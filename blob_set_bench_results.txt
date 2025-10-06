@@ -1,0 +1,67 @@
+goos: linux
+goarch: amd64
+pkg: github.com/arloliu/mebo/blob
+cpu: Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz
+BenchmarkBlobSet_SameMetrics_Sequential/2Blobs_10Metrics_100Points-8         	   20181	     59157 ns/op	    1936 B/op	      54 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/2Blobs_100Metrics_100Points-8        	   20122	     59491 ns/op	    1936 B/op	      54 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/2Blobs_200Metrics_100Points-8        	   20191	     59519 ns/op	    1936 B/op	      54 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/2Blobs_10Metrics_1000Points-8        	    2086	    575134 ns/op	    1936 B/op	      54 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/2Blobs_100Metrics_1000Points-8       	    2154	    557313 ns/op	    1936 B/op	      54 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/5Blobs_10Metrics_100Points-8         	    8024	    148585 ns/op	    4672 B/op	     129 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/5Blobs_100Metrics_100Points-8        	    8199	    148329 ns/op	    4672 B/op	     129 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/5Blobs_200Metrics_100Points-8        	    8128	    146696 ns/op	    4672 B/op	     129 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/5Blobs_10Metrics_1000Points-8        	     876	   1384719 ns/op	    4672 B/op	     129 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/5Blobs_100Metrics_1000Points-8       	     814	   1404116 ns/op	    4672 B/op	     129 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/10Blobs_10Metrics_100Points-8        	    4016	    300432 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/10Blobs_100Metrics_100Points-8       	    4092	    293399 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/10Blobs_200Metrics_100Points-8       	    3950	    296758 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/10Blobs_10Metrics_1000Points-8       	     430	   2778641 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/10Blobs_100Metrics_1000Points-8      	     434	   2777088 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/20Blobs_10Metrics_100Points-8        	    2012	    604353 ns/op	   18352 B/op	     504 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/20Blobs_100Metrics_100Points-8       	    2032	    590009 ns/op	   18352 B/op	     504 allocs/op
+BenchmarkBlobSet_SameMetrics_Sequential/20Blobs_200Metrics_100Points-8       	    2028	    589009 ns/op	   18352 B/op	     504 allocs/op
+BenchmarkBlobSet_SameMetrics_RandomAccess/2Blobs_10Metrics_100Points-8       	  392812	      2959 ns/op	     320 B/op	       5 allocs/op
+BenchmarkBlobSet_SameMetrics_RandomAccess/5Blobs_100Metrics_100Points-8      	  268610	      4356 ns/op	     576 B/op	       9 allocs/op
+BenchmarkBlobSet_SameMetrics_RandomAccess/10Blobs_200Metrics_100Points-8     	  325204	      3911 ns/op	    1088 B/op	      17 allocs/op
+BenchmarkBlobSet_SameMetrics_RandomAccess/20Blobs_100Metrics_1000Points-8    	   48729	     24422 ns/op	    2048 B/op	      32 allocs/op
+BenchmarkBlobSet_UniqueMetrics_Sequential/2Blobs_10Metrics_100Points-8       	   40435	     29884 ns/op	    1024 B/op	      29 allocs/op
+BenchmarkBlobSet_UniqueMetrics_Sequential/5Blobs_100Metrics_100Points-8      	   40534	     29483 ns/op	    1024 B/op	      29 allocs/op
+BenchmarkBlobSet_UniqueMetrics_Sequential/10Blobs_200Metrics_100Points-8     	   39504	     30082 ns/op	    1024 B/op	      29 allocs/op
+BenchmarkBlobSet_UniqueMetrics_Sequential/20Blobs_100Metrics_1000Points-8    	    4245	    284848 ns/op	    1024 B/op	      29 allocs/op
+BenchmarkBlobSet_UniqueMetrics_RandomAccess/2Blobs_10Metrics_100Points-8     	  295190	      4012 ns/op	     192 B/op	       3 allocs/op
+BenchmarkBlobSet_UniqueMetrics_RandomAccess/5Blobs_100Metrics_100Points-8    	  297462	      3963 ns/op	     192 B/op	       3 allocs/op
+BenchmarkBlobSet_UniqueMetrics_RandomAccess/10Blobs_200Metrics_100Points-8   	  303757	      3962 ns/op	     192 B/op	       3 allocs/op
+BenchmarkBlobSet_OverlappingMetrics_Sequential/5Blobs_100Metrics_50%Overlap-8         	    7858	    147874 ns/op	    4672 B/op	     129 allocs/op
+BenchmarkBlobSet_OverlappingMetrics_Sequential/10Blobs_200Metrics_50%Overlap-8        	   40376	     29796 ns/op	    1024 B/op	      29 allocs/op
+BenchmarkBlobSet_OverlappingMetrics_Sequential/10Blobs_100Metrics_75%Overlap-8        	    4200	    295204 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_Mixed90_10_TypeSpecific/5Blobs_90Numeric_10Text_100Points_Numeric-8  	    8001	    147964 ns/op	    4672 B/op	     129 allocs/op
+BenchmarkBlobSet_Mixed90_10_TypeSpecific/5Blobs_90Numeric_10Text_100Points_Text-8     	   47382	     31347 ns/op	   13152 B/op	     519 allocs/op
+BenchmarkBlobSet_Mixed90_10_TypeSpecific/10Blobs_90Numeric_10Text_100Points_Numeric-8 	    4006	    298324 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_Mixed90_10_TypeSpecific/10Blobs_90Numeric_10Text_100Points_Text-8    	   21196	     69086 ns/op	   26192 B/op	    1034 allocs/op
+BenchmarkBlobSet_Mixed90_10_TypeSpecific/10Blobs_180Numeric_20Text_100Points_Numeric-8         	    4009	    298681 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_Mixed90_10_TypeSpecific/10Blobs_180Numeric_20Text_100Points_Text-8            	   21958	     64031 ns/op	   26192 B/op	    1034 allocs/op
+BenchmarkBlobSet_Mixed95_5_TypeSpecific/10Blobs_95Numeric_5Text_100Points_Numeric-8            	    3301	    304549 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_Mixed95_5_TypeSpecific/10Blobs_190Numeric_10Text_100Points_Numeric-8          	    3356	    330539 ns/op	    9233 B/op	     254 allocs/op
+BenchmarkBlobSet_Iteration_FullScan/AllNumerics-8                                              	    3904	    309601 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_Iteration_FullScan/AllNumericValues-8                                         	   58239	     20509 ns/op	    1712 B/op	      44 allocs/op
+BenchmarkBlobSet_Iteration_FullScan/AllTimestamps-8                                            	  111543	     10762 ns/op	    1232 B/op	      34 allocs/op
+BenchmarkBlobSet_Iteration_EarlyTermination/First10-8                                          	  250065	      4470 ns/op	    1048 B/op	      29 allocs/op
+BenchmarkBlobSet_Iteration_EarlyTermination/First100-8                                         	   39817	     29881 ns/op	    1048 B/op	      29 allocs/op
+BenchmarkBlobSet_Iteration_EarlyTermination/First1000-8                                        	    4194	    285619 ns/op	    1048 B/op	      29 allocs/op
+BenchmarkBlobSet_Access_Sequential-8                                                           	    9054	    134233 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkBlobSet_Access_Random-8                                                               	    1180	   1016290 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkBlobSet_Access_Strided/Stride10-8                                                     	    1087	   1108462 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkBlobSet_Access_Strided/Stride50-8                                                     	    5661	    213419 ns/op	    1280 B/op	      20 allocs/op
+BenchmarkBlobSet_Access_Strided/Stride100-8                                                    	   10000	    100265 ns/op	     640 B/op	      10 allocs/op
+BenchmarkBlobSet_Lookup_ByID_vs_ByName/ByID-8                                                  	    3816	    316738 ns/op	    9232 B/op	     254 allocs/op
+BenchmarkBlobSet_Lookup_ByID_vs_ByName/ByName-8                                                	    3924	    299420 ns/op	    9248 B/op	     254 allocs/op
+BenchmarkBlobSet_GlobalIndexing_Overhead/Blobs_1-8                                             	  892018	      1331 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBlobSet_GlobalIndexing_Overhead/Blobs_2-8                                             	  900660	      1334 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBlobSet_GlobalIndexing_Overhead/Blobs_5-8                                             	  884528	      1345 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBlobSet_GlobalIndexing_Overhead/Blobs_:-8                                             	  883371	      1363 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBlobSet_GlobalIndexing_Overhead/Blobs_D-8                                             	  830047	      1378 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBlobSet_RealWorld_Dashboard-8                                                         	     808	   1475559 ns/op	   46720 B/op	    1290 allocs/op
+BenchmarkBlobSet_RealWorld_Alert-8                                                             	   28773	     41673 ns/op	    3320 B/op	      84 allocs/op
+BenchmarkBlobSet_RealWorld_Aggregation-8                                                       	   55455	     21629 ns/op	    1728 B/op	      45 allocs/op
+PASS
+ok  	github.com/arloliu/mebo/blob	73.821s
