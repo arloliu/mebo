@@ -12,9 +12,32 @@ A high-performance, space-efficient binary format for storing time-series metric
 
 Mebo is optimized for multiple scenarios, providing excellent compression ratios and fast lookup performance through hash-based identification and columnar storage.
 
+## Design Philosophy
+
+**Mebo is designed for batch processing of already-collected metrics**, not for streaming ingestion. The typical workflow is:
+
+1. **Collect metrics** in memory (from monitoring agents, APIs, or other sources)
+2. **Pack metrics** into one or more blobs using Mebo encoders
+3. **Persist blobs** to storage (databases, object stores, file systems)
+4. **Query blobs** later by decoding them on-demand
+
+This design makes Mebo ideal for:
+- 📦 **Batch metric ingestion**: Collect 10 seconds/1 minute/5 minutes of metrics, then encode into single or multiple blobs
+- 🗄️ **Time-series databases**: Store compressed metric data with minimal space overhead
+- ☁️ **Object storage**: Save blobs to S3/GCS/Azure Blob with excellent compression
+- 📊 **Metrics aggregation**: Combine metrics from multiple sources before storage
+- 🔄 **ETL pipelines**: Transform and compress metrics between systems
+
+**Important**: Because Mebo works with pre-collected data, you must **declare the number of data points** for each metric upfront using `StartMetricID(metricID, count)` or `StartMetricName(name, count)`, and complete the metric with `EndMetric()`. This allows Mebo to:
+- Pre-allocate buffers efficiently
+- Validate data completeness
+- Optimize compression strategies
+- Ensure data integrity
+
 ## Features
 
 - 🚀 **High Performance**: 25-50M ops/sec encoding, 40-100M ops/sec decoding
+- ⚡ **Zero-Allocation Iteration**: Decode and iterate in-memory without allocating per data point—just read compressed bytes directly
 - 💾 **Space Efficient**: 42% smaller than raw storage with Gorilla+Delta encoding
 - 🔍 **Fast Lookups**: O(1) metric lookup via 64-bit xxHash64
 - 📊 **Columnar Storage**: Separate timestamp and value encoding for optimal compression
@@ -46,6 +69,14 @@ CGO_ENABLED=1 go build
 This provides significant performance improvements (2-3× faster compression/decompression) compared to the pure Go implementation. The pure Go fallback is used when `CGO_ENABLED=0`.
 
 ## Quick Start
+
+**Important Note**: Mebo requires you to declare the number of data points for each metric when starting. This is because Mebo is designed for encoding **already-collected metrics** (batch processing), not for streaming/real-time ingestion. Always follow the pattern:
+
+```go
+encoder.StartMetricID(metricID, count)  // Declare: "This metric will have 'count' points"
+// ... add exactly 'count' data points ...
+encoder.EndMetric()                      // Complete: "This metric is done"
+```
 
 ### Encoding Numeric Metrics
 
@@ -133,21 +164,32 @@ timestamp, ok := materialized.TimestampAt(metricID, 500)
 
 ### Bulk Operations for Better Performance
 
+**Metric Lifecycle**: Every metric must follow the `Start → Add → End` pattern:
+
 ```go
 startTime := time.Now()
 encoder, _ := mebo.NewDefaultNumericEncoder(startTime)
-
-// Single data point insertion (use for streaming data)
 metricID := mebo.MetricID("cpu.usage")
-encoder.StartMetricID(metricID, 1000)
+
+// Step 1: Start metric and declare data point count
+encoder.StartMetricID(metricID, 1000)  // "I will add 1000 points"
+
+// Step 2: Add data points (single or bulk)
+// Single data point insertion (use for streaming data)
 for i := 0; i < 1000; i++ {
     ts := startTime.Add(time.Duration(i) * time.Second)
     value := float64(i * 10)
     encoder.AddDataPoint(ts.UnixMicro(), value, "")  // Empty string for no tag
 }
-encoder.EndMetric()
 
-// Bulk insertion (2-3× faster for batch data)
+// Step 3: Complete the metric
+encoder.EndMetric()  // "I'm done with this metric"
+```
+
+**Bulk Insertion (2-3× faster)**:
+
+```go
+// Bulk insertion with AddDataPoints (more efficient for batch data)
 encoder.StartMetricID(metricID, 1000)
 timestamps := make([]int64, 1000)
 values := make([]float64, 1000)
@@ -160,6 +202,8 @@ encoder.AddDataPoints(timestamps, values, nil)  // nil for no tags
 encoder.EndMetric()
 
 // Bulk insertion with tags
+encoder.StartMetricID(metricID, 1000)
+// ... prepare timestamps and values same as above ...
 tags := make([]string, 1000)
 for i := 0; i < 1000; i++ {
     tags[i] = fmt.Sprintf("host=server%d", i%10)
@@ -167,14 +211,21 @@ for i := 0; i < 1000; i++ {
 encoder.AddDataPoints(timestamps, values, tags)
 encoder.EndMetric()
 ```
+```
 
 **Performance Tip**: Use `AddDataPoints` for bulk operations when you have all data ready. It's 2-3× faster than individual `AddDataPoint` calls due to reduced function call overhead and better memory locality.
 
 ## Performance
 
-### Compression Ratios
+**Benchmark Conditions:**
+- **CPU:** Intel Core i7-9700K @ 3.60GHz
+- **Go Version:** 1.24+
+- **Timestamps:** Microseconds with 1-second intervals ± 5% jitter
+- **Values:** Base 100.0, ±2% delta between consecutive points (simulates real monitoring metrics)
+- **Dataset:** 200 metrics × 250 points = 50,000 data points
+- **📊 Detailed Analysis:** See [docs/METRICS_TO_POINTS_ANALYSIS.md](docs/METRICS_TO_POINTS_ANALYSIS.md) for comprehensive ratio impact analysis
 
-Benchmark with 200 metrics × 250 points (50,000 data points):
+### Compression Ratios
 
 | Configuration | Bytes/Point | Space Savings | Use Case |
 |--------------|-------------|---------------|----------|
@@ -185,6 +236,99 @@ Benchmark with 200 metrics × 250 points (50,000 data points):
 | Raw + Raw | 16.06 | 0% (baseline) | No compression |
 
 **Text metrics** with Zstd achieve up to **85% space savings**.
+
+### Impact of Metrics-to-Points Ratio
+
+**The ratio of metrics to points per metric is the single most important factor for compression efficiency.** Target: **<1:1 ratio** (more points than metrics).
+
+#### Compression Efficiency by Configuration
+
+Benchmark results using **Delta+Gorilla** (production default, no additional compression):
+
+**Quick Reference (200 metrics):**
+
+| Points/Metric | Total Points | Bytes/Point | Space Savings | Efficiency |
+|---------------|--------------|-------------|---------------|------------|
+| **10** | 2,000 | **12.48** | **22.0%** | ❌ Poor |
+| **100** | 20,000 | **9.81** | **38.7%** | ✅ Good |
+| **250** | 50,000 | **9.69** | **39.4%** | ✅ Optimal |
+
+**Comprehensive Results (all combinations tested):**
+
+| Configuration | Bytes/Point | Space Savings | Grade |
+|---------------|-------------|---------------|-------|
+| ❌ **Terrible**: Any × 1 point | **32-35** | Negative (worse than raw!) | ❌❌ |
+| ⚠️ **Poor**: Any × 5 points | **15.4-15.8** | Only 1-4% | ⚠️ |
+| ⚠️ **Acceptable**: Any × 10 points | **12.5-12.7** | 20-22% | ⚠️ |
+| ✅ **Good**: Any × 100 points | **9.8-9.9** | 38-39% | ✅ |
+| ✅ **Optimal**: Any × 100-250 points | **9.68-9.81** | 38-39% | ✅✅ |
+
+#### Key Insights
+
+**1. Points per metric matters 30× more than metric count**
+
+Whether you have 10 or 400 metrics, if each has 100+ points, you'll get ~9.8 bytes/point. The number of points per metric dominates compression efficiency:
+
+- **1 → 5 points**: 52% improvement
+- **5 → 10 points**: 19% improvement
+- **10 → 100 points**: 21% improvement
+- **100 → 250 points**: Only 1% improvement (diminishing returns)
+
+**2. Sweet spot: 100-250 points per metric**
+
+After 100 points, compression efficiency plateaus. Further increases provide minimal benefit.
+
+**3. Minimum threshold: 10 points per metric**
+
+Below 10 points, fixed overhead dominates and compression becomes inefficient.
+
+#### Why More Points = Better Compression
+
+1. **Fixed overhead amortization**: Each metric has fixed costs (metric ID, index entry, flags, metadata) totaling ~34-44 bytes. With more points, this overhead is spread across more data.
+2. **Better pattern detection**: Delta and Gorilla encoding work better with larger datasets to identify and exploit patterns.
+3. **Reduced metadata ratio**: Index size grows linearly with metric count, but compression benefits scale with total data points.
+
+#### Practical Recommendations
+
+**✅ DO: Optimal Configurations**
+
+| Scenario | Configuration | Result |
+|----------|--------------|---------|
+| **Best Practice** | 100-250 points/metric | 9.68-9.81 bytes/point (38-39% savings) |
+| **Minimum Acceptable** | 10+ points/metric | 12.46-12.74 bytes/point (20-22% savings) |
+| **Target Ratio** | <1:1 (metrics:points) | Ensures good compression |
+
+**Example**: 100 metrics × 100 points (1:1) = 9.81 bytes/point ✅
+
+**❌ DON'T: Anti-Patterns**
+
+| Scenario | Configuration | Result | Why It Fails |
+|----------|--------------|---------|-------------|
+| **Never use** | Any × 1 point | 32+ bytes/point | All overhead, no compression |
+| **Avoid** | Any × 5 points | 15.4-15.8 bytes/point | Only 1-4% savings |
+| **Avoid high ratios** | 500 metrics × 5 points | ~15.5 bytes/point | Poor compression |
+
+#### Real-World Use Cases
+
+**Scenario 1: Real-time Dashboard (1-minute windows)**
+- ❌ Bad: 500 metrics × 6 points (10-second intervals) = ~15.5 bytes/point
+- ✅ Good: 500 metrics × 60 points (1-second intervals) = ~9.7 bytes/point
+- **Recommendation**: Collect at higher frequency (1Hz) for better compression
+
+**Scenario 2: Long-term Storage (1-hour windows)**
+- ❌ Bad: 1000 metrics × 12 points (5-minute intervals) = ~12.5 bytes/point
+- ✅ Good: 1000 metrics × 60 points (1-minute intervals) = ~9.8 bytes/point
+- ✅ Better: 1000 metrics × 360 points (10-second intervals) = ~9.7 bytes/point
+- **Recommendation**: Store higher resolution data, compression makes it cheaper
+
+**Scenario 3: Sparse Metrics**
+- ❌ Bad: 1000 metrics × 2 points (only start/end) = ~20+ bytes/point
+- ✅ Workaround: Batch multiple time windows together
+  - Instead of: 10 blobs × (1000 metrics × 2 points)
+  - Do: 1 blob × (1000 metrics × 20 points)
+- **Recommendation**: Accumulate before encoding
+
+> 📊 **Comprehensive Analysis:** For detailed benchmarks covering 20 different combinations of metric counts (10/100/200/400) and point sizes (1/5/10/100/250), including ratio analysis and practical recommendations, see [docs/METRICS_TO_POINTS_ANALYSIS.md](docs/METRICS_TO_POINTS_ANALYSIS.md).
 
 ### Encoding Performance
 
@@ -197,13 +341,15 @@ Benchmark with 200 metrics × 250 points (50,000 data points):
 
 ### Decoding Performance
 
+**🔥 Hot Feature: Zero-Allocation In-Memory Iteration** — Mebo decodes compressed data on-the-fly without allocating memory per data point. Just read bytes directly from the blob!
+
 | Operation | Speed | Latency | Notes |
 |-----------|-------|---------|-------|
-| Sequential (Delta) | ~40M ops/sec | ~25 ns/op | Most efficient |
-| Sequential (Gorilla) | ~50M ops/sec | ~20 ns/op | Less memory bandwidth |
+| Sequential (Delta) | ~40M ops/sec | ~25 ns/op | Zero allocation, in-memory decode |
+| Sequential (Gorilla) | ~50M ops/sec | ~20 ns/op | Zero allocation, less memory bandwidth |
 | Random access (Raw) | ~100M ops/sec | ~10 ns/op | O(1) access |
 | Random access (Delta) | Varies | O(n) | Must scan from start |
-| Materialized access | ~200M ops/sec | ~5 ns/op | Direct array indexing |
+| Materialized access | ~200M ops/sec | ~5 ns/op | Direct array indexing (allocates once) |
 
 ### Materialization
 
@@ -211,6 +357,61 @@ Benchmark with 200 metrics × 250 points (50,000 data points):
 - **Memory**: ~16 bytes/point (numeric), ~24 bytes/point (text)
 - **Access**: O(1), ~5 ns per access
 - **Speedup**: 820× faster than decoding for random access patterns
+
+### Mebo vs FlatBuffers
+
+Comprehensive benchmarks with 200 metrics × 250 points (50,000 data points):
+
+**Benchmark Conditions:**
+- **CPU:** Intel Core i7-9700K @ 3.60GHz
+- **Timestamps:** Microseconds with 1-second intervals ± 5% jitter
+- **Values:** Base 100.0, ±2% delta between consecutive points (simulates real monitoring metrics)
+
+#### Space Efficiency
+
+| Format | Bytes/Point | Space Savings | Winner |
+|--------|-------------|---------------|--------|
+| **Mebo (Delta + Gorilla + Zstd)** | **9.32** | **42.0%** | 🏆 |
+| Mebo (Delta + Gorilla) | 9.65 | 39.9% | ✓ |
+| FlatBuffers + Zstd | ~11-12 | ~30% (est.) | |
+| Mebo (Raw) | 16.06 | 0% (baseline) | |
+
+**Result**: Mebo achieves **10-15% better compression** than FlatBuffers with comparable settings.
+
+#### Read Performance (Decode + Iterate All Data)
+
+| Format | Total Time | Winner |
+|--------|------------|--------|
+| **Mebo (Delta + Gorilla)** | **523 μs** | 🏆 **2.6× faster** |
+| Mebo (Raw + Gorilla) | 374 μs | 🏆 **3.6× faster** |
+| Mebo (Delta + Gorilla + Zstd) | 999 μs | ✓ **2.4× faster** |
+| FlatBuffers + Zstd | 2,377 μs | |
+| FlatBuffers (no compression) | 1,337 μs | |
+
+**Result**: Mebo is **2.4-3.6× faster** for reading and iterating data, even with compression enabled.
+
+#### Why Mebo Outperforms FlatBuffers
+
+1. **Zero-Allocation In-Memory Iteration**: Decode compressed data on-the-fly without allocating memory per data point. Just read bytes directly from the blob—no deserialization overhead!
+
+2. **Highly Optimized Gorilla Encoding**: Compressed values iterate faster than uncompressed due to:
+   - Less memory bandwidth (smaller data transfers)
+   - Better CPU cache utilization (more values per cache line)
+   - Fast XOR-based decompression (~20ns per value)
+
+3. **Columnar Storage**: Separate timestamp/value encoding enables:
+   - Independent compression strategies
+   - Better compression ratios per data type
+   - More efficient iteration patterns
+
+3. **Optimized for Time-Series**: Purpose-built for metric data with:
+   - Delta-of-delta timestamp compression
+   - Value redundancy elimination (Gorilla)
+   - Specialized for monitoring use cases
+
+**Key Insight**: Mebo's counter-intuitive result - Gorilla-compressed data (358 μs) iterates **2.3× faster** than raw uncompressed data (816 μs) due to reduced memory bandwidth requirements.
+
+**See detailed benchmarks**: [Full Benchmark Report](_tests/fbs_compare/BENCHMARK_REPORT.md)
 
 ## Encoding Strategies
 
@@ -259,7 +460,7 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 9.32 bytes/point (42% savings), best compression ratio
+**Result**: 9.32 bytes/point (42% savings), best compression ratio, but the decode+iteration slower than no compression.
 
 ### Balanced (Production Default)
 
@@ -268,7 +469,7 @@ encoder, _ := mebo.NewDefaultNumericEncoder(time.Now())
 ```
 
 **Configuration**: Delta timestamps (no compression), Gorilla values (no compression)
-**Result**: 9.65 bytes/point (40% savings), minimal CPU overhead
+**Result**: 9.65 bytes/point (40% savings), minimal CPU overhead, compression ratio very close to zstd.
 
 ### Fast Access (Query-Optimized)
 
@@ -390,14 +591,18 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 
 ## Best Practices
 
-1. **Choose appropriate encoding**: Delta for regular intervals, Gorilla for slowly-changing values
-2. **Batch metrics**: Group related metrics in the same blob for better compression
-3. **Pre-allocate**: Use `StartMetricID` with accurate capacity for better performance
-4. **Use blob sets**: For multi-blob queries, blob sets are more efficient than manual iteration
-5. **Materialize wisely**: Only materialize when random access pattern justifies the cost (>100 accesses)
-6. **Monitor memory**: Materialization can use significant memory for large datasets
-7. **Use tags judiciously**: Tags add 8-16 bytes overhead per point; only enable when needed
-8. **Profile your workload**: Test different configurations with your actual data
+1. **Always declare data point count**: Call `StartMetricID(id, count)` or `StartMetricName(name, count)` with accurate count, then call `EndMetric()` after adding exactly that many points. This is required for Mebo's batch processing design.
+2. **Collect before encoding**: Gather all metric data in memory first, then encode in batches. Mebo is designed for batch processing, not streaming ingestion.
+3. **Choose appropriate encoding**: Delta for regular intervals, Gorilla for slowly-changing values, Raw for random access needs.
+4. **Batch metrics**: Group related metrics in the same blob for better compression (e.g., all metrics from one time window).
+5. **Use bulk operations**: Call `AddDataPoints` instead of multiple `AddDataPoint` calls when you have all data ready (2-3× faster).
+6. **Pre-allocate accurately**: Accurate count in `StartMetricID` enables buffer pre-allocation and better performance.
+7. **Optimize metrics-to-points ratio**: Each metric should contain at least **10 data points**, with **100-250 points** being optimal. Target **<1:1 ratio** (more points than metrics) for best compression. See [Impact of Metrics-to-Points Ratio](#impact-of-metrics-to-points-ratio) section for detailed analysis.
+8. **Use blob sets**: For multi-blob queries, blob sets are more efficient than manual iteration.
+8. **Materialize wisely**: Only materialize when random access pattern justifies the cost (>100 accesses).
+9. **Monitor memory**: Materialization can use significant memory for large datasets (~16 bytes/point).
+10. **Use tags judiciously**: Tags add 8-16 bytes overhead per point; only enable when needed.
+11. **Profile your workload**: Test different configurations with your actual data to find optimal settings.
 
 ## Thread Safety
 
