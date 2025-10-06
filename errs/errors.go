@@ -1,0 +1,31 @@
+package errs
+
+import "errors"
+
+var (
+	ErrInvalidMetricCount            = errors.New("invalid metric count, must be between 0 and 65535")
+	ErrInvalidHeaderSize             = errors.New("invalid header size, must be exactly 32 bytes")
+	ErrInvalidHeaderFlags            = errors.New("invalid header flags")
+	ErrInvalidMetricID               = errors.New("invalid metric ID, must be non-zero")
+	ErrInvalidMetricName             = errors.New("invalid metric name")
+	ErrInvalidIndexEntrySize         = errors.New("invalid index entry size, must be exactly 16 bytes")
+	ErrInvalidNumOfDataPoints        = errors.New("invalid number of data points, must be between 1 and 65535")
+	ErrInvalidTimestampPayloadOffset = errors.New("invalid timestamp payload offset")
+	ErrInvalidValuePayloadOffset     = errors.New("invalid value payload offset")
+	ErrInvalidTagPayloadOffset       = errors.New("invalid tag payload offset")
+	ErrInvalidIndexOffsets           = errors.New("invalid index offsets, must be non-decreasing")
+	ErrMetricCountExceeded           = errors.New("metric count exceeded the declared count in header")
+	ErrMetricAlreadyStarted          = errors.New("metric already started, call EndMetric first")
+	ErrNoMetricStarted               = errors.New("no metric started, call StartMetric first")
+	ErrMetricNotEnded                = errors.New("cannot finish: there is an unended metric, call EndMetric before Finish")
+	ErrNoMetricsAdded                = errors.New("no metrics added to encoder")
+	ErrTooManyDataPoints             = errors.New("too many data points, exceeds claimed count")
+	ErrNoDataPointsAdded             = errors.New("no data points added, add at least one data point before ending the metric")
+	ErrOffsetOutOfRange              = errors.New("offset out of range, too many data points")
+	ErrDataPointCountMismatch        = errors.New("data point count mismatch")
+	ErrHashCollision                 = errors.New("hash collision detected")
+	ErrHashMismatch                  = errors.New("hash mismatch")
+	ErrInvalidMetricNamesPayload     = errors.New("invalid metric names payload")
+	ErrInvalidMetricNamesCount       = errors.New("invalid metric names count")
+	ErrMixedIdentifierMode           = errors.New("cannot mix StartMetricID and StartMetricName in the same encoder")
+)

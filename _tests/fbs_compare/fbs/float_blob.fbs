@@ -1,0 +1,16 @@
+namespace numericblob;
+
+// Maps to NumericBlob
+table NumericMetric {
+    id: uint64; // metric id, same as IndexEntry.MetricID
+ 	timestamp: [long]; // the int64 timestamp payload
+ 	value: [double]; // the float64 value payload
+    tag: [string]; // optional tag
+}
+
+// Maps to NumericBlobSet
+table NumericMetricSet {
+    metrics: [NumericMetric]; // metrics set
+}
+
+root_type NumericMetricSet;

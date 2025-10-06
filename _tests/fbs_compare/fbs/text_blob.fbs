@@ -1,0 +1,18 @@
+namespace textblob;
+
+// Maps to TextBlob
+table TextMetric {
+    id: uint64; // metric id, same as IndexEntry.MetricID
+ 	timestamp: [long]; // the int64 timestamp payload
+ 	value: [string]; // the string value payload
+    tag: [string]; // optional tag
+}
+
+
+// Maps to TextBlobSet
+table TextBlobSet {
+    metrics: [TextMetric]; // metrics set
+
+}
+
+root_type TextBlobSet;
