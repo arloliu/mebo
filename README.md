@@ -1,7 +1,7 @@
 # Mebo
 
 <p align="center">
-  <img src="docs/mebo_logo.png" alt="Mebo Logo" width="200"/>
+  <img src="docs/mebo_logo.png" alt="Mebo Logo" width="300"/>
 </p>
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/arloliu/mebo.svg)](https://pkg.go.dev/github.com/arloliu/mebo)
