@@ -47,6 +47,7 @@ This design makes Mebo ideal for:
 - 🔋 **Low Memory Footprint**: Minimal allocations with internal buffer pooling
 - 🧵 **Thread-Safe**: Immutable blobs, safe concurrent reads
 - 🎨 **Type Support**: Numeric (float64) and text (string) metrics
+- 🗂️ **BlobSet Support**: Unified access across multiple blobs with global indexing
 
 ## Installation
 
@@ -210,7 +211,6 @@ for i := 0; i < 1000; i++ {
 }
 encoder.AddDataPoints(timestamps, values, tags)
 encoder.EndMetric()
-```
 ```
 
 **Performance Tip**: Use `AddDataPoints` for bulk operations when you have all data ready. It's 2-3× faster than individual `AddDataPoint` calls due to reduced function call overhead and better memory locality.
@@ -493,7 +493,23 @@ encoder, _ := mebo.NewDefaultTextEncoder(time.Now())
 
 ## Advanced Usage
 
-### Multi-Blob Queries
+### BlobSet: Unified Multi-Blob Access
+
+**BlobSet** represents a collection of blobs (both numeric and text) sorted by start time. It provides unified access to data points across multiple blobs with **global indexing**, making it easy to query metrics that span multiple time windows.
+
+**Key Features:**
+- 🔄 **Automatic sorting** by start time for chronological iteration
+- 🌍 **Global indexing** across all blobs (index 0-N spans all blobs)
+- 🎯 **Type-safe access** with separate numeric and text blob storage
+- ⚡ **Zero-allocation iteration** across blob boundaries
+- 🔍 **Random access** using global indices
+
+**Performance optimization:**
+- Numeric and text blobs stored separately for better CPU cache locality
+- Type-specific queries skip irrelevant blobs (no type assertions)
+- Generic queries check numeric first (95% of typical workloads)
+
+#### Basic Multi-Blob Queries
 
 ```go
 // Create blobs for different time windows
@@ -511,7 +527,54 @@ for dp := range blobSet.All(cpuID) {
 }
 ```
 
-### Tags Support
+#### Mixed Numeric and Text Blobs
+
+```go
+// Create BlobSet with both numeric and text blobs
+blobSet := blob.NewBlobSet(
+    []blob.NumericBlob{numericBlob1, numericBlob2},
+    []blob.TextBlob{textBlob1, textBlob2},
+)
+
+// Iterate numeric metrics with global indices
+for index, dp := range blobSet.AllNumerics(metricID) {
+    fmt.Printf("Global index %d: ts=%d, val=%f\n", index, dp.Ts, dp.Val)
+}
+
+// Iterate text metrics with global indices
+for index, dp := range blobSet.AllTexts(metricID) {
+    fmt.Printf("Global index %d: ts=%d, val=%s\n", index, dp.Ts, dp.Val)
+}
+```
+
+#### Global Index Random Access
+
+```go
+// Global index spans all blobs in the set
+// If blob1 has 100 points and blob2 has 150 points:
+// - Index 0-99 accesses blob1
+// - Index 100-249 accesses blob2
+
+value, ok := blobSet.NumericValueAt(metricID, 150)  // Accesses blob2 at local index 50
+timestamp, ok := blobSet.TimestampAt(metricID, 50)   // Accesses blob1 at local index 50
+
+// Complete data point access
+dp, ok := blobSet.NumericAt(metricID, 125)  // Returns NumericDataPoint with ts, val, tag
+```
+
+#### Materialization for Fast Random Access
+
+```go
+// Materialize numeric metrics for O(1) random access
+matNumeric := blobSet.MaterializeNumeric()
+val, ok := matNumeric.ValueAt(metricID, 150)  // ~5ns (O(1), direct array indexing)
+
+// Materialize text metrics separately
+matText := blobSet.MaterializeText()
+textVal, ok := matText.ValueAt(metricID, 75)  // ~5ns (O(1), direct array indexing)
+```
+
+#### Tags Support
 
 ```go
 startTime := time.Now()
