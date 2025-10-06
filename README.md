@@ -6,7 +6,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/arloliu/mebo.svg)](https://pkg.go.dev/github.com/arloliu/mebo)
 [![Go Report Card](https://goreportcard.com/badge/github.com/arloliu/mebo)](https://goreportcard.com/report/github.com/arloliu/mebo)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache](https://img.shields.io/badge/License-Apache-blue.svg)](LICENSE)
 
 A high-performance, space-efficient binary format for storing time-series metric data in Go.
 
@@ -60,13 +60,23 @@ import (
 
 func main() {
     // Create encoder with default settings (Delta timestamps, Gorilla values)
-    encoder, _ := mebo.NewDefaultNumericEncoder(time.Now())
+    startTime := time.Now()
+    encoder, _ := mebo.NewDefaultNumericEncoder(startTime)
 
-    // Add "cpu.usage" metric
+    // Add "cpu.usage" metric by ID with 10 data points
     metricID := mebo.MetricID("cpu.usage")
     encoder.StartMetricID(metricID, 10)
     for i := 0; i < 10; i++ {
-        encoder.AppendValue(float64(i * 10))
+        ts := startTime.Add(time.Duration(i) * time.Second)
+        encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
+    }
+    encoder.EndMetric()
+
+    // Add another "process.latency" metric by name with 20 data points
+    encoder.StartMetricName(("process.latency", 20)
+    for i := 0; i < 20; i++ {
+        ts := startTime.Add(time.Duration(i) * time.Second)
+        encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
     }
     encoder.EndMetric()
 
@@ -120,6 +130,45 @@ materialized := blobSet.Materialize()
 value, ok := materialized.ValueAt(metricID, 500)     // Very fast!
 timestamp, ok := materialized.TimestampAt(metricID, 500)
 ```
+
+### Bulk Operations for Better Performance
+
+```go
+startTime := time.Now()
+encoder, _ := mebo.NewDefaultNumericEncoder(startTime)
+
+// Single data point insertion (use for streaming data)
+metricID := mebo.MetricID("cpu.usage")
+encoder.StartMetricID(metricID, 1000)
+for i := 0; i < 1000; i++ {
+    ts := startTime.Add(time.Duration(i) * time.Second)
+    value := float64(i * 10)
+    encoder.AddDataPoint(ts.UnixMicro(), value, "")  // Empty string for no tag
+}
+encoder.EndMetric()
+
+// Bulk insertion (2-3× faster for batch data)
+encoder.StartMetricID(metricID, 1000)
+timestamps := make([]int64, 1000)
+values := make([]float64, 1000)
+for i := 0; i < 1000; i++ {
+    ts := startTime.Add(time.Duration(i) * time.Second)
+    timestamps[i] = ts.UnixMicro()
+    values[i] = float64(i * 10)
+}
+encoder.AddDataPoints(timestamps, values, nil)  // nil for no tags
+encoder.EndMetric()
+
+// Bulk insertion with tags
+tags := make([]string, 1000)
+for i := 0; i < 1000; i++ {
+    tags[i] = fmt.Sprintf("host=server%d", i%10)
+}
+encoder.AddDataPoints(timestamps, values, tags)
+encoder.EndMetric()
+```
+
+**Performance Tip**: Use `AddDataPoints` for bulk operations when you have all data ready. It's 2-3× faster than individual `AddDataPoint` calls due to reduced function call overhead and better memory locality.
 
 ## Performance
 
@@ -264,16 +313,23 @@ for dp := range blobSet.All(cpuID) {
 ### Tags Support
 
 ```go
+startTime := time.Now()
+metricID := mebo.MetricID("cpu.usage")
+
 // Enable tags in encoder
-encoder, _ := mebo.NewNumericEncoder(time.Now(),
+encoder, _ := mebo.NewNumericEncoder(startTime,
     blob.WithTagsEnabled(true),
 )
+// Or use factory function
+// encoder, _ := mebo.NewTaggedNumericEncoder(startTime)
 
 // Add tagged values
 encoder.StartMetricID(metricID, 10)
 for i := 0; i < 10; i++ {
-    encoder.AppendValueWithTag(float64(i), fmt.Sprintf("host=server%d", i%3))
+    ts := startTime.Add(time.Duration(i) * time.Second)
+    encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), fmt.Sprintf("host=server%d", i%3))
 }
+encoder.EndMetric()
 
 // Read tags during decoding
 for dp := range decoder.AllWithTags(metricID) {
@@ -355,7 +411,7 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 
 - 📚 [API Documentation](https://pkg.go.dev/github.com/arloliu/mebo)
 - 📖 [Design Document](docs/DESIGN.md)
-- 🧪 [Benchmark Report](tests/fbs_compare/BENCHMARK_REPORT.md)
+- 🧪 [Benchmark Report](_tests/fbs_compare/BENCHMARK_REPORT.md)
 - 💡 [Examples](examples/)
   - [Blob Set Demo](examples/blob_set_demo/) - Multi-blob queries and materialization
 

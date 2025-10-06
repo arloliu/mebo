@@ -22,13 +22,15 @@
 //	import "github.com/arloliu/mebo"
 //
 //	// Create encoder with default settings
-//	encoder, _ := mebo.NewDefaultNumericEncoder(time.Now())
+//	startTime := time.Now()
+//	encoder, _ := mebo.NewDefaultNumericEncoder(startTime)
 //
 //	// Add "cpu.usage" metric with 10 data points
 //	metricID := mebo.MetricID("cpu.usage")
 //	encoder.StartMetricID(metricID, 10)
 //	for i := 0; i < 10; i++ {
-//	    encoder.AppendValue(float64(i * 10))
+//	    ts := startTime.Add(time.Duration(i) * time.Second)
+//	    encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
 //	}
 //	encoder.EndMetric()
 //
@@ -36,7 +38,8 @@
 //	metricID = mebo.MetricID("memory.usage")
 //	encoder.StartMetricID(metricID, 10)
 //	for i := 0; i < 10; i++ {
-//	    encoder.AppendValue(float64(i * 10))
+//	    ts := startTime.Add(time.Duration(i+10) * time.Second)
+//	    encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
 //	}
 //	encoder.EndMetric()
 //
@@ -153,11 +156,15 @@ func NewDefaultNumericEncoder(startTime time.Time) (*blob.NumericEncoder, error)
 //
 // Example:
 //
-//	encoder, err := mebo.NewTaggedNumericEncoder(time.Now(),
+//	startTime := time.Now()
+//	encoder, err := mebo.NewTaggedNumericEncoder(startTime,
 //	    blob.WithValueCompression(format.CompressionZstd),
 //	)
 //	encoder.StartMetricID(metricID, 100)
-//	encoder.AppendValueWithTag(42.0, "host=server1")
+//	for i := 0; i < 100; i++ {
+//	    ts := startTime.Add(time.Duration(i) * time.Second)
+//	    encoder.AddDataPoint(ts.UnixMicro(), 42.0+float64(i), "host=server1")
+//	}
 func NewTaggedNumericEncoder(startTime time.Time, opts ...blob.NumericEncoderOption) (*blob.NumericEncoder, error) {
 	allOpts := append(append(opts, defaultNumericOptions...), blob.WithTagsEnabled(true))
 	return blob.NewNumericEncoder(startTime, allOpts...)
@@ -235,10 +242,17 @@ func NewTextEncoder(startTime time.Time, opts ...blob.TextEncoderOption) (*blob.
 //
 // Example:
 //
-//	encoder, err := mebo.NewDefaultTextEncoder(time.Now())
+//	startTime := time.Now()
+//	encoder, err := mebo.NewDefaultTextEncoder(startTime)
 //	encoder.StartMetricID(metricID, 10)
-//	encoder.AppendValue("OK")
-//	encoder.AppendValue("WARN")
+//	for i := 0; i < 10; i++ {
+//	    ts := startTime.Add(time.Duration(i) * time.Second)
+//	    status := "OK"
+//	    if i%3 == 0 {
+//	        status = "WARN"
+//	    }
+//	    encoder.AddDataPoint(ts.UnixMicro(), status, "")
+//	}
 func NewDefaultTextEncoder(startTime time.Time) (*blob.TextEncoder, error) {
 	return blob.NewTextEncoder(startTime, defaultTextOptions...)
 }
@@ -251,11 +265,15 @@ func NewDefaultTextEncoder(startTime time.Time) (*blob.TextEncoder, error) {
 //
 // Example:
 //
-//	encoder, err := mebo.NewTaggedTextEncoder(time.Now(),
+//	startTime := time.Now()
+//	encoder, err := mebo.NewTaggedTextEncoder(startTime,
 //	    blob.WithTextDataCompression(format.CompressionZstd),
 //	)
 //	encoder.StartMetricID(metricID, 100)
-//	encoder.AppendValueWithTag("ERROR", "service=api")
+//	for i := 0; i < 100; i++ {
+//	    ts := startTime.Add(time.Duration(i) * time.Second)
+//	    encoder.AddDataPoint(ts.UnixMicro(), "ERROR", "service=api")
+//	}
 func NewTaggedTextEncoder(startTime time.Time, opts ...blob.TextEncoderOption) (*blob.TextEncoder, error) {
 	allOpts := append(append(opts, defaultTextOptions...), blob.WithTextTagsEnabled(true))
 	return blob.NewTextEncoder(startTime, allOpts...)
