@@ -20,12 +20,23 @@ type LZ4Compressor struct{}
 var _ Codec = (*LZ4Compressor)(nil)
 
 // NewLZ4Compressor creates a new LZ4 compressor.
+//
+// Returns:
+//   - LZ4Compressor: New LZ4 compressor instance
 func NewLZ4Compressor() LZ4Compressor {
 	return LZ4Compressor{}
 }
 
 // Compress compresses the input data using LZ4 compression.
+//
 // Uses a pooled lz4.Compressor for better performance.
+//
+// Parameters:
+//   - data: Input data to compress
+//
+// Returns:
+//   - []byte: Compressed data (nil if input is empty)
+//   - error: Compression error if any
 func (c LZ4Compressor) Compress(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -53,10 +64,12 @@ func (c LZ4Compressor) Compress(data []byte) ([]byte, error) {
 //  2. On ErrInvalidSourceShortBuffer, double the buffer size (up to maxSize)
 //  3. Return error if buffer exceeds reasonable limits (prevents memory exhaustion)
 //
-// Performance characteristics:
-//   - Best case: O(1) with single allocation when initial buffer is sufficient
-//   - Worst case: O(log n) with multiple doublings, capped at maxSize
-//   - Memory overhead: Temporary allocation up to maxSize (default 128MB)
+// Parameters:
+//   - data: Compressed data to decompress
+//
+// Returns:
+//   - []byte: Decompressed data (nil if input is empty)
+//   - error: ErrInvalidSourceShortBuffer if buffer exceeded 128MB limit, or other decompression errors
 func (c LZ4Compressor) Decompress(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil

@@ -52,6 +52,18 @@ var (
 )
 
 // NewNumericFlag creates a new NumericFlag with default settings.
+//
+// Default configuration:
+//   - Little-endian byte order
+//   - Raw timestamp encoding
+//   - Raw value encoding
+//   - No timestamp compression
+//   - Zstd value compression
+//   - No tag support
+//   - No metric names payload
+//
+// Returns:
+//   - NumericFlag: New flag with default settings
 func NewNumericFlag() NumericFlag {
 	flag := NumericFlag{
 		Options:         MagicFloatV1Opt,
@@ -63,7 +75,10 @@ func NewNumericFlag() NumericFlag {
 	return flag
 }
 
-// HasTag returns whether tag is enabled.
+// HasTag returns whether tag support is enabled.
+//
+// Returns:
+//   - bool: true if tag support is enabled, false otherwise
 func (f NumericFlag) HasTag() bool {
 	return (f.Options & TagMask) != 0
 }
@@ -79,7 +94,11 @@ func (f *NumericFlag) WithoutTag() {
 }
 
 // HasMetricNames returns whether metric names payload is enabled.
+//
 // When enabled, the blob includes a metric names section for collision detection and verification.
+//
+// Returns:
+//   - bool: true if metric names payload is enabled, false otherwise
 func (f NumericFlag) HasMetricNames() bool {
 	return (f.Options & MetricNamesMask) != 0
 }

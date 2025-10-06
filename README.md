@@ -662,9 +662,9 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 6. **Pre-allocate accurately**: Accurate count in `StartMetricID` enables buffer pre-allocation and better performance.
 7. **Optimize metrics-to-points ratio**: Each metric should contain at least **10 data points**, with **100-250 points** being optimal. Target **<1:1 ratio** (more points than metrics) for best compression. See [Impact of Metrics-to-Points Ratio](#impact-of-metrics-to-points-ratio) section for detailed analysis.
 8. **Use blob sets**: For multi-blob queries, blob sets are more efficient than manual iteration.
-8. **Materialize wisely**: Only materialize when random access pattern justifies the cost (>100 accesses).
-9. **Monitor memory**: Materialization can use significant memory for large datasets (~16 bytes/point).
-10. **Use tags judiciously**: Tags add 8-16 bytes overhead per point; only enable when needed.
+9. **Materialize wisely**: Only materialize when random access pattern justifies the cost (>100 accesses).
+10. **Monitor memory**: Materialization can use significant memory for large datasets (~16 bytes/point).
+11. **Use tags judiciously**: Tags add 8-16 bytes overhead per point; only enable when needed.
 11. **Profile your workload**: Test different configurations with your actual data to find optimal settings.
 
 ## Thread Safety

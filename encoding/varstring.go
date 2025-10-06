@@ -35,6 +35,12 @@ type VarStringEncoder struct {
 //
 // The encoder uses a pooled byte buffer with amortized growth strategy for
 // optimal performance when encoding multiple strings.
+//
+// Parameters:
+//   - engine: Endian engine for byte order (typically little-endian)
+//
+// Returns:
+//   - *VarStringEncoder: A new encoder instance ready for variable-length string encoding
 func NewVarStringEncoder(engine endian.EndianEngine) *VarStringEncoder {
 	return &VarStringEncoder{
 		engine: engine,
@@ -54,6 +60,12 @@ func NewVarStringEncoder(engine endian.EndianEngine) *VarStringEncoder {
 // Buffer growth strategy:
 //   - Pre-grows buffer to accommodate length byte + string data
 //   - Minimizes reallocations during encoding
+//
+// Parameters:
+//   - text: String to encode (must not exceed 255 characters)
+//
+// Returns:
+//   - error: nil if successful, error if string exceeds MaxTextLength
 func (e *VarStringEncoder) Write(text string) error {
 	if len(text) > MaxTextLength {
 		return fmt.Errorf("text length %d exceeds maximum %d", len(text), MaxTextLength)
@@ -83,6 +95,12 @@ func (e *VarStringEncoder) Write(text string) error {
 //   - Pre-allocates total space needed for all strings
 //   - Single buffer growth operation for the entire slice
 //   - Minimizes memory allocations and copying
+//
+// Parameters:
+//   - texts: Slice of strings to encode (each must not exceed 255 characters)
+//
+// Returns:
+//   - error: nil if successful, error if any string exceeds MaxTextLength
 func (e *VarStringEncoder) WriteSlice(texts []string) error {
 	// Validate all strings first
 	totalSize := 0
@@ -112,6 +130,9 @@ func (e *VarStringEncoder) WriteSlice(texts []string) error {
 // This method is used for encoding timestamps in delta format.
 // It uses zigzag encoding for signed integers to improve compression
 // of negative values.
+//
+// Parameters:
+//   - val: The int64 value to encode as varint
 func (e *VarStringEncoder) WriteVarint(val int64) {
 	// Zigzag encoding: converts signed to unsigned
 	// -1 becomes 1, -2 becomes 3, 0 stays 0, 1 becomes 2, etc.
@@ -129,16 +150,25 @@ func (e *VarStringEncoder) WriteVarint(val int64) {
 //
 // The returned slice shares the underlying buffer with the encoder.
 // Do not modify the returned slice.
+//
+// Returns:
+//   - []byte: Encoded byte slice containing all written strings
 func (e *VarStringEncoder) Bytes() []byte {
 	return e.buf.Bytes()
 }
 
 // Len returns the number of strings encoded.
+//
+// Returns:
+//   - int: Number of strings written since last Reset
 func (e *VarStringEncoder) Len() int {
 	return e.count
 }
 
 // Size returns the total size of encoded data in bytes.
+//
+// Returns:
+//   - int: Total bytes written to internal buffer since last Reset
 func (e *VarStringEncoder) Size() int {
 	return e.buf.Len()
 }

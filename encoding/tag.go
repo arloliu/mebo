@@ -26,6 +26,12 @@ var _ ColumnarEncoder[string] = (*TagEncoder)(nil)
 // NewTagEncoder creates a new tag encoder.
 // The engine parameter is kept for interface compatibility but not used
 // since tag encoding is endian-neutral (length-prefixed bytes).
+//
+// Parameters:
+//   - engine: Endian engine (currently unused but kept for interface compatibility)
+//
+// Returns:
+//   - *TagEncoder: A new encoder instance ready for tag encoding
 func NewTagEncoder(engine endian.EndianEngine) *TagEncoder {
 	return &TagEncoder{
 		engine: engine,
@@ -39,6 +45,9 @@ func NewTagEncoder(engine endian.EndianEngine) *TagEncoder {
 //
 // The Reset() method does not clear the internal buffer, allowing it to be reused for a new sequence of timestamps
 // until the end of the encoding process.
+//
+// Returns:
+//   - []byte: Encoded byte slice containing all written tags
 func (e *TagEncoder) Bytes() []byte {
 	return e.buf.Bytes()
 }
@@ -47,6 +56,9 @@ func (e *TagEncoder) Bytes() []byte {
 //
 // The Reset() method does not clear the internal buffer, allowing it to be reused for a new sequence of timestamps
 // until the end of the encoding process.
+//
+// Returns:
+//   - int: Number of tags written since last Finish
 func (e *TagEncoder) Len() int {
 	return e.count
 }
@@ -56,6 +68,9 @@ func (e *TagEncoder) Len() int {
 //
 // The Reset() method does not clear the internal buffer, allowing it to be reused for a new sequence of timestamps
 // until the end of the encoding process.
+//
+// Returns:
+//   - int: Total bytes written to internal buffer since last Finish
 func (e *TagEncoder) Size() int {
 	return e.buf.Len()
 }
@@ -88,6 +103,9 @@ func (e *TagEncoder) Finish() {
 //
 // This method is optimized for appending a single tag.
 // For bulk writes, use WriteSlice for better performance.
+//
+// Parameters:
+//   - tag: The string tag to encode
 func (e *TagEncoder) Write(tag string) {
 	// Fast path for empty tags: just write a zero-length varint
 	if len(tag) == 0 {
@@ -118,6 +136,9 @@ func (e *TagEncoder) Write(tag string) {
 // Format: [length:uvarint][bytes:UTF-8] for each tag
 //
 // This method is optimized for bulk writes. For single writes, use Write for better performance.
+//
+// Parameters:
+//   - tags: Slice of string tags to encode
 func (e *TagEncoder) WriteSlice(tags []string) {
 	if len(tags) == 0 {
 		return
@@ -163,6 +184,12 @@ var _ ColumnarDecoder[string] = TagDecoder{}
 // NewTagDecoder creates a new tag decoder.
 // The engine parameter is kept for interface compatibility but not used
 // since tag encoding is endian-neutral (length-prefixed bytes).
+//
+// Parameters:
+//   - engine: Endian engine (currently unused but kept for interface compatibility)
+//
+// Returns:
+//   - TagDecoder: A new decoder instance (stateless, can be reused)
 func NewTagDecoder(engine endian.EndianEngine) TagDecoder {
 	return TagDecoder{
 		engine: engine,
@@ -170,6 +197,13 @@ func NewTagDecoder(engine endian.EndianEngine) TagDecoder {
 }
 
 // All returns an iterator that yields all decoded items from the provided encoded data.
+//
+// Parameters:
+//   - data: Encoded byte slice from TagEncoder.Bytes()
+//   - count: Expected number of tags to decode
+//
+// Returns:
+//   - iter.Seq[string]: Iterator yielding decoded string tags
 func (d TagDecoder) All(data []byte, count int) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		offset := 0
@@ -195,6 +229,15 @@ func (d TagDecoder) All(data []byte, count int) iter.Seq[string] {
 // The index is zero-based, so index 0 retrieves the first tag.
 //
 // If the index is out of bounds, the second return value will be false.
+//
+// Parameters:
+//   - data: Encoded byte slice from TagEncoder.Bytes()
+//   - index: Zero-based index of the tag to retrieve
+//   - count: Total number of tags in the encoded data
+//
+// Returns:
+//   - string: The tag at the specified index
+//   - bool: true if the index exists and was successfully decoded, false otherwise
 func (d TagDecoder) At(data []byte, index int, count int) (string, bool) {
 	if index < 0 || index >= count {
 		return "", false

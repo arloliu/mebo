@@ -91,14 +91,17 @@ type NumericIndexEntry struct {
 	Count int
 }
 
-// Bytes returns the byte representation of the IndexEntry.
-// It uses a fixed-size array to avoid heap allocations for better performance.
+// Bytes returns the index entry as a byte slice using the specified endian engine.
 //
-// The returned slice is a view over the array, so it should be used immediately or copied if needed later.
+// This method uses stack allocation for better performance. It can only be used during
+// encoding when offsets fit in uint16 range. After decoding, offsets may exceed uint16
+// range and should not be written back using this method.
 //
-// Note:
-// This method can only be used during encoding when offsets fit in uint16 range.
-// After decoding, offsets may exceed uint16 range and should not be written back using this method.
+// Parameters:
+//   - engine: Endian engine for byte order
+//
+// Returns:
+//   - []byte: 16-byte index entry with all fields encoded
 func (e *NumericIndexEntry) Bytes(engine endian.EndianEngine) []byte {
 	var b [NumericIndexEntrySize]byte // stack allocation, it's faster than heap allocation
 	engine.PutUint64(b[0:8], e.MetricID)
@@ -111,7 +114,10 @@ func (e *NumericIndexEntry) Bytes(engine endian.EndianEngine) []byte {
 }
 
 // WriteTo writes the index entry to a buffer using the specified endian engine.
-// Returns the number of bytes written (always 16).
+//
+// Parameters:
+//   - buf: Buffer to write to (will grow if needed)
+//   - engine: Endian engine for byte order
 func (e *NumericIndexEntry) WriteTo(buf *bytes.Buffer, engine endian.EndianEngine) {
 	buf.Grow(NumericIndexEntrySize)
 
@@ -129,7 +135,16 @@ func (e *NumericIndexEntry) WriteTo(buf *bytes.Buffer, engine endian.EndianEngin
 }
 
 // WriteToSlice writes to a pre-allocated slice and returns the next position.
-// This is most efficient when writing multiple entries sequentially.
+//
+// This is the most efficient method when writing multiple entries sequentially.
+//
+// Parameters:
+//   - data: Pre-allocated byte slice (must have space for 16 bytes at offset)
+//   - offset: Starting position in data slice
+//   - engine: Endian engine for byte order
+//
+// Returns:
+//   - int: Next write position (offset + 16)
 func (e *NumericIndexEntry) WriteToSlice(data []byte, offset int, engine endian.EndianEngine) int {
 	engine.PutUint64(data[offset:offset+8], e.MetricID)
 	engine.PutUint16(data[offset+8:offset+10], uint16(e.Count))            //nolint: gosec
@@ -140,6 +155,16 @@ func (e *NumericIndexEntry) WriteToSlice(data []byte, offset int, engine endian.
 	return offset + NumericIndexEntrySize
 }
 
+// NewNumericIndexEntry creates a new NumericIndexEntry with the specified metric ID and count.
+//
+// Offsets are initialized to zero and should be set by the encoder.
+//
+// Parameters:
+//   - metricID: Unique 64-bit metric identifier
+//   - count: Number of data points for this metric (1-65535)
+//
+// Returns:
+//   - NumericIndexEntry: New index entry with zero offsets
 func NewNumericIndexEntry(metricID uint64, count uint16) NumericIndexEntry {
 	return NumericIndexEntry{
 		MetricID:        metricID,
@@ -150,7 +175,15 @@ func NewNumericIndexEntry(metricID uint64, count uint16) NumericIndexEntry {
 	}
 }
 
-// ParseNumericIndexEntry parses a float value index entry from a byte slice.
+// ParseNumericIndexEntry parses a NumericIndexEntry from a byte slice.
+//
+// Parameters:
+//   - data: Byte slice containing index entry (must be at least 16 bytes)
+//   - engine: Endian engine for byte order
+//
+// Returns:
+//   - NumericIndexEntry: Parsed index entry
+//   - error: ErrInvalidIndexEntrySize if data is too short
 func ParseNumericIndexEntry(data []byte, engine endian.EndianEngine) (NumericIndexEntry, error) {
 	if len(data) < NumericIndexEntrySize {
 		return NumericIndexEntry{}, errs.ErrInvalidIndexEntrySize
@@ -166,7 +199,11 @@ func ParseNumericIndexEntry(data []byte, engine endian.EndianEngine) (NumericInd
 }
 
 // GetCount returns the count of data points for this metric.
+//
 // This method is used by the generic indexMaps type for type-safe access.
+//
+// Returns:
+//   - uint32: Number of data points (converted from int)
 func (e NumericIndexEntry) GetCount() uint32 {
 	return uint32(e.Count) //nolint: gosec
 }

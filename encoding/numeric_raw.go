@@ -32,6 +32,12 @@ var _ ColumnarEncoder[float64] = (*NumericRawEncoder)(nil)
 // - WriteSlice: Pre-allocated buffer for bulk operations
 //
 // Both methods are optimized for the mebo time-series use case of "150 metrics × 10 points".
+//
+// Parameters:
+//   - engine: Endian engine for byte order (typically little-endian)
+//
+// Returns:
+//   - *NumericRawEncoder: A new encoder instance ready for float64 encoding
 func NewNumericRawEncoder(engine endian.EndianEngine) *NumericRawEncoder {
 	return &NumericRawEncoder{
 		engine: engine,
@@ -55,6 +61,9 @@ func NewNumericRawEncoder(engine endian.EndianEngine) *NumericRawEncoder {
 //
 // The encoded bytes are appended to the internal buffer and can be retrieved
 // using the Bytes method.
+//
+// Parameters:
+//   - val: The float64 value to encode
 func (e *NumericRawEncoder) Write(val float64) {
 	e.count++
 
@@ -84,6 +93,9 @@ func (e *NumericRawEncoder) Write(val float64) {
 //
 // The encoded bytes are appended to the internal buffer and can be retrieved
 // using the Bytes method.
+//
+// Parameters:
+//   - values: Slice of float64 values to encode
 func (e *NumericRawEncoder) WriteSlice(values []float64) {
 	valLen := len(values)
 	e.count += valLen
@@ -116,7 +128,8 @@ func (e *NumericRawEncoder) WriteSlice(values []float64) {
 // Each float64 value occupies exactly 8 bytes in the output, encoded in the
 // byte order specified by the endian engine during construction.
 //
-// Returns an empty slice if no values have been written since the last Reset.
+// Returns:
+//   - []byte: Encoded byte slice (empty if no values written since last Reset)
 func (e *NumericRawEncoder) Bytes() []byte {
 	return e.buf.Bytes()
 }
@@ -125,6 +138,9 @@ func (e *NumericRawEncoder) Bytes() []byte {
 //
 // This count reflects the total number of float64 values written
 // since the last Finish call.
+//
+// Returns:
+//   - int: Number of float64 values written since last Finish
 func (e *NumericRawEncoder) Len() int {
 	return e.count
 }
@@ -133,6 +149,9 @@ func (e *NumericRawEncoder) Len() int {
 //
 // It represents the number of bytes that were written to the internal buffer
 // since the last Finish call.
+//
+// Returns:
+//   - int: Total bytes written to internal buffer since last Finish
 func (e *NumericRawEncoder) Size() int {
 	return e.buf.Len()
 }
@@ -200,6 +219,12 @@ var _ ColumnarDecoder[float64] = NumericRawDecoder{}
 //   - 16-byte struct fits in CPU registers on amd64
 //
 // The decoder is immutable and stateless, making value semantics ideal.
+//
+// Parameters:
+//   - engine: Endian engine for byte order (must match encoder's engine)
+//
+// Returns:
+//   - NumericRawDecoder: A new decoder instance (stateless, can be reused)
 func NewNumericRawDecoder(engine endian.EndianEngine) NumericRawDecoder {
 	return NumericRawDecoder{engine: engine}
 }
@@ -208,6 +233,13 @@ func NewNumericRawDecoder(engine endian.EndianEngine) NumericRawDecoder {
 //
 // It returns a sequence of float64 values decoded from the input byte slice.
 // The data must be a multiple of 8 bytes, as each float64 value occupies exactly 8 bytes.
+//
+// Parameters:
+//   - data: Encoded byte slice from NumericRawEncoder.Bytes()
+//   - count: Expected number of float64 values to decode
+//
+// Returns:
+//   - iter.Seq[float64]: Iterator yielding decoded float64 values
 func (d NumericRawDecoder) All(data []byte, count int) iter.Seq[float64] {
 	return func(yield func(float64) bool) {
 		if len(data) < count*8 || count == 0 {
@@ -231,6 +263,15 @@ func (d NumericRawDecoder) All(data []byte, count int) iter.Seq[float64] {
 // The index is zero-based, so index 0 retrieves the first float64 value.
 //
 // If the index is out of bounds (negative or >= count), the method returns false.
+//
+// Parameters:
+//   - data: Encoded byte slice from NumericRawEncoder.Bytes()
+//   - index: Zero-based index of the float64 value to retrieve
+//   - count: Total number of float64 values in the encoded data
+//
+// Returns:
+//   - float64: The value at the specified index
+//   - bool: true if the index exists and was successfully decoded, false otherwise
 func (d NumericRawDecoder) At(data []byte, index int, count int) (float64, bool) {
 	if len(data) == 0 || index < 0 || index >= count {
 		return 0, false
@@ -280,6 +321,12 @@ var _ ColumnarDecoder[float64] = NumericRawUnsafeDecoder{}
 // Caution: This decoder assumes that the input byte slice has the correct alignment and length.
 // The caller must ensure that the input length is a multiple of 8 bytes, as each float64 value occupies exactly 8 bytes.
 // Using this decoder with improperly aligned or sized data may lead to undefined behavior.
+//
+// Parameters:
+//   - engine: Endian engine (currently unused but kept for interface compatibility)
+//
+// Returns:
+//   - NumericRawUnsafeDecoder: A new unsafe decoder instance (stateless, can be reused)
 func NewNumericRawUnsafeDecoder(engine endian.EndianEngine) NumericRawUnsafeDecoder {
 	return NumericRawUnsafeDecoder{engine: engine}
 }
@@ -294,6 +341,13 @@ func NewNumericRawUnsafeDecoder(engine endian.EndianEngine) NumericRawUnsafeDeco
 // Caution: This method uses unsafe operations and assumes that the input byte slice
 // has the correct alignment and length. The caller must ensure that the input length
 // is a multiple of 8 bytes to avoid undefined behavior.
+//
+// Parameters:
+//   - data: Encoded byte slice from NumericRawEncoder.Bytes() (must be multiple of 8 bytes)
+//   - count: Expected number of float64 values to decode
+//
+// Returns:
+//   - iter.Seq[float64]: Iterator yielding decoded float64 values
 func (d NumericRawUnsafeDecoder) All(data []byte, count int) iter.Seq[float64] {
 	return func(yield func(float64) bool) {
 		if len(data) < count*8 || count == 0 {
@@ -323,6 +377,15 @@ func (d NumericRawUnsafeDecoder) All(data []byte, count int) iter.Seq[float64] {
 // Caution: This method uses unsafe operations and assumes that the input byte slice
 // has the correct alignment and length. The caller must ensure that the input length
 // is a multiple of 8 bytes to avoid undefined behavior.
+//
+// Parameters:
+//   - data: Encoded byte slice from NumericRawEncoder.Bytes() (must be multiple of 8 bytes)
+//   - index: Zero-based index of the float64 value to retrieve
+//   - count: Total number of float64 values in the encoded data
+//
+// Returns:
+//   - float64: The value at the specified index
+//   - bool: true if the index exists and was successfully decoded, false otherwise
 func (d NumericRawUnsafeDecoder) At(data []byte, index int, count int) (float64, bool) {
 	if len(data) == 0 || index < 0 || index >= count {
 		return 0, false

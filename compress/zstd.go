@@ -18,21 +18,18 @@ type ZstdCompressor struct{}
 
 var _ Codec = (*ZstdCompressor)(nil)
 
-// NewZstdCompressor creates a new Zstd compressor with the specified options.
+// NewZstdCompressor creates a new Zstd compressor with default settings.
 //
-// Example usage:
+// Returns:
+//   - ZstdCompressor: New Zstd compressor instance
 //
-//	// Create compressor with default settings (recommended)
-//	compressor, err := NewZstdCompressor()
+// Example:
+//
+//	compressor := NewZstdCompressor()
+//	compressed, err := compressor.Compress(data)
 //	if err != nil {
 //		return err
 //	}
-//	defer compressor.Close()
-//
-//	// Create compressor optimized for maximum compression
-//	compressor, err := NewZstdCompressor(
-//		WithZstdCompressionLevel(zstd.SpeedBestCompression),
-//	)
 func NewZstdCompressor() ZstdCompressor {
 	return ZstdCompressor{}
 }

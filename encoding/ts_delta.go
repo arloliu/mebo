@@ -81,6 +81,9 @@ var _ ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
 //   - Values 128-16383: 2 bytes
 //   - Larger values: Up to 9 bytes
 //
+// Returns:
+//   - *TimestampDeltaEncoder: A new encoder instance ready for timestamp encoding
+//
 // Example:
 //
 //	encoder := NewTimestampDeltaEncoder()
@@ -102,13 +105,6 @@ func NewTimestampDeltaEncoder() *TimestampDeltaEncoder {
 //   - Second timestamp: Delta from first, zigzag + varint encoded (1-9 bytes)
 //   - Subsequent timestamps: Delta-of-delta, zigzag + varint encoded (1-9 bytes)
 //
-// Performance characteristics:
-//   - Regular intervals: 1 byte per timestamp after second (delta-of-delta = 0)
-//   - Semi-regular intervals: 1-2 bytes per timestamp (small delta-of-deltas)
-//   - Irregular intervals: 3-5 bytes per timestamp
-//   - Sequential encoding dependency: Must encode in timestamp order
-//   - Amortized O(1) buffer growth for repeated calls
-//
 // The implementation uses branchless logic where possible to improve CPU pipeline efficiency
 // and enable better compiler optimizations for inlining.
 //
@@ -117,6 +113,9 @@ func NewTimestampDeltaEncoder() *TimestampDeltaEncoder {
 //   - Second timestamp: ~3 bytes (delta = 1000000μs)
 //   - Each subsequent: ~1 byte (delta-of-delta = 0)
 //   - Total for 10 timestamps: ~13 bytes vs 80 bytes raw (84% savings)
+//
+// Parameters:
+//   - timestampUs: Timestamp in microseconds since Unix epoch
 func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 	e.count++
 	e.buf.Grow(10)
@@ -170,23 +169,15 @@ func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 //   - Single buffer growth operation (no repeated allocations)
 //   - Uses local temp buffer to avoid allocations during varint encoding
 //
-// Compression efficiency:
-//   - Regular intervals: 85-90% space savings vs raw encoding
-//   - Semi-regular intervals (±5% jitter): 75-85% space savings
-//   - Irregular intervals: 40-60% space savings (similar to simple delta)
-//
-// Performance characteristics:
-//   - Optimal for bulk timestamp encoding
-//   - Single buffer allocation for entire operation
-//   - Linear time complexity O(n)
-//   - Sequential processing requirement (maintains delta-of-delta chain)
-//
 // Example compression for typical time-series data:
 //   - 10 timestamps at 1-second intervals: ~11 bytes vs 80 bytes raw (86% savings)
 //   - 100 timestamps at 1-second intervals: ~109 bytes vs 800 bytes raw (86% savings)
 //
 // The encoded bytes are appended to the internal buffer and can be retrieved
 // using the Bytes method.
+//
+// Parameters:
+//   - timestampsUs: Slice of timestamps in microseconds since Unix epoch
 func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 	tsLen := len(timestampsUs)
 	if tsLen == 0 {
@@ -265,12 +256,16 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 //   - Minimum size: 5 bytes (single timestamp)
 //   - Maximum size: 9 bytes per timestamp (for extreme variations)
 //
-// Returns an empty slice if no timestamps have been written since the last Reset.
+// Returns:
+//   - []byte: Encoded byte slice (empty if no timestamps written since last Reset)
 func (e *TimestampDeltaEncoder) Bytes() []byte {
 	return e.buf.Bytes()
 }
 
 // Len returns the number of encoded timestamps.
+//
+// Returns:
+//   - int: Number of timestamps written since last Finish
 func (e *TimestampDeltaEncoder) Len() int {
 	return e.count
 }
@@ -278,6 +273,9 @@ func (e *TimestampDeltaEncoder) Len() int {
 // Size returns the size in bytes of encoded timestamps.
 //
 // It represents the number of bytes that were written to the internal buffer.
+//
+// Returns:
+//   - int: Total bytes written to internal buffer since last Finish
 func (e *TimestampDeltaEncoder) Size() int {
 	return e.buf.Len()
 }
@@ -319,12 +317,6 @@ func (e *TimestampDeltaEncoder) Finish() {
 //   - Sequential iteration with minimal allocations
 //   - Iterator pattern for memory-efficient processing
 //
-// Performance characteristics:
-//   - Zero-allocation iteration (uses iter.Seq)
-//   - Direct byte slice indexing for optimal CPU cache usage
-//   - Minimal state tracking during iteration
-//   - Early termination support for partial decoding
-//
 // The decoder expects data in the format produced by TimestampDeltaEncoder:
 //  1. First timestamp: Varint-encoded microseconds since Unix epoch
 //  2. Second timestamp: Zigzag + varint encoded delta
@@ -343,6 +335,9 @@ var _ ColumnarDecoder[int64] = TimestampDeltaDecoder{}
 //
 // The decoder is stateless and can be reused across multiple decoding operations.
 // Each call to All() operates independently on the provided data.
+//
+// Returns:
+//   - TimestampDeltaDecoder: A new decoder instance (stateless, can be reused)
 func NewTimestampDeltaDecoder() TimestampDeltaDecoder {
 	return TimestampDeltaDecoder{}
 }
@@ -352,17 +347,6 @@ func NewTimestampDeltaDecoder() TimestampDeltaDecoder {
 // This method provides zero-allocation iteration over timestamps using Go's
 // iter.Seq pattern. The iterator processes data sequentially, decoding each
 // timestamp represented in int64 on-demand without creating intermediate slices.
-//
-// Parameters:
-//   - data: Delta-of-delta encoded byte slice from TimestampDeltaEncoder.Bytes()
-//   - count: Expected number of timestamps (used for optimization and validation)
-//
-// Performance optimizations:
-//   - Direct byte slice access with manual indexing
-//   - Uses binary.Uvarint for efficient varint decoding
-//   - Zigzag decoding with bitwise operations
-//   - No intermediate allocations during iteration
-//   - Early termination on malformed data
 //
 // Decoding algorithm:
 //  1. Decode first timestamp as full varint-encoded microseconds
@@ -378,7 +362,14 @@ func NewTimestampDeltaDecoder() TimestampDeltaDecoder {
 //   - Insufficient data: Iterator stops at actual data end
 //   - Count mismatch: Iterator continues until data exhausted
 //
-// Example usage:
+// Parameters:
+//   - data: Delta-of-delta encoded byte slice from TimestampDeltaEncoder.Bytes()
+//   - count: Expected number of timestamps (used for optimization and validation)
+//
+// Returns:
+//   - iter.Seq[int64]: Iterator yielding decoded timestamps (microseconds since Unix epoch)
+//
+// Example:
 //
 //	decoder := NewTimestampDeltaDecoder()
 //	for ts := range decoder.All(encodedData, expectedCount) {
@@ -389,12 +380,6 @@ func NewTimestampDeltaDecoder() TimestampDeltaDecoder {
 //	        break
 //	    }
 //	}
-//
-// Memory characteristics:
-//   - Zero allocations during iteration
-//   - Constant memory usage regardless of data size
-//   - Optimal CPU cache usage with sequential byte access
-//   - Suitable for processing large time-series datasets
 func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		if len(data) == 0 || count <= 0 {
@@ -474,19 +459,13 @@ func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 //   - int64: The timestamp integer at the specified index, the unit of timestamp is user-defined
 //   - bool: true if the index exists and was successfully decoded, false otherwise
 //
-// Performance characteristics:
-//   - Time complexity: O(index) - must decode sequentially up to target index
-//   - Space complexity: O(1) - no intermediate allocations
-//   - Early termination: Stops decoding immediately after reaching target index
-//   - Error handling: Returns false for invalid indices or malformed data
-//
 // Error conditions:
 //   - Negative index: Returns zero time and false
 //   - Index beyond available data: Returns zero time and false
 //   - Invalid varint encoding: Returns zero time and false
 //   - Empty data: Returns zero time and false
 //
-// Example usage:
+// Example:
 //
 //	decoder := NewTimestampDeltaDecoder()
 //	timestamp, ok := decoder.At(encodedData, 5)

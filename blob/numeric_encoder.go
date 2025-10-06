@@ -116,10 +116,16 @@ func (e *NumericEncoder) cloneHeader() *section.NumericHeader {
 }
 
 // NewNumericEncoder creates a new NumericEncoder with the given start time.
-// The blobTs parameter specifies the timestamp for the entire blob,
-// and used as the sorting key for all blobs belonging to the same series.
+//
 // The encoder will grow dynamically as metrics are added, up to MaxMetricCount (65536).
-// The opts parameter allows configuring various encoding options.
+//
+// Parameters:
+//   - blobTs: Timestamp for the entire blob, used as sorting key for all blobs in the same series
+//   - opts: Optional encoding configuration (endianness, compression, encoding types, etc.)
+//
+// Returns:
+//   - *NumericEncoder: New encoder instance ready for metric encoding
+//   - error: Configuration error if invalid options provided
 func NewNumericEncoder(blobTs time.Time, opts ...NumericEncoderOption) (*NumericEncoder, error) {
 	// Create base configuration
 	config := NewNumericEncoderConfig(blobTs)
@@ -168,14 +174,23 @@ func NewNumericEncoder(blobTs time.Time, opts ...NumericEncoderOption) (*Numeric
 }
 
 // StartMetricID begins encoding a new metric with the specified unique identifier and number of data points.
-// The metricID should be a unique unsigned 64-bit integer.
 //
-// If the application does not have a predefined metric ID, it can use MetricID function to hash the metric name string.
+// The metricID should be a unique unsigned 64-bit integer. If the application does not have
+// a predefined metric ID, it can use the hash.ID function to hash the metric name string.
 //
-// This method is exclusive with StartMetricName. Once StartMetricID is called, all subsequent metrics
-// must also use StartMetricID. Attempting to mix with StartMetricName will return ErrMixedIdentifierMode.
+// This method is exclusive with StartMetricName. Once StartMetricID is called, all subsequent
+// metrics must also use StartMetricID. Attempting to mix with StartMetricName will return
+// ErrMixedIdentifierMode.
 //
 // In ID mode, the encoder uses optimized duplicate detection (no collision tracker overhead).
+//
+// Parameters:
+//   - metricID: Unique 64-bit metric identifier (must be non-zero)
+//   - numOfDataPoints: Expected number of data points (1-65535)
+//
+// Returns:
+//   - error: ErrMetricAlreadyStarted, ErrMixedIdentifierMode, ErrInvalidMetricID,
+//     ErrInvalidNumOfDataPoints, ErrMetricCountExceeded, or ErrHashCollision on duplicate ID
 func (e *NumericEncoder) StartMetricID(metricID uint64, numOfDataPoints int) error {
 	if e.curMetricID != 0 {
 		return fmt.Errorf("%w: metric ID %d is already started", errs.ErrMetricAlreadyStarted, e.curMetricID)
@@ -232,23 +247,27 @@ func (e *NumericEncoder) startMetric(metricID uint64, numOfDataPoints int) error
 }
 
 // StartMetricName begins encoding a new metric with the specified name and number of data points.
-// The metric name string will be hashed to an unsigned 64-bit integer using xxHash64.
 //
+// The metric name string will be hashed to an unsigned 64-bit integer using xxHash64.
 // This method performs collision detection by tracking all metric names added to the blob.
 // If a hash collision is detected (different name, same hash), it automatically enables
 // the metric names payload to handle the collision. This is NOT an error - mebo can
 // handle collisions when metric names are available.
 //
-// Returns error only if:
-// - The metric name is empty (ErrInvalidMetricName)
-// - The same metric name is used twice (ErrMetricAlreadyStarted)
-// - Other validation errors (invalid data point count, etc.)
-//
 // If the application already has a unique metric ID, it should use StartMetricID instead
 // to avoid the overhead of hashing and collision detection.
 //
-// This method is exclusive with StartMetricID. Once StartMetricName is called, all subsequent metrics
-// must also use StartMetricName. Attempting to mix with StartMetricID will return ErrMixedIdentifierMode.
+// This method is exclusive with StartMetricID. Once StartMetricID is called, all subsequent
+// metrics must also use StartMetricName. Attempting to mix with StartMetricID will return
+// ErrMixedIdentifierMode.
+//
+// Parameters:
+//   - metricName: Metric name string (must be non-empty)
+//   - numOfDataPoints: Expected number of data points (1-65535)
+//
+// Returns:
+//   - error: ErrMetricAlreadyStarted, ErrMixedIdentifierMode, ErrInvalidMetricName,
+//     ErrInvalidNumOfDataPoints, or ErrMetricCountExceeded
 func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int) error {
 	if e.curMetricID != 0 {
 		return fmt.Errorf("%w: metric ID %d is already started", errs.ErrMetricAlreadyStarted, e.curMetricID)
@@ -292,8 +311,14 @@ func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int)
 	return e.startMetric(metricID, numOfDataPoints)
 }
 
-// EndMetric completes the encoding of the current metric and prepares the encoder
-// for the next metric. This method should be called after all data points have been added.
+// EndMetric completes the encoding of the current metric and prepares the encoder for the next metric.
+//
+// This method should be called after all data points have been added via AddDataPoint or AddDataPoints.
+// It validates data point counts, creates the index entry, and resets encoder state for the next metric.
+//
+// Returns:
+//   - error: ErrNoMetricStarted, ErrNoDataPointsAdded, ErrDataPointCountMismatch,
+//     or ErrOffsetOutOfRange if offset deltas exceed uint16 range
 func (e *NumericEncoder) EndMetric() error {
 	if e.curMetricID == 0 {
 		return errs.ErrNoMetricStarted
@@ -400,9 +425,15 @@ func (e *NumericEncoder) validateMetricData(curTsLen int, curValLen int, curTagL
 }
 
 // Finish finalizes the encoding process and returns the complete byte slice representing all encoded metrics.
-// It returns an error if there is an unended metric or if no metrics were added.
 //
-// After calling Finish, the encoder cannot be reused and a new encoder must be created for further encoding.
+// This method compresses all payloads, builds the header with final offsets, assembles the index entries,
+// and produces the complete binary blob. After calling Finish, the encoder cannot be reused and a new
+// encoder must be created for further encoding.
+//
+// Returns:
+//   - []byte: Complete encoded blob with header, index entries, and compressed payloads
+//   - error: ErrMetricNotEnded if a metric was started but not ended, ErrNoMetricsAdded if no metrics
+//     were added, or compression errors
 func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Finish encoders regardless of error to release resources
 	defer e.tsEncoder.Finish()
@@ -513,10 +544,17 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 }
 
 // AddDataPoint adds a single timestamp-value pair to the current started metric being encoded.
-// It returns an error if the timestamp or value is invalid or the metric is not started.
 //
-//   - This method is exclusive with AddDataPoints.
-//   - Use AddDataPoints for bulk additions for better performance.
+// This method is exclusive with AddDataPoints. Use AddDataPoints for bulk additions
+// for better performance.
+//
+// Parameters:
+//   - timestamp: Timestamp in microseconds since Unix epoch
+//   - value: Float64 metric value
+//   - tag: Optional tag string (ignored if tag support not enabled)
+//
+// Returns:
+//   - error: ErrTooManyDataPoints if adding would exceed claimed data point count
 func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string) error {
 	if e.tsEncoder.Len()-e.ts.length >= e.claimed {
 		return errs.ErrTooManyDataPoints
@@ -533,12 +571,19 @@ func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string
 }
 
 // AddDataPoints adds multiple timestamp-value pairs to the current started metric being encoded.
-// It returns an error if the lengths of timestamps and values do not match,
-// or if any timestamp or value is invalid.
 //
-//   - The tags is optional, if provided its length must match timestamps and values.
-//   - This method is exclusive with AddDataPoint.
-//   - Use AddDataPoint for single additions.
+// This method is more efficient than calling AddDataPoint multiple times. The tags parameter is
+// optional, but if provided its length must match timestamps and values. This method is exclusive
+// with AddDataPoint.
+//
+// Parameters:
+//   - timestamps: Slice of timestamps in microseconds since Unix epoch
+//   - values: Slice of float64 metric values (must match timestamps length)
+//   - tags: Optional slice of tag strings (if provided, must match timestamps length)
+//
+// Returns:
+//   - error: Length mismatch error if timestamps/values/tags lengths don't match,
+//     or ErrTooManyDataPoints if adding would exceed claimed data point count
 func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tags []string) error {
 	tsLen := len(timestamps)
 	valLen := len(values)

@@ -6,24 +6,24 @@
 //
 // # Core Types
 //
-// **Encoders**: Create blobs from time-series data
+// Encoders - Create blobs from time-series data:
 //   - NumericEncoder: Encodes float64 metrics with configurable compression
 //   - TextEncoder: Encodes string metrics with configurable compression
 //
-// **Decoders**: Read data from blobs
+// Decoders - Read data from blobs:
 //   - NumericDecoder: Decodes numeric blobs with sequential and random access
 //   - TextDecoder: Decodes text blobs with sequential access
 //
-// **Blobs**: Immutable binary containers
+// Blobs - Immutable binary containers:
 //   - NumericBlob: Contains encoded numeric metrics
 //   - TextBlob: Contains encoded text metrics
 //
-// **Blob Sets**: Multi-blob collections
+// Blob Sets - Multi-blob collections:
 //   - NumericBlobSet: Unified access across multiple numeric blobs
 //   - TextBlobSet: Unified access across multiple text blobs
 //   - BlobSet: Heterogeneous collection of both numeric and text blobs
 //
-// **Materialized Views**: O(1) random access
+// Materialized Views - O(1) random access:
 //   - MaterializedNumericBlobSet: Pre-decoded numeric data for fast random access
 //   - MaterializedTextBlobSet: Pre-decoded text data for fast random access
 //
@@ -32,22 +32,38 @@
 // The encoding process follows a simple pattern:
 //
 //	// 1. Create encoder with configuration
-//	encoder, err := blob.NewNumericEncoder(time.Now(),
-//	    blob.WithValueEncoding(format.TypeGorilla),
-//	    blob.WithTimestampEncoding(format.TypeDelta),
-//	)
+//	startTime := time.Now()
+//	encoder, _ := mebo.NewDefaultNumericEncoder(startTime)
 //
-//	// 2. Start a metric
-//	metricID := hash.ID("cpu.usage")
-//	encoder.StartMetricID(metricID, 100) // 100 expected data points
+//	// 2. Start metrics and add data points
+//	// Add "cpu.usage" metric by ID with 10 data points
+//	metricID := mebo.MetricID("cpu.usage")
+//	encoder.StartMetricID(metricID, 10)
 //
-//	// 3. Append values
-//	for i := 0; i < 100; i++ {
-//	    encoder.AppendValue(float64(i * 10))
+//	// 3. Write data points
+//	for i := 0; i < 10; i++ {
+//		ts := startTime.Add(time.Duration(i) * time.Second)
+//		encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
 //	}
 //
-//	// 4. Finish and get blob
-//	blob, err := encoder.Finish()
+//	// 4. End the current metric
+//	encoder.EndMetric()
+//
+//	// 5. (Optional) Start another metric
+//	// Add another "process.latency" metric by name with 20 data points
+//	encoder.StartMetricName(("process.latency", 20)
+//
+//	// 6. Write data points for the new metric
+//	for i := 0; i < 20; i++ {
+//		ts := startTime.Add(time.Duration(i) * time.Second)
+//		encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
+//	}
+//
+//	// 7. End the current metric
+//	encoder.EndMetric()
+//
+//	// 8. Finish and get blob
+//	blob, _ := encoder.Finish()
 //
 // # Decoding Workflow
 //
@@ -105,7 +121,7 @@
 //
 // # Configuration Options
 //
-// **Numeric Encoder Options**:
+// Numeric Encoder Options:
 //   - blob.WithLittleEndian() / blob.WithBigEndian() - Byte order
 //   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta) - Timestamp encoding
 //   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla) - Value encoding
@@ -113,7 +129,7 @@
 //   - blob.WithValueCompression(format.CompressionNone|Zstd|S2|LZ4) - Value compression
 //   - blob.WithTagsEnabled(true|false) - Enable/disable tags
 //
-// **Text Encoder Options**:
+// Text Encoder Options:
 //   - blob.WithTextLittleEndian() / blob.WithTextBigEndian() - Byte order
 //   - blob.WithTextTimestampEncoding(format.TypeRaw|TypeDelta) - Timestamp encoding
 //   - blob.WithTextDataCompression(format.CompressionNone|Zstd|S2|LZ4) - Data compression
@@ -121,37 +137,37 @@
 //
 // # Performance Characteristics
 //
-// **Encoding**:
+// Encoding:
 //   - Numeric (Gorilla+Delta): ~40 ns/point, ~1-4 bytes/point
 //   - Text (Delta+Zstd): ~100 ns/point, varies with string length
 //   - Tag overhead: ~8-16 bytes per tagged point
 //
-// **Sequential Decoding**:
+// Sequential Decoding:
 //   - Numeric: ~20 ns/point
 //   - Text: ~50 ns/point
 //
-// **Random Access**:
+// Random Access:
 //   - Raw encoding: O(1), ~10 ns
 //   - Delta encoding: O(n), must scan from start
 //   - Gorilla encoding: O(n), must decompress from start
 //   - Materialized: O(1), ~5 ns (direct array access)
 //
-// **Materialization**:
+// Materialization:
 //   - Cost: ~100 μs per metric per blob
 //   - Memory: ~16 bytes/point (numeric), ~24 bytes/point (text)
 //   - Access: O(1), ~5 ns per access
 //
 // # Thread Safety
 //
-// **Encoders**: Not thread-safe. Use one encoder per goroutine.
+// Encoders: Not thread-safe. Use one encoder per goroutine.
 //
-// **Decoders**: Safe for concurrent reads from different goroutines.
+// Decoders: Safe for concurrent reads from different goroutines.
 //
-// **Blobs**: Immutable and thread-safe once created.
+// Blobs: Immutable and thread-safe once created.
 //
-// **BlobSets**: Safe for concurrent reads.
+// BlobSets: Safe for concurrent reads.
 //
-// **MaterializedBlobSets**: Safe for concurrent reads.
+// MaterializedBlobSets: Safe for concurrent reads.
 //
 // # Memory Management
 //
@@ -164,13 +180,25 @@
 //
 // # Best Practices
 //
-//  1. **Choose appropriate encoding**: Delta for regular intervals, Gorilla for slowly-changing values
-//  2. **Batch metrics**: Group related metrics in the same blob for better compression
-//  3. **Pre-allocate**: Use StartMetricID with accurate capacity for better performance
-//  4. **Use blob sets**: For multi-blob queries, blob sets are more efficient than manual iteration
-//  5. **Materialize wisely**: Only materialize when random access pattern justifies the cost
-//  6. **Monitor memory**: Materialization can use significant memory for large datasets
-//  7. **Use tags judiciously**: Tags add overhead; only enable when needed
+//  1. Always declare data point count: Call StartMetricID(id, count) or StartMetricName(name, count)
+//     with accurate count, then call EndMetric() after adding exactly that many points.
+//     This is required for Mebo's batch processing design.
+//  2. Collect before encoding: Gather all metric data in memory first, then encode in batches.
+//     Mebo is designed for batch processing, not streaming ingestion.
+//  3. Choose appropriate encoding: Delta for regular intervals, Gorilla for slowly-changing values,
+//     Raw for random access needs.
+//  4. Batch metrics: Group related metrics in the same blob for better compression.
+//  5. Use bulk operations: Call AddDataPoints instead of multiple AddDataPoint calls when you have
+//     all data ready (2-3× faster).
+//  6. Pre-allocate accurately: Accurate count in StartMetricID enables buffer pre-allocation and
+//     better performance.
+//  7. Optimize metrics-to-points ratio: Each metric should contain at least 10 data points,
+//     with 100-250 points being optimal. Target <1:1 ratio (more points than metrics) for best compression.
+//  8. Use blob sets: For multi-blob queries, blob sets are more efficient than manual iteration.
+//  9. Materialize wisely: Only materialize when random access pattern justifies the cost (>100 accesses).
+//  10. Monitor memory: Materialization can use significant memory for large datasets (~16 bytes/point).
+//  11. Use tags judiciously: Tags add 8-16 bytes overhead per point; only enable when needed.
+//  12. Profile your workload: Test different configurations with your actual data to find optimal settings.
 //
 // # Error Handling
 //

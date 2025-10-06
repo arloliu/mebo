@@ -32,7 +32,7 @@ type Compressor interface {
 // compression and decompression may have different performance characteristics
 // or resource requirements.
 //
-// Example usage:
+// Example:
 //
 //	decompressor := NewZstdDecompressor()
 //	originalData, err := decompressor.Decompress(compressedPayload)
@@ -104,6 +104,9 @@ type CompressionStats struct {
 // Values less than 1.0 indicate successful compression.
 // Values equal to 1.0 indicate no compression benefit.
 // Values greater than 1.0 indicate compression overhead (rare for time-series data).
+//
+// Returns:
+//   - float64: Compression ratio (0.0 if original size is zero)
 func (s CompressionStats) CompressionRatio() float64 {
 	if s.OriginalSize == 0 {
 		return 0.0
@@ -115,11 +118,22 @@ func (s CompressionStats) CompressionRatio() float64 {
 // SpaceSavings returns the space savings as a percentage (0-100%).
 //
 // Higher values indicate better compression.
+//
+// Returns:
+//   - float64: Space savings percentage (0-100)
 func (s CompressionStats) SpaceSavings() float64 {
 	return (1.0 - s.CompressionRatio()) * 100.0
 }
 
 // CreateCodec is a factory function that creates a Codec based on the specified compression type.
+//
+// Parameters:
+//   - compressionType: Type of compression (None, Zstd, S2, or LZ4)
+//   - target: Description of target usage (for error messages)
+//
+// Returns:
+//   - Codec: Compressor instance for the specified type
+//   - error: Invalid compression type error
 func CreateCodec(compressionType format.CompressionType, target string) (Codec, error) {
 	switch compressionType {
 	case format.CompressionNone:

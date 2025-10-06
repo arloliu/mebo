@@ -9,19 +9,21 @@
 // Mebo uses columnar storage where timestamps, values, and tags are encoded separately using
 // algorithms optimized for their specific characteristics:
 //
-// **Timestamps**: Regular intervals, highly compressible
+// Timestamps - Regular intervals, highly compressible:
 //   - Raw encoding: No compression, 8 bytes per timestamp
 //   - Delta encoding: Delta-of-delta with zigzag+varint, 1-5 bytes per timestamp
 //
-// **Numeric Values**: Slowly-changing floats, high redundancy
+// Numeric Values - Slowly-changing floats, high redundancy:
 //   - Raw encoding: No compression, 8 bytes per value
 //   - Gorilla encoding: XOR-based compression, 1-8 bytes per value
 //
-// **Text Values**: Variable-length strings
+// Text Values - Variable-length strings:
 //   - Length-prefixed encoding with varint lengths
 //
-// **Tags**: Optional metadata strings
+// Tags - Optional metadata strings:
 //   - Length-prefixed encoding with optional compression
+//   - Stored in a separate payload section
+//   - Compressed by default using Zstd.
 //
 // # Architecture
 //
@@ -44,7 +46,7 @@
 //
 // # Timestamp Encoding
 //
-// **TimestampRawEncoder/Decoder**: Uncompressed timestamps
+// TimestampRawEncoder/Decoder - Uncompressed timestamps:
 //
 //	encoder := encoding.NewTimestampRawEncoder()
 //	encoder.Write(1700000000000000)  // Unix microseconds
@@ -56,7 +58,7 @@
 //   - Timestamps are irregular with large variations
 //   - Compression adds no benefit
 //
-// **TimestampDeltaEncoder/Decoder**: Delta-of-delta compression
+// TimestampDeltaEncoder/Decoder - Delta-of-delta compression:
 //
 //	encoder := encoding.NewTimestampDeltaEncoder()
 //	encoder.Write(1700000000000000)  // First: full value (5-9 bytes)
@@ -76,7 +78,7 @@
 //
 // # Numeric Value Encoding
 //
-// **NumericRawEncoder/Decoder**: Uncompressed float64 values
+// NumericRawEncoder/Decoder - Uncompressed float64 values:
 //
 //	encoder := encoding.NewNumericRawEncoder()
 //	encoder.Write(42.5)
@@ -88,7 +90,7 @@
 //   - Random access is required
 //   - Compression provides no benefit
 //
-// **NumericGorillaEncoder/Decoder**: Facebook's Gorilla compression
+// NumericGorillaEncoder/Decoder - Facebook's Gorilla compression:
 //
 //	encoder := encoding.NewNumericGorillaEncoder()
 //	encoder.Write(42.5)      // First: full value (64 bits)
@@ -150,21 +152,21 @@
 //
 // # Performance Characteristics
 //
-// **Encoding Performance** (operations per second):
+// Encoding Performance (operations per second):
 //   - TimestampRaw: ~50M ops/sec (~20 ns/op)
 //   - TimestampDelta: ~25M ops/sec (~40 ns/op)
 //   - NumericRaw: ~50M ops/sec (~20 ns/op)
 //   - NumericGorilla: ~25M ops/sec (~40 ns/op)
 //   - VarString: ~20M ops/sec (~50 ns/op, depends on length)
 //
-// **Decoding Performance** (sequential):
+// Decoding Performance (sequential):
 //   - TimestampRaw: ~100M ops/sec (~10 ns/op)
 //   - TimestampDelta: ~40M ops/sec (~25 ns/op)
 //   - NumericRaw: ~100M ops/sec (~10 ns/op)
 //   - NumericGorilla: ~50M ops/sec (~20 ns/op)
 //   - VarString: ~30M ops/sec (~33 ns/op)
 //
-// **Random Access Performance**:
+// Random Access Performance:
 //   - Raw encodings: O(1), ~10 ns per access
 //   - Delta encodings: O(n), must decode from start
 //   - Gorilla encoding: O(n), must decode from start
@@ -182,50 +184,56 @@
 //
 // # Thread Safety
 //
-// **Encoders**: Not thread-safe. Use one encoder per goroutine.
+// Encoders: Not thread-safe. Use one encoder per goroutine.
 //
-// **Decoders**: Thread-safe for concurrent reads from different goroutines.
+// Decoders: Thread-safe for concurrent reads from different goroutines.
 //
-// **Buffer Pool**: Thread-safe with internal synchronization.
+// Buffer Pool: Thread-safe with internal synchronization.
 //
 // # Choosing Encodings
 //
-// **For Timestamps**:
+// For Timestamps:
 //   - Regular intervals (monitoring, metrics): Delta encoding (87% savings)
 //   - Irregular events: Raw encoding (no compression overhead)
 //   - Need random access: Raw encoding
 //
-// **For Numeric Values**:
+// For Numeric Values:
 //   - Slowly changing (CPU, memory, temperature): Gorilla (70-85% savings)
 //   - Rapidly changing (network packets, counters): Raw encoding
 //   - Need random access: Raw encoding
 //
-// **For Text Values**:
+// For Text Values:
 //   - Always use varint length-prefixed encoding
 //   - Add compression at the blob level if strings are repetitive
 //
-// **For Tags**:
+// For Tags:
 //   - Enable only when needed (adds 8-16 bytes per point)
 //   - Use short tag values to minimize overhead
-//   - Consider compression if tags are repetitive
+//   - The tag payload are compressed by default using Zstd.
 //
 // # Advanced Features
 //
-// **Bit-Level Encoding**: NumericGorillaEncoder uses bit-level operations for maximum
+// Bit-Level Encoding:
+//
+// NumericGorillaEncoder uses bit-level operations for maximum
 // compression. It maintains a 64-bit buffer and flushes complete bytes to the output:
 //
 //	bitBuf: [████████ ████████ ████████ ████░░░░] (28 bits filled)
 //	         ↓ flush when ≥8 bits available
 //	output:  [████████] [████████] [████████]
 //
-// **Varint Encoding**: Timestamps and string lengths use Protocol Buffers-style varint
+// Varint Encoding:
+//
+// Timestamps and string lengths use Protocol Buffers-style varint
 // encoding where the MSB indicates continuation:
 //
 //	Value 0-127:     0xxxxxxx                    (1 byte)
 //	Value 128-16383: 1xxxxxxx 0xxxxxxx           (2 bytes)
 //	Value 16384+:    1xxxxxxx 1xxxxxxx 0xxxxxxx  (3+ bytes)
 //
-// **Zigzag Encoding**: Signed delta values use zigzag encoding to efficiently represent
+// Zigzag Encoding:
+//
+// Signed delta values use zigzag encoding to efficiently represent
 // both positive and negative values:
 //
 //	Positive: 0 → 0, 1 → 2, 2 → 4, 3 → 6

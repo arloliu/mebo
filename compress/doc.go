@@ -36,7 +36,7 @@
 //
 // # Supported Algorithms
 //
-// **NoOp Compression** (format.CompressionNone)
+// NoOp Compression (format.CompressionNone):
 //
 //	codec := compress.NewNoOpCodec()
 //	compressed, _ := codec.Compress(data)  // Returns data unchanged
@@ -47,7 +47,7 @@
 //   - CPU is more critical than storage
 //   - Data is incompressible (random, encrypted)
 //
-// **Zstandard (Zstd)** (format.CompressionZstd)
+// Zstandard (Zstd) - format.CompressionZstd:
 //
 //	codec := compress.NewZstdCodec()
 //	compressed, _ := codec.Compress(data)  // Best compression ratio
@@ -69,7 +69,7 @@
 //   - Repetitive numeric data
 //   - Cold storage / archival
 //
-// **S2 (Snappy Alternative)** (format.CompressionS2)
+// S2 (Snappy Alternative) - format.CompressionS2:
 //
 //	codec := compress.NewS2Codec()
 //	compressed, _ := codec.Compress(data)  // Fast with good compression
@@ -91,7 +91,7 @@
 //   - Hot path query responses
 //   - Streaming applications
 //
-// **LZ4** (format.CompressionLZ4)
+// LZ4 - format.CompressionLZ4:
 //
 //	codec := compress.NewLZ4Codec()
 //	compressed, _ := codec.Compress(data)  // Very fast decompression
@@ -115,7 +115,7 @@
 //
 // # Algorithm Selection Guide
 //
-// **Choose based on workload**:
+// Choose based on workload:
 //
 // | Workload Type          | Recommended | Reason                              |
 // |------------------------|-------------|-------------------------------------|
@@ -127,7 +127,7 @@
 // | Hot path               | LZ4 or S2   | Minimize latency                    |
 // | Network transmission   | Zstd        | Reduce bandwidth usage              |
 //
-// **Choose based on data characteristics**:
+// Choose based on data characteristics:
 //
 // | Data Type              | Recommended | Typical Ratio (after encoding) |
 // |------------------------|-------------|--------------------------------|
@@ -141,7 +141,7 @@
 //
 // Based on typical 16KB time-series payloads (1000 points):
 //
-// **Timestamp Payload (Delta-encoded)**:
+// Timestamp Payload (Delta-encoded):
 //
 //	Algorithm  | Comp Time | Decomp Time | Ratio | Size
 //	-----------|-----------|-------------|-------|-------
@@ -150,7 +150,7 @@
 //	S2         | 25 μs     | 8 μs        | 1.6x  | 0.8KB
 //	Zstd       | 80 μs     | 20 μs       | 2.1x  | 0.6KB
 //
-// **Value Payload (Gorilla-encoded)**:
+// Value Payload (Gorilla-encoded):
 //
 //	Algorithm  | Comp Time | Decomp Time | Ratio | Size
 //	-----------|-----------|-------------|-------|-------
@@ -159,7 +159,7 @@
 //	S2         | 35 μs     | 12 μs       | 1.5x  | 1.9KB
 //	Zstd       | 120 μs    | 30 μs       | 1.9x  | 1.5KB
 //
-// **Text Payload**:
+// Text Payload:
 //
 //	Algorithm  | Comp Time | Decomp Time | Ratio | Size
 //	-----------|-----------|-------------|-------|-------

@@ -45,7 +45,12 @@ func NewNumericHeader(startTime time.Time) *NumericHeader {
 }
 
 // Parse parses the header from a byte slice.
-// It returns an error if the data is not exactly 32 bytes or if the flags are invalid.
+//
+// Parameters:
+//   - data: Byte slice containing header (must be exactly 32 bytes)
+//
+// Returns:
+//   - error: ErrInvalidHeaderSize if data is not 32 bytes, or flag validation errors
 func (h *NumericHeader) Parse(data []byte) error {
 	if len(data) != HeaderSize {
 		return errs.ErrInvalidHeaderSize
@@ -93,10 +98,21 @@ func (h *NumericHeader) Bytes() []byte {
 }
 
 // StartTimeAsTime returns the start time as a time.Time object.
+//
+// Returns:
+//   - time.Time: Start time converted from microseconds since Unix epoch
 func (h *NumericHeader) StartTimeAsTime() time.Time {
 	return time.UnixMicro(h.StartTime)
 }
 
+// ParseNumericHeader parses a NumericHeader from a byte slice.
+//
+// Parameters:
+//   - data: Byte slice containing header (must be at least 32 bytes)
+//
+// Returns:
+//   - NumericHeader: Parsed header struct
+//   - error: ErrInvalidHeaderSize or flag validation errors
 func ParseNumericHeader(data []byte) (NumericHeader, error) {
 	if len(data) < HeaderSize {
 		return NumericHeader{}, errs.ErrInvalidHeaderSize

@@ -8,9 +8,9 @@
 //
 // The section package defines three main categories of types:
 //
-//  1. **Headers**: Fixed-size blob metadata (NumericHeader, TextHeader)
-//  2. **Flags**: Packed bitfields for encoding/compression configuration (NumericFlag, TextFlag)
-//  3. **Index Entries**: Fixed-size metric descriptors (NumericIndexEntry, TextIndexEntry)
+//  1. Headers: Fixed-size blob metadata (NumericHeader, TextHeader)
+//  2. Flags: Packed bitfields for encoding/compression configuration (NumericFlag, TextFlag)
+//  3. Index Entries: Fixed-size metric descriptors (NumericIndexEntry, TextIndexEntry)
 //
 // These types form the structural foundation of mebo's binary format, providing:
 //   - Fixed-size layouts for O(1) random access
@@ -54,7 +54,7 @@
 //
 // # Header Format
 //
-// **NumericHeader** (32 bytes):
+// NumericHeader (32 bytes):
 //
 //	Bytes  | Field                    | Type   | Description
 //	-------|--------------------------|--------|----------------------------------
@@ -66,7 +66,7 @@
 //	24-27  | ValuePayloadOffset       | uint32 | Byte offset to value data
 //	28-31  | TagPayloadOffset         | uint32 | Byte offset to tag data
 //
-// **TextHeader** (32 bytes):
+// TextHeader (32 bytes):
 //
 //	Same layout as NumericHeader but with text-specific magic number.
 //
@@ -105,7 +105,7 @@
 //
 // # Index Entry Format
 //
-// **NumericIndexEntry** (16 bytes):
+// NumericIndexEntry (16 bytes):
 //
 //	Bytes  | Field           | Type   | Description
 //	-------|-----------------|--------|----------------------------------
@@ -115,11 +115,11 @@
 //	12-13  | ValueOffset     | uint16 | Delta offset from previous metric
 //	14-15  | TagOffset       | uint16 | Delta offset from previous metric
 //
-// **Note**: In memory, Count and offset fields are stored as `int` to avoid type conversions.
-// On disk, they're stored as `uint16` to save space. The decoder reconstructs absolute
+// Note: In memory, Count and offset fields are stored as 'int' to avoid type conversions.
+// On disk, they're stored as 'uint16' to save space. The decoder reconstructs absolute
 // offsets from delta offsets.
 //
-// **TextIndexEntry** (16 bytes):
+// TextIndexEntry (16 bytes):
 //
 //	Same layout as NumericIndexEntry but with Offset/Size instead of separate offsets:
 //
@@ -216,37 +216,43 @@
 //
 // # Performance Considerations
 //
-// **Fixed-Size Advantage**: All header and index structures use fixed sizes, enabling:
+// Fixed-Size Advantage:
+//
+// All header and index structures use fixed sizes, enabling:
 //   - O(1) index lookups via offset calculation
 //   - Single-pass encoding without backtracking
 //   - Memory-mapped file support
 //   - Zero-copy deserialization
 //
-// **Cache Efficiency**: 16-byte index entries fit perfectly in cache lines (64 bytes = 4 entries)
+// Cache Efficiency:
 //
-// **Binary Layout**: Structs use explicit field ordering to avoid padding and ensure consistent
+// 16-byte index entries fit perfectly in cache lines (64 bytes = 4 entries).
+//
+// Binary Layout:
+//
+// Structs use explicit field ordering to avoid padding and ensure consistent
 // cross-platform representation.
 //
 // # Usage Examples
 //
-// **Creating a header**:
+// Creating a header:
 //
 //	header := section.NewNumericHeader(time.Now())
 //	header.MetricCount = 100
 //	header.TimestampPayloadOffset = 1632
 //	header.Flag.SetTimestampEncoding(format.TypeDelta)
 //
-// **Serializing to bytes**:
+// Serializing to bytes:
 //
 //	buf := make([]byte, section.HeaderSize)
 //	err := header.WriteToSlice(buf, endian.GetLittleEndianEngine())
 //
-// **Parsing from bytes**:
+// Parsing from bytes:
 //
 //	header := &section.NumericHeader{}
 //	err := header.Parse(data)
 //
-// **Working with flags**:
+// Working with flags:
 //
 //	flag := section.NewNumericFlag()
 //	flag.SetTagsEnabled(true)

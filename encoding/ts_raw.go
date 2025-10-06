@@ -35,6 +35,12 @@ var _ ColumnarEncoder[int64] = (*TimestampRawEncoder)(nil)
 //   - Encoding/decoding speed is more important than storage size
 //   - Memory usage predictability is important
 //
+// Parameters:
+//   - engine: Endian engine for byte order (typically little-endian)
+//
+// Returns:
+//   - *TimestampRawEncoder: A new encoder instance ready for timestamp encoding
+//
 // Example:
 //
 //	encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
@@ -102,6 +108,9 @@ func (e *TimestampRawEncoder) Write(timestampUs int64) {
 //
 // The encoded bytes are appended to the internal buffer and can be retrieved
 // using the Bytes method.
+//
+// Parameters:
+//   - timestampsUs: Slice of timestamps in microseconds since Unix epoch
 func (e *TimestampRawEncoder) WriteSlice(timestampsUs []int64) {
 	tsLen := len(timestampsUs)
 	e.count += tsLen
@@ -138,12 +147,16 @@ func (e *TimestampRawEncoder) WriteSlice(timestampsUs []int64) {
 //   - Total size: 8 × number_of_timestamps bytes
 //   - Byte order: As specified by endian engine
 //
-// Returns an empty slice if no timestamps have been written since the last Reset.
+// Returns:
+//   - []byte: Encoded byte slice (empty if no timestamps written since last Reset)
 func (e *TimestampRawEncoder) Bytes() []byte {
 	return e.buf.Bytes()
 }
 
 // Len returns the number of encoded timestamps.
+//
+// Returns:
+//   - int: Number of timestamps written since last Finish
 func (e *TimestampRawEncoder) Len() int {
 	return e.count
 }
@@ -151,6 +164,9 @@ func (e *TimestampRawEncoder) Len() int {
 // Size returns the size in bytes of encoded timestamps.
 //
 // It represents the number of bytes that were written to the internal buffer.
+//
+// Returns:
+//   - int: Total bytes written to internal buffer since last Finish
 func (e *TimestampRawEncoder) Size() int {
 	return e.buf.Len()
 }
@@ -212,6 +228,12 @@ var _ ColumnarDecoder[int64] = TimestampRawDecoder{}
 //
 // The decoder is stateless and can be reused across multiple decoding operations.
 // Each call to All() operates independently on the provided data.
+//
+// Parameters:
+//   - engine: Endian engine for byte order (must match encoder's engine)
+//
+// Returns:
+//   - TimestampRawDecoder: A new decoder instance (stateless, can be reused)
 func NewTimestampRawDecoder(engine endian.EndianEngine) TimestampRawDecoder {
 	return TimestampRawDecoder{engine: engine}
 }
@@ -226,6 +248,13 @@ func NewTimestampRawDecoder(engine endian.EndianEngine) TimestampRawDecoder {
 //
 // If the data is malformed or does not contain enough timestamps, the iterator
 // may yield fewer timestamps. The caller should handle this case appropriately.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampRawEncoder.Bytes()
+//   - count: Expected number of timestamps to decode
+//
+// Returns:
+//   - iter.Seq[int64]: Iterator yielding decoded timestamps (microseconds since Unix epoch)
 func (d TimestampRawDecoder) All(data []byte, count int) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		if len(data) == 0 || count == 0 {
@@ -259,6 +288,15 @@ func (d TimestampRawDecoder) All(data []byte, count int) iter.Seq[int64] {
 //
 // If the index is out of bounds (negative or >= count), the method returns false.
 // If the data is malformed or does not contain enough timestamps, it may return false.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampRawEncoder.Bytes()
+//   - index: Zero-based index of the timestamp to retrieve
+//   - count: Total number of timestamps in the encoded data
+//
+// Returns:
+//   - int64: The timestamp at the specified index (microseconds since Unix epoch)
+//   - bool: true if the index exists and was successfully decoded, false otherwise
 func (d TimestampRawDecoder) At(data []byte, index int, count int) (int64, bool) {
 	if len(data) == 0 || index < 0 || index >= count {
 		return 0, false
@@ -291,6 +329,12 @@ var _ ColumnarDecoder[int64] = TimestampRawUnsafeDecoder{}
 //
 // The decoder is stateless and can be reused across multiple decoding operations.
 // Each call to All() operates independently on the provided data.
+//
+// Parameters:
+//   - engine: Endian engine (currently unused but kept for interface compatibility)
+//
+// Returns:
+//   - TimestampRawUnsafeDecoder: A new unsafe decoder instance (stateless, can be reused)
 func NewTimestampRawUnsafeDecoder(engine endian.EndianEngine) TimestampRawUnsafeDecoder {
 	return TimestampRawUnsafeDecoder{}
 }
@@ -299,6 +343,13 @@ func NewTimestampRawUnsafeDecoder(engine endian.EndianEngine) TimestampRawUnsafe
 //
 // It returns a sequence of int64 timestamps decoded from the input byte slice.
 // The data must be a multiple of 8 bytes, as each int64 timestamp occupies exactly 8 bytes.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampRawEncoder.Bytes() (must be multiple of 8 bytes)
+//   - count: Expected number of timestamps to decode
+//
+// Returns:
+//   - iter.Seq[int64]: Iterator yielding decoded timestamps (microseconds since Unix epoch)
 func (d TimestampRawUnsafeDecoder) All(data []byte, count int) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		if len(data) < count*8 || count == 0 {
@@ -329,6 +380,15 @@ func (d TimestampRawUnsafeDecoder) All(data []byte, count int) iter.Seq[int64] {
 //
 // If the index is out of bounds (negative or >= count), the method returns false.
 // If the data is malformed or does not contain enough timestamps, it may return false.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampRawEncoder.Bytes() (must be multiple of 8 bytes)
+//   - index: Zero-based index of the timestamp to retrieve
+//   - count: Total number of timestamps in the encoded data
+//
+// Returns:
+//   - int64: The timestamp at the specified index (microseconds since Unix epoch)
+//   - bool: true if the index exists and was successfully decoded, false otherwise
 func (d TimestampRawUnsafeDecoder) At(data []byte, index int, count int) (int64, bool) {
 	if len(data) == 0 || index < 0 || index >= count {
 		return 0, false

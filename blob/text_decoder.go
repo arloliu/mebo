@@ -32,7 +32,16 @@ type TextDecoder struct {
 }
 
 // NewTextDecoder creates a new TextDecoder for the given encoded data.
-// Returns an error if the data is invalid or the header cannot be parsed.
+//
+// The decoder validates the header and prepares for decoding but does not decompress
+// the data section until Decode() is called.
+//
+// Parameters:
+//   - data: Encoded blob byte slice (must contain valid header)
+//
+// Returns:
+//   - *TextDecoder: New decoder instance ready for decoding
+//   - error: Header parsing error or invalid data format
 func NewTextDecoder(data []byte) (*TextDecoder, error) {
 	decoder := &TextDecoder{
 		data: data,
@@ -46,7 +55,14 @@ func NewTextDecoder(data []byte) (*TextDecoder, error) {
 }
 
 // Decode decodes the encoded data into a TextBlob.
-// It returns an error if decoding fails.
+//
+// This method decompresses the data section, parses index entries, and reconstructs the blob
+// structure. If metric names are present, it verifies name hashes and builds the name index.
+//
+// Returns:
+//   - TextBlob: Decoded blob with data payload and index maps
+//   - error: Payload offset validation errors, decompression errors, index parsing errors,
+//     or metric name verification failures
 func (d *TextDecoder) Decode() (TextBlob, error) {
 	blob := TextBlob{
 		blobBase: blobBase{

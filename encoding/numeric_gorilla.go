@@ -56,6 +56,9 @@ var _ ColumnarEncoder[float64] = (*NumericGorillaEncoder)(nil)
 //
 // This results in significant space savings for typical time-series data where
 // consecutive values are similar.
+//
+// Returns:
+//   - *NumericGorillaEncoder: A new encoder instance ready for float64 encoding
 func NewNumericGorillaEncoder() *NumericGorillaEncoder {
 	return &NumericGorillaEncoder{
 		buf:        pool.GetBlobBuffer(),
@@ -72,6 +75,9 @@ func NewNumericGorillaEncoder() *NumericGorillaEncoder {
 // This method uses bit-level operations for maximum compression efficiency.
 // The compressed bits are accumulated in an internal bit buffer and flushed
 // to the byte buffer when it fills up.
+//
+// Parameters:
+//   - val: The float64 value to encode
 func (e *NumericGorillaEncoder) Write(val float64) {
 	e.count++
 	valBits := math.Float64bits(val)
@@ -92,6 +98,9 @@ func (e *NumericGorillaEncoder) Write(val float64) {
 //
 // This method processes values sequentially, applying the same compression
 // algorithm as Write but optimized for bulk operations.
+//
+// Parameters:
+//   - values: Slice of float64 values to encode
 func (e *NumericGorillaEncoder) WriteSlice(values []float64) {
 	if len(values) == 0 {
 		return
@@ -153,6 +162,9 @@ func (e *NumericGorillaEncoder) writeMultipleZeroBits(count int) {
 // This method automatically flushes any pending bits in the bit buffer to ensure
 // all encoded data is included. However, calling Bytes() multiple times without
 // writing new data will not cause additional flushes (the bits are already flushed).
+//
+// Returns:
+//   - []byte: Gorilla-compressed byte slice (empty if no values written since last Reset)
 func (e *NumericGorillaEncoder) Bytes() []byte {
 	// Flush pending bits to ensure we return complete data
 	// Note: flushBits() has a guard to prevent flushing when bitCount == 0
@@ -164,6 +176,9 @@ func (e *NumericGorillaEncoder) Bytes() []byte {
 }
 
 // Len returns the number of encoded float64 values.
+//
+// Returns:
+//   - int: Number of float64 values written since last Finish
 func (e *NumericGorillaEncoder) Len() int {
 	return e.count
 }
@@ -173,6 +188,9 @@ func (e *NumericGorillaEncoder) Len() int {
 // Note: This returns the size of data that has been flushed to the byte buffer.
 // Pending bits in the bit buffer are not included. Use Finish() to ensure all
 // bits are written before checking the final size.
+//
+// Returns:
+//   - int: Total bytes written to internal buffer since last Finish
 func (e *NumericGorillaEncoder) Size() int {
 	return e.buf.Len()
 }
@@ -454,6 +472,9 @@ var _ ColumnarDecoder[float64] = NumericGorillaDecoder{}
 //   - Zero heap allocations (stack-only, no GC pressure)
 //   - Small struct fits in CPU registers
 //   - Can be used concurrently for different data streams
+//
+// Returns:
+//   - NumericGorillaDecoder: A new decoder instance (stateless, can be reused)
 func NewNumericGorillaDecoder() NumericGorillaDecoder {
 	return NumericGorillaDecoder{}
 }
@@ -467,7 +488,9 @@ func NewNumericGorillaDecoder() NumericGorillaDecoder {
 //   - data: byte slice containing Gorilla-compressed float64 values
 //   - count: expected number of values to decode
 //
-// Returns an iterator that yields decoded float64 values.
+// Returns:
+//   - iter.Seq[float64]: Iterator yielding decoded float64 values
+//
 // If the data is malformed or insufficient, the iterator may yield fewer values.
 func (d NumericGorillaDecoder) All(data []byte, count int) iter.Seq[float64] {
 	return func(yield func(float64) bool) {

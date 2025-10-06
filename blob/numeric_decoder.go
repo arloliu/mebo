@@ -26,7 +26,16 @@ type NumericDecoder struct {
 }
 
 // NewNumericDecoder creates a new NumericDecoder for the given encoded data.
-// Returns an error if the data is invalid or the header cannot be parsed.
+//
+// The decoder validates the header and prepares for decoding but does not decompress
+// payloads until Decode() is called.
+//
+// Parameters:
+//   - data: Encoded blob byte slice (must contain valid header)
+//
+// Returns:
+//   - *NumericDecoder: New decoder instance ready for decoding
+//   - error: Header parsing error or invalid data format
 func NewNumericDecoder(data []byte) (*NumericDecoder, error) {
 	decoder := &NumericDecoder{
 		data: data,
@@ -44,7 +53,14 @@ func NewNumericDecoder(data []byte) (*NumericDecoder, error) {
 }
 
 // Decode decodes the encoded data into a NumericBlob.
-// It returns an error if decoding fails.
+//
+// This method decompresses all payloads, parses index entries, and reconstructs the blob
+// structure. If metric names are present, it verifies name hashes and builds the name index.
+//
+// Returns:
+//   - NumericBlob: Decoded blob with timestamp/value/tag payloads and index maps
+//   - error: Payload offset validation errors, decompression errors, index parsing errors,
+//     or metric name verification failures
 func (d *NumericDecoder) Decode() (NumericBlob, error) {
 	blob := NumericBlob{
 		blobBase: blobBase{
