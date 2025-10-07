@@ -94,6 +94,10 @@ var defaultTextOptions = []blob.TextEncoderOption{
 //   - startTime: The earliest timestamp in the blob (used for blob sorting)
 //   - opts: Optional configuration functions (see blob.NumericEncoderOption)
 //
+// Returns:
+//   - *blob.NumericEncoder: The created numeric encoder.
+//   - error: An error if the configuration is invalid.
+//
 // Available options:
 //   - blob.WithLittleEndian() / blob.WithBigEndian()
 //   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta)
@@ -130,6 +134,13 @@ func NewNumericEncoder(startTime time.Time, opts ...blob.NumericEncoderOption) (
 //
 // For tagged metrics, use NewTaggedNumericEncoder instead.
 //
+// Parameters:
+//   - startTime: The earliest timestamp in the blob
+//
+// Returns:
+//   - *blob.NumericEncoder: The created numeric encoder.
+//   - error: An error if the configuration is invalid.
+//
 // Example:
 //
 //	encoder, err := mebo.NewDefaultNumericEncoder(time.Now())
@@ -153,6 +164,14 @@ func NewDefaultNumericEncoder(startTime time.Time) (*blob.NumericEncoder, error)
 //
 // The encoder inherits default settings (Delta timestamps, Gorilla values, no compression)
 // but you can override them with additional options.
+//
+// Parameters:
+//   - startTime: The earliest timestamp in the blob
+//   - opts: Optional configuration functions (see blob.NumericEncoderOption)
+//
+// Returns:
+//   - *blob.NumericEncoder: The created numeric encoder.
+//   - error: An error if the configuration is invalid.
 //
 // Example:
 //
@@ -178,10 +197,9 @@ func NewTaggedNumericEncoder(startTime time.Time, opts ...blob.NumericEncoderOpt
 // Parameters:
 //   - data: The raw blob bytes (from encoder.Finish().Bytes() or storage)
 //
-// Returns an error if:
-//   - The data is corrupted (CRC32 mismatch)
-//   - The blob format is invalid
-//   - The blob uses unsupported encoding/compression
+// Returns:
+//   - *blob.NumericDecoder: The created numeric decoder.
+//   - error: An error if the configuration is invalid.
 //
 // The decoder provides two access patterns:
 //  1. Sequential iteration: decoder.All(metricID) - O(n), optimized for full scans
@@ -214,6 +232,10 @@ func NewNumericDecoder(data []byte) (*blob.NumericDecoder, error) {
 //   - startTime: The earliest timestamp in the blob
 //   - opts: Optional configuration functions (see blob.TextEncoderOption)
 //
+// Returns:
+//   - *blob.TextEncoder: The created text encoder.
+//   - error: An error if the configuration is invalid.
+//
 // Available options:
 //   - blob.WithTextLittleEndian() / blob.WithTextBigEndian()
 //   - blob.WithTextTimestampEncoding(format.TypeRaw|TypeDelta)
@@ -240,6 +262,18 @@ func NewTextEncoder(startTime time.Time, opts ...blob.TextEncoderOption) (*blob.
 //   - Zstd compression for text data
 //   - Tags disabled
 //
+// Use this when:
+//   - You want optimal performance without manual tuning
+//   - Your metrics don't need tags
+//   - You're storing typical text time-series data
+//
+// Parameters:
+//   - startTime: The earliest timestamp in the blob
+//
+// Returns:
+//   - *blob.TextEncoder: The created text encoder.
+//   - error: An error if the configuration is invalid.
+//
 // Example:
 //
 //	startTime := time.Now()
@@ -262,6 +296,14 @@ func NewDefaultTextEncoder(startTime time.Time) (*blob.TextEncoder, error) {
 // Similar to NewTaggedNumericEncoder but for string values. Use when you need both
 // string values and metadata tags.
 // It inherits default settings (Delta timestamps, Zstd compression) with tags enabled.
+//
+// Parameters:
+//   - startTime: The earliest timestamp in the blob
+//   - opts: Optional configuration functions (see blob.TextEncoderOption)
+//
+// Returns:
+//   - *blob.TextEncoder: The created text encoder.
+//   - error: An error if the configuration is invalid.
 //
 // Example:
 //
@@ -287,7 +329,9 @@ func NewTaggedTextEncoder(startTime time.Time, opts ...blob.TextEncoderOption) (
 // Parameters:
 //   - data: The raw blob bytes
 //
-// Returns an error if the data is corrupted or invalid.
+// Returns:
+//   - *blob.TextDecoder: The created text decoder.
+//   - error: An error if the configuration is invalid.
 //
 // Example:
 //
@@ -317,7 +361,9 @@ func NewTextDecoder(data []byte) (*blob.TextDecoder, error) {
 // Parameters:
 //   - blobs: Array of NumericBlob instances (typically from encoder.Finish())
 //
-// Returns an error if blobs are invalid or incompatible.
+// Returns:
+//   - *blob.NumericBlobSet: The created numeric blob set.
+//   - error: An error if the blobs are invalid.
 //
 // Example:
 //
@@ -354,7 +400,9 @@ func NewNumericBlobSet(blobs []blob.NumericBlob) (*blob.NumericBlobSet, error) {
 // Parameters:
 //   - blobs: Array of NumericBlob instances to materialize
 //
-// Returns an error if blobs are invalid.
+// Returns:
+//   - blob.MaterializedNumericBlobSet: The materialized blob set.
+//   - error: An error if the blobs are invalid.
 //
 // Example:
 //
@@ -383,7 +431,9 @@ func NewMaterializedNumericBlobSet(blobs []blob.NumericBlob) (blob.MaterializedN
 // Parameters:
 //   - blobs: Array of TextBlob instances
 //
-// Returns an error if blobs are invalid.
+// Returns:
+//   - *blob.TextBlobSet: The created text blob set.
+//   - error: An error if the blobs are invalid.
 //
 // Example:
 //
@@ -401,6 +451,13 @@ func NewTextBlobSet(blobs []blob.TextBlob) (*blob.TextBlobSet, error) {
 // random access to string values.
 //
 // Use when you need frequent random access to text metrics across multiple blobs.
+//
+// Parameters:
+//   - blobs: Array of TextBlob instances to materialize
+//
+// Returns:
+//   - blob.MaterializedTextBlobSet: The materialized text blob set.
+//   - error: An error if the blobs are invalid.
 //
 // Example:
 //
@@ -430,6 +487,9 @@ func NewMaterializedTextBlobSet(blobs []blob.TextBlob) (blob.MaterializedTextBlo
 // Parameters:
 //   - numericBlobs: Array of NumericBlob instances (can be nil/empty)
 //   - textBlobs: Array of TextBlob instances (can be nil/empty)
+//
+// Returns:
+//   - blob.BlobSet: The created blob set.
 //
 // Example:
 //

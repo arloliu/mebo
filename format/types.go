@@ -1,3 +1,4 @@
+// Package format defines types and constants for data encoding and compression formats.
 package format
 
 type (

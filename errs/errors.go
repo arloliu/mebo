@@ -1,3 +1,4 @@
+// Package errs defines error variables used across the mebo package.
 package errs
 
 import "errors"
