@@ -685,7 +685,7 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 	case format.TypeDelta:
 		// Delta encoding: read varint delta from blob start time
 		// Note: Encoder calculates delta as (timestamp - startTime), not (timestamp - lastTimestamp)
-		delta, n := DecodeVarint(data[offset:])
+		delta, n := decodeVarint(data[offset:])
 		ts := b.startTime.UnixMicro() + delta
 		*lastTs = ts
 
@@ -740,8 +740,8 @@ func decodeText(data []byte, offset int) (string, int, error) {
 	return text, 1 + length, nil
 }
 
-// DecodeVarint decodes a varint from the byte slice and returns the value and bytes consumed.
-func DecodeVarint(data []byte) (int64, int) {
+// decodeVarint decodes a varint from the byte slice and returns the value and bytes consumed.
+func decodeVarint(data []byte) (int64, int) {
 	var uval uint64
 	var shift uint
 	var n int
