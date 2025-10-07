@@ -1,0 +1,12 @@
+# Binaries
+measure
+*.exe
+
+# Output files
+*.csv
+*.txt
+*.dat
+
+# Temporary files
+*.tmp
+*.log
