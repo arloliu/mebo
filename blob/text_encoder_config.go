@@ -63,11 +63,11 @@ func (c *TextEncoderConfig) setDataCompression(comp format.CompressionType) erro
 }
 
 // setEndianess sets the endianness option.
-func (c *TextEncoderConfig) setEndianess(endiness Endianness) {
+func (c *TextEncoderConfig) setEndianess(endiness endianness) {
 	switch endiness {
-	case LittleEndianOpt:
+	case littleEndianOpt:
 		c.header.Flag.WithLittleEndian()
-	case BigEndianOpt:
+	case bigEndianOpt:
 		c.header.Flag.WithBigEndian()
 	default:
 		c.header.Flag.WithLittleEndian()
@@ -184,7 +184,7 @@ func WithTextTagsEnabled(enabled bool) TextEncoderOption {
 // This is the default endianness for most modern systems.
 func WithTextLittleEndian() TextEncoderOption {
 	return options.NoError(func(c *TextEncoderConfig) {
-		c.setEndianess(LittleEndianOpt)
+		c.setEndianess(littleEndianOpt)
 	})
 }
 
@@ -192,6 +192,6 @@ func WithTextLittleEndian() TextEncoderOption {
 // Use this for compatibility with big-endian systems.
 func WithTextBigEndian() TextEncoderOption {
 	return options.NoError(func(c *TextEncoderConfig) {
-		c.setEndianess(BigEndianOpt)
+		c.setEndianess(bigEndianOpt)
 	})
 }

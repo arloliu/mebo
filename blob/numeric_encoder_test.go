@@ -564,9 +564,9 @@ func TestNumericEncoder_ConfigurationMethods(t *testing.T) {
 
 	t.Run("setEndianess", func(t *testing.T) {
 		// These should not return errors
-		encoder.NumericEncoderConfig.setEndianess(LittleEndianOpt)
-		encoder.NumericEncoderConfig.setEndianess(BigEndianOpt)
-		encoder.NumericEncoderConfig.setEndianess(Endianness(99)) // Should default to little endian
+		encoder.NumericEncoderConfig.setEndianess(littleEndianOpt)
+		encoder.NumericEncoderConfig.setEndianess(bigEndianOpt)
+		encoder.NumericEncoderConfig.setEndianess(endianness(99)) // Should default to little endian
 	})
 }
 

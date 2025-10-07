@@ -102,11 +102,11 @@ func (c *NumericEncoderConfig) setValueCompression(comp format.CompressionType) 
 }
 
 // setEndianess sets the endianness option.
-func (c *NumericEncoderConfig) setEndianess(endiness Endianness) {
+func (c *NumericEncoderConfig) setEndianess(endiness endianness) {
 	switch endiness {
-	case LittleEndianOpt:
+	case littleEndianOpt:
 		c.header.Flag.WithLittleEndian()
-	case BigEndianOpt:
+	case bigEndianOpt:
 		c.header.Flag.WithBigEndian()
 	default:
 		c.header.Flag.WithLittleEndian()
@@ -205,12 +205,12 @@ func (c *NumericEncoderConfig) setCodecs(header section.NumericHeader) error {
 	return nil
 }
 
-// Endianness represents the byte order configuration option.
-type Endianness uint8
+// endianness represents the byte order configuration option.
+type endianness uint8
 
 const (
-	LittleEndianOpt Endianness = iota
-	BigEndianOpt    Endianness = iota
+	littleEndianOpt endianness = iota
+	bigEndianOpt    endianness = iota
 )
 
 // NumericEncoderOption represents a functional option for configuring the NumericEncoderConfig.
@@ -221,7 +221,7 @@ type NumericEncoderOption = options.Option[*NumericEncoderConfig]
 // It is the default option.
 func WithLittleEndian() NumericEncoderOption {
 	return options.NoError(func(c *NumericEncoderConfig) {
-		c.setEndianess(LittleEndianOpt)
+		c.setEndianess(littleEndianOpt)
 	})
 }
 
@@ -229,7 +229,7 @@ func WithLittleEndian() NumericEncoderOption {
 // It rarely needs to be used unless interoperability with big-endian systems is required.
 func WithBigEndian() NumericEncoderOption {
 	return options.NoError(func(c *NumericEncoderConfig) {
-		c.setEndianess(BigEndianOpt)
+		c.setEndianess(bigEndianOpt)
 	})
 }
 
