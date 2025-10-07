@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/stretchr/testify/require"
 )
@@ -834,5 +835,495 @@ func TestBlobSet_CompleteDataPoint(t *testing.T) {
 		tdp, ok := blobSet.TextAt(textMetricID, 0)
 		require.True(t, ok)
 		require.Equal(t, "a", tdp.Val)
+	})
+}
+
+// TestDecodeBlobSet_EmptyInput tests DecodeBlobSet with no input blobs
+func TestDecodeBlobSet_EmptyInput(t *testing.T) {
+	blobSet, err := DecodeBlobSet()
+	require.NoError(t, err)
+	require.NotNil(t, blobSet)
+	require.Empty(t, blobSet.numericBlobs)
+	require.Empty(t, blobSet.textBlobs)
+}
+
+// TestDecodeBlobSet_SingleNumericBlob tests decoding a single numeric blob
+func TestDecodeBlobSet_SingleNumericBlob(t *testing.T) {
+	// Create a numeric blob
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewNumericEncoder(startTime)
+	require.NoError(t, err)
+
+	// Add a metric with data points
+	err = encoder.StartMetricID(12345, 3)
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.UnixMicro(), 1.5, "")
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 2.5, "")
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.Add(2*time.Second).UnixMicro(), 3.5, "")
+	require.NoError(t, err)
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Decode the blob set
+	blobSet, err := DecodeBlobSet(data)
+	require.NoError(t, err)
+	require.Len(t, blobSet.numericBlobs, 1)
+	require.Empty(t, blobSet.textBlobs)
+
+	// Verify the decoded blob
+	blob := blobSet.numericBlobs[0]
+	require.True(t, blob.HasMetricID(12345))
+	require.Equal(t, 3, blob.Len(12345))
+}
+
+// TestDecodeBlobSet_SingleTextBlob tests decoding a single text blob
+func TestDecodeBlobSet_SingleTextBlob(t *testing.T) {
+	// Create a text blob
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewTextEncoder(startTime)
+	require.NoError(t, err)
+
+	// Add a metric with text values
+	err = encoder.StartMetricID(67890, 2)
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.UnixMicro(), "hello", "")
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), "world", "")
+	require.NoError(t, err)
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Decode the blob set
+	blobSet, err := DecodeBlobSet(data)
+	require.NoError(t, err)
+	require.Empty(t, blobSet.numericBlobs)
+	require.Len(t, blobSet.textBlobs, 1)
+
+	// Verify the decoded blob
+	blob := blobSet.textBlobs[0]
+	require.True(t, blob.HasMetricID(67890))
+	require.Equal(t, 2, blob.Len(67890))
+}
+
+// TestDecodeBlobSet_MultipleNumericBlobs tests decoding multiple numeric blobs
+func TestDecodeBlobSet_MultipleNumericBlobs(t *testing.T) {
+	// Create first numeric blob
+	startTime1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder1, err := NewNumericEncoder(startTime1)
+	require.NoError(t, err)
+	err = encoder1.StartMetricID(100, 1)
+	require.NoError(t, err)
+	err = encoder1.AddDataPoint(startTime1.UnixMicro(), 10.0, "")
+	require.NoError(t, err)
+	err = encoder1.EndMetric()
+	require.NoError(t, err)
+	data1, err := encoder1.Finish()
+	require.NoError(t, err)
+
+	// Create second numeric blob
+	startTime2 := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	encoder2, err := NewNumericEncoder(startTime2)
+	require.NoError(t, err)
+	err = encoder2.StartMetricID(200, 1)
+	require.NoError(t, err)
+	err = encoder2.AddDataPoint(startTime2.UnixMicro(), 20.0, "")
+	require.NoError(t, err)
+	err = encoder2.EndMetric()
+	require.NoError(t, err)
+	data2, err := encoder2.Finish()
+	require.NoError(t, err)
+
+	// Decode the blob set
+	blobSet, err := DecodeBlobSet(data1, data2)
+	require.NoError(t, err)
+	require.Len(t, blobSet.numericBlobs, 2)
+	require.Empty(t, blobSet.textBlobs)
+
+	// Verify blobs are sorted by start time
+	require.True(t, blobSet.numericBlobs[0].StartTime().Before(blobSet.numericBlobs[1].StartTime()))
+	require.True(t, blobSet.numericBlobs[0].HasMetricID(100))
+	require.True(t, blobSet.numericBlobs[1].HasMetricID(200))
+}
+
+// TestDecodeBlobSet_MultipleTextBlobs tests decoding multiple text blobs
+func TestDecodeBlobSet_MultipleTextBlobs(t *testing.T) {
+	// Create first text blob
+	startTime1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder1, err := NewTextEncoder(startTime1)
+	require.NoError(t, err)
+	err = encoder1.StartMetricID(300, 1)
+	require.NoError(t, err)
+	err = encoder1.AddDataPoint(startTime1.UnixMicro(), "first", "")
+	require.NoError(t, err)
+	err = encoder1.EndMetric()
+	require.NoError(t, err)
+	data1, err := encoder1.Finish()
+	require.NoError(t, err)
+
+	// Create second text blob
+	startTime2 := time.Date(2024, 1, 1, 2, 0, 0, 0, time.UTC)
+	encoder2, err := NewTextEncoder(startTime2)
+	require.NoError(t, err)
+	err = encoder2.StartMetricID(400, 1)
+	require.NoError(t, err)
+	err = encoder2.AddDataPoint(startTime2.UnixMicro(), "second", "")
+	require.NoError(t, err)
+	err = encoder2.EndMetric()
+	require.NoError(t, err)
+	data2, err := encoder2.Finish()
+	require.NoError(t, err)
+
+	// Decode the blob set
+	blobSet, err := DecodeBlobSet(data1, data2)
+	require.NoError(t, err)
+	require.Empty(t, blobSet.numericBlobs)
+	require.Len(t, blobSet.textBlobs, 2)
+
+	// Verify blobs are sorted by start time
+	require.True(t, blobSet.textBlobs[0].StartTime().Before(blobSet.textBlobs[1].StartTime()))
+	require.True(t, blobSet.textBlobs[0].HasMetricID(300))
+	require.True(t, blobSet.textBlobs[1].HasMetricID(400))
+}
+
+// TestDecodeBlobSet_MixedBlobs tests decoding both numeric and text blobs
+func TestDecodeBlobSet_MixedBlobs(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create numeric blob
+	numEncoder, err := NewNumericEncoder(startTime)
+	require.NoError(t, err)
+	err = numEncoder.StartMetricID(500, 2)
+	require.NoError(t, err)
+	err = numEncoder.AddDataPoint(startTime.UnixMicro(), 50.0, "")
+	require.NoError(t, err)
+	err = numEncoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 51.0, "")
+	require.NoError(t, err)
+	err = numEncoder.EndMetric()
+	require.NoError(t, err)
+	numData, err := numEncoder.Finish()
+	require.NoError(t, err)
+
+	// Create text blob
+	textEncoder, err := NewTextEncoder(startTime.Add(time.Hour))
+	require.NoError(t, err)
+	err = textEncoder.StartMetricID(600, 2)
+	require.NoError(t, err)
+	err = textEncoder.AddDataPoint(startTime.Add(time.Hour).UnixMicro(), "alpha", "")
+	require.NoError(t, err)
+	err = textEncoder.AddDataPoint(startTime.Add(time.Hour+time.Second).UnixMicro(), "beta", "")
+	require.NoError(t, err)
+	err = textEncoder.EndMetric()
+	require.NoError(t, err)
+	textData, err := textEncoder.Finish()
+	require.NoError(t, err)
+
+	// Decode the blob set
+	blobSet, err := DecodeBlobSet(numData, textData)
+	require.NoError(t, err)
+	require.Len(t, blobSet.numericBlobs, 1)
+	require.Len(t, blobSet.textBlobs, 1)
+
+	// Verify numeric blob
+	require.True(t, blobSet.numericBlobs[0].HasMetricID(500))
+	require.Equal(t, 2, blobSet.numericBlobs[0].Len(500))
+
+	// Verify text blob
+	require.True(t, blobSet.textBlobs[0].HasMetricID(600))
+	require.Equal(t, 2, blobSet.textBlobs[0].Len(600))
+}
+
+// TestDecodeBlobSet_InvalidBlob tests decoding with invalid blob data
+func TestDecodeBlobSet_InvalidBlob(t *testing.T) {
+	t.Run("Too short data", func(t *testing.T) {
+		invalidData := []byte{0x01, 0x02, 0x03}
+		blobSet, err := DecodeBlobSet(invalidData)
+		// Current implementation: silently ignores invalid blobs
+		// This test documents the current behavior
+		require.NoError(t, err)
+		require.Empty(t, blobSet.numericBlobs)
+		require.Empty(t, blobSet.textBlobs)
+	})
+
+	t.Run("Empty byte slice", func(t *testing.T) {
+		emptyData := []byte{}
+		blobSet, err := DecodeBlobSet(emptyData)
+		require.NoError(t, err)
+		require.Empty(t, blobSet.numericBlobs)
+		require.Empty(t, blobSet.textBlobs)
+	})
+
+	t.Run("Invalid magic number", func(t *testing.T) {
+		// Create blob with invalid magic number (32 bytes with wrong magic)
+		invalidData := make([]byte, 32)
+		invalidData[0] = 0xFF // Wrong magic number
+		invalidData[1] = 0xFF
+
+		blobSet, err := DecodeBlobSet(invalidData)
+		// Current implementation: silently ignores invalid blobs
+		require.NoError(t, err)
+		require.Empty(t, blobSet.numericBlobs)
+		require.Empty(t, blobSet.textBlobs)
+	})
+}
+
+// TestDecodeBlobSet_CorruptedNumericBlob tests handling of corrupted numeric blob
+func TestDecodeBlobSet_CorruptedNumericBlob(t *testing.T) {
+	// Create a valid numeric blob first
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewNumericEncoder(startTime)
+	require.NoError(t, err)
+	err = encoder.StartMetricID(700, 1)
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.UnixMicro(), 70.0, "")
+	require.NoError(t, err)
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Corrupt the data by truncating it
+	corruptedData := data[:len(data)/2]
+
+	// Attempt to decode - should fail with error
+	_, err = DecodeBlobSet(corruptedData)
+	require.Error(t, err, "Should return error for corrupted numeric blob")
+}
+
+// TestDecodeBlobSet_CorruptedTextBlob tests handling of corrupted text blob
+func TestDecodeBlobSet_CorruptedTextBlob(t *testing.T) {
+	// Create a valid text blob first
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewTextEncoder(startTime)
+	require.NoError(t, err)
+	err = encoder.StartMetricID(800, 1)
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.UnixMicro(), "corrupted", "")
+	require.NoError(t, err)
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Corrupt the data by truncating it
+	corruptedData := data[:len(data)/2]
+
+	// Attempt to decode - should fail with error
+	_, err = DecodeBlobSet(corruptedData)
+	require.Error(t, err, "Should return error for corrupted text blob")
+}
+
+// TestDecodeBlobSet_WithDifferentEncodings tests decoding blobs with different encoding types
+func TestDecodeBlobSet_WithDifferentEncodings(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create numeric blob with delta timestamp encoding
+	encoder1, err := NewNumericEncoder(startTime, WithTimestampEncoding(format.TypeDelta))
+	require.NoError(t, err)
+	err = encoder1.StartMetricID(900, 2)
+	require.NoError(t, err)
+	err = encoder1.AddDataPoint(startTime.UnixMicro(), 90.0, "")
+	require.NoError(t, err)
+	err = encoder1.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 91.0, "")
+	require.NoError(t, err)
+	err = encoder1.EndMetric()
+	require.NoError(t, err)
+	data1, err := encoder1.Finish()
+	require.NoError(t, err)
+
+	// Create numeric blob with raw timestamp encoding
+	encoder2, err := NewNumericEncoder(startTime.Add(time.Hour), WithTimestampEncoding(format.TypeRaw))
+	require.NoError(t, err)
+	err = encoder2.StartMetricID(1000, 2)
+	require.NoError(t, err)
+	err = encoder2.AddDataPoint(startTime.Add(time.Hour).UnixMicro(), 100.0, "")
+	require.NoError(t, err)
+	err = encoder2.AddDataPoint(startTime.Add(time.Hour+time.Second).UnixMicro(), 101.0, "")
+	require.NoError(t, err)
+	err = encoder2.EndMetric()
+	require.NoError(t, err)
+	data2, err := encoder2.Finish()
+	require.NoError(t, err)
+
+	// Decode both blobs
+	blobSet, err := DecodeBlobSet(data1, data2)
+	require.NoError(t, err)
+	require.Len(t, blobSet.numericBlobs, 2)
+
+	// Verify both blobs were decoded correctly
+	require.True(t, blobSet.numericBlobs[0].HasMetricID(900))
+	require.True(t, blobSet.numericBlobs[1].HasMetricID(1000))
+	require.Equal(t, 2, blobSet.numericBlobs[0].Len(900))
+	require.Equal(t, 2, blobSet.numericBlobs[1].Len(1000))
+}
+
+// TestDecodeBlobSet_UnsortedInput tests that blobs are sorted even if input is unsorted
+func TestDecodeBlobSet_UnsortedInput(t *testing.T) {
+	// Create blobs with non-chronological start times
+	time3 := time.Date(2024, 1, 1, 3, 0, 0, 0, time.UTC)
+	time1 := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	time2 := time.Date(2024, 1, 1, 2, 0, 0, 0, time.UTC)
+
+	// Create blob3 (latest time)
+	encoder3, err := NewNumericEncoder(time3)
+	require.NoError(t, err)
+	err = encoder3.StartMetricID(1100, 1)
+	require.NoError(t, err)
+	err = encoder3.AddDataPoint(time3.UnixMicro(), 30.0, "")
+	require.NoError(t, err)
+	err = encoder3.EndMetric()
+	require.NoError(t, err)
+	data3, err := encoder3.Finish()
+	require.NoError(t, err)
+
+	// Create blob1 (earliest time)
+	encoder1, err := NewNumericEncoder(time1)
+	require.NoError(t, err)
+	err = encoder1.StartMetricID(1200, 1)
+	require.NoError(t, err)
+	err = encoder1.AddDataPoint(time1.UnixMicro(), 10.0, "")
+	require.NoError(t, err)
+	err = encoder1.EndMetric()
+	require.NoError(t, err)
+	data1, err := encoder1.Finish()
+	require.NoError(t, err)
+
+	// Create blob2 (middle time)
+	encoder2, err := NewNumericEncoder(time2)
+	require.NoError(t, err)
+	err = encoder2.StartMetricID(1300, 1)
+	require.NoError(t, err)
+	err = encoder2.AddDataPoint(time2.UnixMicro(), 20.0, "")
+	require.NoError(t, err)
+	err = encoder2.EndMetric()
+	require.NoError(t, err)
+	data2, err := encoder2.Finish()
+	require.NoError(t, err)
+
+	// Pass blobs in unsorted order: 3, 1, 2
+	blobSet, err := DecodeBlobSet(data3, data1, data2)
+	require.NoError(t, err)
+	require.Len(t, blobSet.numericBlobs, 3)
+
+	// Verify blobs are sorted by start time (should be 1, 2, 3)
+	require.True(t, blobSet.numericBlobs[0].HasMetricID(1200)) // time1 (earliest)
+	require.True(t, blobSet.numericBlobs[1].HasMetricID(1300)) // time2 (middle)
+	require.True(t, blobSet.numericBlobs[2].HasMetricID(1100)) // time3 (latest)
+	require.True(t, blobSet.numericBlobs[0].StartTime().Before(blobSet.numericBlobs[1].StartTime()))
+	require.True(t, blobSet.numericBlobs[1].StartTime().Before(blobSet.numericBlobs[2].StartTime()))
+}
+
+// TestDecodeBlobSet_WithMetricNames tests decoding blobs that include metric names
+func TestDecodeBlobSet_WithMetricNames(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create numeric blob with metric names (automatically enabled when using StartMetricName)
+	encoder, err := NewNumericEncoder(startTime)
+	require.NoError(t, err)
+	err = encoder.StartMetricName("cpu.usage", 1)
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.UnixMicro(), 75.5, "")
+	require.NoError(t, err)
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Decode the blob set
+	blobSet, err := DecodeBlobSet(data)
+	require.NoError(t, err)
+	require.Len(t, blobSet.numericBlobs, 1)
+
+	// Verify metric name is accessible
+	blob := blobSet.numericBlobs[0]
+	require.True(t, blob.HasMetricName("cpu.usage"))
+	require.Equal(t, 1, blob.LenByName("cpu.usage"))
+}
+
+// TestDecodeBlobSet_WithTags tests decoding blobs with tagged data points
+func TestDecodeBlobSet_WithTags(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create numeric blob with tags (automatically enabled when non-empty tags are added)
+	encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+	require.NoError(t, err)
+	err = encoder.StartMetricID(1400, 2)
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.UnixMicro(), 14.0, "host=server1")
+	require.NoError(t, err)
+	err = encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 15.0, "host=server2")
+	require.NoError(t, err)
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Decode the blob set
+	blobSet, err := DecodeBlobSet(data)
+	require.NoError(t, err)
+	require.Len(t, blobSet.numericBlobs, 1)
+
+	// Verify tags are preserved
+	blob := blobSet.numericBlobs[0]
+	tag1, ok := blob.TagAt(1400, 0)
+	require.True(t, ok)
+	require.Equal(t, "host=server1", tag1)
+
+	tag2, ok := blob.TagAt(1400, 1)
+	require.True(t, ok)
+	require.Equal(t, "host=server2", tag2)
+}
+
+// TestDecodeBlobSet_VariadicInput tests the variadic parameter behavior
+func TestDecodeBlobSet_VariadicInput(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create test blobs
+	encoder1, err := NewNumericEncoder(startTime)
+	require.NoError(t, err)
+	err = encoder1.StartMetricID(1500, 1)
+	require.NoError(t, err)
+	err = encoder1.AddDataPoint(startTime.UnixMicro(), 15.0, "")
+	require.NoError(t, err)
+	err = encoder1.EndMetric()
+	require.NoError(t, err)
+	data1, err := encoder1.Finish()
+	require.NoError(t, err)
+
+	encoder2, err := NewNumericEncoder(startTime.Add(time.Hour))
+	require.NoError(t, err)
+	err = encoder2.StartMetricID(1600, 1)
+	require.NoError(t, err)
+	err = encoder2.AddDataPoint(startTime.Add(time.Hour).UnixMicro(), 16.0, "")
+	require.NoError(t, err)
+	err = encoder2.EndMetric()
+	require.NoError(t, err)
+	data2, err := encoder2.Finish()
+	require.NoError(t, err)
+
+	t.Run("Single blob", func(t *testing.T) {
+		blobSet, err := DecodeBlobSet(data1)
+		require.NoError(t, err)
+		require.Len(t, blobSet.numericBlobs, 1)
+	})
+
+	t.Run("Multiple blobs", func(t *testing.T) {
+		blobSet, err := DecodeBlobSet(data1, data2)
+		require.NoError(t, err)
+		require.Len(t, blobSet.numericBlobs, 2)
+	})
+
+	t.Run("Slice expansion", func(t *testing.T) {
+		blobs := [][]byte{data1, data2}
+		blobSet, err := DecodeBlobSet(blobs...)
+		require.NoError(t, err)
+		require.Len(t, blobSet.numericBlobs, 2)
 	})
 }

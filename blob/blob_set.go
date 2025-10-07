@@ -3,6 +3,8 @@ package blob
 import (
 	"iter"
 	"slices"
+
+	"github.com/arloliu/mebo/section"
 )
 
 // BlobSetIterator provides sequential iteration through data points across multiple blobs.
@@ -132,6 +134,13 @@ var (
 
 // NewBlobSet creates a new BlobSet from numeric and text blobs.
 // Blobs are sorted by start time within each type for deterministic iteration order.
+//
+// Parameters:
+//   - numericBlobs: List of numeric blobs to include in the set
+//   - textBlobs: List of text blobs to include in the set
+//
+// Returns:
+//   - BlobSet: Constructed BlobSet with parsed blobs
 func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
 	// Sort numeric blobs by start time
 	sortedNumeric := make([]NumericBlob, len(numericBlobs))
@@ -151,6 +160,49 @@ func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
 		numericBlobs: sortedNumeric,
 		textBlobs:    sortedText,
 	}
+}
+
+// DecodeBlobSet creates a new BlobSet from a list of encoded byte slices.
+// Each byte slice is parsed to determine if it's a numeric or text blob.
+//
+// Parameters:
+//   - blobs: List of byte slices representing encoded blobs
+//
+// Returns:
+//   - BlobSet: Constructed BlobSet with parsed blobs
+//   - error: Parsing or decoding error
+func DecodeBlobSet(blobs ...[]byte) (BlobSet, error) {
+	numericBlobs := make([]NumericBlob, 0, len(blobs)/2)
+	textBlobs := make([]TextBlob, 0, len(blobs)/2)
+	for _, blob := range blobs {
+		if section.IsNumericBlob(blob) {
+			decoder, err := NewNumericDecoder(blob)
+			if err != nil {
+				return BlobSet{}, err
+			}
+
+			nb, err := decoder.Decode()
+			if err != nil {
+				return BlobSet{}, err
+			}
+
+			numericBlobs = append(numericBlobs, nb)
+		} else if section.IsTextBlob(blob) {
+			decoder, err := NewTextDecoder(blob)
+			if err != nil {
+				return BlobSet{}, err
+			}
+
+			tb, err := decoder.Decode()
+			if err != nil {
+				return BlobSet{}, err
+			}
+
+			textBlobs = append(textBlobs, tb)
+		}
+	}
+
+	return NewBlobSet(numericBlobs, textBlobs), nil
 }
 
 func (bs BlobSet) AllNumerics(metricID uint64) iter.Seq2[int, NumericDataPoint] {
