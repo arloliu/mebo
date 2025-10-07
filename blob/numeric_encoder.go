@@ -11,7 +11,6 @@ import (
 	"github.com/arloliu/mebo/internal/collision"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/internal/options"
-	"github.com/arloliu/mebo/internal/pool"
 	"github.com/arloliu/mebo/section"
 )
 
@@ -507,13 +506,9 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Pre-calculate exact size (reuse indexEntriesSize from above)
 	blobSize := section.HeaderSize + len(metricNamesPayload) + indexEntriesSize + len(tsPayload) + len(valPayload) + len(tagPayload)
 
-	// Get pooled buffer for building the final blob
-	buf := pool.GetBlobBuffer()
-	defer pool.PutBlobBuffer(buf)
-
-	buf.Reset()
-	buf.ExtendOrGrow(blobSize)
-	blob := buf.Bytes()
+	// Allocate exact-size buffer for the final blob
+	// No need for pooled buffer since we return this directly to caller
+	blob := make([]byte, blobSize)
 	offset := 0
 
 	// Copy cloned header with all computed fields

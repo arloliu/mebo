@@ -406,10 +406,9 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 	indexEntriesSize := len(e.indexEntries) * section.TextIndexEntrySize
 	blobSize := headerSize + len(namesPayload) + indexEntriesSize + len(compressedData)
 
-	// Reuse the pooled buffer for building the final blob
-	e.buf.Reset()
-	e.buf.ExtendOrGrow(blobSize)
-	blob := e.buf.Bytes()
+	// Allocate exact-size buffer for the final blob
+	// No need for pooled buffer since we return this directly to caller
+	blob := make([]byte, blobSize)
 	offset := 0
 
 	// Write header
