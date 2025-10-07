@@ -339,7 +339,7 @@ func TestMaterializedMetric_Basic(t *testing.T) {
 	require.Equal(t, []int64{0, 1000, 2000, 3000, 4000}, metric.Timestamps)
 }
 
-func TestMaterializedMetric_WithTags(t *testing.T) {
+func TestMaterializedNumericMetric_WithTags(t *testing.T) {
 	metricID := uint64(5678)
 	blob := createTestBlobForMaterialization(t, format.TypeRaw, format.TypeRaw, true, map[uint64]int{
 		metricID: 3,
@@ -361,7 +361,7 @@ func TestMaterializedMetric_WithTags(t *testing.T) {
 	}
 }
 
-func TestMaterializedMetric_NonExistent(t *testing.T) {
+func TestMaterializedNumericMetric_NonExistent(t *testing.T) {
 	blob := createTestBlobForMaterialization(t, format.TypeRaw, format.TypeRaw, false, map[uint64]int{
 		100: 1,
 	})
@@ -371,7 +371,7 @@ func TestMaterializedMetric_NonExistent(t *testing.T) {
 	require.False(t, ok, "MaterializeMetric should return false for non-existent metric")
 }
 
-func TestMaterializedMetric_ByName(t *testing.T) {
+func TestMaterializedNumericMetric_ByName(t *testing.T) {
 	// Create encoder with metric names
 	startTime := time.Now()
 	encoder, err := NewNumericEncoder(startTime)
@@ -410,7 +410,7 @@ func TestMaterializedMetric_ByName(t *testing.T) {
 	require.False(t, ok)
 }
 
-func TestMaterializedMetric_OutOfBounds(t *testing.T) {
+func TestMaterializedNumericMetric_OutOfBounds(t *testing.T) {
 	metricID := uint64(100)
 	blob := createTestBlobForMaterialization(t, format.TypeRaw, format.TypeRaw, false, map[uint64]int{
 		metricID: 3,

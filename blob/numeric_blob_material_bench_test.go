@@ -270,11 +270,11 @@ func BenchmarkValueAt_Random_Delta_Materialized(b *testing.B) {
 }
 
 // ==============================================================================
-// MaterializedMetric Benchmarks
+// MaterializedNumericMetric Benchmarks
 // ==============================================================================
 
-// BenchmarkMaterializedMetric_ValueAt measures O(1) access performance
-func BenchmarkMaterializedMetric_ValueAt(b *testing.B) {
+// BenchmarkMaterializedNumericMetric_ValueAt measures O(1) access performance
+func BenchmarkMaterializedNumericMetric_ValueAt(b *testing.B) {
 	// Create and materialize a single metric
 	startTime := time.Now()
 	encoder, _ := NewNumericEncoder(startTime,

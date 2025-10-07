@@ -260,7 +260,7 @@ func (m MaterializedNumericBlob) MetricNames() []string {
 	return names
 }
 
-// MaterializedMetric represents a single materialized metric with O(1) random access.
+// MaterializedNumericMetric represents a single materialized numeric metric with O(1) random access.
 // Created by calling NumericBlob.MaterializeMetric().
 //
 // All data is decoded and stored in memory, providing constant-time access.
@@ -272,7 +272,7 @@ func (m MaterializedNumericBlob) MetricNames() []string {
 //	    val, _ := metric.ValueAt(500)  // O(1)
 //	    ts, _ := metric.TimestampAt(500)
 //	}
-type MaterializedMetric struct {
+type MaterializedNumericMetric struct {
 	MetricID   uint64
 	Timestamps []int64
 	Values     []float64
@@ -302,10 +302,10 @@ type MaterializedMetric struct {
 //	}
 //	val, _ := metric.ValueAt(500)  // O(1), ~5ns
 //	ts, _ := metric.TimestampAt(500)
-func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedMetric, bool) {
+func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetric, bool) {
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {
-		return MaterializedMetric{}, false
+		return MaterializedNumericMetric{}, false
 	}
 
 	// Pre-allocate slices with known capacity
@@ -334,7 +334,7 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedMetric, boo
 		}
 	}
 
-	return MaterializedMetric{
+	return MaterializedNumericMetric{
 		MetricID:   metricID,
 		Timestamps: timestamps,
 		Values:     values,
@@ -343,7 +343,7 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedMetric, boo
 }
 
 // MaterializeMetricByName decodes a single metric by name for O(1) random access.
-// Returns (MaterializedMetric{}, false) if the metric name is not found.
+// Returns (MaterializedNumericMetric{}, false) if the metric name is not found.
 //
 // Example:
 //
@@ -351,10 +351,10 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedMetric, boo
 //	if ok {
 //	    val, _ := metric.ValueAt(500)
 //	}
-func (b NumericBlob) MaterializeMetricByName(metricName string) (MaterializedMetric, bool) {
+func (b NumericBlob) MaterializeMetricByName(metricName string) (MaterializedNumericMetric, bool) {
 	entry, ok := b.lookupMetricEntry(metricName)
 	if !ok {
-		return MaterializedMetric{}, false
+		return MaterializedNumericMetric{}, false
 	}
 
 	return b.MaterializeMetric(entry.MetricID)
@@ -364,7 +364,7 @@ func (b NumericBlob) MaterializeMetricByName(metricName string) (MaterializedMet
 // Returns (0, false) if index is out of bounds.
 //
 // This is an O(1) operation (~5ns).
-func (m MaterializedMetric) ValueAt(index int) (float64, bool) {
+func (m MaterializedNumericMetric) ValueAt(index int) (float64, bool) {
 	if index < 0 || index >= len(m.Values) {
 		return 0, false
 	}
@@ -376,7 +376,7 @@ func (m MaterializedMetric) ValueAt(index int) (float64, bool) {
 // Returns (0, false) if index is out of bounds.
 //
 // This is an O(1) operation (~5ns).
-func (m MaterializedMetric) TimestampAt(index int) (int64, bool) {
+func (m MaterializedNumericMetric) TimestampAt(index int) (int64, bool) {
 	if index < 0 || index >= len(m.Timestamps) {
 		return 0, false
 	}
@@ -389,7 +389,7 @@ func (m MaterializedMetric) TimestampAt(index int) (int64, bool) {
 // Returns empty string if tags are not enabled.
 //
 // This is an O(1) operation (~5ns).
-func (m MaterializedMetric) TagAt(index int) (string, bool) {
+func (m MaterializedNumericMetric) TagAt(index int) (string, bool) {
 	// If tags weren't enabled, return empty string
 	if len(m.Tags) == 0 {
 		return "", index >= 0 && index < len(m.Values)
@@ -403,6 +403,6 @@ func (m MaterializedMetric) TagAt(index int) (string, bool) {
 }
 
 // Len returns the number of data points in the materialized metric.
-func (m MaterializedMetric) Len() int {
+func (m MaterializedNumericMetric) Len() int {
 	return len(m.Values)
 }
