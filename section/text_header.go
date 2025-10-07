@@ -24,15 +24,15 @@ type TextHeader struct {
 
 	// StartTime is the start time of the metric, unix timestamp in microseconds.
 	StartTime int64 // 8 bytes, offset 4-11
+	// MetricCount is the number of unique metrics stored in the blob, max to 65535.
+	MetricCount uint32 // 4 bytes, offset 12-15
 	// IndexOffset is the byte offset to the start of the metric index section.
-	IndexOffset uint32 // 4 bytes, offset 12-15
+	IndexOffset uint32 // 4 bytes, offset 16-19
 	// DataOffset is the byte offset to the start of the data section.
-	DataOffset uint32 // 4 bytes, offset 16-19
+	DataOffset uint32 // 4 bytes, offset 20-23
 	// DataSize is the uncompressed size of the data section in bytes.
 	// Used for verification and calculating the last metric's Size field.
-	DataSize uint32 // 4 bytes, offset 20-23
-	// MetricCount is the number of unique metrics stored in the blob, max to 65535.
-	MetricCount uint32 // 4 bytes, offset 24-27
+	DataSize uint32 // 4 bytes, offset 24-27
 }
 
 // NewTextHeader creates a new TextHeader with the given start time and metric count.
@@ -59,6 +59,10 @@ func (h *TextHeader) Parse(data []byte) error {
 
 	// Parse options first to determine endianness (always little-endian for Options field itself)
 	h.Flag.Options = uint16(data[0]) | (uint16(data[1]) << 8)
+	if !h.Flag.IsValidMagicNumber() {
+		return errs.ErrInvalidMagicNumber
+	}
+
 	h.Flag.TimestampEncoding = data[2]
 	h.Flag.DataCompression = data[3]
 
@@ -87,7 +91,9 @@ func (h *TextHeader) Bytes() []byte {
 
 	engine := h.GetEndianEngine()
 
-	engine.PutUint16(b[0:2], h.Flag.Options)
+	// Options field is always little-endian to enable parsing the endianness flag itself
+	b[0] = byte(h.Flag.Options)
+	b[1] = byte(h.Flag.Options >> 8)
 	b[2] = h.Flag.TimestampEncoding
 	b[3] = h.Flag.DataCompression
 	// Use bitwise conversion to avoid overflow warning
@@ -122,4 +128,43 @@ func (h *TextHeader) IsValidFlags() bool {
 	}
 
 	return true
+}
+
+// ParseTextHeader parses a TextHeader from a byte slice.
+//
+// Parameters:
+//   - data: Byte slice containing header (must be at least 32 bytes)
+//
+// Returns:
+//   - TextHeader: Parsed header struct
+//   - error: ErrInvalidHeaderSize or flag validation errors
+func ParseTextHeader(data []byte) (TextHeader, error) {
+	if len(data) < HeaderSize {
+		return TextHeader{}, errs.ErrInvalidHeaderSize
+	}
+
+	h := TextHeader{}
+	if err := h.Parse(data[:HeaderSize]); err != nil {
+		return TextHeader{}, err
+	}
+
+	return h, nil
+}
+
+// IsTextBlob checks if the given data slice represents a text blob by inspecting the magic number.
+//
+// Parameters:
+//   - data: Byte slice containing the blob data (must be at least 32 bytes)
+//
+// Returns:
+//   - bool: True if the data represents a text blob, false otherwise
+func IsTextBlob(data []byte) bool {
+	if len(data) < HeaderSize {
+		return false
+	}
+
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & MagicNumberMask
+
+	return magic == MagicTextV1Opt
 }

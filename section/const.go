@@ -15,8 +15,8 @@ const (
 	MagicNumberMask  = 0xFFF0 // Mask for magic number (bits 4-15)
 
 	// Magic numbers (bits 4-15)
-	MagicFloatV1Opt = 0xEA10 // MagicFloatV1 is a version 1 magic number for float blob format.
-	MagicTextV1Opt  = 0xEB10 // MagicTextV1 is a version 1 magic number for text blob format.
+	MagicNumericV1Opt = 0xEA10 // MagicFloatV1 is a version 1 magic number for float blob format.
+	MagicTextV1Opt    = 0xEB10 // MagicTextV1 is a version 1 magic number for text blob format.
 
 	// Timestamp encodings (bits 0-3) - using types package constants
 	TimestampEncodingNRaw = uint8(format.TypeRaw)   // TimestampTypeRaw represents raw timestamps with no format.

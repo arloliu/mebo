@@ -58,6 +58,10 @@ func (h *NumericHeader) Parse(data []byte) error {
 
 	// Parse options first to determine endianness (always little-endian for Options field itself)
 	h.Flag.Options = uint16(data[0]) | (uint16(data[1]) << 8)
+	if !h.Flag.IsValidMagicNumber() {
+		return errs.ErrInvalidMagicNumber
+	}
+
 	h.Flag.EncodingType = data[2]
 	h.Flag.CompressionType = data[3]
 
@@ -83,7 +87,9 @@ func (h *NumericHeader) Bytes() []byte {
 
 	engine := h.Flag.GetEndianEngine()
 
-	engine.PutUint16(b[0:2], h.Flag.Options)
+	// Options field is always little-endian to enable parsing the endianness flag itself
+	b[0] = byte(h.Flag.Options)
+	b[1] = byte(h.Flag.Options >> 8)
 	b[2] = h.Flag.EncodingType
 	b[3] = h.Flag.CompressionType
 	// Use bitwise conversion to avoid overflow warning - timestamps are stored as-is in binary
@@ -124,4 +130,22 @@ func ParseNumericHeader(data []byte) (NumericHeader, error) {
 	}
 
 	return h, nil
+}
+
+// IsNumericBlob checks if the given data slice represents a numeric blob by inspecting the magic number.
+//
+// Parameters:
+//   - data: Byte slice containing the blob data (must be at least 32 bytes)
+//
+// Returns:
+//   - bool: True if the data represents a numeric blob, false otherwise
+func IsNumericBlob(data []byte) bool {
+	if len(data) < HeaderSize {
+		return false
+	}
+
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magicNumber := options & MagicNumberMask
+
+	return magicNumber == MagicNumericV1Opt
 }

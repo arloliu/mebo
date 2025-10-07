@@ -69,7 +69,10 @@ func (f *TextFlag) SetHasMetricNames(enabled bool) {
 	}
 }
 
-// IsLitt
+// IsValidMagicNumber checks if the magic number in the Options field is valid.
+func (f TextFlag) IsValidMagicNumber() bool {
+	return f.GetMagicNumber() == MagicTextV1Opt
+}
 
 // IsLittleEndian returns whether the data is little-endian.
 func (f TextFlag) IsLittleEndian() bool {

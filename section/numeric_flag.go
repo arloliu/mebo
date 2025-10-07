@@ -66,7 +66,7 @@ var (
 //   - NumericFlag: New flag with default settings
 func NewNumericFlag() NumericFlag {
 	flag := NumericFlag{
-		Options:         MagicFloatV1Opt,
+		Options:         MagicNumericV1Opt,
 		EncodingType:    TimestampEncodingNRaw | ValueTypeRaw,
 		CompressionType: TimestampCompressionNone | ValueCompressionZstd,
 	}
@@ -184,7 +184,7 @@ func (f *NumericFlag) SetValueCompression(compression format.CompressionType) {
 
 // IsValidMagicNumber checks if the magic number is valid.
 func (f NumericFlag) IsValidMagicNumber() bool {
-	return f.GetMagicNumber() == MagicFloatV1Opt
+	return f.GetMagicNumber() == MagicNumericV1Opt
 }
 
 // IsValidEncoding checks if the encoding types are valid.

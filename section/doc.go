@@ -163,7 +163,7 @@
 //
 // Magic numbers for format identification:
 //
-//	MagicFloatV1Opt = 0xEA10  // Numeric blob format v1
+//	MagicNumericV1Opt = 0xEA10  // Numeric blob format v1
 //	MagicTextV1Opt  = 0xEB10  // Text blob format v1
 //
 // Encoding type constants:

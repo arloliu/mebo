@@ -3,6 +3,7 @@ package errs
 import "errors"
 
 var (
+	ErrInvalidMagicNumber            = errors.New("invalid magic number in header options")
 	ErrInvalidMetricCount            = errors.New("invalid metric count, must be between 0 and 65535")
 	ErrInvalidHeaderSize             = errors.New("invalid header size, must be exactly 32 bytes")
 	ErrInvalidHeaderFlags            = errors.New("invalid header flags")
