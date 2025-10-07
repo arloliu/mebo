@@ -85,17 +85,28 @@
 //
 // Blob sets provide unified access to multiple time-ordered blobs:
 //
-//	// Create blob set from multiple blobs
-//	blobSet, err := blob.NewNumericBlobSet([]blob.NumericBlob{blob1, blob2, blob3})
+//	// Create type-specific blob sets
+//	numericSet := blob.NewNumericBlobSet([]blob.NumericBlob{blob1, blob2, blob3})
+//	textSet := blob.NewTextBlobSet([]blob.TextBlob{textBlob1, textBlob2})
+//
+//	// Create heterogeneous blob set from decoded blobs
+//	blobSet := blob.NewBlobSet(
+//	    []blob.NumericBlob{numBlob1, numBlob2},
+//	    []blob.TextBlob{textBlob1, textBlob2},
+//	)
+//
+//	// Or decode from raw byte slices
+//	blobSet, err := blob.DecodeBlobSet(rawBlob1, rawBlob2, rawBlob3)
+//	// Automatically detects and separates numeric vs text blobs
 //
 //	// Query across all blobs chronologically
-//	for dp := range blobSet.All(metricID) {
+//	for dp := range blobSet.AllNumerics(metricID) {
 //	    // Iterates through blob1, then blob2, then blob3
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
 //
-//	// Get specific blob by name access
-//	val, ok := blobSet.ValueAtByName("cpu.usage", 500)
+//	// Get specific data point by name access
+//	val, ok := blobSet.NumericValueAtByName("cpu.usage", 500)
 //
 // # Materialization
 //
