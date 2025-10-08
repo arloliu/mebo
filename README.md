@@ -675,6 +675,54 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 - ✅ **BlobSets**: Safe for concurrent reads.
 - ✅ **MaterializedBlobSets**: Safe for concurrent reads.
 
+## Stability & Versioning
+
+Mebo follows [Semantic Versioning 2.0.0](https://semver.org/):
+
+- **v1.x.x**: Current stable release with API stability guarantees
+- **MAJOR** (v2.0.0): Breaking changes (incompatible API changes)
+- **MINOR** (v1.x.0): New features (backward compatible)
+- **PATCH** (v1.0.x): Bug fixes (backward compatible)
+
+### API Stability Guarantee
+
+All public APIs in stable packages are **guaranteed backward compatible** within the same major version:
+
+**Stable Packages** (v1.x+):
+- ✅ `github.com/arloliu/mebo` (root package)
+- ✅ `github.com/arloliu/mebo/blob`
+- ✅ `github.com/arloliu/mebo/compress`
+- ✅ `github.com/arloliu/mebo/encoding`
+- ✅ `github.com/arloliu/mebo/endian`
+- ✅ `github.com/arloliu/mebo/section`
+- ✅ `github.com/arloliu/mebo/errs`
+
+**Internal Packages** (No Stability Guarantee):
+- ⚠️ `github.com/arloliu/mebo/internal/*` - Implementation details, may change
+
+### Deprecation Policy
+
+- Deprecated features are maintained for **at least 2 minor versions**
+- All deprecations are documented with alternatives in godoc
+- Breaking removals only occur in major version bumps
+
+For full details, see [API_STABILITY.md](API_STABILITY.md).
+
+### Contributing
+
+We welcome contributions! Before starting:
+
+1. Read [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines
+2. Check [API_STABILITY.md](API_STABILITY.md) for API compatibility rules
+3. Review [SECURITY.md](SECURITY.md) for security considerations
+
+**Quick Contribution Checklist:**
+- ✅ Run `make lint` (uses golangci-lint v2.5.0)
+- ✅ Run `make test` (all tests must pass)
+- ✅ Run `make coverage` (aim for >80% coverage)
+- ✅ Update documentation and examples
+- ✅ Follow Go style guidelines and conventions
+
 ## Documentation
 
 - 📚 [API Documentation](https://pkg.go.dev/github.com/arloliu/mebo)
@@ -685,13 +733,25 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 
 ## Contributing
 
-**Development Guidelines:**
+We welcome contributions of all kinds! See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
-- Follow the [Go style guide](https://golang.org/doc/effective_go.html)
-- Run `make lint` before submitting (uses golangci-lint)
-- Ensure `make test` passes
-- Add tests for new features
-- Update documentation as needed
+**Quick Start for Contributors:**
+
+1. **Fork and clone** the repository
+2. **Install tools**: Go 1.23+, golangci-lint v2.5.0
+3. **Make changes** following our coding standards
+4. **Run checks**:
+   ```bash
+   make lint    # Check code quality
+   make test    # Run all tests
+   make coverage # Check test coverage (>80%)
+   ```
+5. **Submit PR** with clear description
+
+**Development Resources:**
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Full contribution guide
+- [API_STABILITY.md](API_STABILITY.md) - API compatibility rules
+- [SECURITY.md](SECURITY.md) - Security policy and reporting
 
 ## Testing
 
