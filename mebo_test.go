@@ -1,6 +1,7 @@
 package mebo
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -253,6 +254,7 @@ func TestNewMaterializedTextBlobSet(t *testing.T) {
 	// Verify we have points from both blobs
 	val, ok = mat.ValueAt(metricID, 2)
 	require.True(t, ok)
+	require.Equal(t, "status_10", val) // First point from second blob
 }
 
 // TestNewBlobSet verifies heterogeneous blob set creation
@@ -331,7 +333,7 @@ func createTestTextBlob(t *testing.T, startTime time.Time, offset int) blob.Text
 
 	for i := range 2 {
 		ts := startTime.Add(time.Duration(i) * time.Minute)
-		status := "status_" + string(rune('0'+offset*10+i))
+		status := fmt.Sprintf("status_%d", offset*10+i)
 		err = encoder.AddDataPoint(ts.UnixMicro(), status, "")
 		require.NoError(t, err)
 	}
