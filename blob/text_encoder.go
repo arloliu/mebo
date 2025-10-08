@@ -37,6 +37,9 @@ type TextEncoder struct {
 	claimed     int    // number of data points claimed for the current metric
 	added       int    // number of data points added for the current metric
 
+	// Delta encoding state - tracks last timestamp for efficient delta calculation
+	lastTimestamp int64 // Last encoded timestamp (reset to 0 in EndMetric for each new metric)
+
 	// Data encoder state tracking
 	dataState encoderState // data encoder state (24 bytes)
 
@@ -160,6 +163,7 @@ func (e *TextEncoder) startMetric(metricID uint64, numOfDataPoints int) error {
 	e.curMetricID = metricID
 	e.claimed = numOfDataPoints
 	e.added = 0
+	e.lastTimestamp = 0 // Initialize for delta encoding
 
 	return nil
 }
@@ -264,11 +268,22 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 
 	case format.TypeDelta:
 		// Delta encoding: write varint delta from previous timestamp
-		// For first point, delta is from blob start time
-		// TODO: track last timestamp for delta calculation (currently only first point works correctly)
-		baseTs := e.header.StartTime
+		// First data point: delta from blob start time
+		// Subsequent data points: delta from previous timestamp
+		var baseTs int64
+		if e.added == 0 {
+			// First data point: calculate delta from blob start time
+			baseTs = e.header.StartTime
+		} else {
+			// Subsequent data points: calculate delta from previous timestamp
+			baseTs = e.lastTimestamp
+		}
+
 		delta := timestamp - baseTs
 		e.dataEncoder.WriteVarint(delta)
+
+		// Track timestamp for next delta calculation
+		e.lastTimestamp = timestamp
 
 	case format.TypeGorilla:
 		return fmt.Errorf("timestamp encoding %v not supported yet", format.TypeGorilla)
@@ -348,10 +363,11 @@ func (e *TextEncoder) EndMetric() error {
 	// Update state for next metric
 	e.dataState.updateLast()
 
-	// Reset current metric
+	// Reset current metric state
 	e.curMetricID = 0
 	e.claimed = 0
 	e.added = 0
+	e.lastTimestamp = 0 // Reset for next metric's delta encoding
 
 	return nil
 }

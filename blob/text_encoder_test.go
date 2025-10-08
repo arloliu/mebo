@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -617,5 +618,269 @@ func TestTextEncoder_TagWithoutEnabled(t *testing.T) {
 	// The test currently expects no error, but implementation may vary
 	if err != nil {
 		require.Contains(t, err.Error(), "tag")
+	}
+}
+
+// ==============================================================================
+// Delta Encoding Tests
+// ==============================================================================
+
+// TestTextEncoder_DeltaEncoding_MultiplePoints tests that multiple data points
+// with regular intervals encode and decode correctly using delta encoding.
+func TestTextEncoder_DeltaEncoding_MultiplePoints(t *testing.T) {
+	blobTS := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewTextEncoder(blobTS, WithTextTimestampEncoding(format.TypeDelta))
+	require.NoError(t, err)
+
+	metricName := "test.metric"
+	metricID := hash.ID(metricName)
+
+	// Add data points with regular 1-second intervals
+	timestamps := []int64{
+		blobTS.UnixMicro(),                      // Point 1: delta = 0
+		blobTS.Add(1 * time.Second).UnixMicro(), // Point 2: delta = 1s
+		blobTS.Add(2 * time.Second).UnixMicro(), // Point 3: delta = 1s
+		blobTS.Add(3 * time.Second).UnixMicro(), // Point 4: delta = 1s
+	}
+
+	err = encoder.StartMetricName(metricName, len(timestamps))
+	require.NoError(t, err)
+
+	for i, ts := range timestamps {
+		err = encoder.AddDataPoint(ts, fmt.Sprintf("value%d", i), "")
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Decode and verify
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	// Verify all data points
+	count := 0
+	for i, dp := range blob.All(metricID) {
+		require.Equal(t, timestamps[i], dp.Ts, "Timestamp mismatch at index %d", i)
+		require.Equal(t, fmt.Sprintf("value%d", i), dp.Val, "Value mismatch at index %d", i)
+		count++
+	}
+
+	require.Equal(t, len(timestamps), count, "Data point count mismatch")
+}
+
+// TestTextEncoder_DeltaEncoding_CompressionEfficiency verifies that delta encoding
+// provides at least 30% compression improvement over raw encoding for regular intervals.
+func TestTextEncoder_DeltaEncoding_CompressionEfficiency(t *testing.T) {
+	blobTS := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create two encoders: Delta vs Raw
+	encoderDelta, err := NewTextEncoder(blobTS,
+		WithTextTimestampEncoding(format.TypeDelta),
+		WithTextDataCompression(format.CompressionNone)) // No compression for fair comparison
+	require.NoError(t, err)
+
+	encoderRaw, err := NewTextEncoder(blobTS,
+		WithTextTimestampEncoding(format.TypeRaw),
+		WithTextDataCompression(format.CompressionNone))
+	require.NoError(t, err)
+
+	metricName := "test.metric"
+	numPoints := 100
+
+	// Add same data to both encoders
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = blobTS.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	// Encode with Delta
+	err = encoderDelta.StartMetricName(metricName, numPoints)
+	require.NoError(t, err)
+	for i, ts := range timestamps {
+		err = encoderDelta.AddDataPoint(ts, fmt.Sprintf("value%d", i), "")
+		require.NoError(t, err)
+	}
+	err = encoderDelta.EndMetric()
+	require.NoError(t, err)
+	dataDelta, err := encoderDelta.Finish()
+	require.NoError(t, err)
+
+	// Encode with Raw
+	err = encoderRaw.StartMetricName(metricName, numPoints)
+	require.NoError(t, err)
+	for i, ts := range timestamps {
+		err = encoderRaw.AddDataPoint(ts, fmt.Sprintf("value%d", i), "")
+		require.NoError(t, err)
+	}
+	err = encoderRaw.EndMetric()
+	require.NoError(t, err)
+	dataRaw, err := encoderRaw.Finish()
+	require.NoError(t, err)
+
+	// Delta should be smaller than Raw for regular intervals
+	compressionRatio := float64(len(dataDelta)) / float64(len(dataRaw))
+
+	t.Logf("Delta encoding size: %d bytes", len(dataDelta))
+	t.Logf("Raw encoding size: %d bytes", len(dataRaw))
+	t.Logf("Compression ratio: %.2f%%", compressionRatio*100)
+	t.Logf("Space savings: %.2f%%", (1-compressionRatio)*100)
+
+	// Delta should be at least 30% smaller for regular 1-second intervals
+	require.Less(t, compressionRatio, 0.7, "Delta encoding should be at least 30%% more efficient")
+}
+
+// TestTextEncoder_DeltaEncoding_MultipleMetrics verifies that lastTimestamp
+// resets correctly between metrics.
+func TestTextEncoder_DeltaEncoding_MultipleMetrics(t *testing.T) {
+	blobTS := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewTextEncoder(blobTS, WithTextTimestampEncoding(format.TypeDelta))
+	require.NoError(t, err)
+
+	// Metric 1
+	metric1ID := hash.ID("metric1")
+	err = encoder.StartMetricID(metric1ID, 2)
+	require.NoError(t, err)
+
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "m1_v1", "")
+	require.NoError(t, err)
+
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "m1_v2", "")
+	require.NoError(t, err)
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	// Metric 2 - should start fresh (lastTimestamp reset to 0)
+	metric2ID := hash.ID("metric2")
+	err = encoder.StartMetricID(metric2ID, 2)
+	require.NoError(t, err)
+
+	// Start from a DIFFERENT base time (should use blob start, not metric1's last timestamp)
+	baseTime2 := blobTS.Add(10 * time.Second)
+	err = encoder.AddDataPoint(baseTime2.UnixMicro(), "m2_v1", "")
+	require.NoError(t, err)
+
+	err = encoder.AddDataPoint(baseTime2.Add(time.Second).UnixMicro(), "m2_v2", "")
+	require.NoError(t, err)
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	// Verify decoding
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	// Verify metric 1
+	points1 := make([]TextDataPoint, 0, 2)
+	for _, dp := range blob.All(metric1ID) {
+		points1 = append(points1, dp)
+	}
+	require.Len(t, points1, 2)
+	require.Equal(t, blobTS.UnixMicro(), points1[0].Ts)
+	require.Equal(t, blobTS.Add(time.Second).UnixMicro(), points1[1].Ts)
+
+	// Verify metric 2
+	points2 := make([]TextDataPoint, 0, 2)
+	for _, dp := range blob.All(metric2ID) {
+		points2 = append(points2, dp)
+	}
+	require.Len(t, points2, 2)
+	require.Equal(t, baseTime2.UnixMicro(), points2[0].Ts)
+	require.Equal(t, baseTime2.Add(time.Second).UnixMicro(), points2[1].Ts)
+}
+
+// TestTextEncoder_DeltaEncoding_EdgeCases tests various edge cases including
+// single point, irregular intervals, large gaps, and negative deltas.
+func TestTextEncoder_DeltaEncoding_EdgeCases(t *testing.T) {
+	blobTS := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		timestamps []int64
+	}{
+		{
+			name: "single data point",
+			timestamps: []int64{
+				blobTS.UnixMicro(),
+			},
+		},
+		{
+			name: "irregular intervals",
+			timestamps: []int64{
+				blobTS.UnixMicro(),
+				blobTS.Add(100 * time.Millisecond).UnixMicro(),
+				blobTS.Add(5 * time.Second).UnixMicro(),
+				blobTS.Add(5*time.Second + 10*time.Millisecond).UnixMicro(),
+			},
+		},
+		{
+			name: "large time gaps",
+			timestamps: []int64{
+				blobTS.UnixMicro(),
+				blobTS.Add(1 * time.Hour).UnixMicro(),
+				blobTS.Add(2 * time.Hour).UnixMicro(),
+			},
+		},
+		{
+			name: "decreasing timestamps (out-of-order)",
+			timestamps: []int64{
+				blobTS.Add(10 * time.Second).UnixMicro(),
+				blobTS.Add(5 * time.Second).UnixMicro(),
+				blobTS.UnixMicro(),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder, err := NewTextEncoder(blobTS, WithTextTimestampEncoding(format.TypeDelta))
+			require.NoError(t, err)
+
+			metricID := hash.ID("test.metric")
+			err = encoder.StartMetricID(metricID, len(tt.timestamps))
+			require.NoError(t, err)
+
+			for i, ts := range tt.timestamps {
+				err = encoder.AddDataPoint(ts, fmt.Sprintf("value%d", i), "")
+				require.NoError(t, err)
+			}
+
+			err = encoder.EndMetric()
+			require.NoError(t, err)
+
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+
+			// Decode and verify
+			decoder, err := NewTextDecoder(data)
+			require.NoError(t, err)
+
+			blob, err := decoder.Decode()
+			require.NoError(t, err)
+
+			// Verify all timestamps match
+			points := make([]TextDataPoint, 0, len(tt.timestamps))
+			for _, dp := range blob.All(metricID) {
+				points = append(points, dp)
+			}
+			require.Len(t, points, len(tt.timestamps))
+
+			for i, expected := range tt.timestamps {
+				require.Equal(t, expected, points[i].Ts, "Timestamp mismatch at index %d", i)
+			}
+		})
 	}
 }
