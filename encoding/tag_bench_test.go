@@ -1,9 +1,13 @@
 package encoding
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/arloliu/mebo/compress"
 	"github.com/arloliu/mebo/endian"
+	"github.com/arloliu/mebo/format"
 )
 
 func BenchmarkTagEncoder_Write_Empty(b *testing.B) {
@@ -539,4 +543,242 @@ func BenchmarkTagDecoder_Allocations_At(b *testing.B) {
 	for b.Loop() {
 		_, _ = decoder.At(data, 2, len(tags))
 	}
+}
+
+// Compression benchmark tests to measure the actual compression improvement
+// of the uint8 grouped layout vs the old varint interleaved layout.
+
+// BenchmarkTagCompression_Zstd_ShortTags measures compression with short tags (typical monitoring)
+func BenchmarkTagCompression_Zstd_ShortTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionZstd, generateShortTags(150))
+}
+
+// BenchmarkTagCompression_Zstd_MediumTags measures compression with medium tags
+func BenchmarkTagCompression_Zstd_MediumTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionZstd, generateMediumTags(150))
+}
+
+// BenchmarkTagCompression_Zstd_LongTags measures compression with long tags (128-255 chars)
+func BenchmarkTagCompression_Zstd_LongTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionZstd, generateLongTags(150))
+}
+
+// BenchmarkTagCompression_Zstd_MixedTags measures compression with mixed length tags
+func BenchmarkTagCompression_Zstd_MixedTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionZstd, generateMixedTags(150))
+}
+
+// BenchmarkTagCompression_LZ4_ShortTags measures LZ4 compression with short tags
+func BenchmarkTagCompression_LZ4_ShortTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionLZ4, generateShortTags(150))
+}
+
+// BenchmarkTagCompression_LZ4_MediumTags measures LZ4 compression with medium tags
+func BenchmarkTagCompression_LZ4_MediumTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionLZ4, generateMediumTags(150))
+}
+
+// BenchmarkTagCompression_LZ4_LongTags measures LZ4 compression with long tags
+func BenchmarkTagCompression_LZ4_LongTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionLZ4, generateLongTags(150))
+}
+
+// BenchmarkTagCompression_LZ4_MixedTags measures LZ4 compression with mixed tags
+func BenchmarkTagCompression_LZ4_MixedTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionLZ4, generateMixedTags(150))
+}
+
+// BenchmarkTagCompression_S2_ShortTags measures S2 compression with short tags
+func BenchmarkTagCompression_S2_ShortTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionS2, generateShortTags(150))
+}
+
+// BenchmarkTagCompression_S2_MediumTags measures S2 compression with medium tags
+func BenchmarkTagCompression_S2_MediumTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionS2, generateMediumTags(150))
+}
+
+// BenchmarkTagCompression_S2_LongTags measures S2 compression with long tags
+func BenchmarkTagCompression_S2_LongTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionS2, generateLongTags(150))
+}
+
+// BenchmarkTagCompression_S2_MixedTags measures S2 compression with mixed tags
+func BenchmarkTagCompression_S2_MixedTags(b *testing.B) {
+	benchmarkTagCompression(b, format.CompressionS2, generateMixedTags(150))
+}
+
+// benchmarkTagCompression is the core compression benchmark function
+func benchmarkTagCompression(b *testing.B, codecType format.CompressionType, tags []string) {
+	engine := endian.GetLittleEndianEngine()
+	encoder := NewTagEncoder(engine)
+
+	// Encode tags
+	encoder.WriteSlice(tags)
+	uncompressed := encoder.Bytes()
+
+	// Get codec
+	codec, err := compress.CreateCodec(codecType, "tag")
+	if err != nil {
+		b.Fatalf("Failed to get codec: %v", err)
+	}
+
+	// Compress
+	compressed, err := codec.Compress(uncompressed)
+	if err != nil {
+		b.Fatalf("Failed to compress: %v", err)
+	}
+
+	// Calculate and report compression ratio
+	uncompressedSize := len(uncompressed)
+	compressedSize := len(compressed)
+	ratio := float64(uncompressedSize) / float64(compressedSize)
+	savings := 100.0 * (1.0 - float64(compressedSize)/float64(uncompressedSize))
+
+	b.ReportMetric(float64(uncompressedSize), "uncompressed_bytes")
+	b.ReportMetric(float64(compressedSize), "compressed_bytes")
+	b.ReportMetric(ratio, "compression_ratio")
+	b.ReportMetric(savings, "space_savings_%")
+
+	// Benchmark compression performance
+	b.ResetTimer()
+	for b.Loop() {
+		_, _ = codec.Compress(uncompressed)
+	}
+}
+
+// TestTagCompressionRatio_Report generates a detailed compression report
+// This is a test (not benchmark) that outputs a comprehensive comparison table
+func TestTagCompressionRatio_Report(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+
+	testCases := []struct {
+		name     string
+		tags     []string
+		tagCount int
+	}{
+		{"Short tags (10-20 chars)", generateShortTags(150), 150},
+		{"Medium tags (30-50 chars)", generateMediumTags(150), 150},
+		{"Long tags (150-200 chars)", generateLongTags(150), 150},
+		{"Mixed tags", generateMixedTags(150), 150},
+		{"Real monitoring tags", generateRealisticMonitoringTags(150), 150},
+	}
+
+	codecs := []format.CompressionType{
+		format.CompressionZstd,
+		format.CompressionLZ4,
+		format.CompressionS2,
+	}
+
+	fmt.Println("\n" + strings.Repeat("=", 100))
+	fmt.Println("TAG COMPRESSION ANALYSIS REPORT")
+	fmt.Println("Layout: [len1:uint8][len2:uint8]...[tag1][tag2]...")
+	fmt.Println(strings.Repeat("=", 100))
+
+	for _, tc := range testCases {
+		encoder := NewTagEncoder(engine)
+		encoder.WriteSlice(tc.tags)
+		uncompressed := encoder.Bytes()
+
+		fmt.Printf("\n%-40s (Count: %d)\n", tc.name, tc.tagCount)
+		fmt.Printf("  Uncompressed size: %d bytes\n", len(uncompressed))
+		fmt.Println("  " + strings.Repeat("-", 80))
+		fmt.Printf("  %-15s %12s %15s %18s\n", "Codec", "Compressed", "Ratio", "Space Savings")
+		fmt.Println("  " + strings.Repeat("-", 80))
+
+		for _, codecType := range codecs {
+			codec, err := compress.CreateCodec(codecType, "tag")
+			if err != nil {
+				t.Fatalf("Failed to get codec: %v", err)
+			}
+
+			compressed, err := codec.Compress(uncompressed)
+			if err != nil {
+				t.Fatalf("Failed to compress: %v", err)
+			}
+
+			ratio := float64(len(uncompressed)) / float64(len(compressed))
+			savings := 100.0 * (1.0 - float64(len(compressed))/float64(len(uncompressed)))
+
+			fmt.Printf("  %-15s %10d B %15.2fx %16.1f%%\n",
+				codecType, len(compressed), ratio, savings)
+		}
+	}
+
+	fmt.Println("\n" + strings.Repeat("=", 100))
+}
+
+// Helper functions to generate test data
+
+func generateShortTags(count int) []string { //nolint:unparam
+	tags := make([]string, count)
+	prefixes := []string{"ok", "error", "warn", "info", "debug"}
+
+	for i := range count {
+		tags[i] = fmt.Sprintf("%s_%d", prefixes[i%len(prefixes)], i)
+	}
+
+	return tags
+}
+
+func generateMediumTags(count int) []string { //nolint:unparam
+	tags := make([]string, count)
+
+	for i := range count {
+		tags[i] = fmt.Sprintf("service=api,region=us-west-%d,env=prod,version=v1.2.%d",
+			i%5, i%10)
+	}
+
+	return tags
+}
+
+func generateLongTags(count int) []string { //nolint:unparam
+	tags := make([]string, count)
+	base := "host=server.example.com,datacenter=us-west-2a,cluster=prod-k8s,namespace=monitoring,pod=metrics-collector,container=exporter,app=prometheus,version=2.45.0,env=production"
+
+	for i := range count {
+		tags[i] = fmt.Sprintf("%s,instance=%d", base, i)
+	}
+
+	return tags
+}
+
+func generateMixedTags(count int) []string { //nolint:unparam
+	tags := make([]string, count)
+
+	for i := range count {
+		switch i % 4 {
+		case 0:
+			tags[i] = "ok"
+		case 1:
+			tags[i] = "service=api,region=us-west"
+		case 2:
+			tags[i] = "host=server.example.com,datacenter=us-west-2a,env=production"
+		case 3:
+			tags[i] = string(make([]byte, 150)) // Long tag
+			for j := range 150 {
+				tags[i] = tags[i][:j] + "x" + tags[i][j+1:]
+			}
+		}
+	}
+
+	return tags
+}
+
+func generateRealisticMonitoringTags(count int) []string {
+	tags := make([]string, count)
+
+	services := []string{"api", "web", "worker", "cache", "db"}
+	regions := []string{"us-west-1", "us-east-1", "eu-west-1"}
+	envs := []string{"prod", "staging", "dev"}
+
+	for i := range count {
+		tags[i] = fmt.Sprintf("service=%s,region=%s,env=%s,host=host-%d",
+			services[i%len(services)],
+			regions[i%len(regions)],
+			envs[i%len(envs)],
+			i)
+	}
+
+	return tags
 }
