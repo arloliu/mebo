@@ -4,6 +4,22 @@
 // binary format. It provides specialized encoders and decoders for timestamps, numeric values,
 // text values, and tags.
 //
+// # Usage Guidance
+//
+// This package is designed for advanced use cases and internal implementation details.
+// Most users should use the high-level blob package instead, which provides:
+//   - Automatic encoding selection based on data patterns
+//   - Integrated compression and formatting
+//   - Simpler API for common operations
+//
+// Use this package directly only when:
+//   - Building custom storage formats that integrate with mebo
+//   - Implementing specialized encoding strategies
+//   - Optimizing for very specific data patterns
+//   - Understanding mebo's internal encoding mechanisms
+//
+// For typical use cases, see: github.com/arlolib/mebo/blob
+//
 // # Overview
 //
 // Mebo uses columnar storage where timestamps, values, and tags are encoded separately using
