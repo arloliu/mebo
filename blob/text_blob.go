@@ -404,26 +404,35 @@ func (b TextBlob) valueAtFromEntry(entry section.TextIndexEntry, index int) (str
 		}
 		currentOffset += n
 
-		// Decode value
-		val, n, err := decodeText(dataBytes, currentOffset)
-		if err != nil {
+		// NEW LAYOUT: Read grouped length bytes first
+		// Layout is now [LEN_V][LEN_T][VAL][TAG] instead of [LEN_V][VAL][LEN_T][TAG]
+		if currentOffset >= len(dataBytes) {
 			return "", false
 		}
-		currentOffset += n
+		lenV := int(dataBytes[currentOffset])
+		currentOffset++
 
-		// If this is our target index, return the value
+		lenT := 0
+		if hasTags {
+			if currentOffset >= len(dataBytes) {
+				return "", false
+			}
+			lenT = int(dataBytes[currentOffset])
+			currentOffset++
+		}
+
+		// If this is our target index, read and return the value
 		if i == index {
+			if currentOffset+lenV > len(dataBytes) {
+				return "", false
+			}
+			val := string(dataBytes[currentOffset : currentOffset+lenV])
+
 			return val, true
 		}
 
-		// Skip tag if present
-		if hasTags {
-			_, n, err := decodeText(dataBytes, currentOffset)
-			if err != nil {
-				return "", false
-			}
-			currentOffset += n
-		}
+		// Skip both value and tag data
+		currentOffset += lenV + lenT
 	}
 
 	return "", false
@@ -458,21 +467,24 @@ func (b TextBlob) timestampAtFromEntry(entry section.TextIndexEntry, index int) 
 			return ts, true
 		}
 
-		// Skip value
-		_, n, err = decodeText(dataBytes, currentOffset)
-		if err != nil {
+		// NEW LAYOUT: Read grouped length bytes
+		if currentOffset >= len(dataBytes) {
 			return 0, false
 		}
-		currentOffset += n
+		lenV := int(dataBytes[currentOffset])
+		currentOffset++
 
-		// Skip tag if present
+		lenT := 0
 		if hasTags {
-			_, n, err := decodeText(dataBytes, currentOffset)
-			if err != nil {
+			if currentOffset >= len(dataBytes) {
 				return 0, false
 			}
-			currentOffset += n
+			lenT = int(dataBytes[currentOffset])
+			currentOffset++
 		}
+
+		// Skip both value and tag data
+		currentOffset += lenV + lenT
 	}
 
 	return 0, false
@@ -501,24 +513,29 @@ func (b TextBlob) tagAtFromEntry(entry section.TextIndexEntry, index int) (strin
 		}
 		currentOffset += n
 
-		// Skip value
-		_, n, err = decodeText(dataBytes, currentOffset)
-		if err != nil {
+		// NEW LAYOUT: Read grouped length bytes
+		if currentOffset+1 >= len(dataBytes) {
 			return "", false
 		}
-		currentOffset += n
+		lenV := int(dataBytes[currentOffset])
+		lenT := int(dataBytes[currentOffset+1])
+		currentOffset += 2
 
-		// Decode tag
-		tag, n, err := decodeText(dataBytes, currentOffset)
-		if err != nil {
-			return "", false
-		}
-		currentOffset += n
+		// Skip value data
+		currentOffset += lenV
 
-		// If this is our target index, return the tag
+		// If this is our target index, read and return the tag
 		if i == index {
+			if currentOffset+lenT > len(dataBytes) {
+				return "", false
+			}
+			tag := string(dataBytes[currentOffset : currentOffset+lenT])
+
 			return tag, true
 		}
+
+		// Skip tag data
+		currentOffset += lenT
 	}
 
 	return "", false
@@ -541,21 +558,37 @@ func (b TextBlob) decodeDataPoints(dataBytes []byte, count int) iter.Seq2[int, T
 			}
 			offset += n
 
-			// Decode value
-			val, n, err := decodeText(dataBytes, offset)
-			if err != nil {
+			// NEW LAYOUT: Read grouped length bytes first
+			if offset >= len(dataBytes) {
 				return
 			}
-			offset += n
+			lenV := int(dataBytes[offset])
+			offset++
 
-			// Decode tag if enabled
-			var tag string
+			lenT := 0
 			if b.flag.HasTag() {
-				tag, n, err = decodeText(dataBytes, offset)
-				if err != nil {
+				if offset >= len(dataBytes) {
 					return
 				}
-				offset += n
+				lenT = int(dataBytes[offset])
+				offset++
+			}
+
+			// Read value
+			if offset+lenV > len(dataBytes) {
+				return
+			}
+			val := string(dataBytes[offset : offset+lenV])
+			offset += lenV
+
+			// Read tag if enabled
+			var tag string
+			if b.flag.HasTag() {
+				if offset+lenT > len(dataBytes) {
+					return
+				}
+				tag = string(dataBytes[offset : offset+lenT])
+				offset += lenT
 			}
 
 			if !yield(i, TextDataPoint{Ts: ts, Val: val, Tag: tag}) {
@@ -580,21 +613,24 @@ func (b TextBlob) decodeTimestamps(dataBytes []byte, count int) iter.Seq[int64] 
 			}
 			offset += n
 
-			// Skip value
-			_, n, err = decodeText(dataBytes, offset)
-			if err != nil {
+			// NEW LAYOUT: Read grouped length bytes
+			if offset >= len(dataBytes) {
 				return
 			}
-			offset += n
+			lenV := int(dataBytes[offset])
+			offset++
 
-			// Skip tag if enabled
+			lenT := 0
 			if b.flag.HasTag() {
-				_, n, err = decodeText(dataBytes, offset)
-				if err != nil {
+				if offset >= len(dataBytes) {
 					return
 				}
-				offset += n
+				lenT = int(dataBytes[offset])
+				offset++
 			}
+
+			// Skip both value and tag data
+			offset += lenV + lenT
 
 			if !yield(ts) {
 				return
@@ -618,21 +654,31 @@ func (b TextBlob) decodeValues(dataBytes []byte, count int) iter.Seq[string] {
 			}
 			offset += n
 
-			// Decode value
-			val, n, err := decodeText(dataBytes, offset)
-			if err != nil {
+			// NEW LAYOUT: Read grouped length bytes
+			if offset >= len(dataBytes) {
 				return
 			}
-			offset += n
+			lenV := int(dataBytes[offset])
+			offset++
 
-			// Skip tag if enabled
+			lenT := 0
 			if b.flag.HasTag() {
-				_, n, err = decodeText(dataBytes, offset)
-				if err != nil {
+				if offset >= len(dataBytes) {
 					return
 				}
-				offset += n
+				lenT = int(dataBytes[offset])
+				offset++
 			}
+
+			// Read value
+			if offset+lenV > len(dataBytes) {
+				return
+			}
+			val := string(dataBytes[offset : offset+lenV])
+			offset += lenV
+
+			// Skip tag data
+			offset += lenT
 
 			if !yield(val) {
 				return
@@ -656,19 +702,23 @@ func (b TextBlob) decodeTags(dataBytes []byte, count int) iter.Seq[string] {
 			}
 			offset += n
 
-			// Skip value
-			_, n, err = decodeText(dataBytes, offset)
-			if err != nil {
+			// NEW LAYOUT: Read grouped length bytes
+			if offset+1 >= len(dataBytes) {
 				return
 			}
-			offset += n
+			lenV := int(dataBytes[offset])
+			lenT := int(dataBytes[offset+1])
+			offset += 2
 
-			// Decode tag
-			tag, n, err := decodeText(dataBytes, offset)
-			if err != nil {
+			// Skip value data
+			offset += lenV
+
+			// Read tag
+			if offset+lenT > len(dataBytes) {
 				return
 			}
-			offset += n
+			tag := string(dataBytes[offset : offset+lenT])
+			offset += lenT
 
 			if !yield(tag) {
 				return
@@ -716,28 +766,6 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 	default:
 		return 0, 0, fmt.Errorf("unsupported timestamp encoding: %v", b.tsEncType)
 	}
-}
-
-// decodeText decodes a length-prefixed text string at the given offset.
-// Returns the string, bytes consumed, and any error.
-func decodeText(data []byte, offset int) (string, int, error) {
-	if offset >= len(data) {
-		return "", 0, fmt.Errorf("offset out of bounds")
-	}
-
-	// Read length byte
-	length := int(data[offset])
-	offset++
-
-	// Check if we have enough data
-	if offset+length > len(data) {
-		return "", 0, fmt.Errorf("insufficient data for text value")
-	}
-
-	// Extract string
-	text := string(data[offset : offset+length])
-
-	return text, 1 + length, nil
 }
 
 // decodeVarint decodes a varint from the byte slice and returns the value and bytes consumed.

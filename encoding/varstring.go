@@ -146,6 +146,18 @@ func (e *VarStringEncoder) WriteVarint(val int64) {
 	e.buf.MustWrite([]byte{byte(uval)})
 }
 
+// WriteRaw writes raw bytes directly to the buffer without any length prefix.
+//
+// This method is used when the caller needs to write pre-formatted data
+// or manage length prefixes separately. Useful for optimized layouts where
+// length bytes are grouped together before the actual data.
+//
+// Parameters:
+//   - data: Raw byte slice to write directly to buffer
+func (e *VarStringEncoder) WriteRaw(data []byte) {
+	e.buf.MustWrite(data)
+}
+
 // Bytes returns the encoded data as a byte slice.
 //
 // The returned slice shares the underlying buffer with the encoder.

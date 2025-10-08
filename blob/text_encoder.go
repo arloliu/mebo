@@ -281,14 +281,30 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 		}
 	}
 
-	// Encode value string (uint8 length + data)
-	if err := e.dataEncoder.Write(value); err != nil {
-		return fmt.Errorf("failed to encode value: %w", err)
-	} // Encode tag if enabled
+	// Validate lengths before encoding
+	if len(value) > encoding.MaxTextLength {
+		return fmt.Errorf("value length %d exceeds maximum %d", len(value), encoding.MaxTextLength)
+	}
+	if e.header.Flag.HasTag() && len(tag) > encoding.MaxTextLength {
+		return fmt.Errorf("tag length %d exceeds maximum %d", len(tag), encoding.MaxTextLength)
+	}
+
+	// NEW LAYOUT: Group length bytes together before data
+	// Write [LEN_V][LEN_T] (if tags enabled), then [VAL][TAG]
+	// This improves cache locality during random access operations
+
+	// Write all length bytes together
+	e.buf.Reset()
+	e.buf.MustWrite([]byte{byte(len(value))})
 	if e.header.Flag.HasTag() {
-		if err := e.dataEncoder.Write(tag); err != nil {
-			return fmt.Errorf("failed to encode tag: %w", err)
-		}
+		e.buf.MustWrite([]byte{byte(len(tag))})
+	}
+	e.dataEncoder.WriteRaw(e.buf.Bytes())
+
+	// Write all data together
+	e.dataEncoder.WriteRaw([]byte(value))
+	if e.header.Flag.HasTag() {
+		e.dataEncoder.WriteRaw([]byte(tag))
 	}
 
 	e.added++
