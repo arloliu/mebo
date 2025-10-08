@@ -553,6 +553,225 @@ func TestNumericBlob_All(t *testing.T) {
 	})
 }
 
+// TestNumericBlob_All_DeltaGorilla tests the optimized Delta+Gorilla path (default configuration).
+func TestNumericBlob_All_DeltaGorilla(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	metricName := "test.metric"
+	metricID := hash.ID(metricName)
+
+	// Test data - realistic time-series pattern
+	timestamps := []int64{
+		startTime.UnixMicro(),
+		startTime.Add(1 * time.Minute).UnixMicro(),
+		startTime.Add(2 * time.Minute).UnixMicro(),
+		startTime.Add(3 * time.Minute).UnixMicro(),
+		startTime.Add(4 * time.Minute).UnixMicro(),
+		startTime.Add(5 * time.Minute).UnixMicro(),
+		startTime.Add(6 * time.Minute).UnixMicro(),
+		startTime.Add(7 * time.Minute).UnixMicro(),
+		startTime.Add(8 * time.Minute).UnixMicro(),
+		startTime.Add(9 * time.Minute).UnixMicro(),
+	}
+	// Gorilla-friendly values (similar consecutive values for good compression)
+	values := []float64{100.1, 100.2, 100.15, 100.18, 100.22, 100.19, 100.21, 100.17, 100.23, 100.2}
+
+	t.Run("TagsDisabled", func(t *testing.T) {
+		// Create encoder with Delta+Gorilla (default configuration)
+		encoder, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		)
+		require.NoError(t, err)
+
+		// Encode data
+		err = encoder.StartMetricID(metricID, len(timestamps))
+		require.NoError(t, err)
+
+		for i := range timestamps {
+			err = encoder.AddDataPoint(timestamps[i], values[i], "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		// Decode and test All()
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		// Verify the optimized path is being used
+		require.Equal(t, format.TypeDelta, blob.tsEncType, "should use delta timestamp encoding")
+		require.Equal(t, format.TypeGorilla, blob.valEncType, "should use gorilla value encoding")
+		require.False(t, blob.flag.HasTag(), "tags should be disabled")
+
+		// Collect all data points
+		var gotIndices []int
+		var gotTimestamps []int64
+		var gotValues []float64
+		var gotTags []string
+		for idx, dp := range blob.All(metricID) {
+			gotIndices = append(gotIndices, idx)
+			gotTimestamps = append(gotTimestamps, dp.Ts)
+			gotValues = append(gotValues, dp.Val)
+			gotTags = append(gotTags, dp.Tag)
+		}
+
+		// Verify correctness
+		require.Len(t, gotIndices, len(timestamps), "should return correct number of data points")
+		for i := range gotIndices {
+			require.Equal(t, i, gotIndices[i], "indices should be sequential from 0")
+		}
+		require.Equal(t, timestamps, gotTimestamps, "timestamps should match")
+		require.Equal(t, values, gotValues, "values should match")
+		for _, tag := range gotTags {
+			require.Empty(t, tag, "tags should be empty when disabled")
+		}
+	})
+
+	t.Run("TagsEnabled", func(t *testing.T) {
+		// Create encoder with Delta+Gorilla + tags enabled
+		encoder, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+			WithTagsEnabled(true),
+		)
+		require.NoError(t, err)
+
+		tags := []string{"tag0", "tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9"}
+
+		// Encode data with tags
+		err = encoder.StartMetricID(metricID, len(timestamps))
+		require.NoError(t, err)
+
+		for i := range timestamps {
+			err = encoder.AddDataPoint(timestamps[i], values[i], tags[i])
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		// Decode and test All()
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		// Verify tags are enabled
+		require.True(t, blob.flag.HasTag(), "tags should be enabled")
+
+		// Collect all data points
+		var gotIndices []int
+		var gotTimestamps []int64
+		var gotValues []float64
+		var gotTags []string
+		for idx, dp := range blob.All(metricID) {
+			gotIndices = append(gotIndices, idx)
+			gotTimestamps = append(gotTimestamps, dp.Ts)
+			gotValues = append(gotValues, dp.Val)
+			gotTags = append(gotTags, dp.Tag)
+		}
+
+		// Verify correctness
+		require.Len(t, gotIndices, len(timestamps), "should return correct number of data points")
+		for i := range gotIndices {
+			require.Equal(t, i, gotIndices[i], "indices should be sequential from 0")
+		}
+		require.Equal(t, timestamps, gotTimestamps, "timestamps should match")
+		require.Equal(t, values, gotValues, "values should match")
+		require.Equal(t, tags, gotTags, "tags should match")
+	})
+
+	t.Run("EarlyBreak", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		)
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(metricID, len(timestamps))
+		require.NoError(t, err)
+
+		for i := range timestamps {
+			err = encoder.AddDataPoint(timestamps[i], values[i], "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		// Test early stop by breaking after 5 items
+		var gotTimestamps []int64
+		var gotValues []float64
+		for _, dp := range blob.All(metricID) {
+			gotTimestamps = append(gotTimestamps, dp.Ts)
+			gotValues = append(gotValues, dp.Val)
+			if len(gotTimestamps) >= 5 {
+				break
+			}
+		}
+
+		require.Equal(t, 5, len(gotTimestamps), "should stop after 5 items")
+		require.Equal(t, timestamps[:5], gotTimestamps, "partial timestamps should match")
+		require.Equal(t, values[:5], gotValues, "partial values should match")
+	})
+
+	t.Run("SingleDataPoint", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		)
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(metricID, 1)
+		require.NoError(t, err)
+
+		err = encoder.AddDataPoint(timestamps[0], values[0], "")
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		// Verify single point
+		count := 0
+		for idx, dp := range blob.All(metricID) {
+			require.Equal(t, 0, idx, "index should be 0 for single point")
+			require.Equal(t, timestamps[0], dp.Ts, "timestamp should match")
+			require.Equal(t, values[0], dp.Val, "value should match")
+			count++
+		}
+		require.Equal(t, 1, count, "should return exactly 1 data point")
+	})
+}
+
 func TestNumericBlob_All_MultipleMetrics(t *testing.T) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 

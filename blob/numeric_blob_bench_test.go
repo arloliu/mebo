@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 )
 
@@ -367,4 +368,121 @@ func BenchmarkNumericBlob_All(b *testing.B) {
 			}
 		}
 	})
+}
+
+// BenchmarkNumericBlob_All_EncodingCombinations benchmarks all encoding combinations
+// to verify performance improvements from optimized paths.
+func BenchmarkNumericBlob_All_EncodingCombinations(b *testing.B) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	metricName := "test.metric"
+	metricID := hash.ID(metricName)
+
+	// Test different data sizes
+	sizes := []struct {
+		name  string
+		count int
+	}{
+		{"10pts", 10},
+		{"100pts", 100},
+		{"1000pts", 1000},
+	}
+
+	// Test all encoding combinations
+	encodings := []struct {
+		name   string
+		tsEnc  NumericEncoderOption
+		valEnc NumericEncoderOption
+	}{
+		{
+			name:   "RawRaw",
+			tsEnc:  WithTimestampEncoding(format.TypeRaw),
+			valEnc: WithValueEncoding(format.TypeRaw),
+		},
+		{
+			name:   "RawGorilla",
+			tsEnc:  WithTimestampEncoding(format.TypeRaw),
+			valEnc: WithValueEncoding(format.TypeGorilla),
+		},
+		{
+			name:   "DeltaRaw",
+			tsEnc:  WithTimestampEncoding(format.TypeDelta),
+			valEnc: WithValueEncoding(format.TypeRaw),
+		},
+		{
+			name:   "DeltaGorilla",
+			tsEnc:  WithTimestampEncoding(format.TypeDelta),
+			valEnc: WithValueEncoding(format.TypeGorilla),
+		},
+	}
+
+	for _, enc := range encodings {
+		for _, size := range sizes {
+			b.Run(enc.name+"/"+size.name, func(b *testing.B) {
+				// Generate test data
+				timestamps := make([]int64, size.count)
+				values := make([]float64, size.count)
+				baseTime := startTime.UnixMicro()
+				for i := range size.count {
+					timestamps[i] = baseTime + int64(i)*60*1000000 // 1 minute intervals
+					values[i] = 100.0 + float64(i)*0.1             // Slowly increasing values (good for Gorilla)
+				}
+
+				// Create encoder with specific encoding
+				encoder, err := NewNumericEncoder(startTime, enc.tsEnc, enc.valEnc)
+				if err != nil {
+					b.Fatalf("Failed to create encoder: %v", err)
+				}
+
+				// Encode data
+				err = encoder.StartMetricID(metricID, len(timestamps))
+				if err != nil {
+					b.Fatalf("Failed to start metric: %v", err)
+				}
+
+				for i := range timestamps {
+					err = encoder.AddDataPoint(timestamps[i], values[i], "")
+					if err != nil {
+						b.Fatalf("Failed to add data point: %v", err)
+					}
+				}
+
+				err = encoder.EndMetric()
+				if err != nil {
+					b.Fatalf("Failed to end metric: %v", err)
+				}
+
+				data, err := encoder.Finish()
+				if err != nil {
+					b.Fatalf("Failed to finish: %v", err)
+				}
+
+				// Decode
+				decoder, err := NewNumericDecoder(data)
+				if err != nil {
+					b.Fatalf("Failed to create decoder: %v", err)
+				}
+
+				blob, err := decoder.Decode()
+				if err != nil {
+					b.Fatalf("Failed to decode: %v", err)
+				}
+
+				// Benchmark All() iteration
+				b.ReportAllocs()
+				b.ResetTimer()
+
+				for b.Loop() {
+					count := 0
+					for _, dp := range blob.All(metricID) {
+						_ = dp.Ts
+						_ = dp.Val
+						count++
+					}
+					if count != size.count {
+						b.Fatalf("wrong count: got %d, want %d", count, size.count)
+					}
+				}
+			})
+		}
+	}
 }
