@@ -217,17 +217,19 @@ func TestTimestampDeltaEncoder_Finish(t *testing.T) {
 	require.Equal(t, 2, encoder.Len())
 	require.Greater(t, encoder.Size(), 0)
 
-	// Finish should clear everything
-	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
-	require.Equal(t, 0, encoder.Size())
-	require.Empty(t, encoder.Bytes())
+	// Get data BEFORE Finish
+	data := encoder.Bytes()
+	require.NotEmpty(t, data)
 
-	// Should be able to write new data after finish
-	newTimestamps := []int64{1672531300000000}
-	encoder.WriteSlice(newTimestamps)
-	require.Equal(t, 1, encoder.Len())
-	require.Greater(t, encoder.Size(), 0)
+	// Finish should return buffer to pool and make encoder unusable
+	encoder.Finish()
+	require.Equal(t, 0, encoder.Len()) // Len() doesn't access buffer, so it's safe
+
+	// Attempting to access buffer-dependent methods after Finish should panic
+	require.Panics(t, func() { encoder.Size() })
+	require.Panics(t, func() { encoder.Bytes() })
+	require.Panics(t, func() { encoder.Write(1672531202000000) })
+	require.Panics(t, func() { encoder.WriteSlice([]int64{1672531202000000}) })
 }
 
 func TestTimestampDeltaEncoder_MixedWriteAndWriteSlice(t *testing.T) {
@@ -725,162 +727,7 @@ func TestTimestampDeltaDecoder_At_ComparisonWithAll(t *testing.T) {
 	}
 }
 
-// === Encoder Reuse Tests ===
-// These tests verify that encoders can be safely reused after Finish()
-
-// TestTimestampDeltaEncoder_ReuseAfterFinish verifies encoder can be reused after Finish()
-func TestTimestampDeltaEncoder_ReuseAfterFinish(t *testing.T) {
-	encoder := NewTimestampDeltaEncoder()
-	decoder := NewTimestampDeltaDecoder()
-
-	// First encoding session
-	firstTimestamps := []int64{1000000, 2000000, 3000000}
-	encoder.WriteSlice(firstTimestamps)
-	require.Equal(t, 3, encoder.Len())
-	firstData := make([]byte, len(encoder.Bytes()))
-	copy(firstData, encoder.Bytes())
-
-	// Verify first encoding
-	decoded := make([]int64, 0, 3)
-	for ts := range decoder.All(firstData, 3) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, firstTimestamps, decoded)
-
-	// Finish to prepare for reuse
-	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
-	require.Empty(t, encoder.Bytes())
-
-	// Second encoding session - should work correctly
-	secondTimestamps := []int64{4000000, 5000000, 6000000, 7000000}
-	encoder.WriteSlice(secondTimestamps)
-	require.Equal(t, 4, encoder.Len())
-	secondData := encoder.Bytes()
-
-	// Verify second encoding is independent and correct
-	decoded = decoded[:0]
-	for ts := range decoder.All(secondData, 4) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, secondTimestamps, decoded)
-
-	// Third session - verify continued reuse
-	encoder.Finish()
-	thirdTimestamps := []int64{8000000}
-	encoder.Write(thirdTimestamps[0])
-	require.Equal(t, 1, encoder.Len())
-	thirdData := encoder.Bytes()
-
-	// Verify third encoding
-	decoded = decoded[:0]
-	for ts := range decoder.All(thirdData, 1) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, thirdTimestamps, decoded)
-}
-
-// TestTimestampDeltaEncoder_MultipleReuseCycles tests many consecutive reuse cycles
-func TestTimestampDeltaEncoder_MultipleReuseCycles(t *testing.T) {
-	encoder := NewTimestampDeltaEncoder()
-	decoder := NewTimestampDeltaDecoder()
-
-	const numCycles = 10
-
-	for cycle := range numCycles {
-		// Encode timestamps with sequential deltas
-		base := int64(cycle) * 1000000
-		timestamps := []int64{base, base + 100000}
-		encoder.WriteSlice(timestamps)
-
-		// Verify encoding
-		require.Equal(t, 2, encoder.Len())
-		data := encoder.Bytes()
-		require.NotEmpty(t, data)
-
-		decoded := make([]int64, 0, 2)
-		for ts := range decoder.All(data, 2) {
-			decoded = append(decoded, ts)
-		}
-		require.Equal(t, timestamps, decoded, "Cycle %d failed", cycle)
-
-		// Prepare for next cycle
-		encoder.Finish()
-		require.Equal(t, 0, encoder.Len())
-		require.Empty(t, encoder.Bytes())
-	}
-}
-
-// TestTimestampDeltaEncoder_ReuseWithMixedOperations tests reuse with Write and WriteSlice
-func TestTimestampDeltaEncoder_ReuseWithMixedOperations(t *testing.T) {
-	encoder := NewTimestampDeltaEncoder()
-	decoder := NewTimestampDeltaDecoder()
-
-	// First session: WriteSlice
-	encoder.WriteSlice([]int64{1000000, 2000000})
-	require.Equal(t, 2, encoder.Len())
-	encoder.Finish()
-
-	// Second session: Write
-	encoder.Write(3000000)
-	encoder.Write(4000000)
-	require.Equal(t, 2, encoder.Len())
-	data := encoder.Bytes()
-
-	decoded := make([]int64, 0, 2)
-	for ts := range decoder.All(data, 2) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, []int64{3000000, 4000000}, decoded)
-	encoder.Finish()
-
-	// Third session: Mixed
-	encoder.Write(5000000)
-	encoder.WriteSlice([]int64{6000000, 7000000})
-	require.Equal(t, 3, encoder.Len())
-	data = encoder.Bytes()
-
-	decoded = decoded[:0]
-	for ts := range decoder.All(data, 3) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, []int64{5000000, 6000000, 7000000}, decoded)
-}
-
-// TestTimestampDeltaEncoder_ReuseStateReset verifies state is properly reset after Finish()
-func TestTimestampDeltaEncoder_ReuseStateReset(t *testing.T) {
-	encoder := NewTimestampDeltaEncoder()
-	decoder := NewTimestampDeltaDecoder()
-
-	// First session with specific timestamp sequence
-	encoder.Write(1000000)
-	encoder.Write(1001000) // Delta: 1000
-	encoder.Write(1002000) // Delta: 1000
-	firstData := make([]byte, len(encoder.Bytes()))
-	copy(firstData, encoder.Bytes())
-
-	// Verify first encoding uses deltas
-	decoded := make([]int64, 0, 3)
-	for ts := range decoder.All(firstData, 3) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, []int64{1000000, 1001000, 1002000}, decoded)
-
-	// Finish and start new session with different base
-	encoder.Finish()
-
-	// Second session should NOT use previous timestamp as reference
-	encoder.Write(5000000) // Should encode as absolute, not delta from 1002000
-	encoder.Write(5001000) // Should be delta from 5000000
-	secondData := encoder.Bytes()
-
-	// Verify second encoding starts fresh
-	decoded = decoded[:0]
-	for ts := range decoder.All(secondData, 2) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, []int64{5000000, 5001000}, decoded)
-}
+// === Decoder Performance Tests ===
 
 // === Size Efficiency Tests ===
 

@@ -16,9 +16,19 @@ func TestNumericGorillaEncoder_SingleValue(t *testing.T) {
 	require.Equal(t, 1, encoder.Len())
 	require.Greater(t, encoder.Size(), 0)
 
+	// Get data before Finish
+	data := encoder.Bytes()
+	require.Greater(t, len(data), 0)
+
 	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
-	require.Equal(t, 0, encoder.Size())
+
+	// After Finish(), encoder should panic on buffer-dependent method calls
+	// Len() still works because it doesn't access the buffer
+	require.Equal(t, 1, encoder.Len())
+	require.Panics(t, func() { encoder.Size() })
+	require.Panics(t, func() { encoder.Bytes() })
+	require.Panics(t, func() { encoder.Write(1.0) })
+	require.Panics(t, func() { encoder.WriteSlice([]float64{1.0}) })
 }
 
 func TestNumericGorillaEncoder_UnchangedValues(t *testing.T) {
@@ -33,14 +43,14 @@ func TestNumericGorillaEncoder_UnchangedValues(t *testing.T) {
 
 	require.Equal(t, 4, encoder.Len())
 
-	// Flush pending bits
-	encoder.Finish()
-
+	// Get data before Finish
 	// First value takes 64 bits (8 bytes)
 	// Next 3 values take 1 bit each (3 bits total)
 	// Total: 64 + 3 = 67 bits = 9 bytes (rounded up)
 	data := encoder.Bytes()
 	require.LessOrEqual(t, len(data), 9, "Compressed size should be small for unchanged values")
+
+	encoder.Finish()
 }
 
 func TestNumericGorillaEncoder_SimilarValues(t *testing.T) {
@@ -54,12 +64,12 @@ func TestNumericGorillaEncoder_SimilarValues(t *testing.T) {
 
 	require.Equal(t, 5, encoder.Len())
 
-	// Flush pending bits
-	encoder.Finish()
-
+	// Get data before Finish
 	data := encoder.Bytes()
 	// Compressed size should be much less than raw (5 * 8 = 40 bytes)
 	require.Less(t, len(data), 40, "Similar values should compress well")
+
+	encoder.Finish()
 }
 
 func TestNumericGorillaEncoder_WriteSlice(t *testing.T) {
@@ -71,7 +81,8 @@ func TestNumericGorillaEncoder_WriteSlice(t *testing.T) {
 	require.Equal(t, 5, encoder.Len())
 
 	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
+	// Len() still works after Finish
+	require.Equal(t, 5, encoder.Len())
 }
 
 func TestNumericGorillaEncoder_EmptySlice(t *testing.T) {

@@ -49,6 +49,10 @@ func NewTagEncoder(engine endian.EndianEngine) *TagEncoder {
 // Returns:
 //   - []byte: Encoded byte slice containing all written tags
 func (e *TagEncoder) Bytes() []byte {
+	if e.buf == nil {
+		panic("encoder already finished - cannot access bytes after Finish()")
+	}
+
 	return e.buf.Bytes()
 }
 
@@ -72,6 +76,10 @@ func (e *TagEncoder) Len() int {
 // Returns:
 //   - int: Total bytes written to internal buffer since last Finish
 func (e *TagEncoder) Size() int {
+	if e.buf == nil {
+		panic("encoder already finished - cannot access size after Finish()")
+	}
+
 	return e.buf.Len()
 }
 
@@ -84,18 +92,25 @@ func (e *TagEncoder) Reset() {
 	e.count = 0
 }
 
-// Finish finalizes the encoding process.
+// Finish finalizes the encoding process and returns the buffer to the pool.
 //
-// This method clears the internal buffer and resets the encoder state, preparing it for a new encoding session.
-// After calling Finish, the encoder behaves as if it was newly created.
+// This method:
+//  1. Returns the byte buffer to the pool
+//  2. Sets the buffer to nil, making the encoder unusable
 //
-// The Len(), Size() and Bytes() will return zero values after calling Finish.
-// The caller can continue to retrieve the accumulated data information using Len(), Size() and Bytes()
-// until Finish() is called.
+// IMPORTANT: This encoder becomes single-use after calling Finish().
+// Any subsequent calls to Write(), WriteSlice(), Bytes(), or Size() will panic.
+// Create a new encoder if you need to encode more data.
+//
+// The caller should retrieve the encoded data using Bytes() BEFORE calling Finish(),
+// as the buffer will be returned to the pool and the encoder will become unusable.
 func (e *TagEncoder) Finish() {
+	if e.buf == nil {
+		return // Already finished
+	}
+
 	pool.PutBlobBuffer(e.buf)
-	e.buf = pool.GetBlobBuffer()
-	e.count = 0
+	e.buf = nil
 }
 
 // Write encodes a single string tag in variable-length format.
@@ -107,6 +122,10 @@ func (e *TagEncoder) Finish() {
 // Parameters:
 //   - tag: The string tag to encode
 func (e *TagEncoder) Write(tag string) {
+	if e.buf == nil {
+		panic("encoder already finished - cannot write tags after Finish()")
+	}
+
 	// Fast path for empty tags: just write a zero-length varint
 	if len(tag) == 0 {
 		e.buf.MustWrite([]byte{0})
@@ -140,6 +159,10 @@ func (e *TagEncoder) Write(tag string) {
 // Parameters:
 //   - tags: Slice of string tags to encode
 func (e *TagEncoder) WriteSlice(tags []string) {
+	if e.buf == nil {
+		panic("encoder already finished - cannot write tags after Finish()")
+	}
+
 	if len(tags) == 0 {
 		return
 	}

@@ -62,9 +62,15 @@ func NewNumericRawEncoder(engine endian.EndianEngine) *NumericRawEncoder {
 // The encoded bytes are appended to the internal buffer and can be retrieved
 // using the Bytes method.
 //
+// Panics if Finish() has been called (nil buffer).
+//
 // Parameters:
 //   - val: The float64 value to encode
 func (e *NumericRawEncoder) Write(val float64) {
+	if e.buf == nil {
+		panic("encoder already finished - cannot write after Finish()")
+	}
+
 	e.count++
 
 	// Amortized growth: pre-grow buffer if near capacity
@@ -94,9 +100,15 @@ func (e *NumericRawEncoder) Write(val float64) {
 // The encoded bytes are appended to the internal buffer and can be retrieved
 // using the Bytes method.
 //
+// Panics if Finish() has been called (nil buffer).
+//
 // Parameters:
 //   - values: Slice of float64 values to encode
 func (e *NumericRawEncoder) WriteSlice(values []float64) {
+	if e.buf == nil {
+		panic("encoder already finished - cannot write after Finish()")
+	}
+
 	valLen := len(values)
 	e.count += valLen
 
@@ -128,9 +140,15 @@ func (e *NumericRawEncoder) WriteSlice(values []float64) {
 // Each float64 value occupies exactly 8 bytes in the output, encoded in the
 // byte order specified by the endian engine during construction.
 //
+// Panics if Finish() has been called (nil buffer).
+//
 // Returns:
 //   - []byte: Encoded byte slice (empty if no values written since last Reset)
 func (e *NumericRawEncoder) Bytes() []byte {
+	if e.buf == nil {
+		panic("encoder already finished - cannot access bytes after Finish()")
+	}
+
 	return e.buf.Bytes()
 }
 
@@ -150,9 +168,15 @@ func (e *NumericRawEncoder) Len() int {
 // It represents the number of bytes that were written to the internal buffer
 // since the last Finish call.
 //
+// Panics if Finish() has been called (nil buffer).
+//
 // Returns:
 //   - int: Total bytes written to internal buffer since last Finish
 func (e *NumericRawEncoder) Size() int {
+	if e.buf == nil {
+		panic("encoder already finished - cannot access size after Finish()")
+	}
+
 	return e.buf.Len()
 }
 
@@ -168,17 +192,20 @@ func (e *NumericRawEncoder) Reset() {
 	// No-op to retain the accumulated data in the internal buffer.
 }
 
-// Finish finalizes the encoding process.
+// Finish finalizes the encoding process and returns buffer resources to the pool.
 //
-// This method clears the internal buffer and resets the encoder state, preparing it for a new encoding session.
-// After calling Finish, the encoder behaves as if it was newly created.
+// After calling Finish(), the encoder is no longer usable. Any subsequent calls to
+// Write(), WriteSlice(), Bytes(), or Size() will panic due to nil buffer.
 //
-// The Len(), Size() and Bytes() will return zero values after calling Finish.
-// The caller can continue to retrieve the accumulated data information using Len(), Size() and Bytes()
-// until Finish() is called.
+// To encode more data, create a new encoder instance.
+//
+// This method must be called when the encoding session is complete to ensure buffer
+// resources are properly returned to the pool for reuse by other encoders.
 func (e *NumericRawEncoder) Finish() {
-	pool.PutBlobBuffer(e.buf)
-	e.buf = pool.GetBlobBuffer()
+	if e.buf != nil {
+		pool.PutBlobBuffer(e.buf)
+		e.buf = nil
+	}
 	e.count = 0
 }
 

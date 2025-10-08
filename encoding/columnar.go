@@ -31,14 +31,23 @@ type ColumnarEncoder[T comparable] interface {
 	// information using Len(), Size() and Bytes().
 	Reset()
 
-	// Finish finalizes the encoding process.
+	// Finish finalizes the encoding process and returns buffer resources to the pool.
 	//
-	// This method clears the internal buffer and resets the encoder state, preparing it for a new encoding session.
-	// After calling Finish, the encoder behaves as if it was newly created.
+	// After calling Finish(), the encoder is no longer usable. Any subsequent calls to
+	// Write(), WriteSlice(), Bytes(), Len(), or Size() will result in a panic due to nil buffer.
 	//
-	// The Len(), Size() and Bytes() will return zero values after calling Finish.
-	// The caller can continue to retrieve the accumulated data information using Len(), Size() and Bytes()
-	// until Finish() is called.
+	// To encode more data, create a new encoder instance.
+	//
+	// This method must be called when the encoding session is complete to ensure buffer
+	// resources are properly returned to the pool for reuse by other encoders. Use defer
+	// to ensure it's called even in error paths:
+	//
+	//	encoder := NewTimestampRawEncoder(engine)
+	//	defer encoder.Finish()  // Ensure buffer is returned to pool
+	//
+	//	encoder.Write(timestamp1)
+	//	data := encoder.Bytes()  // Get data before Finish
+	//	// Finish() called automatically via defer
 	Finish()
 
 	// Write a single value.

@@ -185,11 +185,19 @@ func TestTimestampRawEncoder_Finish(t *testing.T) {
 	require.Equal(t, 2, encoder.Len())
 	require.Greater(t, encoder.Size(), 0)
 
-	// Finish should clear everything
+	// Get data BEFORE Finish
+	data := encoder.Bytes()
+	require.NotEmpty(t, data)
+
+	// Finish should return buffer to pool and make encoder unusable
 	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
-	require.Equal(t, 0, encoder.Size())
-	require.Empty(t, encoder.Bytes())
+	require.Equal(t, 0, encoder.Len()) // Len() doesn't access buffer, so it's safe
+
+	// Attempting to access buffer-dependent methods after Finish should panic
+	require.Panics(t, func() { encoder.Size() })
+	require.Panics(t, func() { encoder.Bytes() })
+	require.Panics(t, func() { encoder.Write(1672531202000000) })
+	require.Panics(t, func() { encoder.WriteSlice([]int64{1672531202000000}) })
 }
 
 func TestTimestampRawEncoder_MixedWriteAndWriteSlice(t *testing.T) {
@@ -544,128 +552,4 @@ func TestTimestampRaw_EncodingSize(t *testing.T) {
 		require.Equal(t, i, enc.Len())
 		require.Equal(t, i*8, enc.Size())
 	}
-}
-
-// === Encoder Reuse Tests ===
-// These tests verify that encoders can be safely reused after Finish()
-
-// TestTimestampRawEncoder_ReuseAfterFinish verifies encoder can be reused after Finish()
-func TestTimestampRawEncoder_ReuseAfterFinish(t *testing.T) {
-	engine := endian.GetLittleEndianEngine()
-	encoder := NewTimestampRawEncoder(engine)
-	decoder := NewTimestampRawDecoder(engine)
-
-	// First encoding session
-	firstTimestamps := []int64{1000, 2000, 3000}
-	encoder.WriteSlice(firstTimestamps)
-	require.Equal(t, 3, encoder.Len())
-	firstData := make([]byte, len(encoder.Bytes()))
-	copy(firstData, encoder.Bytes())
-
-	// Verify first encoding
-	decoded := make([]int64, 0, 3)
-	for ts := range decoder.All(firstData, 3) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, firstTimestamps, decoded)
-
-	// Finish to prepare for reuse
-	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
-	require.Empty(t, encoder.Bytes())
-
-	// Second encoding session - should work correctly
-	secondTimestamps := []int64{4000, 5000, 6000, 7000}
-	encoder.WriteSlice(secondTimestamps)
-	require.Equal(t, 4, encoder.Len())
-	secondData := encoder.Bytes()
-
-	// Verify second encoding is independent and correct
-	decoded = decoded[:0]
-	for ts := range decoder.All(secondData, 4) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, secondTimestamps, decoded)
-
-	// Third session - verify continued reuse
-	encoder.Finish()
-	thirdTimestamps := []int64{8000}
-	encoder.Write(thirdTimestamps[0])
-	require.Equal(t, 1, encoder.Len())
-	thirdData := encoder.Bytes()
-
-	// Verify third encoding
-	decoded = decoded[:0]
-	for ts := range decoder.All(thirdData, 1) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, thirdTimestamps, decoded)
-}
-
-// TestTimestampRawEncoder_MultipleReuseCycles tests many consecutive reuse cycles
-func TestTimestampRawEncoder_MultipleReuseCycles(t *testing.T) {
-	engine := endian.GetLittleEndianEngine()
-	encoder := NewTimestampRawEncoder(engine)
-	decoder := NewTimestampRawDecoder(engine)
-
-	const numCycles = 10
-
-	for cycle := range numCycles {
-		// Encode timestamps
-		timestamps := []int64{int64(cycle) * 1000, int64(cycle)*1000 + 500}
-		encoder.WriteSlice(timestamps)
-
-		// Verify encoding
-		require.Equal(t, 2, encoder.Len())
-		data := encoder.Bytes()
-		require.NotEmpty(t, data)
-
-		decoded := make([]int64, 0, 2)
-		for ts := range decoder.All(data, 2) {
-			decoded = append(decoded, ts)
-		}
-		require.Equal(t, timestamps, decoded, "Cycle %d failed", cycle)
-
-		// Prepare for next cycle
-		encoder.Finish()
-		require.Equal(t, 0, encoder.Len())
-		require.Empty(t, encoder.Bytes())
-	}
-}
-
-// TestTimestampRawEncoder_ReuseWithMixedOperations tests reuse with Write and WriteSlice
-func TestTimestampRawEncoder_ReuseWithMixedOperations(t *testing.T) {
-	engine := endian.GetLittleEndianEngine()
-	encoder := NewTimestampRawEncoder(engine)
-	decoder := NewTimestampRawDecoder(engine)
-
-	// First session: WriteSlice
-	encoder.WriteSlice([]int64{1000, 2000})
-	require.Equal(t, 2, encoder.Len())
-	encoder.Finish()
-
-	// Second session: Write
-	encoder.Write(3000)
-	encoder.Write(4000)
-	require.Equal(t, 2, encoder.Len())
-	data := encoder.Bytes()
-
-	decoded := make([]int64, 0, 2)
-	for ts := range decoder.All(data, 2) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, []int64{3000, 4000}, decoded)
-	encoder.Finish()
-
-	// Third session: Mixed
-	encoder.Write(5000)
-	encoder.WriteSlice([]int64{6000, 7000})
-	require.Equal(t, 3, encoder.Len())
-	data = encoder.Bytes()
-
-	decoded = decoded[:0]
-	for ts := range decoder.All(data, 3) {
-		decoded = append(decoded, ts)
-	}
-	require.Equal(t, []int64{5000, 6000, 7000}, decoded)
 }

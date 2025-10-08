@@ -194,12 +194,19 @@ func TestTagEncoder_Finish(t *testing.T) {
 	encoder.Write("tag1")
 	encoder.Write("tag2")
 
+	// Get data before Finish
+	data := encoder.Bytes()
+	require.Greater(t, len(data), 0)
+	require.Equal(t, 2, encoder.Len())
+
 	encoder.Finish()
 
-	// After finish, everything is cleared
-	require.Equal(t, 0, encoder.Len())
-	require.Equal(t, 0, encoder.Size())
-	require.Equal(t, []byte{}, encoder.Bytes())
+	// After Finish, Len() still works but buffer methods panic
+	require.Equal(t, 2, encoder.Len())
+	require.Panics(t, func() { encoder.Size() })
+	require.Panics(t, func() { encoder.Bytes() })
+	require.Panics(t, func() { encoder.Write("test") })
+	require.Panics(t, func() { encoder.WriteSlice([]string{"test"}) })
 }
 
 func TestTagEncoder_WriteAfterReset(t *testing.T) {
@@ -241,16 +248,8 @@ func TestTagEncoder_WriteAfterFinish(t *testing.T) {
 	encoder.Write("tag1")
 	encoder.Finish()
 
-	// Second session - starts fresh
-	encoder.Write("tag2")
-
-	require.Equal(t, 1, encoder.Len())
-
-	// Only second tag should be in buffer
-	data := encoder.Bytes()
-	length, n := binary.Uvarint(data)
-	require.Equal(t, uint64(4), length)
-	require.Equal(t, "tag2", string(data[n:]))
+	// Second session - should panic as encoder is single-use
+	require.Panics(t, func() { encoder.Write("tag2") })
 }
 
 func TestTagEncoder_KeyValueTags(t *testing.T) {

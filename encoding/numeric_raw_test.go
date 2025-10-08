@@ -203,11 +203,19 @@ func TestNumericRawEncoder_Finish(t *testing.T) {
 	require.Equal(t, 2, encoder.Len())
 	require.Greater(t, encoder.Size(), 0)
 
-	// Finish should clear everything
+	// Get data BEFORE Finish
+	data := encoder.Bytes()
+	require.NotEmpty(t, data)
+
+	// Finish should return buffer to pool and make encoder unusable
 	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
-	require.Equal(t, 0, encoder.Size())
-	require.Empty(t, encoder.Bytes())
+	require.Equal(t, 0, encoder.Len()) // Len() doesn't access buffer, so it's safe
+
+	// Attempting to access buffer-dependent methods after Finish should panic
+	require.Panics(t, func() { encoder.Size() })
+	require.Panics(t, func() { encoder.Bytes() })
+	require.Panics(t, func() { encoder.Write(1.0) })
+	require.Panics(t, func() { encoder.WriteSlice([]float64{1.0}) })
 }
 
 func TestNumericRawEncoder_MixedWriteAndWriteSlice(t *testing.T) {
@@ -654,128 +662,4 @@ func TestNumericRaw_DecoderComparison(t *testing.T) {
 			require.Equal(t, safeResults[i], unsafeResults[i])
 		}
 	}
-}
-
-// === Encoder Reuse Tests ===
-// These tests verify that encoders can be safely reused after Finish()
-
-// TestNumericRawEncoder_ReuseAfterFinish verifies encoder can be reused after Finish()
-func TestNumericRawEncoder_ReuseAfterFinish(t *testing.T) {
-	engine := endian.GetLittleEndianEngine()
-	encoder := NewNumericRawEncoder(engine)
-	decoder := NewNumericRawDecoder(engine)
-
-	// First encoding session
-	firstValues := []float64{1.1, 2.2, 3.3}
-	encoder.WriteSlice(firstValues)
-	require.Equal(t, 3, encoder.Len())
-	firstData := make([]byte, len(encoder.Bytes()))
-	copy(firstData, encoder.Bytes())
-
-	// Verify first encoding
-	decoded := make([]float64, 0, 3)
-	for val := range decoder.All(firstData, 3) {
-		decoded = append(decoded, val)
-	}
-	require.Equal(t, firstValues, decoded)
-
-	// Finish to prepare for reuse
-	encoder.Finish()
-	require.Equal(t, 0, encoder.Len())
-	require.Empty(t, encoder.Bytes())
-
-	// Second encoding session - should work correctly
-	secondValues := []float64{4.4, 5.5, 6.6, 7.7}
-	encoder.WriteSlice(secondValues)
-	require.Equal(t, 4, encoder.Len())
-	secondData := encoder.Bytes()
-
-	// Verify second encoding is independent and correct
-	decoded = decoded[:0]
-	for val := range decoder.All(secondData, 4) {
-		decoded = append(decoded, val)
-	}
-	require.Equal(t, secondValues, decoded)
-
-	// Third session - verify continued reuse
-	encoder.Finish()
-	thirdValues := []float64{8.8}
-	encoder.Write(thirdValues[0])
-	require.Equal(t, 1, encoder.Len())
-	thirdData := encoder.Bytes()
-
-	// Verify third encoding
-	decoded = decoded[:0]
-	for val := range decoder.All(thirdData, 1) {
-		decoded = append(decoded, val)
-	}
-	require.Equal(t, thirdValues, decoded)
-}
-
-// TestNumericRawEncoder_MultipleReuseCycles tests many consecutive reuse cycles
-func TestNumericRawEncoder_MultipleReuseCycles(t *testing.T) {
-	engine := endian.GetLittleEndianEngine()
-	encoder := NewNumericRawEncoder(engine)
-	decoder := NewNumericRawDecoder(engine)
-
-	const numCycles = 10
-
-	for cycle := range numCycles {
-		// Encode values
-		values := []float64{float64(cycle) + 0.1, float64(cycle) + 0.2}
-		encoder.WriteSlice(values)
-
-		// Verify encoding
-		require.Equal(t, 2, encoder.Len())
-		data := encoder.Bytes()
-		require.NotEmpty(t, data)
-
-		decoded := make([]float64, 0, 2)
-		for val := range decoder.All(data, 2) {
-			decoded = append(decoded, val)
-		}
-		require.Equal(t, values, decoded, "Cycle %d failed", cycle)
-
-		// Prepare for next cycle
-		encoder.Finish()
-		require.Equal(t, 0, encoder.Len())
-		require.Empty(t, encoder.Bytes())
-	}
-}
-
-// TestNumericRawEncoder_ReuseWithMixedOperations tests reuse with Write and WriteSlice
-func TestNumericRawEncoder_ReuseWithMixedOperations(t *testing.T) {
-	engine := endian.GetLittleEndianEngine()
-	encoder := NewNumericRawEncoder(engine)
-	decoder := NewNumericRawDecoder(engine)
-
-	// First session: WriteSlice
-	encoder.WriteSlice([]float64{1.1, 2.2})
-	require.Equal(t, 2, encoder.Len())
-	encoder.Finish()
-
-	// Second session: Write
-	encoder.Write(3.3)
-	encoder.Write(4.4)
-	require.Equal(t, 2, encoder.Len())
-	data := encoder.Bytes()
-
-	decoded := make([]float64, 0, 2)
-	for val := range decoder.All(data, 2) {
-		decoded = append(decoded, val)
-	}
-	require.Equal(t, []float64{3.3, 4.4}, decoded)
-	encoder.Finish()
-
-	// Third session: Mixed
-	encoder.Write(5.5)
-	encoder.WriteSlice([]float64{6.6, 7.7})
-	require.Equal(t, 3, encoder.Len())
-	data = encoder.Bytes()
-
-	decoded = decoded[:0]
-	for val := range decoder.All(data, 3) {
-		decoded = append(decoded, val)
-	}
-	require.Equal(t, []float64{5.5, 6.6, 7.7}, decoded)
 }

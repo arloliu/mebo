@@ -79,6 +79,10 @@ func NewNumericGorillaEncoder() *NumericGorillaEncoder {
 // Parameters:
 //   - val: The float64 value to encode
 func (e *NumericGorillaEncoder) Write(val float64) {
+	if e.buf == nil {
+		panic("encoder already finished - cannot write values after Finish()")
+	}
+
 	e.count++
 	valBits := math.Float64bits(val)
 
@@ -102,6 +106,10 @@ func (e *NumericGorillaEncoder) Write(val float64) {
 // Parameters:
 //   - values: Slice of float64 values to encode
 func (e *NumericGorillaEncoder) WriteSlice(values []float64) {
+	if e.buf == nil {
+		panic("encoder already finished - cannot write values after Finish()")
+	}
+
 	if len(values) == 0 {
 		return
 	}
@@ -166,6 +174,10 @@ func (e *NumericGorillaEncoder) writeMultipleZeroBits(count int) {
 // Returns:
 //   - []byte: Gorilla-compressed byte slice (empty if no values written since last Reset)
 func (e *NumericGorillaEncoder) Bytes() []byte {
+	if e.buf == nil {
+		panic("encoder already finished - cannot access bytes after Finish()")
+	}
+
 	// Flush pending bits to ensure we return complete data
 	// Note: flushBits() has a guard to prevent flushing when bitCount == 0
 	if e.bitCount > 0 {
@@ -192,6 +204,10 @@ func (e *NumericGorillaEncoder) Len() int {
 // Returns:
 //   - int: Total bytes written to internal buffer since last Finish
 func (e *NumericGorillaEncoder) Size() int {
+	if e.buf == nil {
+		panic("encoder already finished - cannot access size after Finish()")
+	}
+
 	return e.buf.Len()
 }
 
@@ -209,30 +225,26 @@ func (e *NumericGorillaEncoder) Reset() {
 	e.firstValue = true
 }
 
-// Finish finalizes the encoding process and clears all state.
+// Finish finalizes the encoding process and returns the buffer to the pool.
 //
 // This method:
 //  1. Returns the byte buffer to the pool
-//  2. Resets all internal state (bit buffer, count, etc.)
-//  3. Prepares the encoder for a new encoding session
+//  2. Sets the buffer to nil, making the encoder unusable
 //
-// After calling Finish(), the encoder behaves as if it was newly created.
+// IMPORTANT: This encoder becomes single-use after calling Finish().
+// Any subsequent calls to Write(), WriteSlice(), Bytes(), or Size() will panic.
+// Create a new encoder if you need to encode more data.
+//
 // The caller should retrieve the encoded data using Bytes() BEFORE calling Finish(),
-// as Finish() will clear the buffer and make the data unavailable.
+// as the buffer will be returned to the pool and the encoder will become unusable.
 func (e *NumericGorillaEncoder) Finish() {
-	// Return buffer to pool and get a fresh one
-	pool.PutBlobBuffer(e.buf)
-	e.buf = pool.GetBlobBuffer()
+	if e.buf == nil {
+		return // Already finished
+	}
 
-	// Reset all state
-	e.bitBuf = 0
-	e.bitCount = 0
-	e.prevValue = 0
-	e.prevLeading = 0
-	e.prevTrailing = 0
-	e.prevBlockSize = 0
-	e.count = 0
-	e.firstValue = true
+	// Return buffer to pool
+	pool.PutBlobBuffer(e.buf)
+	e.buf = nil
 }
 
 // writeValue encodes a value using XOR compression with leading/trailing zero optimization.
