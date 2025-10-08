@@ -909,7 +909,7 @@ func TestNumericBlob_TagSupport(t *testing.T) {
 	})
 
 	t.Run("EmptyTags", func(t *testing.T) {
-		// Test with empty tags
+		// Test with empty tags - these should be optimized away
 		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
 		require.NoError(t, err)
 
@@ -938,20 +938,22 @@ func TestNumericBlob_TagSupport(t *testing.T) {
 		blob, err := decoder.Decode()
 		require.NoError(t, err)
 
-		// Verify all tags are empty
+		// OPTIMIZATION: When all tags are empty, tag support is automatically disabled
+		// This saves space and improves decoding performance
+		require.False(t, blob.flag.HasTag(), "Expected tags to be optimized away when all empty")
+
+		// Verify all tags are empty strings in data points
 		for _, dp := range blob.All(metricID) {
 			require.Empty(t, dp.Tag)
 		}
 
-		// Verify AllTags returns empty strings
+		// AllTags should return empty iterator when tags are optimized away
+		// This is consistent with tags being disabled
 		var gotTags []string
 		for tag := range blob.AllTags(metricID) {
 			gotTags = append(gotTags, tag)
 		}
-		require.Len(t, gotTags, 3)
-		for _, tag := range gotTags {
-			require.Empty(t, tag)
-		}
+		require.Len(t, gotTags, 0, "Expected no tags when optimized away")
 	})
 
 	t.Run("MixedTags", func(t *testing.T) {

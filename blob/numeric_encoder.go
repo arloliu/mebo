@@ -78,7 +78,8 @@ type NumericEncoder struct {
 
 	// Header immutability - track pending changes to apply in Finish()
 	// This keeps the original header immutable for future stateless encoder pattern
-	hasCollision bool // Set when hash collision detected, applied to cloned header in Finish()
+	hasCollision    bool // Set when hash collision detected, applied to cloned header in Finish()
+	hasNonEmptyTags bool // Set when any non-empty tag is written, used to optimize empty-tag-only blobs
 }
 
 // encoderState tracks offset and length state for a single encoder (timestamp, value, or tag).
@@ -457,6 +458,12 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 		finalHeader.Flag.SetHasMetricNames(true)
 	}
 
+	// Dynamically disable tag support if no non-empty tags were written
+	// This optimization saves space and decoding time when all tags are empty
+	if finalHeader.Flag.HasTag() && !e.hasNonEmptyTags {
+		finalHeader.Flag.WithoutTag()
+	}
+
 	// Set actual metric count in cloned header now that encoding is complete
 	finalHeader.MetricCount = uint32(len(e.indexEntries)) //nolint: gosec
 
@@ -560,6 +567,10 @@ func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string
 	// Only encode tags if tag support is enabled
 	if e.header.Flag.HasTag() {
 		e.tagEncoder.Write(tag)
+		// Track if any non-empty tag is written (branchless check for hot path)
+		if tag != "" {
+			e.hasNonEmptyTags = true
+		}
 	}
 
 	return nil
@@ -603,10 +614,18 @@ func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tag
 	e.valEncoder.WriteSlice(values)
 	if tagLen > 0 {
 		e.tagEncoder.WriteSlice(tags)
+		// Track if any non-empty tag exists in the slice
+		for _, tag := range tags {
+			if tag != "" {
+				e.hasNonEmptyTags = true
+				break // Early exit once we find one non-empty tag
+			}
+		}
 	} else {
 		// If no tags provided, write empty strings for each data point
 		emptyTags := make([]string, tsLen)
 		e.tagEncoder.WriteSlice(emptyTags)
+		// No need to set hasNonEmptyTags - all are empty
 	}
 
 	return nil

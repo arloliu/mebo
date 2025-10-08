@@ -2039,3 +2039,276 @@ func TestNumericEncoder_TagsEnabled_DeltaEncoding(t *testing.T) {
 	require.Equal(t, []float64{1.1, 2.2, 3.3}, values)
 	require.Equal(t, []string{"tag1", "tag2", "tag3"}, tags)
 }
+
+// TestNumericEncoder_EmptyTagsOptimization tests the dynamic tag optimization feature.
+// When tag support is enabled but all tags are empty, the encoder should automatically
+// disable tag support in the final blob to save space and improve decoding performance.
+func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
+	startTime := time.Now()
+
+	t.Run("AllEmptyTags_AddDataPoint", func(t *testing.T) {
+		// Create encoder with tags enabled
+		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		// Add metric with all empty tags using AddDataPoint
+		err = encoder.StartMetricID(12345, 3)
+		require.NoError(t, err)
+
+		err = encoder.AddDataPoint(1000, 1.1, "")
+		require.NoError(t, err)
+		err = encoder.AddDataPoint(2000, 2.2, "")
+		require.NoError(t, err)
+		err = encoder.AddDataPoint(3000, 3.3, "")
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		// Finish encoding
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		// Decode and verify tag support is DISABLED (optimized away)
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		// Tag support should be automatically disabled
+		require.False(t, blob.flag.HasTag(), "Expected HasTag() to be false when all tags are empty")
+
+		// Verify data is still correct
+		timestamps := make([]int64, 0, 3)
+		values := make([]float64, 0, 3)
+
+		for _, dp := range blob.All(12345) {
+			timestamps = append(timestamps, dp.Ts)
+			values = append(values, dp.Val)
+			// Tag field should be empty string (default value)
+			require.Equal(t, "", dp.Tag)
+		}
+
+		require.Equal(t, []int64{1000, 2000, 3000}, timestamps)
+		require.Equal(t, []float64{1.1, 2.2, 3.3}, values)
+	})
+
+	t.Run("AllEmptyTags_AddDataPoints", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(12345, 3)
+		require.NoError(t, err)
+
+		err = encoder.AddDataPoints(
+			[]int64{1000, 2000, 3000},
+			[]float64{1.1, 2.2, 3.3},
+			[]string{"", "", ""},
+		)
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		require.False(t, blob.flag.HasTag())
+	})
+
+	t.Run("AllEmptyTags_NoTagsProvided", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(12345, 3)
+		require.NoError(t, err)
+
+		err = encoder.AddDataPoints(
+			[]int64{1000, 2000, 3000},
+			[]float64{1.1, 2.2, 3.3},
+			nil,
+		)
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		require.False(t, blob.flag.HasTag())
+	})
+
+	t.Run("MixedTags_SomeNonEmpty", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(12345, 3)
+		require.NoError(t, err)
+
+		err = encoder.AddDataPoint(1000, 1.1, "")
+		require.NoError(t, err)
+		err = encoder.AddDataPoint(2000, 2.2, "tag2")
+		require.NoError(t, err)
+		err = encoder.AddDataPoint(3000, 3.3, "")
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		require.True(t, blob.flag.HasTag())
+
+		tags := make([]string, 0, 3)
+		for _, dp := range blob.All(12345) {
+			tags = append(tags, dp.Tag)
+		}
+
+		require.Equal(t, []string{"", "tag2", ""}, tags)
+	})
+
+	t.Run("AllNonEmptyTags", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(12345, 3)
+		require.NoError(t, err)
+
+		err = encoder.AddDataPoints(
+			[]int64{1000, 2000, 3000},
+			[]float64{1.1, 2.2, 3.3},
+			[]string{"tag1", "tag2", "tag3"},
+		)
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		require.True(t, blob.flag.HasTag())
+
+		tags := make([]string, 0, 3)
+		for _, dp := range blob.All(12345) {
+			tags = append(tags, dp.Tag)
+		}
+
+		require.Equal(t, []string{"tag1", "tag2", "tag3"}, tags)
+	})
+
+	t.Run("MultipleMetrics_AllEmptyTags", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		for i := 0; i < 5; i++ {
+			metricID := uint64(10000 + i)
+			err = encoder.StartMetricID(metricID, 2)
+			require.NoError(t, err)
+
+			err = encoder.AddDataPoints(
+				[]int64{1000, 2000},
+				[]float64{1.1, 2.2},
+				[]string{"", ""},
+			)
+			require.NoError(t, err)
+
+			err = encoder.EndMetric()
+			require.NoError(t, err)
+		}
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		require.False(t, blob.flag.HasTag())
+	})
+
+	t.Run("MultipleMetrics_OneWithNonEmptyTag", func(t *testing.T) {
+		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(10000, 2)
+		require.NoError(t, err)
+		err = encoder.AddDataPoints(
+			[]int64{1000, 2000},
+			[]float64{1.1, 2.2},
+			[]string{"", ""},
+		)
+		require.NoError(t, err)
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(10001, 2)
+		require.NoError(t, err)
+		err = encoder.AddDataPoints(
+			[]int64{1000, 2000},
+			[]float64{3.3, 4.4},
+			[]string{"", "important"},
+		)
+		require.NoError(t, err)
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(10002, 2)
+		require.NoError(t, err)
+		err = encoder.AddDataPoints(
+			[]int64{1000, 2000},
+			[]float64{5.5, 6.6},
+			[]string{"", ""},
+		)
+		require.NoError(t, err)
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		require.True(t, blob.flag.HasTag())
+
+		tags := make([]string, 0, 2)
+		for _, dp := range blob.All(10001) {
+			tags = append(tags, dp.Tag)
+		}
+
+		require.Equal(t, []string{"", "important"}, tags)
+	})
+}

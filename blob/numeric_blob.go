@@ -191,6 +191,10 @@ func (b NumericBlob) AllValuesByName(metricName string) iter.Seq[float64] {
 // AllTags returns a sequence of tags for the given metric ID.
 // Tags are always stored as strings and may be empty.
 //
+// Returns an empty sequence if tags are not enabled (HasTag() == false).
+// This includes both cases where tags were disabled at encoding time
+// or optimized away due to all tags being empty.
+//
 // Example:
 //
 //	for tag := range blob.AllTags(metricID) {
@@ -198,6 +202,7 @@ func (b NumericBlob) AllValuesByName(metricName string) iter.Seq[float64] {
 //	}
 func (b NumericBlob) AllTags(metricID uint64) iter.Seq[string] {
 	// Return empty iterator if tags are not enabled
+	// This handles both tags disabled and tags optimized away
 	if !b.flag.HasTag() {
 		return func(yield func(string) bool) {}
 	}
@@ -305,6 +310,7 @@ func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool)
 // The index is 0-based within this blob.
 //
 // Returns (tag, true) if successful, or ("", false) if:
+//   - Tags are not enabled (HasTag() == false)
 //   - The metric doesn't exist in this blob
 //   - The index is out of bounds
 //
