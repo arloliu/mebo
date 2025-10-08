@@ -13,6 +13,10 @@ ALL_GO_FILES    := $(shell find . -name "*.go" -not -path "./_tests/fbs_compare/
 TEST_DIRS       := $(sort $(dir $(shell find . -name "*_test.go" -not -path "./_tests/fbs_compare/*" -not -path "./vendor/*")))
 LATEST_GIT_TAG  := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
 
+# Linter configuration
+LINTER_GOMOD          := -modfile=linter.go.mod
+GOLANGCI_LINT_VERSION := 2.5.0
+
 # Default target
 .DEFAULT_GOAL := help
 
@@ -62,10 +66,33 @@ clean-test-results:
 
 ##@ Code Quality
 
+.PHONY: linter-update linter-version
+linter-update:
+	@echo "Install/update linter tool..."
+	@go get -tool $(LINTER_GOMOD) github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION)
+	@go mod verify $(LINTER_GOMOD)
+
+linter-version:
+	@go tool $(LINTER_GOMOD) golangci-lint --version
+
 ## lint: Run linters
 lint:
+	@echo "Checking golangci-lint version..."
+	@INSTALLED_VERSION=$$(go tool $(LINTER_GOMOD) golangci-lint --version 2>/dev/null | grep -oE 'version [^ ]+' | cut -d' ' -f2 || echo "not-installed"); \
+	if [ "$$INSTALLED_VERSION" = "not-installed" ]; then \
+		echo "Error: golangci-lint not found. Run 'make linter-update' to install."; \
+		exit 1; \
+	elif [ "$$INSTALLED_VERSION" != "$(GOLANGCI_LINT_VERSION)" ]; then \
+		echo "Warning: golangci-lint version mismatch!"; \
+		echo "  Expected: $(GOLANGCI_LINT_VERSION)"; \
+		echo "  Installed: $$INSTALLED_VERSION"; \
+		echo "  Run 'make linter-update' to install the correct version."; \
+		exit 1; \
+	else \
+		echo "✓ golangci-lint $(GOLANGCI_LINT_VERSION) is installed"; \
+	fi
 	@echo "Running linters..."
-	@golangci-lint run --timeout=$(LINT_TIMEOUT)
+	@go tool $(LINTER_GOMOD) golangci-lint run --timeout=$(LINT_TIMEOUT)
 
 ## fmt: Format code
 fmt:

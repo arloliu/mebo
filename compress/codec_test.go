@@ -2,6 +2,7 @@ package compress
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -49,7 +50,7 @@ func (m *MockCompressor) CompressTo(data []byte, writer io.Writer) (int, error) 
 }
 
 func (m *MockCompressor) EstimateCompressedSize(inputSize int) int {
-	switch m.compressionType {
+	switch m.compressionType { //nolint: revive
 	case format.CompressionNone:
 		return inputSize
 	case format.CompressionLZ4, format.CompressionS2:
@@ -57,6 +58,7 @@ func (m *MockCompressor) EstimateCompressedSize(inputSize int) int {
 	case format.CompressionZstd:
 		return int(float64(inputSize) * 0.50) // Conservative estimate
 	default:
+		// Default to no compression
 		return inputSize
 	}
 }
@@ -105,7 +107,7 @@ func (m *MockDecompressor) DecompressTo(data []byte, writer io.Writer) (int, err
 
 func (m *MockDecompressor) EstimateDecompressedSize(compressedData []byte) int {
 	// Mock implementation: assume 2x expansion ratio for compressed data
-	switch m.compressionType {
+	switch m.compressionType { //nolint: revive
 	case format.CompressionNone:
 		return len(compressedData)
 	case format.CompressionLZ4, format.CompressionS2, format.CompressionZstd:
@@ -386,6 +388,8 @@ func TestMeboUsagePatterns(t *testing.T) {
 				case format.CompressionZstd:
 					require.LessOrEqual(t, estimatedSize, payloadSize)
 					require.GreaterOrEqual(t, estimatedSize, payloadSize/4) // More aggressive estimate
+				default:
+					require.Fail(t, "unknown compression type")
 				}
 
 				// Test compression
@@ -675,7 +679,7 @@ func TestAllCodecs_ConcurrentUsage(t *testing.T) {
 							return
 						}
 						if compressed == nil {
-							done <- fmt.Errorf("compressed result is nil")
+							done <- errors.New("compressed result is nil")
 							return
 						}
 						done <- nil
@@ -704,7 +708,7 @@ func TestAllCodecs_ConcurrentUsage(t *testing.T) {
 							return
 						}
 						if !bytes.Equal(testData, decompressed) {
-							done <- fmt.Errorf("decompressed data mismatch")
+							done <- errors.New("decompressed data mismatch")
 							return
 						}
 						done <- nil
@@ -740,7 +744,7 @@ func TestAllCodecs_ConcurrentUsage(t *testing.T) {
 							return
 						}
 						if !bytes.Equal(testData, decompressed) {
-							done <- fmt.Errorf("data mismatch")
+							done <- errors.New("data mismatch")
 							return
 						}
 						done <- nil
@@ -763,7 +767,7 @@ func TestAllCodecs_InterfaceCompliance(t *testing.T) {
 	for name, codec := range codecs {
 		t.Run(name, func(t *testing.T) {
 			// Verify codec implements Codec interface
-			var _ Codec = codec
+			var _ Codec = codec //nolint: staticcheck
 			require.NotNil(t, codec)
 		})
 	}

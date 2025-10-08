@@ -158,7 +158,7 @@ type textDataPointEncoder struct {
 ```go
 // Core Encoder Methods (matching numeric blob pattern)
 
-func NewTextEncoder(blobTs time.Time, opts ...TextEncoderOption) (*TextEncoder, error)
+func NewTextEncoder(blobTS time.Time, opts ...TextEncoderOption) (*TextEncoder, error)
 
 // Exclusive identifier modes (cannot mix)
 func (e *TextEncoder) StartMetricID(metricID uint64, numOfDataPoints int) error
@@ -466,7 +466,7 @@ type TextEncoder struct {
     // ... (see detailed structure above)
 }
 
-func NewTextEncoder(blobTs time.Time, opts ...TextEncoderOption) (*TextEncoder, error)
+func NewTextEncoder(blobTS time.Time, opts ...TextEncoderOption) (*TextEncoder, error)
 func (e *TextEncoder) StartMetricID(metricID uint64, numOfDataPoints int) error
 func (e *TextEncoder) StartMetricName(metricName string, numOfDataPoints int) error
 func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) error

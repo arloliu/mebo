@@ -64,12 +64,10 @@ func (c *TextEncoderConfig) setDataCompression(comp format.CompressionType) erro
 
 // setEndianess sets the endianness option.
 func (c *TextEncoderConfig) setEndianess(endiness endianness) {
-	switch endiness {
-	case littleEndianOpt:
-		c.header.Flag.WithLittleEndian()
-	case bigEndianOpt:
+	if endiness == bigEndianOpt {
 		c.header.Flag.WithBigEndian()
-	default:
+	} else {
+		// Default to little-endian
 		c.header.Flag.WithLittleEndian()
 	}
 

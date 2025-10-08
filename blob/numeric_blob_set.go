@@ -1,7 +1,7 @@
 package blob
 
 import (
-	"fmt"
+	"errors"
 	"iter"
 	"slices"
 	"time"
@@ -49,7 +49,7 @@ type NumericBlobSet struct {
 //	// blobSet is immutable and safe for concurrent reads
 func NewNumericBlobSet(blobs []NumericBlob) (NumericBlobSet, error) {
 	if len(blobs) == 0 {
-		return NumericBlobSet{}, fmt.Errorf("cannot create NumericBlobSet with empty blobs")
+		return NumericBlobSet{}, errors.New("cannot create NumericBlobSet with empty blobs")
 	}
 
 	// Create a copy to avoid modifying the caller's slice

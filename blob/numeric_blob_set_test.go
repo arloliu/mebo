@@ -14,13 +14,13 @@ import (
 // Helper Functions
 // ==============================================================================
 
-func createBlobWithTimestamp(t *testing.T, blobTs time.Time, metricName string, timestamps []int64, values []float64) NumericBlob {
+func createBlobWithTimestamp(t *testing.T, blobTS time.Time, metricName string, timestamps []int64, values []float64) NumericBlob {
 	t.Helper()
 
 	metricID := hash.ID(metricName)
 
 	// Create encoder
-	encoder, err := NewNumericEncoder(blobTs,
+	encoder, err := NewNumericEncoder(blobTS,
 		WithTimestampEncoding(format.TypeDelta),
 		WithValueEncoding(format.TypeGorilla),
 	)
@@ -54,18 +54,18 @@ func createBlobWithTimestamp(t *testing.T, blobTs time.Time, metricName string, 
 func createTestBlobs(t *testing.T, count int) []NumericBlob {
 	t.Helper()
 
-	blobTs := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	blobTS := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	blobs := make([]NumericBlob, count)
 
 	for i := range count {
 		metricName := "metric1"
 		ts := []int64{
-			blobTs.Add(time.Duration(i) * time.Hour).UnixMicro(),
-			blobTs.Add(time.Duration(i)*time.Hour + 1*time.Minute).UnixMicro(),
+			blobTS.Add(time.Duration(i) * time.Hour).UnixMicro(),
+			blobTS.Add(time.Duration(i)*time.Hour + 1*time.Minute).UnixMicro(),
 		}
 		val := []float64{float64(i * 10), float64(i*10 + 1)}
 
-		blobs[i] = createBlobWithTimestamp(t, blobTs.Add(time.Duration(i)*time.Hour), metricName, ts, val)
+		blobs[i] = createBlobWithTimestamp(t, blobTS.Add(time.Duration(i)*time.Hour), metricName, ts, val)
 	}
 
 	return blobs

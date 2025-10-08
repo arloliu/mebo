@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -62,7 +63,7 @@ func (c *NumericEncoderConfig) setTimestampEncoding(enc format.EncodingType) err
 		c.header.Flag.SetTimestampEncoding(enc)
 		return nil
 	case format.TypeGorilla:
-		return fmt.Errorf("gorilla encoding is not supported for timestamps")
+		return errors.New("gorilla encoding is not supported for timestamps")
 	default:
 		return fmt.Errorf("invalid timestamp encoding: %v", enc)
 	}
@@ -103,12 +104,10 @@ func (c *NumericEncoderConfig) setValueCompression(comp format.CompressionType) 
 
 // setEndianess sets the endianness option.
 func (c *NumericEncoderConfig) setEndianess(endiness endianness) {
-	switch endiness {
-	case littleEndianOpt:
-		c.header.Flag.WithLittleEndian()
-	case bigEndianOpt:
+	if endiness == bigEndianOpt {
 		c.header.Flag.WithBigEndian()
-	default:
+	} else {
+		// Default to little-endian
 		c.header.Flag.WithLittleEndian()
 	}
 

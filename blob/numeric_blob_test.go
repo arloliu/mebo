@@ -2132,7 +2132,7 @@ func TestNumericBlobOffsetLimit(t *testing.T) {
 				}
 			} else {
 				if !ok {
-					t.Errorf("Expected success but got failure. This indicates offset overflow!")
+					t.Error("Expected success but got failure. This indicates offset overflow!")
 					// Try to access earlier metrics to see where it breaks
 					for m := tt.numMetrics - 1; m >= 0; m-- {
 						metricID := uint64(1000 + m)
@@ -2229,7 +2229,7 @@ func TestNumericBlobOffsetLimitDetailed(t *testing.T) {
 						bytesPerMetric, theoreticalMax)
 				} else {
 					// Gorilla varies based on data pattern
-					t.Logf("Theoretical max (Gorilla): varies by data pattern, typically 300-400 metrics")
+					t.Log("Theoretical max (Gorilla): varies by data pattern, typically 300-400 metrics")
 				}
 			})
 		}

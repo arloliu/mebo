@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"errors"
 	"fmt"
 	"iter"
 
@@ -745,14 +746,14 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 		// Raw encoding: timestamps are written as length-prefixed strings containing 8 bytes
 		// First read the length prefix
 		if len(data[offset:]) < 1 {
-			return 0, 0, fmt.Errorf("insufficient data for timestamp length prefix")
+			return 0, 0, errors.New("insufficient data for timestamp length prefix")
 		}
 		length := int(data[offset])
 		offset++
 
 		// Read the timestamp bytes
 		if len(data[offset:]) < length {
-			return 0, 0, fmt.Errorf("insufficient data for raw timestamp")
+			return 0, 0, errors.New("insufficient data for raw timestamp")
 		}
 		if length != 8 {
 			return 0, 0, fmt.Errorf("invalid timestamp length: expected 8, got %d", length)

@@ -59,15 +59,15 @@ type TextEncoder struct {
 // The encoder will grow dynamically as metrics are added, up to MaxMetricCount (65536).
 //
 // Parameters:
-//   - blobTs: Timestamp for the entire blob, used as sorting key for all blobs in the same series
+//   - blobTS: Timestamp for the entire blob, used as sorting key for all blobs in the same series
 //   - opts: Optional encoding configuration (endianness, compression, timestamp encoding, tag support, etc.)
 //
 // Returns:
 //   - *TextEncoder: New encoder instance ready for metric encoding
 //   - error: Configuration error if invalid options provided
-func NewTextEncoder(blobTs time.Time, opts ...TextEncoderOption) (*TextEncoder, error) {
+func NewTextEncoder(blobTS time.Time, opts ...TextEncoderOption) (*TextEncoder, error) {
 	// Create base configuration
-	config := NewTextEncoderConfig(blobTs)
+	config := NewTextEncoderConfig(blobTS)
 
 	encoder := &TextEncoder{
 		TextEncoderConfig: config,
@@ -272,6 +272,9 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 
 	case format.TypeGorilla:
 		return fmt.Errorf("timestamp encoding %v not supported yet", format.TypeGorilla)
+
+	default:
+		return fmt.Errorf("invalid timestamp encoding: %v", tsEncoding)
 	}
 
 	// Write timestamp from buffer to data encoder

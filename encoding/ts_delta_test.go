@@ -498,10 +498,10 @@ func TestTimestampDeltaDecoder_At_BasicAccess(t *testing.T) {
 	decoder := NewTimestampDeltaDecoder()
 
 	// Test accessing each index
-	for i, expectedTs := range originalTimestamps {
+	for i, expectedTS := range originalTimestamps {
 		timestamp, ok := decoder.At(encodedData, i, len(originalTimestamps))
 		require.True(t, ok, "Should find timestamp at index %d", i)
-		require.Equal(t, expectedTs, timestamp, "Timestamp mismatch at index %d", i)
+		require.Equal(t, expectedTS, timestamp, "Timestamp mismatch at index %d", i)
 	}
 }
 
@@ -596,10 +596,10 @@ func TestTimestampDeltaDecoder_At_WithNegativeDeltas(t *testing.T) {
 	decoder := NewTimestampDeltaDecoder()
 
 	// Test accessing each index with negative deltas
-	for i, expectedTs := range originalTimestamps {
+	for i, expectedTS := range originalTimestamps {
 		timestamp, ok := decoder.At(encodedData, i, len(originalTimestamps))
 		require.True(t, ok, "Should find timestamp at index %d", i)
-		require.Equal(t, expectedTs, timestamp, "Timestamp mismatch at index %d", i)
+		require.Equal(t, expectedTS, timestamp, "Timestamp mismatch at index %d", i)
 	}
 }
 
@@ -619,10 +619,10 @@ func TestTimestampDeltaDecoder_At_WithLargeDeltas(t *testing.T) {
 	decoder := NewTimestampDeltaDecoder()
 
 	// Test accessing each index with large deltas
-	for i, expectedTs := range originalTimestamps {
+	for i, expectedTS := range originalTimestamps {
 		timestamp, ok := decoder.At(encodedData, i, len(originalTimestamps))
 		require.True(t, ok, "Should find timestamp at index %d", i)
-		require.Equal(t, expectedTs, timestamp, "Timestamp mismatch at index %d", i)
+		require.Equal(t, expectedTS, timestamp, "Timestamp mismatch at index %d", i)
 	}
 }
 
@@ -840,7 +840,7 @@ func TestTimestampEncodingSizeIrregular(t *testing.T) {
 			// For irregular data, delta-of-delta should still provide some compression
 			// but not as much as regular intervals
 			if deltaSize > rawSize {
-				t.Logf("  Note: Delta-of-delta is larger than raw for irregular data (expected for some patterns)")
+				t.Log("  Note: Delta-of-delta is larger than raw for irregular data (expected for some patterns)")
 			}
 		})
 	}

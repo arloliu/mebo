@@ -30,8 +30,8 @@ func generateBenchmarkData(size int, compressibility string) []byte {
 				data[i] = byte((i*7 + i*i) % 256)
 			}
 		}
-	case "incompressible":
-		// Pseudo-random data - minimal compression
+	default:
+		// Default to incompressible
 		for i := range data {
 			data[i] = byte((i*31 + i*i*7 + i*i*i*3) % 256)
 		}

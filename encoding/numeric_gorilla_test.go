@@ -713,11 +713,11 @@ func debugSequentialDecode(t *testing.T, data []byte, count int, failedIndex int
 	// Read first value
 	firstBits, ok := br.readBits(64)
 	if !ok {
-		t.Logf("DEBUG: Failed to read first value")
+		t.Log("DEBUG: Failed to read first value")
 		return
 	}
 
-	t.Logf("DEBUG: First value decoded successfully")
+	t.Log("DEBUG: First value decoded successfully")
 
 	prevValue := firstBits
 	var prevLeading, prevTrailing int
@@ -803,10 +803,10 @@ func debugDecodeWithLogging(t *testing.T, data []byte, _ int, targetIndex int) {
 	// Read first value
 	firstBits, ok := br.readBits(64)
 	if !ok {
-		t.Logf("Failed to read first value")
+		t.Log("Failed to read first value")
 		return
 	}
-	t.Logf("Index 0: first value read successfully")
+	t.Log("Index 0: first value read successfully")
 
 	if targetIndex == 0 {
 		return
@@ -866,7 +866,7 @@ func debugDecodeWithLogging(t *testing.T, data []byte, _ int, targetIndex int) {
 			if trailing < 0 || trailing > 64 {
 				t.Errorf("Index %d: INVALID trailing=%d (leading=%d, blockSize=%d)",
 					i, trailing, leading, blockSize)
-				t.Errorf("This causes the bug!")
+				t.Error("This causes the bug!")
 
 				return
 			}

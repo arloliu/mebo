@@ -120,15 +120,15 @@ func (e *NumericEncoder) cloneHeader() *section.NumericHeader {
 // The encoder will grow dynamically as metrics are added, up to MaxMetricCount (65536).
 //
 // Parameters:
-//   - blobTs: Timestamp for the entire blob, used as sorting key for all blobs in the same series
+//   - blobTS: Timestamp for the entire blob, used as sorting key for all blobs in the same series
 //   - opts: Optional encoding configuration (endianness, compression, encoding types, etc.)
 //
 // Returns:
 //   - *NumericEncoder: New encoder instance ready for metric encoding
 //   - error: Configuration error if invalid options provided
-func NewNumericEncoder(blobTs time.Time, opts ...NumericEncoderOption) (*NumericEncoder, error) {
+func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*NumericEncoder, error) {
 	// Create base configuration
-	config := NewNumericEncoderConfig(blobTs)
+	config := NewNumericEncoderConfig(blobTS)
 
 	encoder := &NumericEncoder{
 		NumericEncoderConfig: config,

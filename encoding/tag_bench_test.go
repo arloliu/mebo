@@ -759,6 +759,8 @@ func generateMixedTags(count int) []string { //nolint:unparam
 			for j := range 150 {
 				tags[i] = tags[i][:j] + "x" + tags[i][j+1:]
 			}
+		default:
+			tags[i] = ""
 		}
 	}
 

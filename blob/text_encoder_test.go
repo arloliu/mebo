@@ -16,18 +16,18 @@ import (
 // ==============================================================================
 
 func TestTextEncoder_NewTextEncoder(t *testing.T) {
-	blobTs := time.Now()
+	blobTS := time.Now()
 
-	encoder, err := NewTextEncoder(blobTs)
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 	require.NotNil(t, encoder)
 	require.Equal(t, modeUndefined, encoder.identifierMode)
 }
 
 func TestTextEncoder_NewTextEncoderWithOptions(t *testing.T) {
-	blobTs := time.Now()
+	blobTS := time.Now()
 
-	encoder, err := NewTextEncoder(blobTs,
+	encoder, err := NewTextEncoder(blobTS,
 		WithTextTimestampEncoding(format.TypeRaw),
 		WithTextDataCompression(format.CompressionS2),
 		WithTextTagsEnabled(true))
@@ -45,8 +45,8 @@ func TestTextEncoder_NewTextEncoderWithOptions(t *testing.T) {
 // ==============================================================================
 
 func TestTextEncoder_StartMetricID(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Start first metric with ID
@@ -59,8 +59,8 @@ func TestTextEncoder_StartMetricID(t *testing.T) {
 }
 
 func TestTextEncoder_StartMetricName(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Start first metric with name
@@ -74,10 +74,10 @@ func TestTextEncoder_StartMetricName(t *testing.T) {
 }
 
 func TestTextEncoder_DualModeExclusivity(t *testing.T) {
-	blobTs := time.Now()
+	blobTS := time.Now()
 
 	t.Run("ID mode blocks second StartMetricID before EndMetric", func(t *testing.T) {
-		encoder, err := NewTextEncoder(blobTs)
+		encoder, err := NewTextEncoder(blobTS)
 		require.NoError(t, err)
 
 		err = encoder.StartMetricID(12345, 1)
@@ -90,7 +90,7 @@ func TestTextEncoder_DualModeExclusivity(t *testing.T) {
 	})
 
 	t.Run("Name mode blocks second StartMetricName before EndMetric", func(t *testing.T) {
-		encoder, err := NewTextEncoder(blobTs)
+		encoder, err := NewTextEncoder(blobTS)
 		require.NoError(t, err)
 
 		err = encoder.StartMetricName("cpu.usage", 1)
@@ -108,82 +108,82 @@ func TestTextEncoder_DualModeExclusivity(t *testing.T) {
 // ==============================================================================
 
 func TestTextEncoder_AddDataPoint_WithoutTags(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 2)
 	require.NoError(t, err)
 
 	// Add first data point
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 	require.NoError(t, err)
 	require.Equal(t, 1, encoder.added)
 
 	// Add second data point
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "world", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "world", "")
 	require.NoError(t, err)
 	require.Equal(t, 2, encoder.added)
 }
 
 func TestTextEncoder_AddDataPoint_WithTags(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs, WithTextTagsEnabled(true))
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS, WithTextTagsEnabled(true))
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 2)
 	require.NoError(t, err)
 
 	// Add data points with tags
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "tag1")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "tag1")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "world", "tag2")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "world", "tag2")
 	require.NoError(t, err)
 	require.Equal(t, 2, encoder.added)
 }
 
 func TestTextEncoder_AddDataPoint_DeltaEncoding(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs, WithTextTimestampEncoding(format.TypeDelta))
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS, WithTextTimestampEncoding(format.TypeDelta))
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 3)
 	require.NoError(t, err)
 
 	// Add data points with monotonic timestamps
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "first", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "first", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "second", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "second", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), "third", "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), "third", "")
 	require.NoError(t, err)
 }
 
 func TestTextEncoder_AddDataPoint_RawEncoding(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs, WithTextTimestampEncoding(format.TypeRaw))
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS, WithTextTimestampEncoding(format.TypeRaw))
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 3)
 	require.NoError(t, err)
 
 	// Add data points with any timestamps (including out-of-order)
-	err = encoder.AddDataPoint(blobTs.Add(5*time.Second).UnixMicro(), "third", "")
+	err = encoder.AddDataPoint(blobTS.Add(5*time.Second).UnixMicro(), "third", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "first", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "first", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), "second", "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), "second", "")
 	require.NoError(t, err)
 }
 
 func TestTextEncoder_AddDataPoint_MaxTextLength(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 2)
@@ -191,19 +191,19 @@ func TestTextEncoder_AddDataPoint_MaxTextLength(t *testing.T) {
 
 	// Valid: exactly 255 characters
 	validText := string(make([]byte, 255))
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), validText, "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), validText, "")
 	require.NoError(t, err)
 
 	// Invalid: 256 characters
 	invalidText := string(make([]byte, 256))
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), invalidText, "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), invalidText, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds maximum")
 }
 
 func TestTextEncoder_AddDataPoint_MaxTagLength(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs, WithTextTagsEnabled(true))
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS, WithTextTagsEnabled(true))
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 2)
@@ -211,12 +211,12 @@ func TestTextEncoder_AddDataPoint_MaxTagLength(t *testing.T) {
 
 	// Valid: exactly 255 characters
 	validTag := string(make([]byte, 255))
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "value", validTag)
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "value", validTag)
 	require.NoError(t, err)
 
 	// Invalid: 256 characters
 	invalidTag := string(make([]byte, 256))
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "value", invalidTag)
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "value", invalidTag)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds maximum")
 }
@@ -226,17 +226,17 @@ func TestTextEncoder_AddDataPoint_MaxTagLength(t *testing.T) {
 // ==============================================================================
 
 func TestTextEncoder_EndMetric_Success(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 2)
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "world", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "world", "")
 	require.NoError(t, err)
 
 	err = encoder.EndMetric()
@@ -247,18 +247,18 @@ func TestTextEncoder_EndMetric_Success(t *testing.T) {
 }
 
 func TestTextEncoder_EndMetric_MismatchedCount(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 3)
 	require.NoError(t, err)
 
 	// Only add 2 points instead of claimed 3
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "world", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "world", "")
 	require.NoError(t, err)
 
 	err = encoder.EndMetric()
@@ -267,8 +267,8 @@ func TestTextEncoder_EndMetric_MismatchedCount(t *testing.T) {
 }
 
 func TestTextEncoder_EndMetric_NoActiveMetric(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Try to end metric without starting one
@@ -282,14 +282,14 @@ func TestTextEncoder_EndMetric_NoActiveMetric(t *testing.T) {
 // ==============================================================================
 
 func TestTextEncoder_CollisionDetection_NameMode(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// First metric
 	err = encoder.StartMetricName("cpu.usage", 1)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "50.5", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "50.5", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -301,14 +301,14 @@ func TestTextEncoder_CollisionDetection_NameMode(t *testing.T) {
 }
 
 func TestTextEncoder_DuplicateID_Detection(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// First metric with ID
 	err = encoder.StartMetricID(12345, 1)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "value1", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "value1", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -324,8 +324,8 @@ func TestTextEncoder_DuplicateID_Detection(t *testing.T) {
 // ==============================================================================
 
 func TestTextEncoder_Finish_EmptyBlob(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Try to finish without adding any metrics
@@ -336,14 +336,14 @@ func TestTextEncoder_Finish_EmptyBlob(t *testing.T) {
 }
 
 func TestTextEncoder_Finish_ActiveMetric(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 2)
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 	require.NoError(t, err)
 
 	// Try to finish with active metric
@@ -354,18 +354,18 @@ func TestTextEncoder_Finish_ActiveMetric(t *testing.T) {
 }
 
 func TestTextEncoder_Finish_Success_IDMode(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Add one complete metric
 	err = encoder.StartMetricID(12345, 2)
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "world", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "world", "")
 	require.NoError(t, err)
 
 	err = encoder.EndMetric()
@@ -379,18 +379,18 @@ func TestTextEncoder_Finish_Success_IDMode(t *testing.T) {
 }
 
 func TestTextEncoder_Finish_Success_NameMode(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Add one complete metric with name
 	err = encoder.StartMetricName("cpu.usage", 2)
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "50.5", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "50.5", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "60.5", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "60.5", "")
 	require.NoError(t, err)
 
 	err = encoder.EndMetric()
@@ -420,17 +420,17 @@ func TestTextEncoder_CompressionTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blobTs := time.Now()
-			encoder, err := NewTextEncoder(blobTs, WithTextDataCompression(tt.compression))
+			blobTS := time.Now()
+			encoder, err := NewTextEncoder(blobTS, WithTextDataCompression(tt.compression))
 			require.NoError(t, err)
 
 			err = encoder.StartMetricID(12345, 2)
 			require.NoError(t, err)
 
-			err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+			err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 			require.NoError(t, err)
 
-			err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "world", "")
+			err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "world", "")
 			require.NoError(t, err)
 
 			err = encoder.EndMetric()
@@ -448,16 +448,16 @@ func TestTextEncoder_CompressionTypes(t *testing.T) {
 // ==============================================================================
 
 func TestTextEncoder_MultipleMetrics_IDMode(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Metric 1
 	err = encoder.StartMetricID(12345, 2)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "metric1_val1", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "metric1_val1", "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "metric1_val2", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "metric1_val2", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -465,7 +465,7 @@ func TestTextEncoder_MultipleMetrics_IDMode(t *testing.T) {
 	// Metric 2
 	err = encoder.StartMetricID(67890, 1)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), "metric2_val1", "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), "metric2_val1", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -473,11 +473,11 @@ func TestTextEncoder_MultipleMetrics_IDMode(t *testing.T) {
 	// Metric 3
 	err = encoder.StartMetricID(11111, 3)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "metric3_val1", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "metric3_val1", "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "metric3_val2", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "metric3_val2", "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), "metric3_val3", "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), "metric3_val3", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -489,16 +489,16 @@ func TestTextEncoder_MultipleMetrics_IDMode(t *testing.T) {
 }
 
 func TestTextEncoder_MultipleMetrics_NameMode(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Metric 1
 	err = encoder.StartMetricName("cpu.usage", 2)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "50.5", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "50.5", "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "60.5", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "60.5", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -506,7 +506,7 @@ func TestTextEncoder_MultipleMetrics_NameMode(t *testing.T) {
 	// Metric 2
 	err = encoder.StartMetricName("memory.usage", 1)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), "1024", "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), "1024", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -514,11 +514,11 @@ func TestTextEncoder_MultipleMetrics_NameMode(t *testing.T) {
 	// Metric 3
 	err = encoder.StartMetricName("disk.usage", 3)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "75.2", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "75.2", "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "76.8", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "76.8", "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), "78.1", "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), "78.1", "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -534,19 +534,19 @@ func TestTextEncoder_MultipleMetrics_NameMode(t *testing.T) {
 // ==============================================================================
 
 func TestTextEncoder_AddDataPoint_BeforeStartMetric(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Try to add data point without starting metric
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 	require.Error(t, err)
 	require.ErrorIs(t, err, errs.ErrNoMetricStarted)
 }
 
 func TestTextEncoder_StartMetricID_ZeroPoints(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Try to start metric with 0 points
@@ -556,8 +556,8 @@ func TestTextEncoder_StartMetricID_ZeroPoints(t *testing.T) {
 }
 
 func TestTextEncoder_StartMetricName_EmptyName(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Try to start metric with empty name
@@ -567,29 +567,29 @@ func TestTextEncoder_StartMetricName_EmptyName(t *testing.T) {
 }
 
 func TestTextEncoder_AddDataPoint_TooManyPoints(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 2)
 	require.NoError(t, err)
 
 	// Add claimed number of points
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "")
 	require.NoError(t, err)
 
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), "world", "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), "world", "")
 	require.NoError(t, err)
 
 	// Try to add one more
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), "extra", "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), "extra", "")
 	require.Error(t, err)
 	require.ErrorIs(t, err, errs.ErrTooManyDataPoints)
 }
 
 func TestTextEncoder_StartMetric_WhileActive(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs)
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS)
 	require.NoError(t, err)
 
 	// Start first metric
@@ -603,8 +603,8 @@ func TestTextEncoder_StartMetric_WhileActive(t *testing.T) {
 }
 
 func TestTextEncoder_TagWithoutEnabled(t *testing.T) {
-	blobTs := time.Now()
-	encoder, err := NewTextEncoder(blobTs) // Tags not enabled
+	blobTS := time.Now()
+	encoder, err := NewTextEncoder(blobTS) // Tags not enabled
 	require.NoError(t, err)
 
 	err = encoder.StartMetricID(12345, 1)
@@ -612,7 +612,7 @@ func TestTextEncoder_TagWithoutEnabled(t *testing.T) {
 
 	// Try to add data point with tag when tags not enabled
 	// This should either error or silently ignore the tag
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), "hello", "my_tag")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), "hello", "my_tag")
 	// Note: Actual behavior depends on implementation
 	// The test currently expects no error, but implementation may vary
 	if err != nil {

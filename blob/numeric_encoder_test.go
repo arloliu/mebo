@@ -15,8 +15,8 @@ import (
 // ==============================================================================
 // Helper Functions
 func createTestBlob(t *testing.T, tsEncoding, valEncoding format.EncodingType) NumericBlob { //nolint: unparam
-	blobTs := time.Now()
-	encoder, err := NewNumericEncoder(blobTs,
+	blobTS := time.Now()
+	encoder, err := NewNumericEncoder(blobTS,
 		WithTimestampEncoding(tsEncoding),
 		WithValueEncoding(valEncoding))
 	require.NoError(t, err)
@@ -24,11 +24,11 @@ func createTestBlob(t *testing.T, tsEncoding, valEncoding format.EncodingType) N
 	// Metric 1: Multiple data points
 	err = encoder.StartMetricID(12345, 3)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.UnixMicro(), 1.5, "")
+	err = encoder.AddDataPoint(blobTS.UnixMicro(), 1.5, "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(time.Second).UnixMicro(), 2.5, "")
+	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), 2.5, "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(2*time.Second).UnixMicro(), 3.5, "")
+	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), 3.5, "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -36,7 +36,7 @@ func createTestBlob(t *testing.T, tsEncoding, valEncoding format.EncodingType) N
 	// Metric 2: Single data point
 	err = encoder.StartMetricID(67890, 1)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(3*time.Second).UnixMicro(), 4.5, "")
+	err = encoder.AddDataPoint(blobTS.Add(3*time.Second).UnixMicro(), 4.5, "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -44,9 +44,9 @@ func createTestBlob(t *testing.T, tsEncoding, valEncoding format.EncodingType) N
 	// Metric 3: Different timestamps
 	err = encoder.StartMetricID(11111, 2)
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(-time.Second).UnixMicro(), 5.5, "")
+	err = encoder.AddDataPoint(blobTS.Add(-time.Second).UnixMicro(), 5.5, "")
 	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTs.Add(5*time.Second).UnixMicro(), 6.5, "")
+	err = encoder.AddDataPoint(blobTS.Add(5*time.Second).UnixMicro(), 6.5, "")
 	require.NoError(t, err)
 	err = encoder.EndMetric()
 	require.NoError(t, err)
@@ -519,26 +519,26 @@ func TestNumericEncoder_ConfigurationMethods(t *testing.T) {
 	encoder := createTestEncoder(t)
 
 	t.Run("setTimestampEncoding", func(t *testing.T) {
-		err := encoder.NumericEncoderConfig.setTimestampEncoding(format.TypeRaw)
+		err := encoder.setTimestampEncoding(format.TypeRaw)
 		require.NoError(t, err)
 
-		err = encoder.NumericEncoderConfig.setTimestampEncoding(format.TypeDelta)
+		err = encoder.setTimestampEncoding(format.TypeDelta)
 		require.NoError(t, err)
 
-		err = encoder.NumericEncoderConfig.setTimestampEncoding(format.TypeGorilla)
+		err = encoder.setTimestampEncoding(format.TypeGorilla)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "gorilla encoding is not supported")
 
-		err = encoder.NumericEncoderConfig.setTimestampEncoding(format.EncodingType(99))
+		err = encoder.setTimestampEncoding(format.EncodingType(99))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid timestamp encoding")
 	})
 
 	t.Run("setValueEncoding", func(t *testing.T) {
-		err := encoder.NumericEncoderConfig.setValueEncoding(format.TypeRaw)
+		err := encoder.setValueEncoding(format.TypeRaw)
 		require.NoError(t, err)
 
-		err = encoder.NumericEncoderConfig.setValueEncoding(format.TypeGorilla)
+		err = encoder.setValueEncoding(format.TypeGorilla)
 		require.NoError(t, err)
 	})
 
@@ -549,24 +549,24 @@ func TestNumericEncoder_ConfigurationMethods(t *testing.T) {
 			format.CompressionS2,
 			format.CompressionLZ4,
 		} {
-			err := encoder.NumericEncoderConfig.setTimestampCompression(compression)
+			err := encoder.setTimestampCompression(compression)
 			require.NoError(t, err)
 		}
 	})
 
 	t.Run("setValueCompression", func(t *testing.T) {
-		err := encoder.NumericEncoderConfig.setValueCompression(format.CompressionNone)
+		err := encoder.setValueCompression(format.CompressionNone)
 		require.NoError(t, err)
 
-		err = encoder.NumericEncoderConfig.setValueCompression(format.CompressionZstd)
+		err = encoder.setValueCompression(format.CompressionZstd)
 		require.NoError(t, err)
 	})
 
 	t.Run("setEndianess", func(t *testing.T) {
 		// These should not return errors
-		encoder.NumericEncoderConfig.setEndianess(littleEndianOpt)
-		encoder.NumericEncoderConfig.setEndianess(bigEndianOpt)
-		encoder.NumericEncoderConfig.setEndianess(endianness(99)) // Should default to little endian
+		encoder.setEndianess(littleEndianOpt)
+		encoder.setEndianess(bigEndianOpt)
+		encoder.setEndianess(endianness(99)) // Should default to little endian
 	})
 }
 
