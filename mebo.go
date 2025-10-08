@@ -362,7 +362,7 @@ func NewTextDecoder(data []byte) (*blob.TextDecoder, error) {
 //   - blobs: Array of NumericBlob instances (typically from encoder.Finish())
 //
 // Returns:
-//   - *blob.NumericBlobSet: The created numeric blob set.
+//   - blob.NumericBlobSet: The created numeric blob set (immutable, safe for concurrent reads).
 //   - error: An error if the blobs are invalid.
 //
 // Example:
@@ -375,7 +375,7 @@ func NewTextDecoder(data []byte) (*blob.TextDecoder, error) {
 //	for dp := range blobSet.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
-func NewNumericBlobSet(blobs []blob.NumericBlob) (*blob.NumericBlobSet, error) {
+func NewNumericBlobSet(blobs []blob.NumericBlob) (blob.NumericBlobSet, error) {
 	return blob.NewNumericBlobSet(blobs)
 }
 
@@ -432,7 +432,7 @@ func NewMaterializedNumericBlobSet(blobs []blob.NumericBlob) (blob.MaterializedN
 //   - blobs: Array of TextBlob instances
 //
 // Returns:
-//   - *blob.TextBlobSet: The created text blob set.
+//   - blob.TextBlobSet: The created text blob set (immutable, safe for concurrent reads).
 //   - error: An error if the blobs are invalid.
 //
 // Example:
@@ -441,7 +441,7 @@ func NewMaterializedNumericBlobSet(blobs []blob.NumericBlob) (blob.MaterializedN
 //	for dp := range blobSet.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%s\n", dp.Ts, dp.Val)
 //	}
-func NewTextBlobSet(blobs []blob.TextBlob) (*blob.TextBlobSet, error) {
+func NewTextBlobSet(blobs []blob.TextBlob) (blob.TextBlobSet, error) {
 	return blob.NewTextBlobSet(blobs)
 }
 

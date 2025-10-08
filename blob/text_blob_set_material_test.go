@@ -10,7 +10,7 @@ import (
 )
 
 // Helper function to create a test TextBlobSet with specified number of blobs
-func createTestTextBlobSetForMaterialization(t *testing.T, numBlobs int, tsEnc format.EncodingType, withTags bool, metricsPerBlob map[uint64]int) *TextBlobSet {
+func createTestTextBlobSetForMaterialization(t *testing.T, numBlobs int, tsEnc format.EncodingType, withTags bool, metricsPerBlob map[uint64]int) TextBlobSet {
 	t.Helper()
 
 	blobs := make([]TextBlob, numBlobs)

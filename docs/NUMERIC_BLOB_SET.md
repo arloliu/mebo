@@ -22,16 +22,16 @@ Time-series databases typically store data in time windows (e.g., 1-hour or 1-da
 ### Constructor
 
 ```go
-func NewNumericBlobSet(blobs []NumericBlob) (*NumericBlobSet, error)
+func NewNumericBlobSet(blobs []NumericBlob) (NumericBlobSet, error)
 ```
 
-Creates a new `NumericBlobSet` and automatically sorts blobs by their `startTime` field.
+Creates a new immutable `NumericBlobSet` and automatically sorts blobs by their `startTime` field.
 
 **Parameters:**
 - `blobs`: Slice of `NumericBlob` instances (can be in any order)
 
 **Returns:**
-- `*NumericBlobSet`: The created blob set
+- `NumericBlobSet`: The created blob set (immutable, safe for concurrent reads)
 - `error`: Returns error if `blobs` slice is empty
 
 **Example:**
@@ -45,6 +45,7 @@ blobSet, err := blob.NewNumericBlobSet([]blob.NumericBlob{blob3, blob1, blob2})
 if err != nil {
     log.Fatal(err)
 }
+// blobSet is now immutable and safe for concurrent reads
 ```
 
 ### Iteration Methods

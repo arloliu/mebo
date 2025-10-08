@@ -68,12 +68,12 @@ func TestTextBlobSet_NewTextBlobSet(t *testing.T) {
 	// Test successful creation
 	blobSet, err := NewTextBlobSet(blobs)
 	require.NoError(t, err)
-	require.NotNil(t, blobSet)
 	require.Equal(t, 3, blobSet.Len())
 
 	// Test empty blobs error
-	_, err = NewTextBlobSet([]TextBlob{})
+	emptySet, err := NewTextBlobSet([]TextBlob{})
 	require.Error(t, err)
+	require.Equal(t, TextBlobSet{}, emptySet)
 	require.Contains(t, err.Error(), "empty blobs")
 }
 

@@ -425,14 +425,13 @@ func TestNewNumericBlobSet(t *testing.T) {
 
 		blobSet, err := NewNumericBlobSet(blobs)
 		require.NoError(t, err)
-		require.NotNil(t, blobSet)
 		require.Equal(t, 3, blobSet.Len())
 	})
 
 	t.Run("EmptyBlobs", func(t *testing.T) {
 		blobSet, err := NewNumericBlobSet([]NumericBlob{})
 		require.Error(t, err)
-		require.Nil(t, blobSet)
+		require.Equal(t, NumericBlobSet{}, blobSet)
 		require.Contains(t, err.Error(), "empty blobs")
 	})
 

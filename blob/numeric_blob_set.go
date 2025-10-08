@@ -7,13 +7,17 @@ import (
 	"time"
 )
 
-// NumericBlobSet represents a collection of NumericBlob instances that together
-// contain time-series data for metrics across multiple time windows.
+// NumericBlobSet represents an immutable collection of NumericBlob instances that
+// together contain time-series data for metrics across multiple time windows.
 //
 // The blobs are automatically sorted by their start time, enabling efficient
 // time-ordered iteration across the entire dataset. Metrics may not be present
 // in all blobs (e.g., sparse data where some metrics have no data points in certain
 // time windows).
+//
+// NumericBlobSet is designed to be immutable and safe for concurrent reads. Once
+// created, the set cannot be modified. Use value semantics when passing BlobSets
+// to functions.
 //
 // Example use case: A BlobSet containing hourly blobs for a 24-hour period,
 // where each blob contains metrics with data points for that hour.
@@ -22,12 +26,30 @@ type NumericBlobSet struct {
 }
 
 // NewNumericBlobSet creates a new NumericBlobSet from the provided blobs.
-// The blobs are automatically sorted by their start time in ascending order.
 //
-// Returns an error if the blobs slice is empty.
-func NewNumericBlobSet(blobs []NumericBlob) (*NumericBlobSet, error) {
+// The blobs are automatically sorted by their start time in ascending order.
+// The provided slice is copied to ensure immutability - modifications to the
+// original slice will not affect the returned BlobSet.
+//
+// Parameters:
+//   - blobs: Slice of NumericBlob instances to include in the set
+//
+// Returns:
+//   - NumericBlobSet: An immutable blob set with blobs sorted by start time
+//   - error: Returns an error if the blobs slice is empty
+//
+// Example:
+//
+//	blob1 := createBlob(time1, metrics1)
+//	blob2 := createBlob(time2, metrics2)
+//	blobSet, err := NewNumericBlobSet([]NumericBlob{blob1, blob2})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	// blobSet is immutable and safe for concurrent reads
+func NewNumericBlobSet(blobs []NumericBlob) (NumericBlobSet, error) {
 	if len(blobs) == 0 {
-		return nil, fmt.Errorf("cannot create NumericBlobSet with empty blobs")
+		return NumericBlobSet{}, fmt.Errorf("cannot create NumericBlobSet with empty blobs")
 	}
 
 	// Create a copy to avoid modifying the caller's slice
@@ -39,7 +61,7 @@ func NewNumericBlobSet(blobs []NumericBlob) (*NumericBlobSet, error) {
 		return a.startTime.Compare(b.startTime)
 	})
 
-	return &NumericBlobSet{
+	return NumericBlobSet{
 		blobs: sortedBlobs,
 	}, nil
 }
@@ -55,7 +77,7 @@ func NewNumericBlobSet(blobs []NumericBlob) (*NumericBlobSet, error) {
 // has 10 points and blob 1 has 5 points, indices will be 0-14.
 //
 // Performance: Single iteration through all blobs with minimal overhead.
-func (s *NumericBlobSet) All(metricID uint64) iter.Seq2[int, NumericDataPoint] {
+func (s NumericBlobSet) All(metricID uint64) iter.Seq2[int, NumericDataPoint] {
 	return func(yield func(int, NumericDataPoint) bool) {
 		globalIndex := 0
 		for i := range s.blobs {
@@ -77,7 +99,7 @@ func (s *NumericBlobSet) All(metricID uint64) iter.Seq2[int, NumericDataPoint] {
 // The iterator will seamlessly traverse all blobs, yielding timestamps in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped.
-func (s *NumericBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
+func (s NumericBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -96,7 +118,7 @@ func (s *NumericBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
 // The iterator will seamlessly traverse all blobs, yielding values in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped.
-func (s *NumericBlobSet) AllValues(metricID uint64) iter.Seq[float64] {
+func (s NumericBlobSet) AllValues(metricID uint64) iter.Seq[float64] {
 	return func(yield func(float64) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -115,7 +137,7 @@ func (s *NumericBlobSet) AllValues(metricID uint64) iter.Seq[float64] {
 // The iterator will seamlessly traverse all blobs, yielding tags in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped. Tags can be empty strings.
-func (s *NumericBlobSet) AllTags(metricID uint64) iter.Seq[string] {
+func (s NumericBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -129,7 +151,7 @@ func (s *NumericBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 }
 
 // Len returns the number of blobs in the set.
-func (s *NumericBlobSet) Len() int {
+func (s NumericBlobSet) Len() int {
 	return len(s.blobs)
 }
 
@@ -139,7 +161,7 @@ func (s *NumericBlobSet) Len() int {
 // Note: The actual time range extends beyond the last blob's start time
 // to include its data points. To get the exact end time, you would need
 // to inspect the last timestamp in the last blob.
-func (s *NumericBlobSet) TimeRange() (start, end time.Time) {
+func (s NumericBlobSet) TimeRange() (start, end time.Time) {
 	if len(s.blobs) == 0 {
 		return time.Time{}, time.Time{}
 	}
@@ -149,7 +171,7 @@ func (s *NumericBlobSet) TimeRange() (start, end time.Time) {
 
 // BlobAt returns the blob at the specified index.
 // Returns nil if the index is out of bounds.
-func (s *NumericBlobSet) BlobAt(index int) *NumericBlob {
+func (s NumericBlobSet) BlobAt(index int) *NumericBlob {
 	if index < 0 || index >= len(s.blobs) {
 		return nil
 	}
@@ -159,7 +181,7 @@ func (s *NumericBlobSet) BlobAt(index int) *NumericBlob {
 
 // Blobs returns all blobs in chronological order.
 // The returned slice is a copy and can be safely modified without affecting the set.
-func (s *NumericBlobSet) Blobs() []NumericBlob {
+func (s NumericBlobSet) Blobs() []NumericBlob {
 	result := make([]NumericBlob, len(s.blobs))
 	copy(result, s.blobs)
 
@@ -179,7 +201,7 @@ func (s *NumericBlobSet) Blobs() []NumericBlob {
 //   - The index falls within a blob that doesn't contain this metric
 //
 // Performance: O(log n) to find the blob + O(1) to access the value within the blob.
-func (s *NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
+func (s NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
 	}
@@ -219,7 +241,7 @@ func (s *NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 //   - The index falls within a blob that doesn't contain this metric
 //
 // Performance: O(log n) to find the blob + O(1) to access the timestamp within the blob.
-func (s *NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
+func (s NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
 	}
@@ -259,7 +281,7 @@ func (s *NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 //   - The index falls within a blob that doesn't contain this metric
 //
 // Performance: O(log n) to find the blob + O(1) to access the tag within the blob.
-func (s *NumericBlobSet) TagAt(metricID uint64, index int) (string, bool) {
+func (s NumericBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return "", false
 	}

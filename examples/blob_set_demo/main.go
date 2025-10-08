@@ -122,7 +122,7 @@ func createBlobForHour(baseTime time.Time, hourOffset int, metricNames ...string
 	return decodedBlob, nil
 }
 
-func queryMetric(blobSet *blob.NumericBlobSet, metricName string) {
+func queryMetric(blobSet blob.NumericBlobSet, metricName string) {
 	metricID := hash.ID(metricName)
 	count := 0
 	var firstTimestamp, lastTimestamp int64

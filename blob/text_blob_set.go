@@ -7,13 +7,17 @@ import (
 	"time"
 )
 
-// TextBlobSet represents a collection of TextBlob instances that together
-// contain time-series data for metrics across multiple time windows.
+// TextBlobSet represents an immutable collection of TextBlob instances that
+// together contain time-series data for metrics across multiple time windows.
 //
 // The blobs are automatically sorted by their start time, enabling efficient
 // time-ordered iteration across the entire dataset. Metrics may not be present
 // in all blobs (e.g., sparse data where some metrics have no data points in certain
 // time windows).
+//
+// TextBlobSet is designed to be immutable and safe for concurrent reads. Once
+// created, the set cannot be modified. Use value semantics when passing BlobSets
+// to functions.
 //
 // Example use case: A BlobSet containing hourly blobs for a 24-hour period,
 // where each blob contains metrics with data points for that hour.
@@ -22,12 +26,30 @@ type TextBlobSet struct {
 }
 
 // NewTextBlobSet creates a new TextBlobSet from the provided blobs.
-// The blobs are automatically sorted by their start time in ascending order.
 //
-// Returns an error if the blobs slice is empty.
-func NewTextBlobSet(blobs []TextBlob) (*TextBlobSet, error) {
+// The blobs are automatically sorted by their start time in ascending order.
+// The provided slice is copied to ensure immutability - modifications to the
+// original slice will not affect the returned BlobSet.
+//
+// Parameters:
+//   - blobs: Slice of TextBlob instances to include in the set
+//
+// Returns:
+//   - TextBlobSet: An immutable blob set with blobs sorted by start time
+//   - error: Returns an error if the blobs slice is empty
+//
+// Example:
+//
+//	blob1 := createBlob(time1, metrics1)
+//	blob2 := createBlob(time2, metrics2)
+//	blobSet, err := NewTextBlobSet([]TextBlob{blob1, blob2})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	// blobSet is immutable and safe for concurrent reads
+func NewTextBlobSet(blobs []TextBlob) (TextBlobSet, error) {
 	if len(blobs) == 0 {
-		return nil, fmt.Errorf("cannot create TextBlobSet with empty blobs")
+		return TextBlobSet{}, fmt.Errorf("cannot create TextBlobSet with empty blobs")
 	}
 
 	// Create a copy to avoid modifying the caller's slice
@@ -39,7 +61,7 @@ func NewTextBlobSet(blobs []TextBlob) (*TextBlobSet, error) {
 		return a.startTime.Compare(b.startTime)
 	})
 
-	return &TextBlobSet{
+	return TextBlobSet{
 		blobs: sortedBlobs,
 	}, nil
 }
@@ -55,7 +77,7 @@ func NewTextBlobSet(blobs []TextBlob) (*TextBlobSet, error) {
 // has 10 points and blob 1 has 5 points, indices will be 0-14.
 //
 // Performance: Single iteration through all blobs with minimal overhead.
-func (s *TextBlobSet) All(metricID uint64) iter.Seq2[int, TextDataPoint] {
+func (s TextBlobSet) All(metricID uint64) iter.Seq2[int, TextDataPoint] {
 	return func(yield func(int, TextDataPoint) bool) {
 		globalIndex := 0
 		for i := range s.blobs {
@@ -78,7 +100,7 @@ func (s *TextBlobSet) All(metricID uint64) iter.Seq2[int, TextDataPoint] {
 // name doesn't exist.
 //
 // The index is 0-based and continuous across all blobs.
-func (s *TextBlobSet) AllByName(metricName string) iter.Seq2[int, TextDataPoint] {
+func (s TextBlobSet) AllByName(metricName string) iter.Seq2[int, TextDataPoint] {
 	return func(yield func(int, TextDataPoint) bool) {
 		globalIndex := 0
 		for i := range s.blobs {
@@ -100,7 +122,7 @@ func (s *TextBlobSet) AllByName(metricName string) iter.Seq2[int, TextDataPoint]
 // The iterator will seamlessly traverse all blobs, yielding timestamps in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped.
-func (s *TextBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
+func (s TextBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -118,7 +140,7 @@ func (s *TextBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
 //
 // Returns an empty iterator if any blob doesn't support metric names or the metric
 // name doesn't exist.
-func (s *TextBlobSet) AllTimestampsByName(metricName string) iter.Seq[int64] {
+func (s TextBlobSet) AllTimestampsByName(metricName string) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -137,7 +159,7 @@ func (s *TextBlobSet) AllTimestampsByName(metricName string) iter.Seq[int64] {
 // The iterator will seamlessly traverse all blobs, yielding values in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped.
-func (s *TextBlobSet) AllValues(metricID uint64) iter.Seq[string] {
+func (s TextBlobSet) AllValues(metricID uint64) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -155,7 +177,7 @@ func (s *TextBlobSet) AllValues(metricID uint64) iter.Seq[string] {
 //
 // Returns an empty iterator if any blob doesn't support metric names or the metric
 // name doesn't exist.
-func (s *TextBlobSet) AllValuesByName(metricName string) iter.Seq[string] {
+func (s TextBlobSet) AllValuesByName(metricName string) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -174,7 +196,7 @@ func (s *TextBlobSet) AllValuesByName(metricName string) iter.Seq[string] {
 // The iterator will seamlessly traverse all blobs, yielding tags in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped. Tags can be empty strings.
-func (s *TextBlobSet) AllTags(metricID uint64) iter.Seq[string] {
+func (s TextBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -192,7 +214,7 @@ func (s *TextBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 //
 // Returns an empty iterator if any blob doesn't support metric names or the metric
 // name doesn't exist.
-func (s *TextBlobSet) AllTagsByName(metricName string) iter.Seq[string] {
+func (s TextBlobSet) AllTagsByName(metricName string) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
@@ -206,7 +228,7 @@ func (s *TextBlobSet) AllTagsByName(metricName string) iter.Seq[string] {
 }
 
 // Len returns the number of blobs in the set.
-func (s *TextBlobSet) Len() int {
+func (s TextBlobSet) Len() int {
 	return len(s.blobs)
 }
 
@@ -216,7 +238,7 @@ func (s *TextBlobSet) Len() int {
 // Note: The actual time range extends beyond the last blob's start time
 // to include its data points. To get the exact end time, you would need
 // to inspect the last timestamp in the last blob.
-func (s *TextBlobSet) TimeRange() (start, end time.Time) {
+func (s TextBlobSet) TimeRange() (start, end time.Time) {
 	if len(s.blobs) == 0 {
 		return time.Time{}, time.Time{}
 	}
@@ -226,7 +248,7 @@ func (s *TextBlobSet) TimeRange() (start, end time.Time) {
 
 // BlobAt returns the blob at the specified index.
 // Returns nil if the index is out of bounds.
-func (s *TextBlobSet) BlobAt(index int) *TextBlob {
+func (s TextBlobSet) BlobAt(index int) *TextBlob {
 	if index < 0 || index >= len(s.blobs) {
 		return nil
 	}
@@ -236,7 +258,7 @@ func (s *TextBlobSet) BlobAt(index int) *TextBlob {
 
 // Blobs returns all blobs in chronological order.
 // The returned slice is a copy and can be safely modified without affecting the set.
-func (s *TextBlobSet) Blobs() []TextBlob {
+func (s TextBlobSet) Blobs() []TextBlob {
 	result := make([]TextBlob, len(s.blobs))
 	copy(result, s.blobs)
 
@@ -256,7 +278,7 @@ func (s *TextBlobSet) Blobs() []TextBlob {
 //   - The index falls within a blob that doesn't contain this metric
 //
 // Performance: O(n) where n is the number of blobs to skip to reach the target index.
-func (s *TextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
+func (s TextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return "", false
 	}
@@ -296,7 +318,7 @@ func (s *TextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
 //   - The index falls within a blob that doesn't contain this metric
 //
 // Performance: O(n) where n is the number of blobs to skip to reach the target index.
-func (s *TextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
+func (s TextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
 	}
@@ -336,7 +358,7 @@ func (s *TextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 //   - The index falls within a blob that doesn't contain this metric
 //
 // Performance: O(n) where n is the number of blobs to skip to reach the target index.
-func (s *TextBlobSet) TagAt(metricID uint64, index int) (string, bool) {
+func (s TextBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return "", false
 	}
