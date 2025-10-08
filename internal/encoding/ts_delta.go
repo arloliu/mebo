@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"iter"
 
+	"github.com/arloliu/mebo/encoding"
+
 	"github.com/arloliu/mebo/internal/pool"
 )
 
@@ -48,7 +50,7 @@ type TimestampDeltaEncoder struct {
 	count     int
 }
 
-var _ ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
+var _ encoding.ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
 
 // NewTimestampDeltaEncoder creates a new delta-of-delta compressed timestamp encoder.
 //
@@ -356,7 +358,7 @@ func (e *TimestampDeltaEncoder) Finish() {
 //   - High throughput: Optimized for time-series data processing
 type TimestampDeltaDecoder struct{}
 
-var _ ColumnarDecoder[int64] = TimestampDeltaDecoder{}
+var _ encoding.ColumnarDecoder[int64] = TimestampDeltaDecoder{}
 
 // NewTimestampDeltaDecoder creates a new high-performance delta-of-delta timestamp decoder.
 //

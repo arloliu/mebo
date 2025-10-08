@@ -5,10 +5,10 @@ import (
 	"math"
 	"time"
 
-	"github.com/arloliu/mebo/encoding"
 	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/collision"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/internal/options"
 	"github.com/arloliu/mebo/internal/pool"
@@ -31,7 +31,7 @@ import (
 type TextEncoder struct {
 	*TextEncoderConfig
 
-	dataEncoder *encoding.VarStringEncoder // Encodes all data points (timestamps + values + tags)
+	dataEncoder *ienc.VarStringEncoder // Encodes all data points (timestamps + values + tags)
 
 	curMetricID uint64 // current metric ID being encoded
 	claimed     int    // number of data points claimed for the current metric
@@ -86,7 +86,7 @@ func NewTextEncoder(blobTS time.Time, opts ...TextEncoderOption) (*TextEncoder, 
 	}
 
 	// Initialize data encoder
-	encoder.dataEncoder = encoding.NewVarStringEncoder(encoder.engine)
+	encoder.dataEncoder = ienc.NewVarStringEncoder(encoder.engine)
 
 	if err := encoder.setCodecs(*encoder.header); err != nil {
 		return nil, err
@@ -300,11 +300,11 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 	}
 
 	// Validate lengths before encoding
-	if len(value) > encoding.MaxTextLength {
-		return fmt.Errorf("value length %d exceeds maximum %d", len(value), encoding.MaxTextLength)
+	if len(value) > ienc.MaxTextLength {
+		return fmt.Errorf("value length %d exceeds maximum %d", len(value), ienc.MaxTextLength)
 	}
-	if e.header.Flag.HasTag() && len(tag) > encoding.MaxTextLength {
-		return fmt.Errorf("tag length %d exceeds maximum %d", len(tag), encoding.MaxTextLength)
+	if e.header.Flag.HasTag() && len(tag) > ienc.MaxTextLength {
+		return fmt.Errorf("tag length %d exceeds maximum %d", len(tag), ienc.MaxTextLength)
 	}
 
 	// NEW LAYOUT: Group length bytes together before data
@@ -423,7 +423,7 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 	var namesPayload []byte
 	if e.identifierMode == modeNameManaged && e.collisionTracker != nil {
 		var err error
-		namesPayload, err = encoding.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
+		namesPayload, err = ienc.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encode metric names: %w", err)
 		}

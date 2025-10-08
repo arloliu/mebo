@@ -5,6 +5,8 @@ import (
 	"iter"
 	"unsafe"
 
+	"github.com/arloliu/mebo/encoding"
+
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/internal/pool"
 )
@@ -15,7 +17,7 @@ type TimestampRawEncoder struct {
 	engine endian.EndianEngine
 }
 
-var _ ColumnarEncoder[int64] = (*TimestampRawEncoder)(nil)
+var _ encoding.ColumnarEncoder[int64] = (*TimestampRawEncoder)(nil)
 
 // NewTimestampRawEncoder creates a new raw timestamp encoder using the specified endian engine.
 //
@@ -246,7 +248,7 @@ type TimestampRawDecoder struct {
 	engine endian.EndianEngine
 }
 
-var _ ColumnarDecoder[int64] = TimestampRawDecoder{}
+var _ encoding.ColumnarDecoder[int64] = TimestampRawDecoder{}
 
 // NewTimestampRawDecoder creates a new raw timestamp decoder using the specified endian engine.
 //
@@ -350,7 +352,7 @@ func (d TimestampRawDecoder) At(data []byte, index int, count int) (int64, bool)
 // Using this decoder with improperly aligned or sized data may lead to undefined behavior.
 type TimestampRawUnsafeDecoder struct{}
 
-var _ ColumnarDecoder[int64] = TimestampRawUnsafeDecoder{}
+var _ encoding.ColumnarDecoder[int64] = TimestampRawUnsafeDecoder{}
 
 // NewTimestampRawUnsafeDecoder creates a new raw timestamp decoder.
 //

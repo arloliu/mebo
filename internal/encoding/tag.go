@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"iter"
 
+	"github.com/arloliu/mebo/encoding"
+
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/internal/pool"
 )
@@ -21,7 +23,7 @@ type TagEncoder struct {
 	engine endian.EndianEngine
 }
 
-var _ ColumnarEncoder[string] = (*TagEncoder)(nil)
+var _ encoding.ColumnarEncoder[string] = (*TagEncoder)(nil)
 
 // NewTagEncoder creates a new tag encoder.
 // The engine parameter is kept for interface compatibility but not used
@@ -202,7 +204,7 @@ type TagDecoder struct {
 	engine endian.EndianEngine
 }
 
-var _ ColumnarDecoder[string] = TagDecoder{}
+var _ encoding.ColumnarDecoder[string] = TagDecoder{}
 
 // NewTagDecoder creates a new tag decoder.
 // The engine parameter is kept for interface compatibility but not used

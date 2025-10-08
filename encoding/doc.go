@@ -1,24 +1,80 @@
-// Package encoding provides low-level encoding and decoding algorithms for mebo time-series data.
+// Package encoding provides low-level encoding and decoding interfaces for mebo time-series data.
 //
-// This package implements the columnar encoding strategies that power mebo's space-efficient
-// binary format. It provides specialized encoders and decoders for timestamps, numeric values,
-// text values, and tags.
+// This package defines the generic ColumnarEncoder and ColumnarDecoder interfaces that
+// power mebo's space-efficient binary format. Concrete implementations live in the
+// internal/encoding package.
 //
 // # Usage Guidance
 //
-// This package is designed for advanced use cases and internal implementation details.
+// This package is designed for advanced use cases and defining custom encoders.
 // Most users should use the high-level blob package instead, which provides:
 //   - Automatic encoding selection based on data patterns
 //   - Integrated compression and formatting
 //   - Simpler API for common operations
 //
 // Use this package directly only when:
-//   - Building custom storage formats that integrate with mebo
-//   - Implementing specialized encoding strategies
-//   - Optimizing for very specific data patterns
+//   - Implementing custom encoding strategies for specialized data patterns
+//   - Building third-party encoder plugins
+//   - Creating custom storage formats that integrate with mebo
 //   - Understanding mebo's internal encoding mechanisms
 //
-// For typical use cases, see: github.com/arlolib/mebo/blob
+// For typical use cases, see: github.com/arloliu/mebo/blob
+//
+// # Custom Encoder Example
+//
+// To implement a custom encoder, implement the ColumnarEncoder[T] interface:
+//
+//	package myencoder
+//
+//	import "github.com/arloliu/mebo/encoding"
+//
+//	type MyCustomEncoder struct {
+//	    buffer []byte
+//	    count  int
+//	}
+//
+//	func NewMyCustomEncoder() *MyCustomEncoder {
+//	    return &MyCustomEncoder{buffer: make([]byte, 0, 1024)}
+//	}
+//
+//	// Implement encoding.ColumnarEncoder[float64] interface
+//	func (e *MyCustomEncoder) Write(data float64) { /* ... */ }
+//	func (e *MyCustomEncoder) WriteSlice(data []float64) { /* ... */ }
+//	func (e *MyCustomEncoder) Bytes() []byte { return e.buffer }
+//	func (e *MyCustomEncoder) Len() int { return e.count }
+//	func (e *MyCustomEncoder) Size() int { return len(e.buffer) }
+//	func (e *MyCustomEncoder) Reset() { /* ... */ }
+//	func (e *MyCustomEncoder) Finish() { /* ... */ }
+//
+// Then use it with the blob package:
+//
+//	import (
+//	    "github.com/arloliu/mebo/blob"
+//	    "mypackage/myencoder"
+//	)
+//
+//	encoder := blob.NewNumericEncoder(
+//	    blob.WithValueEncoder(myencoder.NewMyCustomEncoder()),
+//	)
+//
+// # Built-in Implementations
+//
+// Mebo provides several built-in encoding implementations in the internal/encoding package:
+//
+// Timestamp Encoders (for int64 Unix microseconds):
+//   - TimestampRawEncoder/Decoder - No compression, 8 bytes per timestamp
+//   - TimestampDeltaEncoder/Decoder - Delta-of-delta compression, 1-5 bytes per timestamp
+//
+// Numeric Value Encoders (for float64 values):
+//   - NumericRawEncoder/Decoder - No compression, 8 bytes per value
+//   - NumericGorillaEncoder/Decoder - Facebook's Gorilla compression, 1-8 bytes per value
+//
+// Text Value Encoders (for string values):
+//   - VarStringEncoder/Decoder - Variable-length encoding with varint lengths
+//   - TagEncoder/Decoder - Tag metadata encoding
+//
+// These implementations are used internally by the blob package based on the configured
+// encoding strategy (Raw, Delta, Gorilla).
 //
 // # Overview
 //

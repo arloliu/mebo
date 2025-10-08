@@ -6,6 +6,8 @@ import (
 	"math"
 	"unsafe"
 
+	"github.com/arloliu/mebo/encoding"
+
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/internal/pool"
 )
@@ -23,7 +25,7 @@ type NumericRawEncoder struct {
 	count  int
 }
 
-var _ ColumnarEncoder[float64] = (*NumericRawEncoder)(nil)
+var _ encoding.ColumnarEncoder[float64] = (*NumericRawEncoder)(nil)
 
 // NewNumericRawEncoder creates a new raw float value encoder using the specified endian engine.
 //
@@ -233,7 +235,7 @@ type NumericRawDecoder struct {
 	engine endian.EndianEngine
 }
 
-var _ ColumnarDecoder[float64] = NumericRawDecoder{}
+var _ encoding.ColumnarDecoder[float64] = NumericRawDecoder{}
 
 // NewNumericRawDecoder creates a new raw numeric decoder using the specified endian engine.
 //
@@ -330,7 +332,7 @@ type NumericRawUnsafeDecoder struct {
 	engine endian.EndianEngine
 }
 
-var _ ColumnarDecoder[float64] = NumericRawUnsafeDecoder{}
+var _ encoding.ColumnarDecoder[float64] = NumericRawUnsafeDecoder{}
 
 // NewNumericRawUnsafeDecoder creates a new raw numeric decoder using unsafe operations for optimal performance.
 //

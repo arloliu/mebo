@@ -9,6 +9,7 @@ import (
 	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/collision"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/internal/options"
 	"github.com/arloliu/mebo/section"
@@ -145,9 +146,9 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	enc := encoder.header.Flag.ValueEncoding()
 	switch enc {
 	case format.TypeRaw:
-		encoder.valEncoder = encoding.NewNumericRawEncoder(encoder.engine)
+		encoder.valEncoder = ienc.NewNumericRawEncoder(encoder.engine)
 	case format.TypeGorilla:
-		encoder.valEncoder = encoding.NewNumericGorillaEncoder()
+		encoder.valEncoder = ienc.NewNumericGorillaEncoder()
 	case format.TypeDelta:
 		return nil, fmt.Errorf("value encoding %s not supported yet", enc.String())
 	default:
@@ -157,14 +158,14 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	enc = encoder.header.Flag.TimestampEncoding()
 	switch enc { //nolint: exhaustive
 	case format.TypeRaw:
-		encoder.tsEncoder = encoding.NewTimestampRawEncoder(encoder.engine)
+		encoder.tsEncoder = ienc.NewTimestampRawEncoder(encoder.engine)
 	case format.TypeDelta:
-		encoder.tsEncoder = encoding.NewTimestampDeltaEncoder()
+		encoder.tsEncoder = ienc.NewTimestampDeltaEncoder()
 	default:
 		return nil, fmt.Errorf("invalid timestamp encoding: %s", enc.String())
 	}
 
-	encoder.tagEncoder = encoding.NewTagEncoder(encoder.engine)
+	encoder.tagEncoder = ienc.NewTagEncoder(encoder.engine)
 
 	if err := encoder.setCodecs(*encoder.header); err != nil {
 		return nil, err
@@ -490,7 +491,7 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// In ID mode, collisionTracker is nil, so we skip this entirely
 	var metricNamesPayload []byte
 	if e.collisionTracker != nil && finalHeader.Flag.HasMetricNames() {
-		metricNamesPayload, err = encoding.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
+		metricNamesPayload, err = ienc.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encode metric names: %w", err)
 		}

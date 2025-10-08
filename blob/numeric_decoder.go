@@ -5,10 +5,10 @@ import (
 	"time"
 
 	"github.com/arloliu/mebo/compress"
-	"github.com/arloliu/mebo/encoding"
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
 )
@@ -119,7 +119,7 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 
 	// Step 5: Verify and populate metric name map (if metric names present)
 	if len(metricNames) > 0 {
-		if err := encoding.VerifyMetricNamesHashes(metricNames, metricIDs, hash.ID); err != nil {
+		if err := ienc.VerifyMetricNamesHashes(metricNames, metricIDs, hash.ID); err != nil {
 			return blob, fmt.Errorf("metric name verification failed: %w", err)
 		}
 
@@ -165,7 +165,7 @@ func (d *NumericDecoder) parseMetricNames() ([]string, int, error) {
 		return nil, section.HeaderSize, nil
 	}
 
-	metricNames, bytesRead, err := encoding.DecodeMetricNames(d.data[section.HeaderSize:], d.engine)
+	metricNames, bytesRead, err := ienc.DecodeMetricNames(d.data[section.HeaderSize:], d.engine)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to decode metric names: %w", err)
 	}

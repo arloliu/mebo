@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/bits"
 
+	"github.com/arloliu/mebo/encoding"
 	"github.com/arloliu/mebo/internal/pool"
 )
 
@@ -41,7 +42,7 @@ type NumericGorillaEncoder struct {
 	buf *pool.ByteBuffer // Byte buffer for storing encoded data
 }
 
-var _ ColumnarEncoder[float64] = (*NumericGorillaEncoder)(nil)
+var _ encoding.ColumnarEncoder[float64] = (*NumericGorillaEncoder)(nil)
 
 // NewNumericGorillaEncoder creates a new Gorilla encoder for float64 values.
 //
@@ -476,7 +477,7 @@ func (e *NumericGorillaEncoder) flushBits() {
 // This decoder is stateless and can be used concurrently for different data streams.
 type NumericGorillaDecoder struct{}
 
-var _ ColumnarDecoder[float64] = NumericGorillaDecoder{}
+var _ encoding.ColumnarDecoder[float64] = NumericGorillaDecoder{}
 
 // NewNumericGorillaDecoder creates a new Gorilla decoder for float64 values.
 //
