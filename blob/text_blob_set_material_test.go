@@ -327,3 +327,168 @@ func TestMaterializedTextBlobSet_Correctness(t *testing.T) {
 		})
 	}
 }
+
+// TestTextBlobSet_MaterializeMetric tests single metric materialization by ID
+func TestTextBlobSet_MaterializeMetric(t *testing.T) {
+	tests := []struct {
+		name     string
+		tsEnc    format.EncodingType
+		withTags bool
+	}{
+		{
+			name:     "delta encoding with tags",
+			tsEnc:    format.TypeDelta,
+			withTags: true,
+		},
+		{
+			name:     "raw encoding without tags",
+			tsEnc:    format.TypeRaw,
+			withTags: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create blob set with 3 blobs, 2 metrics per blob
+			metricID1 := uint64(100)
+			metricID2 := uint64(200)
+			metricsPerBlob := map[uint64]int{
+				metricID1: 10,
+				metricID2: 20,
+			}
+
+			blobSet := createTestTextBlobSetForMaterialization(t, 3, tt.tsEnc, tt.withTags, metricsPerBlob)
+
+			// Materialize first metric
+			metric, ok := blobSet.MaterializeMetric(metricID1)
+			require.True(t, ok)
+			require.Equal(t, metricID1, metric.MetricID)
+			require.Len(t, metric.Timestamps, 30) // 3 blobs × 10 points
+			require.Len(t, metric.Values, 30)
+
+			if tt.withTags {
+				require.Len(t, metric.Tags, 30)
+			} else {
+				require.Nil(t, metric.Tags)
+			}
+
+			// Verify O(1) access works
+			val, ok := metric.ValueAt(0)
+			require.True(t, ok)
+			require.Equal(t, metric.Values[0], val)
+
+			val, ok = metric.ValueAt(15)
+			require.True(t, ok)
+			require.Equal(t, metric.Values[15], val)
+
+			// Materialize second metric
+			metric2, ok := blobSet.MaterializeMetric(metricID2)
+			require.True(t, ok)
+			require.Equal(t, metricID2, metric2.MetricID)
+			require.Len(t, metric2.Timestamps, 60) // 3 blobs × 20 points
+			require.Len(t, metric2.Values, 60)
+
+			// Test non-existent metric
+			_, ok = blobSet.MaterializeMetric(999)
+			require.False(t, ok)
+		})
+	}
+}
+
+// TestTextBlobSet_MaterializeMetricByName tests single metric materialization by name
+func TestTextBlobSet_MaterializeMetricByName(t *testing.T) {
+	// Create blob set with metric names
+	baseTime := time.Now()
+	blobs := make([]TextBlob, 2)
+
+	for blobIdx := range 2 {
+		startTime := baseTime.Add(time.Duration(blobIdx) * time.Hour)
+		encoder, err := NewTextEncoder(
+			startTime,
+			WithTextTimestampEncoding(format.TypeDelta),
+			WithTextTagsEnabled(false),
+		)
+		require.NoError(t, err)
+
+		// Add metrics with names
+		err = encoder.StartMetricName("system.load", 3)
+		require.NoError(t, err)
+		for range 3 {
+			err = encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), "value", "")
+			require.NoError(t, err)
+			startTime = startTime.Add(time.Second)
+		}
+		require.NoError(t, encoder.EndMetric())
+
+		err = encoder.StartMetricName("network.bytes", 2)
+		require.NoError(t, err)
+		for range 2 {
+			err = encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), "data", "")
+			require.NoError(t, err)
+			startTime = startTime.Add(time.Second)
+		}
+		require.NoError(t, encoder.EndMetric())
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewTextDecoder(data)
+		require.NoError(t, err)
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+		blobs[blobIdx] = blob
+	}
+
+	blobSet, err := NewTextBlobSet(blobs)
+	require.NoError(t, err)
+
+	// Materialize by name
+	metric, ok := blobSet.MaterializeMetricByName("system.load")
+	require.True(t, ok)
+	require.Len(t, metric.Values, 6) // 2 blobs × 3 points
+
+	metric2, ok := blobSet.MaterializeMetricByName("network.bytes")
+	require.True(t, ok)
+	require.Len(t, metric2.Values, 4) // 2 blobs × 2 points
+
+	// Non-existent metric name
+	_, ok = blobSet.MaterializeMetricByName("nonexistent")
+	require.False(t, ok)
+}
+
+// TestTextBlobSet_MaterializeMetric_EmptyBlobSet tests edge case with empty blob set
+func TestTextBlobSet_MaterializeMetric_EmptyBlobSet(t *testing.T) {
+	// Create blob set and try to materialize a metric that doesn't exist
+	metricsPerBlob := map[uint64]int{
+		uint64(100): 5,
+	}
+
+	blobSet := createTestTextBlobSetForMaterialization(t, 2, format.TypeDelta, false, metricsPerBlob)
+
+	// Try to materialize a metric that doesn't exist
+	_, ok := blobSet.MaterializeMetric(999)
+	require.False(t, ok, "should return false for non-existent metric")
+}
+
+// TestTextBlobSet_MaterializeMetric_SingleBlob tests with just one blob
+func TestTextBlobSet_MaterializeMetric_SingleBlob(t *testing.T) {
+	metricID := uint64(100)
+	metricsPerBlob := map[uint64]int{
+		metricID: 10,
+	}
+
+	blobSet := createTestTextBlobSetForMaterialization(t, 1, format.TypeDelta, true, metricsPerBlob)
+
+	metric, ok := blobSet.MaterializeMetric(metricID)
+	require.True(t, ok)
+	require.Len(t, metric.Timestamps, 10)
+	require.Len(t, metric.Values, 10)
+	require.Len(t, metric.Tags, 10)
+
+	// Verify sequential access works
+	for i := range 10 {
+		val, ok := metric.ValueAt(i)
+		require.True(t, ok)
+		require.Equal(t, metric.Values[i], val)
+	}
+}

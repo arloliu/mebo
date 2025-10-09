@@ -587,3 +587,198 @@ func TestMaterializedNumericBlobSet_Correctness_AllEncodings(t *testing.T) {
 		})
 	}
 }
+
+// TestNumericBlobSet_MaterializeMetric tests single metric materialization by ID
+func TestNumericBlobSet_MaterializeMetric(t *testing.T) {
+	tests := []struct {
+		name     string
+		tsEnc    format.EncodingType
+		valEnc   format.EncodingType
+		withTags bool
+	}{
+		{
+			name:     "delta encoding with tags",
+			tsEnc:    format.TypeDelta,
+			valEnc:   format.TypeGorilla,
+			withTags: true,
+		},
+		{
+			name:     "raw encoding without tags",
+			tsEnc:    format.TypeRaw,
+			valEnc:   format.TypeRaw,
+			withTags: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create blob set with 3 blobs, 2 metrics per blob
+			metricID1 := uint64(100)
+			metricID2 := uint64(200)
+			metricsPerBlob := map[uint64]int{
+				metricID1: 5, // 5 points per blob
+				metricID2: 3, // 3 points per blob
+			}
+
+			blobSet := createTestBlobSetForMaterialization(t, 3, tt.tsEnc, tt.valEnc, tt.withTags, metricsPerBlob)
+
+			// Test: Materialize only metricID1
+			metric, ok := blobSet.MaterializeMetric(metricID1)
+			require.True(t, ok, "metric should be found")
+			require.Equal(t, metricID1, metric.MetricID)
+			require.Len(t, metric.Timestamps, 15, "should have 5 points × 3 blobs")
+			require.Len(t, metric.Values, 15)
+
+			// Verify data points match sequential iteration
+			expectedValues := []float64{}
+			expectedTimestamps := []int64{}
+			for i := range blobSet.blobs {
+				blob := &blobSet.blobs[i]
+				for _, dp := range blob.All(metricID1) {
+					expectedValues = append(expectedValues, dp.Val)
+					expectedTimestamps = append(expectedTimestamps, dp.Ts)
+				}
+			}
+
+			require.Equal(t, len(expectedValues), len(metric.Values))
+			for i := range len(expectedValues) {
+				require.Equal(t, expectedTimestamps[i], metric.Timestamps[i], "timestamp mismatch at index %d", i)
+				require.Equal(t, expectedValues[i], metric.Values[i], "value mismatch at index %d", i)
+			} // Verify tags
+			if tt.withTags {
+				require.Len(t, metric.Tags, 15)
+				for i := range 15 {
+					pointIdx := i % 5
+					expectedTag := "tag" + string(rune('A'+pointIdx%3))
+					require.Equal(t, expectedTag, metric.Tags[i], "tag mismatch at index %d", i)
+				}
+			} else {
+				require.Empty(t, metric.Tags)
+			}
+
+			// Test: Access methods work without passing metric ID
+			val, ok := metric.ValueAt(10)
+			require.True(t, ok)
+			require.Equal(t, metric.Values[10], val)
+
+			ts, ok := metric.TimestampAt(5)
+			require.True(t, ok)
+			require.Equal(t, metric.Timestamps[5], ts)
+
+			// Test: Materialize non-existent metric
+			_, ok = blobSet.MaterializeMetric(999)
+			require.False(t, ok, "non-existent metric should not be found")
+		})
+	}
+}
+
+// TestNumericBlobSet_MaterializeMetricByName tests single metric materialization by name
+func TestNumericBlobSet_MaterializeMetricByName(t *testing.T) {
+	// Create blob set with metric names
+	baseTime := time.Now()
+	blobs := make([]NumericBlob, 2)
+
+	for blobIdx := range 2 {
+		startTime := baseTime.Add(time.Duration(blobIdx) * time.Hour)
+		encoder, err := NewNumericEncoder(
+			startTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+			WithTagsEnabled(false),
+		)
+		require.NoError(t, err)
+
+		// Add metrics with names
+		err = encoder.StartMetricName("cpu.usage", 3)
+		require.NoError(t, err)
+		for i := range 3 {
+			ts := int64(blobIdx*1000000 + i*1000)
+			val := float64(50 + blobIdx*10 + i)
+			err = encoder.AddDataPoint(ts, val, "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		err = encoder.StartMetricName("memory.usage", 2)
+		require.NoError(t, err)
+		for i := range 2 {
+			ts := int64(blobIdx*1000000 + i*1000)
+			val := float64(80 + blobIdx*10 + i)
+			err = encoder.AddDataPoint(ts, val, "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blobs[blobIdx], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := NewNumericBlobSet(blobs)
+	require.NoError(t, err)
+
+	// Test: Materialize by name
+	metric, ok := blobSet.MaterializeMetricByName("cpu.usage")
+	require.True(t, ok, "metric should be found by name")
+	require.Len(t, metric.Timestamps, 6, "should have 3 points × 2 blobs")
+	require.Len(t, metric.Values, 6)
+
+	// Verify data
+	expectedValues := []float64{50, 51, 52, 60, 61, 62}
+	for i, expectedVal := range expectedValues {
+		require.Equal(t, expectedVal, metric.Values[i], "value mismatch at index %d", i)
+	}
+
+	// Test: Access without metric name parameter
+	val, ok := metric.ValueAt(3)
+	require.True(t, ok)
+	require.Equal(t, 60.0, val)
+
+	// Test: Non-existent metric name
+	_, ok = blobSet.MaterializeMetricByName("disk.usage")
+	require.False(t, ok, "non-existent metric should not be found")
+}
+
+// TestNumericBlobSet_MaterializeMetric_EmptyBlobSet tests edge case with empty blob set
+func TestNumericBlobSet_MaterializeMetric_EmptyBlobSet(t *testing.T) {
+	// Create empty blob set would fail in NewNumericBlobSet, so test with metric not in any blob
+	metricsPerBlob := map[uint64]int{
+		uint64(100): 5,
+	}
+
+	blobSet := createTestBlobSetForMaterialization(t, 2, format.TypeDelta, format.TypeGorilla, false, metricsPerBlob)
+
+	// Try to materialize a metric that doesn't exist
+	_, ok := blobSet.MaterializeMetric(999)
+	require.False(t, ok, "should return false for non-existent metric")
+}
+
+// TestNumericBlobSet_MaterializeMetric_SingleBlob tests with just one blob
+func TestNumericBlobSet_MaterializeMetric_SingleBlob(t *testing.T) {
+	metricID := uint64(100)
+	metricsPerBlob := map[uint64]int{
+		metricID: 10,
+	}
+
+	blobSet := createTestBlobSetForMaterialization(t, 1, format.TypeDelta, format.TypeGorilla, true, metricsPerBlob)
+
+	metric, ok := blobSet.MaterializeMetric(metricID)
+	require.True(t, ok)
+	require.Len(t, metric.Timestamps, 10)
+	require.Len(t, metric.Values, 10)
+	require.Len(t, metric.Tags, 10)
+
+	// Verify sequential access works
+	for i := range 10 {
+		val, ok := metric.ValueAt(i)
+		require.True(t, ok)
+		require.Equal(t, metric.Values[i], val)
+	}
+}

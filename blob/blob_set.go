@@ -865,6 +865,146 @@ func (bs BlobSet) MaterializeText() MaterializedTextBlobSet {
 	return textSet.Materialize()
 }
 
+// MaterializeNumericMetric materializes a single numeric metric by ID from all numeric blobs
+// in this BlobSet for O(1) random access without needing to pass metric ID on each call.
+//
+// This is a thin wrapper that delegates to NumericBlobSet.MaterializeMetric().
+//
+// Parameters:
+//   - metricID: The metric ID to materialize
+//
+// Returns:
+//   - MaterializedNumericMetric: The materialized metric with direct access methods
+//   - bool: false if the metric is not found in any numeric blob
+//
+// Performance:
+//   - Materialization cost: ~100μs (one-time, for one metric across all blobs)
+//   - Random access: ~5ns (O(1), direct array indexing)
+//   - Memory: ~16 bytes per data point × total data points for this metric
+//
+// Example:
+//
+//	blobSet := NewBlobSet(numericBlobs, textBlobs)
+//	metric, ok := blobSet.MaterializeNumericMetric(metricID)
+//	if ok {
+//	    val, _ := metric.ValueAt(150)  // O(1) access, no metric ID needed
+//	}
+func (bs BlobSet) MaterializeNumericMetric(metricID uint64) (MaterializedNumericMetric, bool) {
+	if len(bs.numericBlobs) == 0 {
+		return MaterializedNumericMetric{}, false
+	}
+
+	// Create NumericBlobSet and delegate to its MaterializeMetric()
+	numericSet := &NumericBlobSet{blobs: bs.numericBlobs}
+
+	return numericSet.MaterializeMetric(metricID)
+}
+
+// MaterializeNumericMetricByName materializes a single numeric metric by name from all numeric blobs
+// in this BlobSet for O(1) random access without needing to pass metric name on each call.
+//
+// This is a thin wrapper that delegates to NumericBlobSet.MaterializeMetricByName().
+//
+// Parameters:
+//   - metricName: The metric name to materialize
+//
+// Returns:
+//   - MaterializedNumericMetric: The materialized metric with direct access methods
+//   - bool: false if the metric is not found in any numeric blob
+//
+// Performance:
+//   - Materialization cost: ~100μs (one-time, for one metric across all blobs)
+//   - Random access: ~5ns (O(1), direct array indexing)
+//   - Memory: ~16 bytes per data point × total data points for this metric
+//
+// Example:
+//
+//	blobSet := NewBlobSet(numericBlobs, textBlobs)
+//	metric, ok := blobSet.MaterializeNumericMetricByName("cpu.usage")
+//	if ok {
+//	    val, _ := metric.ValueAt(150)  // O(1) access, no metric name needed
+//	}
+func (bs BlobSet) MaterializeNumericMetricByName(metricName string) (MaterializedNumericMetric, bool) {
+	if len(bs.numericBlobs) == 0 {
+		return MaterializedNumericMetric{}, false
+	}
+
+	// Create NumericBlobSet and delegate to its MaterializeMetricByName()
+	numericSet := &NumericBlobSet{blobs: bs.numericBlobs}
+
+	return numericSet.MaterializeMetricByName(metricName)
+}
+
+// MaterializeTextMetric materializes a single text metric by ID from all text blobs
+// in this BlobSet for O(1) random access without needing to pass metric ID on each call.
+//
+// This is a thin wrapper that delegates to TextBlobSet.MaterializeMetric().
+//
+// Parameters:
+//   - metricID: The metric ID to materialize
+//
+// Returns:
+//   - MaterializedTextMetric: The materialized metric with direct access methods
+//   - bool: false if the metric is not found in any text blob
+//
+// Performance:
+//   - Materialization cost: ~100μs (one-time, for one metric across all blobs)
+//   - Random access: ~5ns (O(1), direct array indexing)
+//   - Memory: ~24 bytes per data point × total data points for this metric
+//
+// Example:
+//
+//	blobSet := NewBlobSet(numericBlobs, textBlobs)
+//	metric, ok := blobSet.MaterializeTextMetric(metricID)
+//	if ok {
+//	    val, _ := metric.ValueAt(150)  // O(1) access, no metric ID needed
+//	}
+func (bs BlobSet) MaterializeTextMetric(metricID uint64) (MaterializedTextMetric, bool) {
+	if len(bs.textBlobs) == 0 {
+		return MaterializedTextMetric{}, false
+	}
+
+	// Create TextBlobSet and delegate to its MaterializeMetric()
+	textSet := &TextBlobSet{blobs: bs.textBlobs}
+
+	return textSet.MaterializeMetric(metricID)
+}
+
+// MaterializeTextMetricByName materializes a single text metric by name from all text blobs
+// in this BlobSet for O(1) random access without needing to pass metric name on each call.
+//
+// This is a thin wrapper that delegates to TextBlobSet.MaterializeMetricByName().
+//
+// Parameters:
+//   - metricName: The metric name to materialize
+//
+// Returns:
+//   - MaterializedTextMetric: The materialized metric with direct access methods
+//   - bool: false if the metric is not found in any text blob
+//
+// Performance:
+//   - Materialization cost: ~100μs (one-time, for one metric across all blobs)
+//   - Random access: ~5ns (O(1), direct array indexing)
+//   - Memory: ~24 bytes per data point × total data points for this metric
+//
+// Example:
+//
+//	blobSet := NewBlobSet(numericBlobs, textBlobs)
+//	metric, ok := blobSet.MaterializeTextMetricByName("log.message")
+//	if ok {
+//	    val, _ := metric.ValueAt(150)  // O(1) access, no metric name needed
+//	}
+func (bs BlobSet) MaterializeTextMetricByName(metricName string) (MaterializedTextMetric, bool) {
+	if len(bs.textBlobs) == 0 {
+		return MaterializedTextMetric{}, false
+	}
+
+	// Create TextBlobSet and delegate to its MaterializeMetricByName()
+	textSet := &TextBlobSet{blobs: bs.textBlobs}
+
+	return textSet.MaterializeMetricByName(metricName)
+}
+
 // NumericBlobs returns the numeric blobs in this BlobSet.
 // The blobs are sorted by start time.
 func (bs BlobSet) NumericBlobs() []NumericBlob {

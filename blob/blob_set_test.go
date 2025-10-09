@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -1325,5 +1326,204 @@ func TestDecodeBlobSet_VariadicInput(t *testing.T) {
 		blobSet, err := DecodeBlobSet(blobs...)
 		require.NoError(t, err)
 		require.Len(t, blobSet.numericBlobs, 2)
+	})
+}
+
+// TestBlobSet_MaterializeNumericMetric tests the NumericBlobSet wrapper methods
+func TestBlobSet_MaterializeNumericMetric(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	metricID := uint64(100)
+
+	// Create numeric blobs
+	blobs := make([][]byte, 2)
+	for i := range 2 {
+		encoder, err := NewNumericEncoder(startTime.Add(time.Duration(i) * time.Hour))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(metricID, 5)
+		require.NoError(t, err)
+		for j := range 5 {
+			err = encoder.AddDataPoint(startTime.Add(time.Duration(j)*time.Second).UnixMicro(), float64(i*100+j), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		blobs[i], err = encoder.Finish()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := DecodeBlobSet(blobs...)
+	require.NoError(t, err)
+
+	// Test MaterializeNumericMetric by ID
+	metric, ok := blobSet.MaterializeNumericMetric(metricID)
+	require.True(t, ok)
+	require.Equal(t, metricID, metric.MetricID)
+	require.Len(t, metric.Values, 10) // 2 blobs × 5 points
+
+	// Test non-existent metric
+	_, ok = blobSet.MaterializeNumericMetric(999)
+	require.False(t, ok)
+}
+
+// TestBlobSet_MaterializeNumericMetricByName tests the NumericBlobSet wrapper for name lookup
+func TestBlobSet_MaterializeNumericMetricByName(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create numeric blobs with metric names
+	blobs := make([][]byte, 2)
+	for i := range 2 {
+		encoder, err := NewNumericEncoder(startTime.Add(time.Duration(i) * time.Hour))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricName("cpu.usage", 3)
+		require.NoError(t, err)
+		for j := range 3 {
+			err = encoder.AddDataPoint(startTime.Add(time.Duration(j)*time.Second).UnixMicro(), float64(i*10+j), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		blobs[i], err = encoder.Finish()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := DecodeBlobSet(blobs...)
+	require.NoError(t, err)
+
+	// Test MaterializeNumericMetricByName
+	metric, ok := blobSet.MaterializeNumericMetricByName("cpu.usage")
+	require.True(t, ok)
+	require.Len(t, metric.Values, 6) // 2 blobs × 3 points
+
+	// Test non-existent metric name
+	_, ok = blobSet.MaterializeNumericMetricByName("nonexistent")
+	require.False(t, ok)
+}
+
+// TestBlobSet_MaterializeTextMetric tests the TextBlobSet wrapper methods
+func TestBlobSet_MaterializeTextMetric(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	metricID := uint64(200)
+
+	// Create text blobs
+	blobs := make([][]byte, 2)
+	for i := range 2 {
+		encoder, err := NewTextEncoder(startTime.Add(time.Duration(i) * time.Hour))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(metricID, 5)
+		require.NoError(t, err)
+		for j := range 5 {
+			err = encoder.AddDataPoint(startTime.Add(time.Duration(j)*time.Second).UnixMicro(), fmt.Sprintf("value%d-%d", i, j), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		blobs[i], err = encoder.Finish()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := DecodeBlobSet(blobs...)
+	require.NoError(t, err)
+
+	// Test MaterializeTextMetric by ID
+	metric, ok := blobSet.MaterializeTextMetric(metricID)
+	require.True(t, ok)
+	require.Equal(t, metricID, metric.MetricID)
+	require.Len(t, metric.Values, 10) // 2 blobs × 5 points
+
+	// Test non-existent metric
+	_, ok = blobSet.MaterializeTextMetric(999)
+	require.False(t, ok)
+}
+
+// TestBlobSet_MaterializeTextMetricByName tests the TextBlobSet wrapper for name lookup
+func TestBlobSet_MaterializeTextMetricByName(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create text blobs with metric names
+	blobs := make([][]byte, 2)
+	for i := range 2 {
+		encoder, err := NewTextEncoder(startTime.Add(time.Duration(i) * time.Hour))
+		require.NoError(t, err)
+
+		err = encoder.StartMetricName("server.status", 3)
+		require.NoError(t, err)
+		for j := range 3 {
+			err = encoder.AddDataPoint(startTime.Add(time.Duration(j)*time.Second).UnixMicro(), fmt.Sprintf("status%d-%d", i, j), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		blobs[i], err = encoder.Finish()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := DecodeBlobSet(blobs...)
+	require.NoError(t, err)
+
+	// Test MaterializeTextMetricByName
+	metric, ok := blobSet.MaterializeTextMetricByName("server.status")
+	require.True(t, ok)
+	require.Len(t, metric.Values, 6) // 2 blobs × 3 points
+
+	// Test non-existent metric name
+	_, ok = blobSet.MaterializeTextMetricByName("nonexistent")
+	require.False(t, ok)
+}
+
+// TestBlobSet_MaterializeEmptyBlobSet tests edge cases with empty blob sets
+func TestBlobSet_MaterializeEmptyBlobSet(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("Numeric empty blob set", func(t *testing.T) {
+		// Create a blob set with one metric, try to materialize another
+		encoder, err := NewNumericEncoder(startTime)
+		require.NoError(t, err)
+		err = encoder.StartMetricID(100, 1)
+		require.NoError(t, err)
+		err = encoder.AddDataPoint(startTime.UnixMicro(), 1.0, "")
+		require.NoError(t, err)
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		blobSet, err := DecodeBlobSet(data)
+		require.NoError(t, err)
+
+		_, ok := blobSet.MaterializeNumericMetric(999)
+		require.False(t, ok, "should return false for non-existent metric")
+
+		_, ok = blobSet.MaterializeNumericMetricByName("nonexistent")
+		require.False(t, ok, "should return false for non-existent metric name")
+	})
+
+	t.Run("Text empty blob set", func(t *testing.T) {
+		// Create a blob set with one metric, try to materialize another
+		encoder, err := NewTextEncoder(startTime)
+		require.NoError(t, err)
+		err = encoder.StartMetricID(200, 1)
+		require.NoError(t, err)
+		err = encoder.AddDataPoint(startTime.UnixMicro(), "value", "")
+		require.NoError(t, err)
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		blobSet, err := DecodeBlobSet(data)
+		require.NoError(t, err)
+
+		_, ok := blobSet.MaterializeTextMetric(999)
+		require.False(t, ok, "should return false for non-existent metric")
+
+		_, ok = blobSet.MaterializeTextMetricByName("nonexistent")
+		require.False(t, ok, "should return false for non-existent metric name")
 	})
 }
