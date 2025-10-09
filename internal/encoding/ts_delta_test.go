@@ -1,6 +1,8 @@
 package encoding
 
 import (
+	"encoding/binary"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -387,6 +389,76 @@ func TestTimestampDeltaDecoder_LargeDeltas(t *testing.T) {
 	}
 }
 
+func TestTimestampDeltaDecoder_All_MaxVarintLength(t *testing.T) {
+	timestamps := extremeVarintTimestamps()
+
+	encoder := NewTimestampDeltaEncoder()
+	encoder.WriteSlice(timestamps)
+	encoded := append([]byte(nil), encoder.Bytes()...)
+
+	// Validate that each encoded component requires the maximum varint length (9 bytes)
+	var lengths []int
+	offset := 0
+	for offset < len(encoded) && len(lengths) < len(timestamps) {
+		_, n := binary.Uvarint(encoded[offset:])
+		require.Greater(t, n, 0, "invalid varint length at offset %d", offset)
+		lengths = append(lengths, n)
+		offset += n
+	}
+
+	require.Len(t, lengths, len(timestamps))
+	for i, n := range lengths {
+		require.GreaterOrEqualf(t, n, 9, "expected >=9-byte varint at position %d, got %d", i, n)
+	}
+
+	decoder := NewTimestampDeltaDecoder()
+	decoded := make([]int64, 0, len(timestamps))
+	for ts := range decoder.All(encoded, len(timestamps)) {
+		decoded = append(decoded, ts)
+	}
+
+	require.Equal(t, timestamps, decoded)
+}
+
+func TestTimestampDeltaDecoder_All_RandomizedSequences(t *testing.T) {
+	rng := rand.New(rand.NewSource(0xC0FFEE))
+	decoder := NewTimestampDeltaDecoder()
+
+	for i := 0; i < 64; i++ {
+		count := 2 + rng.Intn(63)
+		timestamps := make([]int64, count)
+
+		current := rng.Int63n(1<<20) - (1 << 19)
+		timestamps[0] = current
+
+		delta := rng.Int63n(1<<20) - (1 << 19)
+		for j := 1; j < count; j++ {
+			// Introduce bounded delta-of-delta variance to cover positive and negative swings
+			delta += rng.Int63n(1<<19) - (1 << 18)
+			current += delta
+			timestamps[j] = current
+		}
+
+		encoder := NewTimestampDeltaEncoder()
+		encoder.WriteSlice(timestamps)
+		encoded := append([]byte(nil), encoder.Bytes()...)
+
+		decoded := make([]int64, 0, count)
+		for ts := range decoder.All(encoded, count) {
+			decoded = append(decoded, ts)
+		}
+
+		require.Equalf(t, timestamps, decoded, "sequence %d mismatch", i)
+
+		for checks := 0; checks < 5; checks++ {
+			idx := rng.Intn(count)
+			ts, ok := decoder.At(encoded, idx, count)
+			require.Truef(t, ok, "sequence %d index %d", i, idx)
+			require.Equalf(t, timestamps[idx], ts, "sequence %d index %d mismatch", i, idx)
+		}
+	}
+}
+
 func TestTimestampDeltaDecoder_InvalidData(t *testing.T) {
 	decoder := NewTimestampDeltaDecoder()
 
@@ -400,6 +472,37 @@ func TestTimestampDeltaDecoder_InvalidData(t *testing.T) {
 
 	// Should handle invalid data gracefully (may decode some valid data or none)
 	require.True(t, len(timestamps) <= 5, "Should not decode more than expected count")
+}
+
+func TestTimestampDeltaDecoder_At_MaxVarintLength(t *testing.T) {
+	timestamps := extremeVarintTimestamps()
+
+	encoder := NewTimestampDeltaEncoder()
+	encoder.WriteSlice(timestamps)
+	encoded := encoder.Bytes()
+
+	decoder := NewTimestampDeltaDecoder()
+	for idx, expected := range timestamps {
+		ts, ok := decoder.At(encoded, idx, len(timestamps))
+		require.Truef(t, ok, "failed to decode index %d", idx)
+		require.Equalf(t, expected, ts, "timestamp mismatch at index %d", idx)
+	}
+}
+
+func extremeVarintTimestamps() []int64 {
+	const (
+		base   = int64(1) << 56
+		delta1 = int64(1) << 56
+		delta2 = int64(1) << 57
+	)
+
+	return []int64{
+		base,
+		base + delta1,
+		base + delta1 + delta2,
+		base + delta2,
+		base + delta2 + delta1,
+	}
 }
 
 func TestTimestampDeltaDecoder_CountMismatch(t *testing.T) {

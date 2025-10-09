@@ -175,6 +175,48 @@ func BenchmarkTimestampDeltaDecoder_All(b *testing.B) {
 	}
 }
 
+func BenchmarkTimestampDeltaDecoder_All_VarintSizes(b *testing.B) {
+	scenarios := []struct {
+		name       string
+		timestamps []int64
+	}{
+		{
+			name:       "SmallVarints",
+			timestamps: makeSequentialMicroseconds(1024, 1_000_000),
+		},
+		{
+			name:       "MixedVarints",
+			timestamps: buildMixedVarintSequence(1024),
+		},
+		{
+			name:       "MaxVarints",
+			timestamps: buildExtremeVarintSequence(120),
+		},
+	}
+
+	for _, scenario := range scenarios {
+		b.Run(scenario.name, func(b *testing.B) {
+			encoder := NewTimestampDeltaEncoder()
+			encoder.WriteSlice(scenario.timestamps)
+			encoded := append([]byte(nil), encoder.Bytes()...)
+			count := len(scenario.timestamps)
+
+			decoder := NewTimestampDeltaDecoder()
+			b.ResetTimer()
+
+			for b.Loop() {
+				yielded := 0
+				for range decoder.All(encoded, count) {
+					yielded++
+				}
+				if yielded != count {
+					b.Fatalf("expected %d timestamps, got %d", count, yielded)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkTimestampDeltaDecoder_vs_Slice(b *testing.B) {
 	// Generate test data
 	timestamps := make([]int64, 1000)
@@ -411,6 +453,78 @@ func BenchmarkTimestampDeltaDecoder_At_DataPatterns(b *testing.B) {
 			}
 		}
 	})
+}
+
+func makeSequentialMicroseconds(count int, interval int64) []int64 {
+	if count <= 0 {
+		return nil
+	}
+
+	seq := make([]int64, count)
+	start := time.Now().UnixMicro()
+	for i := range seq {
+		seq[i] = start + int64(i)*interval
+	}
+
+	return seq
+}
+
+func buildMixedVarintSequence(count int) []int64 {
+	if count <= 0 {
+		return nil
+	}
+
+	seq := make([]int64, count)
+	seq[0] = 0
+	delta := int64(750_000)
+
+	for i := 1; i < count; i++ {
+		switch i % 6 {
+		case 0:
+			delta += 2_000_000
+		case 1:
+			delta -= 1_200_000
+		case 2:
+			delta += 500_000
+		case 3:
+			delta -= 750_000
+		case 4:
+			delta += 1_500_000
+		default:
+			delta -= 900_000
+		}
+
+		seq[i] = seq[i-1] + delta
+	}
+
+	return seq
+}
+
+func buildExtremeVarintSequence(count int) []int64 {
+	if count <= 0 {
+		return nil
+	}
+
+	pattern := extremeVarintTimestamps()
+	if len(pattern) == 0 {
+		return nil
+	}
+
+	seq := make([]int64, 0, count)
+	offset := int64(0)
+	const offsetStep = int64(1) << 58
+
+	for len(seq) < count {
+		for _, ts := range pattern {
+			seq = append(seq, ts+offset)
+			if len(seq) == count {
+				break
+			}
+		}
+		offset += offsetStep
+	}
+
+	return seq
 }
 
 // BenchmarkTimestampDeltaEncoder_RealWorldPattern benchmarks realistic usage pattern:

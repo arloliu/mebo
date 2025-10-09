@@ -481,62 +481,46 @@ func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 			return
 		}
 
-		offset := 0
-		yielded := 0
-
-		// Decode first timestamp (full varint)
-		firstTS, n := binary.Uvarint(data[offset:])
-		if n <= 0 {
+		first, offset, ok := decodeVarint64(data, 0)
+		if !ok {
 			return
 		}
-		offset += n
-		yielded++
 
-		curTS := int64(firstTS) //nolint:gosec
+		curTS := int64(first) //nolint:gosec
 		if !yield(curTS) {
 			return
 		}
 
-		if yielded >= count {
+		if count == 1 {
 			return
 		}
 
-		// Decode second timestamp (first delta)
-		zigzag, n := binary.Uvarint(data[offset:])
-		if n <= 0 {
+		zigzag, offset, ok := decodeVarint64(data, offset)
+		if !ok {
 			return
 		}
-		offset += n
 
-		delta := int64(zigzag>>1) ^ -(int64(zigzag & 1)) //nolint:gosec
+		delta := int64(zigzag>>1) ^ -int64(zigzag&1) //nolint:gosec
 		curTS += delta
-		yielded++
-
 		if !yield(curTS) {
 			return
 		}
 
 		prevDelta := delta
-
-		// Decode remaining timestamps as delta-of-deltas
-		for yielded < count && offset < len(data) {
-			zigzag, n := binary.Uvarint(data[offset:])
-			if n <= 0 {
+		for produced := 2; produced < count; produced++ {
+			deltaZigzag, nextOffset, ok := decodeVarint64(data, offset)
+			if !ok {
 				return
 			}
-			offset += n
+			offset = nextOffset
 
-			// Decode delta-of-delta
-			deltaOfDelta := int64(zigzag>>1) ^ -(int64(zigzag & 1)) //nolint:gosec
-			delta = prevDelta + deltaOfDelta
-			curTS += delta
-			yielded++
+			deltaOfDelta := int64(deltaZigzag>>1) ^ -int64(deltaZigzag&1) //nolint:gosec
+			prevDelta += deltaOfDelta
+			curTS += prevDelta
 
 			if !yield(curTS) {
 				return
 			}
-
-			prevDelta = delta
 		}
 	}
 }
@@ -577,64 +561,81 @@ func (d TimestampDeltaDecoder) At(data []byte, index int, count int) (int64, boo
 		return 0, false
 	}
 
-	offset := 0
-	curIdx := 0
-
-	// Decode first timestamp (full varint)
-	firstTS, n := binary.Uvarint(data[offset:])
-	if n <= 0 {
+	first, offset, ok := decodeVarint64(data, 0)
+	if !ok {
 		return 0, false
 	}
-	offset += n
 
-	curTS := int64(firstTS) //nolint:gosec
-
+	curTS := int64(first) //nolint:gosec
 	if index == 0 {
 		return curTS, true
 	}
 
-	curIdx++
-
-	// Decode second timestamp (first delta)
-	if offset >= len(data) {
+	zigzag, offset, ok := decodeVarint64(data, offset)
+	if !ok {
 		return 0, false
 	}
 
-	zigzag, n := binary.Uvarint(data[offset:])
-	if n <= 0 {
-		return 0, false
-	}
-	offset += n
-
-	delta := int64(zigzag>>1) ^ -(int64(zigzag & 1)) //nolint:gosec
+	delta := int64(zigzag>>1) ^ -int64(zigzag&1) //nolint:gosec
 	curTS += delta
-
 	if index == 1 {
 		return curTS, true
 	}
 
-	curIdx++
 	prevDelta := delta
 
-	// Decode remaining timestamps as delta-of-deltas
-	for curIdx <= index && offset < len(data) {
-		zigzag, n := binary.Uvarint(data[offset:])
-		if n <= 0 {
+	for i := 2; i <= index; i++ {
+		deltaZigzag, nextOffset, ok := decodeVarint64(data, offset)
+		if !ok {
 			return 0, false
 		}
-		offset += n
+		offset = nextOffset
 
-		deltaOfDelta := int64(zigzag>>1) ^ -(int64(zigzag & 1)) //nolint:gosec
-		delta = prevDelta + deltaOfDelta
-		curTS += delta
-
-		if curIdx == index {
-			return curTS, true
-		}
-
-		curIdx++
-		prevDelta = delta
+		deltaOfDelta := int64(deltaZigzag>>1) ^ -int64(deltaZigzag&1) //nolint:gosec
+		prevDelta += deltaOfDelta
+		curTS += prevDelta
 	}
 
-	return 0, false
+	return curTS, true
+}
+
+// decodeVarint64 decodes a uint64 varint from data starting at offset.
+//
+// This function handles provides a fast path for single-byte varints
+// and falls back to binary.Uvarint for larger values.
+//
+// Parameters:
+//   - data: Byte slice containing the varint-encoded data
+//   - offset: Starting index within data to decode from
+//
+// Returns:
+//   - uint64: The decoded unsigned integer value
+//   - int: The new offset after reading the varint
+//   - bool: true if decoding was successful, false otherwise
+func decodeVarint64(data []byte, offset int) (uint64, int, bool) {
+	if offset >= len(data) {
+		return 0, offset, false
+	}
+
+	b0 := data[offset]
+	if b0 < 0x80 {
+		return uint64(b0), offset + 1, true
+	}
+
+	if offset+1 >= len(data) {
+		return 0, offset, false
+	}
+
+	b1 := data[offset+1]
+	value := uint64(b0&0x7f) | uint64(b1&0x7f)<<7
+	if b1 < 0x80 {
+		return value, offset + 2, true
+	}
+
+	value, n := binary.Uvarint(data[offset:])
+	if n <= 0 {
+		return 0, offset, false
+	}
+
+	return value, offset + n, true
 }
