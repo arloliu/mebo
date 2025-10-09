@@ -39,15 +39,17 @@ import (
 // Internal state:
 //   - prevTS: Previous timestamp for delta calculation
 //   - prevDelta: Previous delta for delta-of-delta calculation
-//   - temp: Reusable buffer for varint encoding (avoids allocations)
 //   - buf: Output buffer accumulating encoded data
 //   - count: Number of timestamps encoded
+//   - avgEncodedSize: Smoothed rolling average of encoded varint byte length
+//   - maxEncodedSize: Largest observed encoded length (safety bound)
 type TimestampDeltaEncoder struct {
-	prevTS    int64
-	prevDelta int64
-	temp      [binary.MaxVarintLen64]byte
-	buf       *pool.ByteBuffer
-	count     int
+	prevTS         int64
+	prevDelta      int64
+	buf            *pool.ByteBuffer
+	count          int
+	avgEncodedSize float32
+	maxEncodedSize uint8
 }
 
 var _ encoding.ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
@@ -96,7 +98,9 @@ var _ encoding.ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
 //	data := encoder.Bytes()  // ~8 bytes total vs 24 bytes raw (67% savings)
 func NewTimestampDeltaEncoder() *TimestampDeltaEncoder {
 	return &TimestampDeltaEncoder{
-		buf: pool.GetBlobBuffer(),
+		buf:            pool.GetBlobBuffer(),
+		avgEncodedSize: 2.0,
+		maxEncodedSize: 2,
 	}
 }
 
@@ -126,12 +130,10 @@ func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 	}
 
 	e.count++
-	e.buf.Grow(10)
 
 	if e.count == 1 {
 		// First timestamp: write full value (no zigzag, just varint)
-		n := binary.PutUvarint(e.temp[:], uint64(timestampUs)) //nolint:gosec
-		e.buf.MustWrite(e.temp[:n])
+		e.appendUnsigned(uint64(timestampUs)) //nolint:gosec
 		e.prevTS = timestampUs
 
 		return
@@ -154,9 +156,8 @@ func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 	// Zigzag encode (efficient signed-to-unsigned mapping)
 	zigzag := (valToEncode << 1) ^ (valToEncode >> 63)
 
-	// Write varint
-	n := binary.PutUvarint(e.temp[:], uint64(zigzag)) //nolint:gosec
-	e.buf.MustWrite(e.temp[:n])
+	// Write varint with inline fast paths
+	e.appendUnsigned(uint64(zigzag)) //nolint:gosec
 
 	e.prevTS = timestampUs
 }
@@ -199,11 +200,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 	}
 
 	e.count += tsLen
-
-	// Estimate size for regular intervals: 6 + 3 + (n-2)*1.5
-	// Use conservative estimate of 2 bytes per timestamp after first two
-	estimatedSize := 6 + (tsLen-1)*2
-	e.buf.Grow(estimatedSize)
+	e.reserveFor(tsLen)
 
 	prevTS := e.prevTS
 	prevDelta := e.prevDelta
@@ -212,8 +209,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 	// Handle first timestamp if this is initial write
 	if e.prevTS == 0 {
 		ts := timestampsUs[0]
-		n := binary.PutUvarint(e.temp[:], uint64(ts)) //nolint:gosec
-		e.buf.MustWrite(e.temp[:n])
+		e.appendUnsigned(uint64(ts)) //nolint:gosec
 		prevTS = ts
 		startIdx = 1
 	}
@@ -223,8 +219,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 		ts := timestampsUs[startIdx]
 		delta := ts - prevTS
 		zigzag := (delta << 1) ^ (delta >> 63)
-		n := binary.PutUvarint(e.temp[:], uint64(zigzag)) //nolint:gosec
-		e.buf.MustWrite(e.temp[:n])
+		e.appendUnsigned(uint64(zigzag)) //nolint:gosec
 		prevTS = ts
 		prevDelta = delta
 		startIdx++
@@ -237,8 +232,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 		// Zigzag encoding
 		zigzag := (deltaOfDelta << 1) ^ (deltaOfDelta >> 63)
 		// Varint encoding
-		n := binary.PutUvarint(e.temp[:], uint64(zigzag)) //nolint:gosec
-		e.buf.MustWrite(e.temp[:n])
+		e.appendUnsigned(uint64(zigzag)) //nolint:gosec
 		prevTS = ts
 		prevDelta = delta
 	}
@@ -246,6 +240,74 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 	// Update encoder state
 	e.prevTS = prevTS
 	e.prevDelta = prevDelta
+}
+
+func (e *TimestampDeltaEncoder) appendUnsigned(value uint64) {
+	if value <= 0x7F {
+		e.appendSingleByte(byte(value))
+		e.observeEncodedSize(1)
+		return
+	}
+
+	const maxLen = binary.MaxVarintLen64
+	e.buf.Grow(maxLen)
+	prevLen := len(e.buf.B)
+	e.buf.B = binary.AppendUvarint(e.buf.B, value)
+	e.observeEncodedSize(len(e.buf.B) - prevLen)
+}
+
+func (e *TimestampDeltaEncoder) appendSingleByte(b byte) {
+	idx := len(e.buf.B)
+	e.buf.ExtendOrGrow(1)
+	e.buf.B[idx] = b
+}
+
+func (e *TimestampDeltaEncoder) observeEncodedSize(n int) {
+	if n <= 0 {
+		return
+	}
+
+	if e.avgEncodedSize == 0 {
+		e.avgEncodedSize = float32(n)
+		if n > binary.MaxVarintLen64 {
+			n = binary.MaxVarintLen64
+		}
+		e.maxEncodedSize = uint8(n) //nolint:gosec
+
+		return
+	}
+
+	const smoothing = 0.25
+	e.avgEncodedSize = e.avgEncodedSize*(1-smoothing) + float32(n)*smoothing
+	if n > int(e.maxEncodedSize) {
+		if n > binary.MaxVarintLen64 {
+			n = binary.MaxVarintLen64
+		}
+		e.maxEncodedSize = uint8(n) //nolint:gosec
+	}
+}
+
+func (e *TimestampDeltaEncoder) reserveFor(count int) {
+	if count <= 0 || e.buf == nil {
+		return
+	}
+
+	avg := e.avgEncodedSize
+	if avg <= 0 {
+		avg = 2.0
+	}
+
+	perEntry := int(avg + 0.999)
+	if perEntry < 1 {
+		perEntry = 1
+	}
+
+	if upperBound := int(e.maxEncodedSize); upperBound > perEntry {
+		perEntry = upperBound
+	}
+
+	reserve := perEntry*count + binary.MaxVarintLen64
+	e.buf.Grow(reserve)
 }
 
 // Bytes returns the delta-of-delta compressed encoded byte slice containing all written timestamps.
@@ -317,6 +379,8 @@ func (e *TimestampDeltaEncoder) Size() int {
 func (e *TimestampDeltaEncoder) Reset() {
 	e.prevTS = 0
 	e.prevDelta = 0
+	e.avgEncodedSize = 2.0
+	e.maxEncodedSize = 2
 }
 
 // Finish finalizes the encoding process and returns buffer resources to the pool.
@@ -336,6 +400,8 @@ func (e *TimestampDeltaEncoder) Finish() {
 	e.prevTS = 0
 	e.prevDelta = 0
 	e.count = 0
+	e.avgEncodedSize = 2.0
+	e.maxEncodedSize = 2
 }
 
 // TimestampDeltaDecoder provides high-performance decoding of delta-of-delta compressed timestamps.
