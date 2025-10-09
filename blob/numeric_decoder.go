@@ -202,27 +202,29 @@ func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloa
 	indexEntries := make([]section.NumericIndexEntry, d.metricCount)
 	metricIDs := make([]uint64, d.metricCount)
 
+	var err error
 	for i := 0; i < d.metricCount; i++ {
 		start := i * section.NumericIndexEntrySize
 		end := start + section.NumericIndexEntrySize
 
-		entry, err := section.ParseNumericIndexEntry(indexData[start:end], d.engine)
+		indexEntries[i], err = section.ParseNumericIndexEntry(indexData[start:end], d.engine)
 		if err != nil {
 			return nil, nil, err
 		}
 
+		curEntry := &indexEntries[i]
+
 		// Convert delta offsets to absolute offsets
 		// Accumulate in int to prevent uint16 overflow, entry now has int fields
-		lastTsOffset += entry.TimestampOffset
-		lastValOffset += entry.ValueOffset
-		lastTagOffset += entry.TagOffset
+		lastTsOffset += curEntry.TimestampOffset
+		lastValOffset += curEntry.ValueOffset
+		lastTagOffset += curEntry.TagOffset
 
-		entry.TimestampOffset = lastTsOffset
-		entry.ValueOffset = lastValOffset
-		entry.TagOffset = lastTagOffset
+		curEntry.TimestampOffset = lastTsOffset
+		curEntry.ValueOffset = lastValOffset
+		curEntry.TagOffset = lastTagOffset
 
-		indexEntries[i] = entry
-		metricIDs[i] = entry.MetricID
+		metricIDs[i] = curEntry.MetricID
 
 		// Calculate entry lengths for validation later
 		if i > 0 {
@@ -266,39 +268,39 @@ type decodedPayloads struct {
 
 // decompressPayloads decompresses timestamp, value, and tag payloads.
 func (d *NumericDecoder) decompressPayloads(tsOffset, valOffset, tagOffset int) (decodedPayloads, error) {
-	// Create codecs based on header settings
-	tsCodec, err := compress.CreateCodec(d.header.Flag.TimestampCompression(), "timestamps")
+	// Get built-in codecs based on header settings
+	tsCodec, err := compress.GetCodec(d.header.Flag.TimestampCompression())
 	if err != nil {
-		return decodedPayloads{}, err
+		return decodedPayloads{}, fmt.Errorf("unsupported timestamp compression: %w", err)
 	}
 
-	valCodec, err := compress.CreateCodec(d.header.Flag.ValueCompression(), "values")
+	valCodec, err := compress.GetCodec(d.header.Flag.ValueCompression())
 	if err != nil {
-		return decodedPayloads{}, err
+		return decodedPayloads{}, fmt.Errorf("unsupported value compression: %w", err)
 	}
 
 	// Decompress timestamp and value payloads
 	tsPayload, err := tsCodec.Decompress(d.data[tsOffset:valOffset])
 	if err != nil {
-		return decodedPayloads{}, err
+		return decodedPayloads{}, fmt.Errorf("failed to decompress timestamp payload: %w", err)
 	}
 
 	valPayload, err := valCodec.Decompress(d.data[valOffset:tagOffset])
 	if err != nil {
-		return decodedPayloads{}, err
+		return decodedPayloads{}, fmt.Errorf("failed to decompress value payload: %w", err)
 	}
 
 	// Decompress tag payload only if tag support is enabled
 	var tagPayload []byte
 	if d.header.Flag.HasTag() {
-		tagCodec, err := compress.CreateCodec(format.CompressionZstd, "tags")
+		tagCodec, err := compress.GetCodec(format.CompressionZstd)
 		if err != nil {
-			return decodedPayloads{}, err
+			return decodedPayloads{}, fmt.Errorf("unsupported tag compression: %w", err)
 		}
 
 		tagPayload, err = tagCodec.Decompress(d.data[tagOffset:])
 		if err != nil {
-			return decodedPayloads{}, err
+			return decodedPayloads{}, fmt.Errorf("failed to decompress tag payload: %w", err)
 		}
 	}
 

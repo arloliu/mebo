@@ -148,3 +148,19 @@ func CreateCodec(compressionType format.CompressionType, target string) (Codec, 
 		return nil, fmt.Errorf("invalid %s compression: %s", target, compressionType)
 	}
 }
+
+var builtinCodecs = map[format.CompressionType]Codec{
+	format.CompressionNone: NewNoOpCompressor(),
+	format.CompressionZstd: NewZstdCompressor(),
+	format.CompressionS2:   NewS2Compressor(),
+	format.CompressionLZ4:  NewLZ4Compressor(),
+}
+
+// GetCodec retrieves a built-in Codec for the specified compression type.
+func GetCodec(compressionType format.CompressionType) (Codec, error) {
+	if codec, ok := builtinCodecs[compressionType]; ok {
+		return codec, nil
+	}
+
+	return nil, fmt.Errorf("unsupported compression type: %s", compressionType)
+}
