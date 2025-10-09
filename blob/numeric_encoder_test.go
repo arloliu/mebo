@@ -2312,3 +2312,570 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		require.Equal(t, []string{"", "important"}, tags)
 	})
 }
+
+// ============================================================================
+// Slice Caching Tests (consolidated from numeric_encoder_cache_test.go)
+// ============================================================================
+
+// TestNumericEncoder_SliceCaching_MultipleMetrics verifies that slice caching works
+// correctly when encoding multiple metrics with AddFromRows in a single encoder.
+func TestNumericEncoder_SliceCaching_MultipleMetrics(t *testing.T) {
+	type DataPoint struct {
+		Timestamp int64
+		Value     float64
+		Tag       string
+	}
+
+	// Create encoder with tags enabled
+	encoder, err := NewNumericEncoder(time.Now(), WithTagsEnabled(true))
+	require.NoError(t, err)
+
+	// Add 3 metrics with different sizes to test caching and reuse
+	metricSizes := []int{10, 20, 5}
+
+	for metricIdx, size := range metricSizes {
+		data := make([]DataPoint, size)
+		for i := 0; i < size; i++ {
+			data[i] = DataPoint{
+				Timestamp: int64(i * 1000),
+				Value:     float64(metricIdx*1000 + i),
+				Tag:       "host=server1",
+			}
+		}
+
+		err = encoder.StartMetricID(uint64(metricIdx+1), len(data))
+		require.NoError(t, err)
+
+		err = AddFromRows(encoder, data, func(dp DataPoint) (int64, float64, string) {
+			return dp.Timestamp, dp.Value, dp.Tag
+		})
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	// Finish encoding - this should cleanup cached slices
+	blob, err := encoder.Finish()
+	require.NoError(t, err)
+	require.NotEmpty(t, blob)
+
+	// Decode and verify basic structure
+	decoder, err := NewNumericDecoder(blob)
+	require.NoError(t, err)
+
+	numericBlob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 3, numericBlob.MetricCount())
+
+	// Verify each metric has correct length
+	for metricIdx, expectedSize := range metricSizes {
+		metricID := uint64(metricIdx + 1)
+		require.Equal(t, expectedSize, numericBlob.Len(metricID))
+	}
+}
+
+// TestNumericEncoder_SliceCaching_NoTag verifies slice caching with AddFromRowsNoTag
+func TestNumericEncoder_SliceCaching_NoTag(t *testing.T) {
+	type DataPoint struct {
+		TS  int64
+		Val float64
+	}
+
+	encoder, err := NewNumericEncoder(time.Now())
+	require.NoError(t, err)
+
+	// Add multiple metrics using AddFromRowsNoTag
+	for metricID := 1; metricID <= 5; metricID++ {
+		data := make([]DataPoint, 10)
+		for i := 0; i < 10; i++ {
+			data[i] = DataPoint{
+				TS:  int64(i * 1000),
+				Val: float64(metricID*100 + i),
+			}
+		}
+
+		err = encoder.StartMetricID(uint64(metricID), len(data))
+		require.NoError(t, err)
+
+		err = AddFromRowsNoTag(encoder, data, func(dp DataPoint) (int64, float64) {
+			return dp.TS, dp.Val
+		})
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	blob, err := encoder.Finish()
+	require.NoError(t, err)
+	require.NotEmpty(t, blob)
+
+	// Decode and verify
+	decoder, err := NewNumericDecoder(blob)
+	require.NoError(t, err)
+
+	numericBlob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 5, numericBlob.MetricCount())
+}
+
+// TestNumericEncoder_SliceCaching_GrowthScenario tests the slice growth when
+// encountering progressively larger metrics
+func TestNumericEncoder_SliceCaching_GrowthScenario(t *testing.T) {
+	type DataPoint struct {
+		Timestamp int64
+		Value     float64
+		Tag       string
+	}
+
+	encoder, err := NewNumericEncoder(time.Now(), WithTagsEnabled(true))
+	require.NoError(t, err)
+
+	// Add metrics with progressively increasing sizes to test growth
+	sizes := []int{10, 20, 50, 100, 25} // Last one smaller to test reuse
+
+	for metricIdx, size := range sizes {
+		data := make([]DataPoint, size)
+		for i := 0; i < size; i++ {
+			data[i] = DataPoint{
+				Timestamp: int64(i * 1000),
+				Value:     float64(metricIdx*1000 + i),
+				Tag:       "tag",
+			}
+		}
+
+		err = encoder.StartMetricID(uint64(metricIdx+1), len(data))
+		require.NoError(t, err)
+
+		err = AddFromRows(encoder, data, func(dp DataPoint) (int64, float64, string) {
+			return dp.Timestamp, dp.Value, dp.Tag
+		})
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	blob, err := encoder.Finish()
+	require.NoError(t, err)
+	require.NotEmpty(t, blob)
+
+	// Decode and verify all metrics
+	decoder, err := NewNumericDecoder(blob)
+	require.NoError(t, err)
+
+	numericBlob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, len(sizes), numericBlob.MetricCount())
+
+	// Verify each metric has correct size
+	for i, expectedSize := range sizes {
+		metricID := uint64(i + 1)
+		require.Equal(t, expectedSize, numericBlob.Len(metricID))
+	}
+}
+
+// TestNumericEncoder_SliceCaching_LargeBatching tests the batching mechanism
+// when metrics exceed maxCachedSliceSize (512)
+func TestNumericEncoder_SliceCaching_LargeBatching(t *testing.T) {
+	type DataPoint struct {
+		Timestamp int64
+		Value     float64
+		Tag       string
+	}
+
+	encoder, err := NewNumericEncoder(time.Now(), WithTagsEnabled(true))
+	require.NoError(t, err)
+
+	// Test various sizes around and above the batch threshold
+	testSizes := []int{
+		500,  // Below threshold - single batch
+		512,  // Exactly threshold - single batch
+		513,  // Just over threshold - two batches
+		1000, // Multiple batches
+		1536, // Three batches (512 × 3)
+		2000, // Uneven batches
+	}
+
+	for idx, size := range testSizes {
+		data := make([]DataPoint, size)
+		for i := 0; i < size; i++ {
+			data[i] = DataPoint{
+				Timestamp: int64(i * 1000),
+				Value:     float64(idx*10000 + i),
+				Tag:       "tag",
+			}
+		}
+
+		err = encoder.StartMetricID(uint64(idx+1), len(data))
+		require.NoError(t, err)
+
+		err = AddFromRows(encoder, data, func(dp DataPoint) (int64, float64, string) {
+			return dp.Timestamp, dp.Value, dp.Tag
+		})
+		require.NoError(t, err)
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	blob, err := encoder.Finish()
+	require.NoError(t, err)
+	require.NotEmpty(t, blob)
+
+	// Decode and verify all data was correctly batched
+	decoder, err := NewNumericDecoder(blob)
+	require.NoError(t, err)
+
+	numericBlob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, len(testSizes), numericBlob.MetricCount())
+
+	// Verify each metric has correct size and all data is present
+	for i, expectedSize := range testSizes {
+		metricID := uint64(i + 1)
+		require.Equal(t, expectedSize, numericBlob.Len(metricID), "metric %d should have %d points", metricID, expectedSize)
+
+		// Verify data integrity for a sample
+		count := 0
+		for _, dp := range numericBlob.All(metricID) {
+			require.Equal(t, int64(count*1000), dp.Ts)
+			require.Equal(t, float64(i*10000+count), dp.Val)
+			require.Equal(t, "tag", dp.Tag)
+			count++
+		}
+		require.Equal(t, expectedSize, count)
+	}
+}
+
+// TestNumericEncoder_SliceCaching_NoTag_LargeBatching tests batching with AddFromRowsNoTag
+func TestNumericEncoder_SliceCaching_NoTag_LargeBatching(t *testing.T) {
+	type DataPoint struct {
+		TS  int64
+		Val float64
+	}
+
+	encoder, err := NewNumericEncoder(time.Now())
+	require.NoError(t, err)
+
+	// Test large metric (over batch threshold)
+	size := 1500
+	data := make([]DataPoint, size)
+	for i := 0; i < size; i++ {
+		data[i] = DataPoint{
+			TS:  int64(i * 1000),
+			Val: float64(i) + 0.5,
+		}
+	}
+
+	err = encoder.StartMetricID(1, len(data))
+	require.NoError(t, err)
+
+	err = AddFromRowsNoTag(encoder, data, func(dp DataPoint) (int64, float64) {
+		return dp.TS, dp.Val
+	})
+	require.NoError(t, err)
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	blob, err := encoder.Finish()
+	require.NoError(t, err)
+	require.NotEmpty(t, blob)
+
+	// Decode and verify
+	decoder, err := NewNumericDecoder(blob)
+	require.NoError(t, err)
+
+	numericBlob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 1, numericBlob.MetricCount())
+	require.Equal(t, size, numericBlob.Len(1))
+
+	// Verify data integrity
+	count := 0
+	for _, dp := range numericBlob.All(1) {
+		require.Equal(t, int64(count*1000), dp.Ts)
+		require.Equal(t, float64(count)+0.5, dp.Val)
+		count++
+	}
+	require.Equal(t, size, count)
+}
+
+// ============================================================================
+// AddFromRows Tests (consolidated from numeric_encoder_rows_test.go)
+// ============================================================================
+
+// Test types for row-based data
+type testMeasurement struct {
+	Timestamp time.Time
+	Value     float64
+	Tag       string
+}
+
+type testDataPoint struct {
+	TS  int64
+	Val float64
+}
+
+func TestAddFromRows(t *testing.T) {
+	tests := []struct {
+		name        string
+		rows        []testMeasurement
+		expectError bool
+	}{
+		{
+			name: "single row",
+			rows: []testMeasurement{
+				{Timestamp: time.UnixMicro(1000000), Value: 42.5, Tag: "host=server1"},
+			},
+			expectError: false,
+		},
+		{
+			name: "multiple rows",
+			rows: []testMeasurement{
+				{Timestamp: time.UnixMicro(1000000), Value: 42.5, Tag: "host=server1"},
+				{Timestamp: time.UnixMicro(2000000), Value: 43.2, Tag: "host=server1"},
+				{Timestamp: time.UnixMicro(3000000), Value: 44.1, Tag: "host=server2"},
+			},
+			expectError: false,
+		},
+		{
+			name:        "empty rows",
+			rows:        []testMeasurement{},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder, err := NewNumericEncoder(time.Now())
+			require.NoError(t, err)
+
+			if len(tt.rows) == 0 {
+				// Can't start metric with 0 data points, just verify empty input handling
+				err = AddFromRows(encoder, tt.rows, func(m testMeasurement) (int64, float64, string) {
+					return m.Timestamp.UnixMicro(), m.Value, m.Tag
+				})
+				require.NoError(t, err)
+
+				return
+			}
+
+			err = encoder.StartMetricName("test.metric", len(tt.rows))
+			require.NoError(t, err)
+
+			err = AddFromRows(encoder, tt.rows, func(m testMeasurement) (int64, float64, string) {
+				return m.Timestamp.UnixMicro(), m.Value, m.Tag
+			})
+
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			err = encoder.EndMetric()
+			require.NoError(t, err)
+
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+			require.NotEmpty(t, data)
+		})
+	}
+}
+
+func TestAddFromRowsNoTag(t *testing.T) {
+	tests := []struct {
+		name        string
+		rows        []testDataPoint
+		expectError bool
+	}{
+		{
+			name: "single row",
+			rows: []testDataPoint{
+				{TS: 1000000, Val: 100.5},
+			},
+			expectError: false,
+		},
+		{
+			name: "multiple rows",
+			rows: []testDataPoint{
+				{TS: 1000000, Val: 100.5},
+				{TS: 2000000, Val: 101.2},
+				{TS: 3000000, Val: 102.1},
+			},
+			expectError: false,
+		},
+		{
+			name:        "empty rows",
+			rows:        []testDataPoint{},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder, err := NewNumericEncoder(time.Now())
+			require.NoError(t, err)
+
+			if len(tt.rows) == 0 {
+				// Can't start metric with 0 data points, just verify empty input handling
+				err = AddFromRowsNoTag(encoder, tt.rows, func(p testDataPoint) (int64, float64) {
+					return p.TS, p.Val
+				})
+				require.NoError(t, err)
+
+				return
+			}
+
+			err = encoder.StartMetricName("test.metric", len(tt.rows))
+			require.NoError(t, err)
+
+			err = AddFromRowsNoTag(encoder, tt.rows, func(p testDataPoint) (int64, float64) {
+				return p.TS, p.Val
+			})
+
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			err = encoder.EndMetric()
+			require.NoError(t, err)
+
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+			require.NotEmpty(t, data)
+		})
+	}
+}
+
+func TestAddFromRows_VariousTypes(t *testing.T) {
+	t.Run("struct with pointer fields", func(t *testing.T) {
+		type MeasurementPtr struct {
+			TS  *int64
+			Val *float64
+			Tag *string
+		}
+
+		ts1 := int64(1000000)
+		val1 := 42.5
+		tag1 := "test"
+		rows := []MeasurementPtr{
+			{TS: &ts1, Val: &val1, Tag: &tag1},
+		}
+
+		encoder, err := NewNumericEncoder(time.Now())
+		require.NoError(t, err)
+
+		err = encoder.StartMetricName("test.metric", len(rows))
+		require.NoError(t, err)
+
+		err = AddFromRows(encoder, rows, func(m MeasurementPtr) (int64, float64, string) {
+			return *m.TS, *m.Val, *m.Tag
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("map type", func(t *testing.T) {
+		rows := []map[string]any{
+			{"ts": int64(1000000), "val": 42.5, "tag": "test1"},
+			{"ts": int64(2000000), "val": 43.2, "tag": "test2"},
+		}
+
+		encoder, err := NewNumericEncoder(time.Now())
+		require.NoError(t, err)
+
+		err = encoder.StartMetricName("test.metric", len(rows))
+		require.NoError(t, err)
+
+		err = AddFromRows(encoder, rows, func(m map[string]any) (int64, float64, string) {
+			ts, tsOK := m["ts"].(int64)
+			val, valOK := m["val"].(float64)
+			tag, tagOK := m["tag"].(string)
+			require.True(t, tsOK && valOK && tagOK, "type assertion failed")
+
+			return ts, val, tag
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("pointer to struct", func(t *testing.T) {
+		rows := []*testMeasurement{
+			{Timestamp: time.UnixMicro(1000000), Value: 42.5, Tag: "test1"},
+			{Timestamp: time.UnixMicro(2000000), Value: 43.2, Tag: "test2"},
+		}
+
+		encoder, err := NewNumericEncoder(time.Now())
+		require.NoError(t, err)
+
+		err = encoder.StartMetricName("test.metric", len(rows))
+		require.NoError(t, err)
+
+		err = AddFromRows(encoder, rows, func(m *testMeasurement) (int64, float64, string) {
+			return m.Timestamp.UnixMicro(), m.Value, m.Tag
+		})
+		require.NoError(t, err)
+	})
+}
+
+func TestAddFromRows_DataIntegrity(t *testing.T) {
+	// Create test data
+	rows := []testMeasurement{
+		{Timestamp: time.UnixMicro(1000000), Value: 42.5, Tag: "host=server1"},
+		{Timestamp: time.UnixMicro(2000000), Value: 43.2, Tag: "host=server2"},
+		{Timestamp: time.UnixMicro(3000000), Value: 44.1, Tag: "host=server3"},
+	}
+
+	// Encode with AddFromRows - enable tag support
+	encoder, err := NewNumericEncoder(time.Now(), WithTagsEnabled(true))
+	require.NoError(t, err)
+
+	err = encoder.StartMetricName("test.metric", len(rows))
+	require.NoError(t, err)
+
+	err = AddFromRows(encoder, rows, func(m testMeasurement) (int64, float64, string) {
+		return m.Timestamp.UnixMicro(), m.Value, m.Tag
+	})
+	require.NoError(t, err)
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Decode and verify data
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	materialized := blob.Materialize()
+	require.Equal(t, 1, materialized.MetricCount())
+
+	metricIDs := materialized.MetricIDs()
+	require.Len(t, metricIDs, 1)
+
+	metricID := metricIDs[0]
+
+	// Verify all values match
+	require.Equal(t, len(rows), materialized.DataPointCount(metricID))
+	for i, row := range rows {
+		ts, ok := materialized.TimestampAt(metricID, i)
+		require.True(t, ok)
+		require.Equal(t, row.Timestamp.UnixMicro(), ts)
+
+		val, ok := materialized.ValueAt(metricID, i)
+		require.True(t, ok)
+		require.Equal(t, row.Value, val)
+
+		tag, ok := materialized.TagAt(metricID, i)
+		require.True(t, ok)
+		require.Equal(t, row.Tag, tag)
+	}
+}
