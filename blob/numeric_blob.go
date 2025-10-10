@@ -377,7 +377,11 @@ func (b NumericBlob) allFromEntry(entry section.NumericIndexEntry) iter.Seq2[int
 	// Get timestamp, value, and tag byte slices
 	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 	valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-	tagBytes := b.tagPayload[entry.TagOffset : entry.TagOffset+entry.TagLength]
+	
+	var tagBytes []byte
+	if b.HasTag() && len(b.tagPayload) > 0 {
+		tagBytes = b.tagPayload[entry.TagOffset : entry.TagOffset+entry.TagLength]
+	}
 
 	// Return optimized iterator based on encoding types
 	return b.allDataPoints(tsBytes, valBytes, tagBytes, entry.Count)
@@ -410,6 +414,17 @@ func (b NumericBlob) allTagsFromEntry(entry section.NumericIndexEntry) iter.Seq[
 	count := entry.Count
 	if count == 0 {
 		return func(yield func(string) bool) {}
+	}
+
+	// If tags are disabled, return empty strings
+	if !b.HasTag() || len(b.tagPayload) == 0 {
+		return func(yield func(string) bool) {
+			for i := 0; i < count; i++ {
+				if !yield("") {
+					break
+				}
+			}
+		}
 	}
 
 	start := entry.TagOffset
