@@ -25,9 +25,9 @@ type NumericDataPoint struct {
 type NumericBlob struct {
 	blobBase                                        // Embedded base: engine, startTime, tsEncType, sameByteOrder, flags
 	index      indexMaps[section.NumericIndexEntry] // Metric ID/name → IndexEntry mappings
-	tagPayload []byte
 	tsPayload  []byte
 	valPayload []byte
+	tagPayload []byte
 }
 
 var _ BlobReader = NumericBlob{}

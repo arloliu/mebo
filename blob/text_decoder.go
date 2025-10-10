@@ -81,9 +81,9 @@ func (d *TextDecoder) Decode() (TextBlob, error) {
 
 	blob := TextBlob{
 		blobBase: blobBase{
-			startTimeMicros: d.header.StartTime, // Direct int64 assignment (optimized)
-			sameByteOrder:   endian.CompareNativeEndian(d.engine),
-			tsEncType:       d.header.Flag.GetTimestampEncoding(),
+			tsEncType:     d.header.Flag.GetTimestampEncoding(),
+			flags:         flags, // Packed flags (optimized)
+			sameByteOrder: endian.CompareNativeEndian(d.engine),
 			endianType: func() uint8 {
 				if d.header.Flag.IsBigEndian() {
 					return 1
@@ -91,7 +91,7 @@ func (d *TextDecoder) Decode() (TextBlob, error) {
 
 				return 0
 			}(), // 0=little, 1=big
-			flags: flags, // Packed flags (optimized)
+			startTimeMicros: d.header.StartTime, // Direct int64 assignment (optimized)
 		},
 	}
 

@@ -71,11 +71,11 @@ type BlobReader interface {
 // blobBase contains common fields and methods shared by NumericBlob and TextBlob.
 // This is an internal type for code reuse and is not exposed in the public API.
 type blobBase struct {
-	startTimeMicros int64               // Unix timestamp in microseconds (optimized from time.Time)
-	flags           uint16              // Packed flags: endian, tsEnc, valEnc, tag, etc. (optimized)
-	tsEncType       format.EncodingType // Timestamp encoding type
-	sameByteOrder   bool                // Whether the blob uses the same byte order as the system
-	endianType      uint8               // 0=little, 1=big (optimized from interface)
+	tsEncType       format.EncodingType // Timestamp encoding type (hot: decoder selection)
+	flags           uint16              // Packed flags: endian, tsEnc, valEnc, tag, etc. (hot: feature checks)
+	sameByteOrder   bool                // Whether the blob uses the same byte order as the system (hot: decoder optimization)
+	endianType      uint8               // 0=little, 1=big (warm: Engine() only)
+	startTimeMicros int64               // Unix timestamp in microseconds (warm: metadata queries)
 }
 
 // indexMaps holds metric ID and name mappings for a blob.
