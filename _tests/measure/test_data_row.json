@@ -1,0 +1,35 @@
+{
+  "metrics": [
+    {
+      "name": "disk.io",
+      "points": [
+        {"timestamp": 1700000001000000, "value": 1024.5},
+        {"timestamp": 1700000002000000, "value": 1025.2},
+        {"timestamp": 1700000003000000, "value": 1026.1},
+        {"timestamp": 1700000004000000, "value": 1027.8},
+        {"timestamp": 1700000005000000, "value": 1028.2},
+        {"timestamp": 1700000006000000, "value": 1029.5},
+        {"timestamp": 1700000007000000, "value": 1030.1},
+        {"timestamp": 1700000008000000, "value": 1031.0},
+        {"timestamp": 1700000009000000, "value": 1032.3},
+        {"timestamp": 1700000010000000, "value": 1033.1}
+      ]
+    },
+    {
+      "id": 12345678901234,
+      "points": [
+        {"timestamp": 1700000001000000, "value": 512.1},
+        {"timestamp": 1700000002000000, "value": 513.5},
+        {"timestamp": 1700000003000000, "value": 514.2},
+        {"timestamp": 1700000004000000, "value": 515.8},
+        {"timestamp": 1700000005000000, "value": 516.3},
+        {"timestamp": 1700000006000000, "value": 517.7},
+        {"timestamp": 1700000007000000, "value": 518.4},
+        {"timestamp": 1700000008000000, "value": 519.9},
+        {"timestamp": 1700000009000000, "value": 520.2},
+        {"timestamp": 1700000010000000, "value": 521.6}
+      ]
+    }
+  ]
+}
+

@@ -10,11 +10,13 @@ import (
 
 // Config holds the configuration parameters for test data generation.
 type Config struct {
-	NumMetrics      int     // Number of metrics to generate
-	MaxPoints       int     // Maximum points per metric
-	ValueJitter     float64 // Value jitter percentage (e.g., 5.0 = 5%)
-	TimestampJitter float64 // Timestamp jitter percentage (e.g., 2.0 = 2%)
-	Seed            int64   // Random seed for reproducibility
+	NumMetrics      int      // Number of metrics to generate
+	MaxPoints       int      // Maximum points per metric
+	ValueJitter     float64  // Value jitter percentage (e.g., 5.0 = 5%)
+	TimestampJitter float64  // Timestamp jitter percentage (e.g., 2.0 = 2%)
+	Seed            int64    // Random seed for reproducibility
+	DataSource      string   // Data source: "simulated" or filename
+	TimeUnit        TimeUnit // Time unit for input data (only used with real-world data)
 }
 
 // TestData holds the generated test data for measurements.

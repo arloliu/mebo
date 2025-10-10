@@ -12,8 +12,19 @@ func PrintConfig(config Config) {
 	fmt.Println("Configuration:")
 	fmt.Printf("  Metrics:           %d\n", config.NumMetrics)
 	fmt.Printf("  Max Points:        %d\n", config.MaxPoints)
-	fmt.Printf("  Value Jitter:      %.1f%%\n", config.ValueJitter)
-	fmt.Printf("  Timestamp Jitter:  %.1f%%\n", config.TimestampJitter)
+
+	// Print data source
+	if config.DataSource == "simulated" {
+		fmt.Printf("  Data Source:       Simulated\n")
+		fmt.Printf("  Value Jitter:      %.1f%%\n", config.ValueJitter)
+		fmt.Printf("  Timestamp Jitter:  %.1f%%\n", config.TimestampJitter)
+	} else {
+		fmt.Printf("  Data Source:       %s\n", config.DataSource)
+		if config.TimeUnit != "" {
+			fmt.Printf("  Time Unit:         %s\n", config.TimeUnit)
+		}
+	}
+
 	fmt.Printf("  Encoding:          Delta + Gorilla\n")
 	fmt.Printf("  Compression:       None\n")
 	fmt.Println()
