@@ -134,7 +134,7 @@ func TestNumericDecoder_Decode(t *testing.T) {
 
 		// Verify blob structure
 		require.Equal(t, format.TypeRaw, blob.tsEncType)
-		require.Equal(t, format.TypeRaw, blob.valEncType)
+		require.Equal(t, format.TypeRaw, blob.ValueEncoding())
 		require.Len(t, blob.index.byID, 2)
 		require.NotEmpty(t, blob.tsPayload)
 		require.NotEmpty(t, blob.valPayload)
@@ -151,7 +151,7 @@ func TestNumericDecoder_Decode(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, format.TypeDelta, blob.tsEncType)
-		require.Equal(t, format.TypeRaw, blob.valEncType)
+		require.Equal(t, format.TypeRaw, blob.ValueEncoding())
 		require.Len(t, blob.index.byID, 2)
 	})
 
@@ -324,7 +324,7 @@ func TestNumericDecoderBackwardCompatibility(t *testing.T) {
 	blob, err := decoder.Decode()
 	require.NoError(t, err)
 	require.Equal(t, 2, len(blob.index.byID))
-	require.False(t, blob.flag.HasMetricNames())
+	require.False(t, blob.HasMetricNames())
 }
 
 // TestNumericDecoder_PayloadLengths verifies that payload lengths are correctly

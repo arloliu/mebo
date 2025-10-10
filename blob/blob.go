@@ -1,12 +1,26 @@
 package blob
 
 import (
+	"sync"
 	"time"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
+	"github.com/arloliu/mebo/section"
 )
+
+// Global engine cache to avoid interface overhead
+var (
+	littleEndianEngine endian.EndianEngine
+	bigEndianEngine    endian.EndianEngine
+	engineOnce         sync.Once
+)
+
+func initEngines() {
+	littleEndianEngine = endian.GetLittleEndianEngine()
+	bigEndianEngine = endian.GetBigEndianEngine()
+}
 
 // BlobReader represents common interface for both NumericBlob and TextBlob.
 // It is a type-erased interface for accessing blob metadata and data.
@@ -57,10 +71,12 @@ type BlobReader interface {
 // blobBase contains common fields and methods shared by NumericBlob and TextBlob.
 // This is an internal type for code reuse and is not exposed in the public API.
 type blobBase struct {
-	engine        endian.EndianEngine
-	startTime     time.Time
-	tsEncType     format.EncodingType
-	sameByteOrder bool
+	engine          endian.EndianEngine // Will be replaced with cached engine
+	startTimeMicros int64               // Unix timestamp in microseconds (optimized from time.Time)
+	flags           uint16              // Packed flags: endian, tsEnc, valEnc, tag, etc. (optimized)
+	tsEncType       format.EncodingType // Timestamp encoding type
+	sameByteOrder   bool                // Whether the blob uses the same byte order as the system
+	endianType      uint8               // 0=little, 1=big (optimized from interface)
 }
 
 // indexMaps holds metric ID and name mappings for a blob.
@@ -79,13 +95,22 @@ type countGetter interface {
 // StartTime returns the start time of the blob.
 // This method is embedded by NumericBlob and TextBlob to satisfy BlobReader interface.
 func (b blobBase) StartTime() time.Time {
-	return b.startTime
+	if b.startTimeMicros == 0 && b.tsEncType == 0 && b.flags == 0 && b.endianType == 0 {
+		return time.Time{}
+	}
+
+	return time.UnixMicro(b.startTimeMicros).UTC()
 }
 
 // Engine returns the endian engine for byte order operations.
 // Internal helper for decoder selection.
 func (b blobBase) Engine() endian.EndianEngine {
-	return b.engine
+	engineOnce.Do(initEngines)
+	if b.endianType == 0 {
+		return littleEndianEngine
+	}
+
+	return bigEndianEngine
 }
 
 // TimestampEncodingType returns the timestamp encoding type.
@@ -98,6 +123,46 @@ func (b blobBase) TimestampEncodingType() format.EncodingType {
 // Internal helper for optimization selection (raw unsafe decoder vs safe decoder).
 func (b blobBase) SameByteOrder() bool {
 	return b.sameByteOrder
+}
+
+// Flag accessor methods for packed flags field
+
+// IsLittleEndian returns whether the data is little-endian.
+func (b blobBase) IsLittleEndian() bool {
+	return (b.flags & section.FlagEndianLittleEndian) == 0
+}
+
+// IsBigEndian returns whether the data is big-endian.
+func (b blobBase) IsBigEndian() bool {
+	return (b.flags & section.FlagEndianLittleEndian) != 0
+}
+
+// TimestampEncoding returns the timestamp encoding type from packed flags.
+func (b blobBase) TimestampEncoding() format.EncodingType {
+	if (b.flags & section.FlagTsEncRaw) != 0 {
+		return format.TypeRaw
+	}
+
+	return format.TypeDelta
+}
+
+// ValueEncoding returns the value encoding type from packed flags.
+func (b blobBase) ValueEncoding() format.EncodingType {
+	if (b.flags & section.FlagValEncRaw) != 0 {
+		return format.TypeRaw
+	}
+
+	return format.TypeGorilla
+}
+
+// HasTag returns whether tag support is enabled.
+func (b blobBase) HasTag() bool {
+	return (b.flags & section.FlagTagEnabled) != 0
+}
+
+// HasMetricNames returns whether metric names payload is enabled.
+func (b blobBase) HasMetricNames() bool {
+	return (b.flags & section.FlagMetricNames) != 0
 }
 
 // MetricCount returns the number of unique metrics in the blob.

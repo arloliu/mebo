@@ -2,7 +2,6 @@ package blob
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/arloliu/mebo/compress"
 	"github.com/arloliu/mebo/endian"
@@ -62,15 +61,39 @@ func NewNumericDecoder(data []byte) (*NumericDecoder, error) {
 //   - error: Payload offset validation errors, decompression errors, index parsing errors,
 //     or metric name verification failures
 func (d *NumericDecoder) Decode() (NumericBlob, error) {
+	// Pack flags into single uint16 for size optimization
+	var flags uint16
+	if d.header.Flag.IsBigEndian() {
+		flags |= section.FlagEndianLittleEndian // 1=big endian
+	}
+	if d.header.Flag.TimestampEncoding() == format.TypeRaw {
+		flags |= section.FlagTsEncRaw
+	}
+	if d.header.Flag.ValueEncoding() == format.TypeRaw {
+		flags |= section.FlagValEncRaw
+	}
+	if d.header.Flag.HasTag() {
+		flags |= section.FlagTagEnabled
+	}
+	if d.header.Flag.HasMetricNames() {
+		flags |= section.FlagMetricNames
+	}
+
 	blob := NumericBlob{
 		blobBase: blobBase{
-			engine:        d.engine,
-			startTime:     time.UnixMicro(d.header.StartTime).UTC(),
-			sameByteOrder: endian.CompareNativeEndian(d.engine),
-			tsEncType:     d.header.Flag.TimestampEncoding(),
+			engine:          d.engine,           // Keep for backward compatibility during transition
+			startTimeMicros: d.header.StartTime, // Direct int64 assignment (optimized)
+			sameByteOrder:   endian.CompareNativeEndian(d.engine),
+			tsEncType:       d.header.Flag.TimestampEncoding(),
+			endianType: func() uint8 {
+				if d.header.Flag.IsBigEndian() {
+					return 1
+				}
+
+				return 0
+			}(), // 0=little, 1=big
+			flags: flags, // Packed flags (optimized)
 		},
-		flag:       d.header.Flag,
-		valEncType: d.header.Flag.ValueEncoding(),
 	}
 
 	// Validate payload offsets

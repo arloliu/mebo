@@ -2,11 +2,11 @@ package blob
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/arloliu/mebo/compress"
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/errs"
+	"github.com/arloliu/mebo/format"
 	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
@@ -64,14 +64,36 @@ func NewTextDecoder(data []byte) (*TextDecoder, error) {
 //   - error: Payload offset validation errors, decompression errors, index parsing errors,
 //     or metric name verification failures
 func (d *TextDecoder) Decode() (TextBlob, error) {
+	// Pack flags into single uint16 for size optimization
+	var flags uint16
+	if d.header.Flag.IsBigEndian() {
+		flags |= section.FlagEndianLittleEndian // 1=big endian
+	}
+	if d.header.Flag.GetTimestampEncoding() == format.TypeRaw {
+		flags |= section.FlagTsEncRaw
+	}
+	if d.header.Flag.HasTag() {
+		flags |= section.FlagTagEnabled
+	}
+	if d.header.Flag.HasMetricNames() {
+		flags |= section.FlagMetricNames
+	}
+
 	blob := TextBlob{
 		blobBase: blobBase{
-			engine:        d.engine,
-			startTime:     time.UnixMicro(d.header.StartTime).UTC(),
-			sameByteOrder: endian.CompareNativeEndian(d.engine),
-			tsEncType:     d.header.Flag.GetTimestampEncoding(),
+			engine:          d.engine,           // Keep for backward compatibility during transition
+			startTimeMicros: d.header.StartTime, // Direct int64 assignment (optimized)
+			sameByteOrder:   endian.CompareNativeEndian(d.engine),
+			tsEncType:       d.header.Flag.GetTimestampEncoding(),
+			endianType: func() uint8 {
+				if d.header.Flag.IsBigEndian() {
+					return 1
+				}
+
+				return 0
+			}(), // 0=little, 1=big
+			flags: flags, // Packed flags (optimized)
 		},
-		flag: d.header.Flag,
 	}
 
 	// Validate payload offsets

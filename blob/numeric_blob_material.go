@@ -63,7 +63,7 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 		timestamps := make([]int64, 0, count)
 		values := make([]float64, 0, count)
 		var tags []string
-		if b.flag.HasTag() {
+		if b.HasTag() {
 			tags = make([]string, 0, count)
 		}
 
@@ -75,7 +75,7 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 			values = append(values, val)
 		}
 
-		if b.flag.HasTag() {
+		if b.HasTag() {
 			for tag := range b.allTagsFromEntry(entry) {
 				tags = append(tags, tag)
 			}
@@ -313,7 +313,7 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetr
 	timestamps := make([]int64, 0, count)
 	values := make([]float64, 0, count)
 	var tags []string
-	if b.flag.HasTag() {
+	if b.HasTag() {
 		tags = make([]string, 0, count)
 	}
 
@@ -328,7 +328,7 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetr
 	}
 
 	// Decode tags (if enabled)
-	if b.flag.HasTag() {
+	if b.HasTag() {
 		for tag := range b.allTagsFromEntry(entry) {
 			tags = append(tags, tag)
 		}

@@ -1149,7 +1149,7 @@ func TestNumericEncoderWithMetricNamesPayload(t *testing.T) {
 	require.Equal(t, 2, len(blob.index.byID))
 
 	// Header should indicate metric names present
-	require.True(t, blob.flag.HasMetricNames())
+	require.True(t, blob.HasMetricNames())
 }
 
 // TestNumericEncoderDecoderRoundTrip tests full encode/decode cycle
@@ -1227,7 +1227,7 @@ func TestNumericEncoderDecoderRoundTrip(t *testing.T) {
 			require.Equal(t, len(tt.metrics), len(blob.index.byID))
 
 			// Verify flag
-			require.Equal(t, tt.enableMetricNames, blob.flag.HasMetricNames())
+			require.Equal(t, tt.enableMetricNames, blob.HasMetricNames())
 		})
 	}
 }
@@ -1789,7 +1789,7 @@ func TestNumericEncoder_TagsDisabled(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify flag indicates tags are disabled
-	require.False(t, blob.flag.HasTag())
+	require.False(t, blob.HasTag())
 
 	// Verify first metric - timestamps and values should work, tags should be empty
 	timestamps := make([]int64, 0, 3)
@@ -1883,7 +1883,7 @@ func TestNumericEncoder_TagsEnabled(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify flag indicates tags are enabled
-	require.True(t, blob.flag.HasTag())
+	require.True(t, blob.HasTag())
 
 	// Verify first metric - all data should be present
 	timestamps := make([]int64, 0, 3)
@@ -1968,7 +1968,7 @@ func TestNumericEncoder_TagsDisabled_DeltaEncoding(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify tags are disabled
-	require.False(t, blob.flag.HasTag())
+	require.False(t, blob.HasTag())
 
 	// Verify data - use All() which calls allDataPointsDeltaRaw
 	timestamps := make([]int64, 0, 3)
@@ -2021,7 +2021,7 @@ func TestNumericEncoder_TagsEnabled_DeltaEncoding(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify tags are enabled
-	require.True(t, blob.flag.HasTag())
+	require.True(t, blob.HasTag())
 
 	// Verify all data is present - use All() which calls allDataPointsDeltaRaw
 	timestamps := make([]int64, 0, 3)
@@ -2077,7 +2077,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		require.NoError(t, err)
 
 		// Tag support should be automatically disabled
-		require.False(t, blob.flag.HasTag(), "Expected HasTag() to be false when all tags are empty")
+		require.False(t, blob.HasTag(), "Expected HasTag() to be false when all tags are empty")
 
 		// Verify data is still correct
 		timestamps := make([]int64, 0, 3)
@@ -2120,7 +2120,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		blob, err := decoder.Decode()
 		require.NoError(t, err)
 
-		require.False(t, blob.flag.HasTag())
+		require.False(t, blob.HasTag())
 	})
 
 	t.Run("AllEmptyTags_NoTagsProvided", func(t *testing.T) {
@@ -2149,7 +2149,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		blob, err := decoder.Decode()
 		require.NoError(t, err)
 
-		require.False(t, blob.flag.HasTag())
+		require.False(t, blob.HasTag())
 	})
 
 	t.Run("MixedTags_SomeNonEmpty", func(t *testing.T) {
@@ -2178,7 +2178,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		blob, err := decoder.Decode()
 		require.NoError(t, err)
 
-		require.True(t, blob.flag.HasTag())
+		require.True(t, blob.HasTag())
 
 		tags := make([]string, 0, 3)
 		for _, dp := range blob.All(12345) {
@@ -2214,7 +2214,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		blob, err := decoder.Decode()
 		require.NoError(t, err)
 
-		require.True(t, blob.flag.HasTag())
+		require.True(t, blob.HasTag())
 
 		tags := make([]string, 0, 3)
 		for _, dp := range blob.All(12345) {
@@ -2253,7 +2253,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		blob, err := decoder.Decode()
 		require.NoError(t, err)
 
-		require.False(t, blob.flag.HasTag())
+		require.False(t, blob.HasTag())
 	})
 
 	t.Run("MultipleMetrics_OneWithNonEmptyTag", func(t *testing.T) {
@@ -2302,7 +2302,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		blob, err := decoder.Decode()
 		require.NoError(t, err)
 
-		require.True(t, blob.flag.HasTag())
+		require.True(t, blob.HasTag())
 
 		tags := make([]string, 0, 2)
 		for _, dp := range blob.All(10001) {

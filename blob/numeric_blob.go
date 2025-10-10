@@ -23,13 +23,11 @@ type NumericDataPoint struct {
 
 // NumericBlob represents a decoded blob of float values with associated timestamps and optional tags.
 type NumericBlob struct {
-	blobBase                                        // Embedded base: engine, startTime, tsEncType, sameByteOrder
+	blobBase                                        // Embedded base: engine, startTime, tsEncType, sameByteOrder, flags
 	index      indexMaps[section.NumericIndexEntry] // Metric ID/name → IndexEntry mappings
+	tagPayload []byte
 	tsPayload  []byte
 	valPayload []byte
-	tagPayload []byte
-	valEncType format.EncodingType
-	flag       section.NumericFlag
 }
 
 var _ BlobReader = NumericBlob{}
@@ -56,7 +54,11 @@ func (b NumericBlob) AsText() (TextBlob, bool) {
 
 // StartTime returns the start time of the blob.
 func (b NumericBlob) StartTime() time.Time {
-	return b.startTime
+	if b.startTimeMicros == 0 && len(b.index.byID) == 0 {
+		return time.Time{}
+	}
+
+	return time.UnixMicro(b.startTimeMicros).UTC()
 }
 
 // MetricCount returns the number of metrics in the blob.
@@ -204,7 +206,7 @@ func (b NumericBlob) AllValuesByName(metricName string) iter.Seq[float64] {
 func (b NumericBlob) AllTags(metricID uint64) iter.Seq[string] {
 	// Return empty iterator if tags are not enabled
 	// This handles both tags disabled and tags optimized away
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return func(yield func(string) bool) {}
 	}
 
@@ -221,7 +223,7 @@ func (b NumericBlob) AllTags(metricID uint64) iter.Seq[string] {
 // Returns an empty sequence if tags are not enabled or the metric name is not found.
 func (b NumericBlob) AllTagsByName(metricName string) iter.Seq[string] {
 	// Return empty iterator if tags are not enabled
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return func(yield func(string) bool) {}
 	}
 
@@ -324,7 +326,7 @@ func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool)
 //	}
 func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 	// Return empty string if tags are not enabled
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return "", false
 	}
 
@@ -345,7 +347,7 @@ func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 //   - The index is out of bounds
 func (b NumericBlob) TagAtByName(metricName string, index int) (string, bool) {
 	// Return empty string if tags are not enabled
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return "", false
 	}
 
@@ -459,7 +461,7 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 
 	var valBytes []byte
 
-	switch b.valEncType { //nolint: exhaustive
+	switch b.ValueEncoding() { //nolint: exhaustive
 	case format.TypeRaw:
 		// Raw encoding: fixed 8 bytes per float64
 		valEnd := valStart + count*8
@@ -520,23 +522,23 @@ func (b NumericBlob) tagAtFromEntry(entry section.NumericIndexEntry, index int) 
 // All other combinations fall back to generic implementation.
 func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
 	// Fastest path: optimize for raw encoding (supports random access via At())
-	if b.tsEncType == format.TypeRaw && b.valEncType == format.TypeRaw {
+	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeRaw {
 		return b.allDataPointsRaw(tsBytes, valBytes, tagBytes, count)
 	}
 
 	// Fast path: optimize for raw timestamps + gorilla values
-	if b.tsEncType == format.TypeRaw && b.valEncType == format.TypeGorilla {
+	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeGorilla {
 		return b.allDataPointsRawGorilla(tsBytes, valBytes, tagBytes, count)
 	}
 
 	// High-priority path: optimize for delta + gorilla (DEFAULT CONFIGURATION)
 	// This is the most commonly used encoding combination in production
-	if b.tsEncType == format.TypeDelta && b.valEncType == format.TypeGorilla {
+	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeGorilla {
 		return b.allDataPointsDeltaGorilla(tsBytes, valBytes, tagBytes, count)
 	}
 
 	// Faster path: optimize for delta timestamps + raw values (common for time-series)
-	if b.tsEncType == format.TypeDelta && b.valEncType == format.TypeRaw {
+	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeRaw {
 		return b.allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes, count)
 	}
 
@@ -562,7 +564,7 @@ func (b NumericBlob) allDataPointsRaw(tsBytes, valBytes, tagBytes []byte, count 
 
 	return func(yield func(int, NumericDataPoint) bool) {
 		// If tags are disabled, use simple iteration without tag decoder
-		if !b.flag.HasTag() {
+		if !b.HasTag() {
 			for i := 0; i < count; i++ {
 				ts, _ := tsDecoder.At(tsBytes, i, count)
 				val, _ := valDecoder.At(valBytes, i, count)
@@ -621,7 +623,7 @@ func (b NumericBlob) allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes []byte, c
 
 	return func(yield func(int, NumericDataPoint) bool) {
 		// If tags are disabled, use simple iteration without tag decoder
-		if !b.flag.HasTag() {
+		if !b.HasTag() {
 			tsIter := tsDecoder.All(tsBytes, count)
 			i := 0
 			for ts := range tsIter {
@@ -701,7 +703,7 @@ func (b NumericBlob) allDataPointsDeltaGorilla(tsBytes, valBytes, tagBytes []byt
 
 	return func(yield func(int, NumericDataPoint) bool) {
 		// If tags are disabled, use simple iteration without tag decoder
-		if !b.flag.HasTag() {
+		if !b.HasTag() {
 			tsIter := tsDecoder.All(tsBytes, count)
 			valIter := valDecoder.All(valBytes, count)
 
@@ -800,7 +802,7 @@ func (b NumericBlob) allDataPointsRawGorilla(tsBytes, valBytes, tagBytes []byte,
 
 	return func(yield func(int, NumericDataPoint) bool) {
 		// If tags are disabled, use simple iteration without tag decoder
-		if !b.flag.HasTag() {
+		if !b.HasTag() {
 			valIter := valDecoder.All(valBytes, count)
 
 			i := 0
@@ -866,7 +868,7 @@ func (b NumericBlob) allDataPointsGeneric(tsBytes, valBytes, tagBytes []byte, co
 	tsIter := b.decodeTimestamps(tsBytes, count)
 	valIter := b.decodeValues(valBytes, count)
 
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
 			// Use iter.Pull for fallback (works for all encoding combinations)
 			tsNext, tsStop := iter.Pull(tsIter)
@@ -946,7 +948,7 @@ func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64]
 
 // decodeValues selects the optimal value decoder and returns an iterator.
 func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] {
-	switch b.valEncType { //nolint: exhaustive
+	switch b.ValueEncoding() { //nolint: exhaustive
 	case format.TypeRaw:
 		if b.sameByteOrder {
 			decoder := ienc.NewNumericRawUnsafeDecoder(b.engine)

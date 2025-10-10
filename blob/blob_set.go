@@ -142,18 +142,18 @@ var (
 // Returns:
 //   - BlobSet: Constructed BlobSet with parsed blobs
 func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
-	// Sort numeric blobs by start time
+	// Sort numeric blobs by start time (optimized: compare microseconds directly)
 	sortedNumeric := make([]NumericBlob, len(numericBlobs))
 	copy(sortedNumeric, numericBlobs)
 	slices.SortFunc(sortedNumeric, func(a, b NumericBlob) int {
-		return a.StartTime().Compare(b.StartTime())
+		return int(a.startTimeMicros - b.startTimeMicros)
 	})
 
-	// Sort text blobs by start time
+	// Sort text blobs by start time (optimized: compare microseconds directly)
 	sortedText := make([]TextBlob, len(textBlobs))
 	copy(sortedText, textBlobs)
 	slices.SortFunc(sortedText, func(a, b TextBlob) int {
-		return a.StartTime().Compare(b.StartTime())
+		return int(a.startTimeMicros - b.startTimeMicros)
 	})
 
 	return BlobSet{

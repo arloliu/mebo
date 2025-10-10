@@ -56,9 +56,9 @@ func NewNumericBlobSet(blobs []NumericBlob) (NumericBlobSet, error) {
 	sortedBlobs := make([]NumericBlob, len(blobs))
 	copy(sortedBlobs, blobs)
 
-	// Sort blobs by start time in ascending order
+	// Sort blobs by start time in ascending order (optimized: compare microseconds directly)
 	slices.SortFunc(sortedBlobs, func(a, b NumericBlob) int {
-		return a.startTime.Compare(b.startTime)
+		return int(a.startTimeMicros - b.startTimeMicros)
 	})
 
 	return NumericBlobSet{
@@ -166,7 +166,7 @@ func (s NumericBlobSet) TimeRange() (start, end time.Time) {
 		return time.Time{}, time.Time{}
 	}
 
-	return s.blobs[0].startTime, s.blobs[len(s.blobs)-1].startTime
+	return s.blobs[0].StartTime(), s.blobs[len(s.blobs)-1].StartTime()
 }
 
 // BlobAt returns the blob at the specified index.

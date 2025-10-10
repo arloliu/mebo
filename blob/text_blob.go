@@ -22,10 +22,10 @@ type TextDataPoint struct {
 
 // TextBlob represents a decoded blob of text values with associated timestamps and optional tags.
 type TextBlob struct {
-	blobBase                                      // Embedded base: engine, startTime, tsEncType, sameByteOrder
+	blobBase                                      // Embedded base: engine, startTime, tsEncType, sameByteOrder, flags
 	index       indexMaps[section.TextIndexEntry] // Metric ID/name → IndexEntry mappings
 	dataPayload []byte                            // Single decompressed data section (row-based)
-	flag        section.TextFlag
+	// flag is now packed into blobBase.flags (optimized)
 }
 
 var _ BlobReader = TextBlob{}
@@ -158,7 +158,7 @@ func (b TextBlob) AllValuesByName(metricName string) iter.Seq[string] {
 // AllTags returns an iterator over all tags for the given metric ID.
 // Returns an empty iterator if tags are not enabled or the metric ID doesn't exist.
 func (b TextBlob) AllTags(metricID uint64) iter.Seq[string] {
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return func(yield func(string) bool) {}
 	}
 
@@ -174,7 +174,7 @@ func (b TextBlob) AllTags(metricID uint64) iter.Seq[string] {
 // Returns an empty iterator if tags are not enabled, the metric name doesn't exist,
 // or the blob has no metric names.
 func (b TextBlob) AllTagsByName(metricName string) iter.Seq[string] {
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return func(yield func(string) bool) {}
 	}
 
@@ -281,7 +281,7 @@ func (b TextBlob) TimestampAtByName(metricName string, index int) (int64, bool) 
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TagAt(metricID uint64, index int) (string, bool) {
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return "", false
 	}
 
@@ -304,7 +304,7 @@ func (b TextBlob) TagAt(metricID uint64, index int) (string, bool) {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TagAtByName(metricName string, index int) (string, bool) {
-	if !b.flag.HasTag() {
+	if !b.HasTag() {
 		return "", false
 	}
 
@@ -394,8 +394,8 @@ func (b TextBlob) valueAtFromEntry(entry section.TextIndexEntry, index int) (str
 
 	// Skip to the target index
 	currentOffset := 0
-	lastTs := b.startTime.UnixMicro()
-	hasTags := b.flag.HasTag()
+	lastTs := b.startTimeMicros
+	hasTags := b.HasTag()
 
 	for i := range count {
 		// Decode and skip timestamp
@@ -452,8 +452,8 @@ func (b TextBlob) timestampAtFromEntry(entry section.TextIndexEntry, index int) 
 
 	// Skip to the target index
 	currentOffset := 0
-	lastTs := b.startTime.UnixMicro()
-	hasTags := b.flag.HasTag()
+	lastTs := b.startTimeMicros
+	hasTags := b.HasTag()
 
 	for i := range count {
 		// Decode timestamp
@@ -504,7 +504,7 @@ func (b TextBlob) tagAtFromEntry(entry section.TextIndexEntry, index int) (strin
 
 	// Skip to the target index
 	currentOffset := 0
-	lastTs := b.startTime.UnixMicro()
+	lastTs := b.startTimeMicros
 
 	for i := range count {
 		// Skip timestamp
@@ -549,7 +549,7 @@ func (b TextBlob) decodeDataPoints(dataBytes []byte, count int) iter.Seq2[int, T
 		offset := 0
 		// Initialize lastTs to blob start time for delta encoding
 		// For raw encoding, this value is not used
-		lastTs := b.startTime.UnixMicro()
+		lastTs := b.startTimeMicros
 
 		for i := range count {
 			// Decode timestamp
@@ -567,7 +567,7 @@ func (b TextBlob) decodeDataPoints(dataBytes []byte, count int) iter.Seq2[int, T
 			offset++
 
 			lenT := 0
-			if b.flag.HasTag() {
+			if b.HasTag() {
 				if offset >= len(dataBytes) {
 					return
 				}
@@ -584,7 +584,7 @@ func (b TextBlob) decodeDataPoints(dataBytes []byte, count int) iter.Seq2[int, T
 
 			// Read tag if enabled
 			var tag string
-			if b.flag.HasTag() {
+			if b.HasTag() {
 				if offset+lenT > len(dataBytes) {
 					return
 				}
@@ -604,7 +604,7 @@ func (b TextBlob) decodeTimestamps(dataBytes []byte, count int) iter.Seq[int64] 
 	return func(yield func(int64) bool) {
 		offset := 0
 		// Initialize lastTs to blob start time for delta encoding
-		lastTs := b.startTime.UnixMicro()
+		lastTs := b.startTimeMicros
 
 		for range count {
 			// Decode timestamp
@@ -622,7 +622,7 @@ func (b TextBlob) decodeTimestamps(dataBytes []byte, count int) iter.Seq[int64] 
 			offset++
 
 			lenT := 0
-			if b.flag.HasTag() {
+			if b.HasTag() {
 				if offset >= len(dataBytes) {
 					return
 				}
@@ -645,7 +645,7 @@ func (b TextBlob) decodeValues(dataBytes []byte, count int) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		offset := 0
 		// Initialize lastTs to blob start time for delta encoding
-		lastTs := b.startTime.UnixMicro()
+		lastTs := b.startTimeMicros
 
 		for range count {
 			// Skip timestamp
@@ -663,7 +663,7 @@ func (b TextBlob) decodeValues(dataBytes []byte, count int) iter.Seq[string] {
 			offset++
 
 			lenT := 0
-			if b.flag.HasTag() {
+			if b.HasTag() {
 				if offset >= len(dataBytes) {
 					return
 				}
@@ -693,7 +693,7 @@ func (b TextBlob) decodeTags(dataBytes []byte, count int) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		offset := 0
 		// Initialize lastTs to blob start time for delta encoding
-		lastTs := b.startTime.UnixMicro()
+		lastTs := b.startTimeMicros
 
 		for range count {
 			// Skip timestamp
@@ -742,7 +742,7 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 		var ts int64
 		if *lastTs == 0 {
 			// First data point: add delta to blob start time
-			ts = b.startTime.UnixMicro() + delta
+			ts = b.startTimeMicros + delta
 		} else {
 			// Subsequent data points: add delta to previous timestamp
 			ts = *lastTs + delta

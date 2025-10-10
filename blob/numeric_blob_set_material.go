@@ -76,7 +76,7 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 	// Step 3: Check if any blob has tags enabled
 	hasTags := false
 	for i := range s.blobs {
-		if s.blobs[i].flag.HasTag() {
+		if s.blobs[i].HasTag() {
 			hasTags = true
 			break
 		}
@@ -123,7 +123,7 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 			}
 
 			// Decode and append tags (if enabled)
-			if hasTags && blob.flag.HasTag() {
+			if hasTags && blob.HasTag() {
 				for tag := range blob.allTagsFromEntry(entry) {
 					metricSet.tags = append(metricSet.tags, tag)
 				}
@@ -192,7 +192,7 @@ func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumeric
 	// Step 2: Check if any blob has tags enabled
 	hasTags := false
 	for i := range s.blobs {
-		if s.blobs[i].flag.HasTag() {
+		if s.blobs[i].HasTag() {
 			hasTags = true
 			break
 		}
@@ -225,7 +225,7 @@ func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumeric
 		}
 
 		// Decode and append tags (if enabled)
-		if hasTags && blob.flag.HasTag() {
+		if hasTags && blob.HasTag() {
 			for tag := range blob.allTagsFromEntry(entry) {
 				tags = append(tags, tag)
 			}

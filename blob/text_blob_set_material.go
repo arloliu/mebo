@@ -83,7 +83,7 @@ func (s *TextBlobSet) Materialize() MaterializedTextBlobSet {
 	// Step 3: Check if any blob has tags enabled
 	hasTags := false
 	for i := range s.blobs {
-		if s.blobs[i].flag.HasTag() {
+		if s.blobs[i].HasTag() {
 			hasTags = true
 			break
 		}
@@ -163,7 +163,7 @@ func (s *TextBlobSet) MaterializeMetric(metricID uint64) (MaterializedTextMetric
 	// Step 2: Check if any blob has tags enabled
 	hasTags := false
 	for i := range s.blobs {
-		if s.blobs[i].flag.HasTag() {
+		if s.blobs[i].HasTag() {
 			hasTags = true
 			break
 		}
@@ -196,7 +196,7 @@ func (s *TextBlobSet) MaterializeMetric(metricID uint64) (MaterializedTextMetric
 		}
 
 		// Decode and append tags if present
-		if hasTags && blob.flag.HasTag() {
+		if hasTags && blob.HasTag() {
 			for tag := range blob.allTagsFromEntry(entry) {
 				tags = append(tags, tag)
 			}
@@ -290,7 +290,7 @@ func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, met
 			}
 
 			// Decode and append tags if present
-			if hasTags && blob.flag.HasTag() {
+			if hasTags && blob.HasTag() {
 				for tag := range blob.allTagsFromEntry(entry) {
 					metricSet.tags = append(metricSet.tags, tag)
 				}

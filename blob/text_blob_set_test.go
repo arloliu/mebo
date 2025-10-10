@@ -354,8 +354,8 @@ func TestTextBlobSet_TimeRange(t *testing.T) {
 	require.NoError(t, err)
 
 	start, end := blobSet.TimeRange()
-	require.Equal(t, blobs[0].startTime, start)
-	require.Equal(t, blobs[2].startTime, end)
+	require.Equal(t, blobs[0].StartTime(), start)
+	require.Equal(t, blobs[2].StartTime(), end)
 }
 
 func TestTextBlobSet_BlobAt(t *testing.T) {
@@ -366,11 +366,11 @@ func TestTextBlobSet_BlobAt(t *testing.T) {
 	// Test valid indices
 	blob := blobSet.BlobAt(0)
 	require.NotNil(t, blob)
-	require.Equal(t, blobs[0].startTime, blob.startTime)
+	require.Equal(t, blobs[0].StartTime(), blob.StartTime())
 
 	blob = blobSet.BlobAt(2)
 	require.NotNil(t, blob)
-	require.Equal(t, blobs[2].startTime, blob.startTime)
+	require.Equal(t, blobs[2].StartTime(), blob.StartTime())
 
 	// Test out of bounds
 	blob = blobSet.BlobAt(-1)

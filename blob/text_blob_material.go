@@ -63,7 +63,7 @@ func (b TextBlob) Materialize() MaterializedTextBlob {
 		timestamps := make([]int64, 0, count)
 		values := make([]string, 0, count)
 		var tags []string
-		if b.flag.HasTag() {
+		if b.HasTag() {
 			tags = make([]string, 0, count)
 		}
 
@@ -78,7 +78,7 @@ func (b TextBlob) Materialize() MaterializedTextBlob {
 		}
 
 		// Decode tags (if enabled)
-		if b.flag.HasTag() {
+		if b.HasTag() {
 			for tag := range b.allTagsFromEntry(entry) {
 				tags = append(tags, tag)
 			}
@@ -316,7 +316,7 @@ func (b TextBlob) MaterializeMetric(metricID uint64) (MaterializedTextMetric, bo
 	timestamps := make([]int64, 0, count)
 	values := make([]string, 0, count)
 	var tags []string
-	if b.flag.HasTag() {
+	if b.HasTag() {
 		tags = make([]string, 0, count)
 	}
 
@@ -331,7 +331,7 @@ func (b TextBlob) MaterializeMetric(metricID uint64) (MaterializedTextMetric, bo
 	}
 
 	// Decode tags (if enabled)
-	if b.flag.HasTag() {
+	if b.HasTag() {
 		for tag := range b.allTagsFromEntry(entry) {
 			tags = append(tags, tag)
 		}

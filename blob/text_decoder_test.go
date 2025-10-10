@@ -234,7 +234,7 @@ func TestTextDecoder_Decode_WithTags(t *testing.T) {
 	blob, err := decoder.Decode()
 	require.NoError(t, err)
 	require.Equal(t, 1, blob.MetricCount())
-	require.True(t, blob.flag.HasTag())
+	require.True(t, blob.HasTag())
 }
 
 // ==============================================================================

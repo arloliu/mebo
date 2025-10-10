@@ -234,7 +234,7 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 			},
 			tsPayload:  []byte{},
 			valPayload: []byte{},
-			valEncType: format.TypeRaw,
+			// valEncType is now packed into flags (optimized)
 		}
 
 		count := 0
@@ -263,7 +263,7 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 			},
 			tsPayload:  []byte{0, 0, 0, 0, 0, 0, 0, 0}, // Some data
 			valPayload: []byte{},
-			valEncType: format.TypeRaw,
+			// valEncType is now packed into flags (optimized)
 		}
 
 		count := 0
@@ -292,7 +292,7 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 			},
 			tsPayload:  []byte{0, 0, 0, 0}, // Only 4 bytes
 			valPayload: []byte{},
-			valEncType: format.TypeRaw,
+			// valEncType is now packed into flags (optimized)
 		}
 
 		count := 0
@@ -607,8 +607,8 @@ func TestNumericBlob_All_DeltaGorilla(t *testing.T) {
 
 		// Verify the optimized path is being used
 		require.Equal(t, format.TypeDelta, blob.tsEncType, "should use delta timestamp encoding")
-		require.Equal(t, format.TypeGorilla, blob.valEncType, "should use gorilla value encoding")
-		require.False(t, blob.flag.HasTag(), "tags should be disabled")
+		require.Equal(t, format.TypeGorilla, blob.ValueEncoding(), "should use gorilla value encoding")
+		require.False(t, blob.HasTag(), "tags should be disabled")
 
 		// Collect all data points
 		var gotIndices []int
@@ -668,7 +668,7 @@ func TestNumericBlob_All_DeltaGorilla(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify tags are enabled
-		require.True(t, blob.flag.HasTag(), "tags should be enabled")
+		require.True(t, blob.HasTag(), "tags should be enabled")
 
 		// Collect all data points
 		var gotIndices []int
@@ -1159,7 +1159,7 @@ func TestNumericBlob_TagSupport(t *testing.T) {
 
 		// OPTIMIZATION: When all tags are empty, tag support is automatically disabled
 		// This saves space and improves decoding performance
-		require.False(t, blob.flag.HasTag(), "Expected tags to be optimized away when all empty")
+		require.False(t, blob.HasTag(), "Expected tags to be optimized away when all empty")
 
 		// Verify all tags are empty strings in data points
 		for _, dp := range blob.All(metricID) {

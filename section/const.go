@@ -39,6 +39,13 @@ const (
 	ValueCompressionZstd = uint8(format.CompressionZstd) << 4 // ValueCompressionZstd represents Zstandard compression for values.
 	ValueCompressionS2   = uint8(format.CompressionS2) << 4   // ValueCompressionS2 represents S2 compression for values.
 	ValueCompressionLZ4  = uint8(format.CompressionLZ4) << 4  // ValueCompressionLZ4 represents LZ4 compression for values.
+
+	// Blob flags for packed uint16 field (optimized struct fields)
+	FlagEndianLittleEndian = 0x0001 // 0=little, 1=big
+	FlagTsEncRaw           = 0x0002 // 0=raw, 1=delta
+	FlagValEncRaw          = 0x0004 // 0=raw, 1=gorilla
+	FlagTagEnabled         = 0x0008 // 0=disabled, 1=enabled
+	FlagMetricNames        = 0x0010 // 0=disabled, 1=enabled
 )
 
 // offset and section sizes in the blob file
