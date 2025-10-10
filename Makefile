@@ -58,6 +58,14 @@ bench:
 	@echo "Running benchmarks..."
 	@go test ./... -bench=. -benchmem -run=^$$ -timeout=$(TEST_TIMEOUT)
 
+## bench-gorilla-decoder: Compare Numeric Gorilla decoder benchmarks against a baseline commit
+bench-gorilla-decoder:
+	@if [ -z "$(BASELINE)" ]; then \
+		echo "Error: BASELINE variable is required. Example: make bench-gorilla-decoder BASELINE=HEAD~1"; \
+		exit 1; \
+	fi
+	@OUTPUT_DIR=$(OUTPUT_DIR) COUNT=$(COUNT) ./scripts/bench_numeric_gorilla_decoder.sh --baseline "$(BASELINE)" ${COUNT:+--count $(COUNT)} ${OUTPUT_DIR:+--output $(OUTPUT_DIR)} $(EXTRA_FLAGS)
+
 ## clean-test-results: Clean test artifacts
 clean-test-results:
 	@rm -f test.log *.pprof

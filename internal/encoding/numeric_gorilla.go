@@ -10,6 +10,10 @@ import (
 	"github.com/arloliu/mebo/internal/pool"
 )
 
+const (
+	gorillaSmallSequenceThreshold = 64
+)
+
 // NumericGorillaEncoder implements Facebook's Gorilla compression algorithm for float64 time-series values.
 //
 // The algorithm uses XOR-based compression with leading/trailing zero optimization:
@@ -492,6 +496,60 @@ func NewNumericGorillaDecoder() NumericGorillaDecoder {
 	return NumericGorillaDecoder{}
 }
 
+// gorillaBlockState caches block metadata to support Gorilla decoder reuse logic.
+//
+// It tracks the leading/trailing zero counts and block size from the previous
+// block, allowing subsequent values to reuse the same bit window without
+// re-reading header metadata from the stream.
+type gorillaBlockState struct {
+	trailing  int
+	blockSize int
+	valid     bool
+}
+
+// next reads the block metadata for a changed Gorilla value.
+// It returns the block parameters and updates the cached state when a new block
+// definition is encountered.
+func (s *gorillaBlockState) next(br *bitReader) (trailing int, blockSize int, ok bool) {
+	blockControlBit, ok := br.readBit()
+	if !ok {
+		return 0, 0, false
+	}
+
+	if blockControlBit == 0 {
+		if !s.valid {
+			return 0, 0, false
+		}
+
+		return s.trailing, s.blockSize, true
+	}
+
+	leading, ok := br.read5Bits()
+	if !ok {
+		return 0, 0, false
+	}
+
+	blockSize, ok = br.read6Bits()
+	if !ok {
+		return 0, 0, false
+	}
+	blockSize++
+	if blockSize < 1 || blockSize > 64 {
+		return 0, 0, false
+	}
+
+	trailing = 64 - leading - blockSize
+	if trailing < 0 || trailing > 64 {
+		return 0, 0, false
+	}
+
+	s.trailing = trailing
+	s.blockSize = blockSize
+	s.valid = true
+
+	return trailing, blockSize, true
+}
+
 // All decodes all float64 values from the Gorilla-compressed byte slice.
 //
 // The decoder reads the first value uncompressed, then decodes subsequent values
@@ -511,9 +569,8 @@ func (d NumericGorillaDecoder) All(data []byte, count int) iter.Seq[float64] {
 			return
 		}
 
-		// Prefetch data for better cache performance
 		if len(data) >= 64 {
-			_ = data[63] // Touch cache line
+			_ = data[63]
 		}
 
 		br := newBitReader(data)
@@ -524,83 +581,226 @@ func (d NumericGorillaDecoder) All(data []byte, count int) iter.Seq[float64] {
 			return
 		}
 		prevValue := firstBits
-		if !yield(math.Float64frombits(firstBits)) {
+		prevFloat := math.Float64frombits(prevValue)
+		if !yield(prevFloat) {
 			return
 		}
 
-		var prevLeading, prevTrailing int
+		if count == 1 {
+			return
+		}
 
-		// Decode remaining values
-		for i := 1; i < count; i++ {
-			controlBit, ok := br.readBit()
+		remaining := count - 1
+		if remaining <= gorillaSmallSequenceThreshold {
+			d.decodeAllSmall(br, prevValue, prevFloat, remaining, yield)
+			return
+		}
+
+		d.decodeAllLarge(br, prevValue, prevFloat, remaining, yield)
+	}
+}
+
+func (NumericGorillaDecoder) decodeAllSmall(br *bitReader, prevValue uint64, prevFloat float64, remaining int, yield func(float64) bool) {
+	trailing := 0
+	blockSize := 0
+	blockValid := false
+
+	for remaining > 0 {
+		controlBit, ok := br.readBit()
+		if !ok {
+			return
+		}
+
+		if controlBit == 0 {
+			if !yield(prevFloat) {
+				return
+			}
+			remaining--
+
+			continue
+		}
+
+		reuseBit, ok := br.readBit()
+		if !ok {
+			return
+		}
+
+		var trailingBits, blockSizeBits int
+		if reuseBit == 0 {
+			if !blockValid {
+				return
+			}
+			trailingBits = trailing
+			blockSizeBits = blockSize
+		} else {
+			leading, ok := br.read5Bits()
 			if !ok {
 				return
 			}
-
-			if controlBit == 0 {
-				// Value unchanged
-				if !yield(math.Float64frombits(prevValue)) {
-					return
-				}
-
-				continue
-			}
-
-			// Value changed - read block info
-			blockControlBit, ok := br.readBit()
+			sizeBits, ok := br.read6Bits()
 			if !ok {
 				return
 			}
+			blockSizeBits = sizeBits + 1
+			if blockSizeBits < 1 || blockSizeBits > 64 {
+				return
+			}
+			trailingBits = 64 - leading - blockSizeBits
+			if trailingBits < 0 || trailingBits > 64 {
+				return
+			}
 
-			var leading, blockSize int
-			if blockControlBit == 0 {
-				// Reuse previous block
-				leading = prevLeading
-				blockSize = 64 - prevLeading - prevTrailing
-			} else {
-				// New block
-				leading, ok = br.read5Bits()
+			trailing = trailingBits
+			blockSize = blockSizeBits
+			blockValid = true
+		}
+
+		meaningful, ok := br.readBits(blockSizeBits)
+		if !ok {
+			return
+		}
+
+		shift := uint64(trailingBits) // #nosec G115 -- trailingBits constrained to [0,64]
+		prevValue ^= meaningful << shift
+		prevFloat = math.Float64frombits(prevValue)
+		if !yield(prevFloat) {
+			return
+		}
+		remaining--
+	}
+}
+
+func (NumericGorillaDecoder) decodeAllLarge(br *bitReader, prevValue uint64, prevFloat float64, remaining int, yield func(float64) bool) {
+	if remaining <= 0 {
+		return
+	}
+
+	state := gorillaBlockState{}
+	produced := 0
+
+	for produced < remaining {
+		controlBit, ok := br.readBit()
+		if !ok {
+			return
+		}
+
+		if controlBit == 0 {
+			if !yield(prevFloat) {
+				return
+			}
+			produced++
+
+			for produced < remaining {
+				controlBit, ok = br.readBit()
 				if !ok {
 					return
 				}
+				if controlBit != 0 {
+					break
+				}
 
-				blockSize, ok = br.read6Bits()
-				if !ok {
+				if !yield(prevFloat) {
 					return
 				}
-				blockSize++ // Add 1 to decode from 0-63 back to 1-64
-
-				// Validate blockSize: must be between 1 and 64
-				// (0 would mean no meaningful bits, which shouldn't happen for a changed value)
-				if blockSize < 1 || blockSize > 64 {
-					return // malformed data
-				}
-
-				prevLeading = leading
-				prevTrailing = 64 - leading - blockSize
+				produced++
 			}
 
-			// Read meaningful bits
-			meaningfulBits, ok := br.readBits(blockSize)
-			if !ok {
-				return
-			}
-
-			// Reconstruct XOR value
-			trailing := 64 - leading - blockSize
-			// Safety check: ensure trailing is valid
-			if trailing < 0 || trailing > 64 {
-				return // malformed data
-			}
-			xor := meaningfulBits << trailing
-
-			// XOR with previous value to get current value
-			prevValue ^= xor
-			if !yield(math.Float64frombits(prevValue)) {
+			if produced >= remaining {
 				return
 			}
 		}
+
+		trailing, blockSize, ok := state.next(br)
+		if !ok {
+			return
+		}
+
+		meaningfulBits, ok := br.readBits(blockSize)
+		if !ok {
+			return
+		}
+
+		shift := uint64(trailing) // #nosec G115 -- trailing validated by gorillaBlockState
+		prevValue ^= meaningfulBits << shift
+		prevFloat = math.Float64frombits(prevValue)
+		if !yield(prevFloat) {
+			return
+		}
+		produced++
 	}
+}
+
+func (NumericGorillaDecoder) decodeAtSmall(br *bitReader, prevValue uint64, target int) (float64, bool) {
+	trailing := 0
+	blockSize := 0
+	blockValid := false
+	prevFloat := math.Float64frombits(prevValue)
+
+	for current := 1; current <= target; {
+		controlBit, ok := br.readBit()
+		if !ok {
+			return 0, false
+		}
+
+		if controlBit == 0 {
+			if current == target {
+				return prevFloat, true
+			}
+			current++
+
+			continue
+		}
+
+		reuseBit, ok := br.readBit()
+		if !ok {
+			return 0, false
+		}
+
+		var trailingBits, blockSizeBits int
+		if reuseBit == 0 {
+			if !blockValid {
+				return 0, false
+			}
+			trailingBits = trailing
+			blockSizeBits = blockSize
+		} else {
+			leading, ok := br.read5Bits()
+			if !ok {
+				return 0, false
+			}
+			sizeBits, ok := br.read6Bits()
+			if !ok {
+				return 0, false
+			}
+			blockSizeBits = sizeBits + 1
+			if blockSizeBits < 1 || blockSizeBits > 64 {
+				return 0, false
+			}
+			trailingBits = 64 - leading - blockSizeBits
+			if trailingBits < 0 || trailingBits > 64 {
+				return 0, false
+			}
+
+			trailing = trailingBits
+			blockSize = blockSizeBits
+			blockValid = true
+		}
+
+		meaningful, ok := br.readBits(blockSizeBits)
+		if !ok {
+			return 0, false
+		}
+
+		shift := uint64(trailingBits) // #nosec G115 -- trailingBits constrained to [0,64]
+		prevValue ^= meaningful << shift
+		prevFloat = math.Float64frombits(prevValue)
+		if current == target {
+			return prevFloat, true
+		}
+		current++
+	}
+
+	return 0, false
 }
 
 // At retrieves the float64 value at the specified index from the Gorilla-compressed data.
@@ -629,75 +829,66 @@ func (d NumericGorillaDecoder) At(data []byte, index int, count int) (float64, b
 		return 0, false
 	}
 
+	prevValue := firstBits
+	prevFloat := math.Float64frombits(prevValue)
 	if index == 0 {
-		return math.Float64frombits(firstBits), true
+		return prevFloat, true
+	}
+	remaining := index
+	if remaining <= gorillaSmallSequenceThreshold {
+		return d.decodeAtSmall(br, prevValue, remaining)
 	}
 
-	prevValue := firstBits
-	var prevLeading, prevTrailing int
+	state := gorillaBlockState{}
 
-	// Decode up to the requested index
-	for i := 1; i <= index; i++ {
+	for current := 1; current <= index; {
 		controlBit, ok := br.readBit()
 		if !ok {
 			return 0, false
 		}
 
 		if controlBit == 0 {
-			// Value unchanged
-			if i == index {
-				return math.Float64frombits(prevValue), true
+			if current == index {
+				return prevFloat, true
+			}
+			current++
+
+			for current <= index {
+				controlBit, ok = br.readBit()
+				if !ok {
+					return 0, false
+				}
+				if controlBit != 0 {
+					break
+				}
+				if current == index {
+					return prevFloat, true
+				}
+				current++
 			}
 
-			continue
+			if controlBit == 0 {
+				return 0, false
+			}
 		}
 
-		// Value changed - read block info
-		blockControlBit, ok := br.readBit()
+		trailing, blockSize, ok := state.next(br)
 		if !ok {
 			return 0, false
 		}
 
-		var leading, blockSize int
-		if blockControlBit == 0 {
-			// Reuse previous block
-			leading = prevLeading
-			blockSize = 64 - prevLeading - prevTrailing
-		} else {
-			// New block
-			leading, ok = br.read5Bits()
-			if !ok {
-				return 0, false
-			}
-
-			blockSize, ok = br.read6Bits()
-			if !ok {
-				return 0, false
-			}
-			blockSize++ // Add 1 to decode from 0-63 back to 1-64
-
-			prevLeading = leading
-			prevTrailing = 64 - leading - blockSize
-		} // Read meaningful bits
 		meaningfulBits, ok := br.readBits(blockSize)
 		if !ok {
 			return 0, false
 		}
 
-		// Reconstruct XOR value
-		trailing := 64 - leading - blockSize
-		// Safety check: ensure trailing is valid
-		if trailing < 0 || trailing > 64 {
-			return 0, false // malformed data
+		shift := uint64(trailing) // #nosec G115 -- trailing validated by gorillaBlockState
+		prevValue ^= meaningfulBits << shift
+		prevFloat = math.Float64frombits(prevValue)
+		if current == index {
+			return prevFloat, true
 		}
-		xor := meaningfulBits << trailing
-
-		// XOR with previous value to get current value
-		prevValue ^= xor
-
-		if i == index {
-			return math.Float64frombits(prevValue), true
-		}
+		current++
 	}
 
 	return 0, false
@@ -731,7 +922,7 @@ func (d NumericGorillaDecoder) ByteLength(data []byte, count int) int {
 		return 8
 	}
 
-	var prevLeading, prevTrailing int
+	state := gorillaBlockState{}
 
 	// Decode remaining values to track bit consumption
 	for i := 1; i < count; i++ {
@@ -742,34 +933,14 @@ func (d NumericGorillaDecoder) ByteLength(data []byte, count int) int {
 
 		if controlBit == 0 {
 			// Value unchanged - just 1 bit
+
 			continue
 		}
 
 		// Value changed - read block info
-		blockControlBit, ok := br.readBit()
+		_, blockSize, ok := state.next(br)
 		if !ok {
 			return 0
-		}
-
-		var blockSize int
-		if blockControlBit == 0 {
-			// Reuse previous block
-			blockSize = 64 - prevLeading - prevTrailing
-		} else {
-			// New block
-			leading, ok := br.read5Bits()
-			if !ok {
-				return 0
-			}
-
-			blockSize, ok = br.read6Bits()
-			if !ok {
-				return 0
-			}
-			blockSize++ // Add 1 to decode from 0-63 back to 1-64
-
-			prevLeading = leading
-			prevTrailing = 64 - leading - blockSize
 		}
 
 		// Read meaningful bits
@@ -895,6 +1066,15 @@ func (br *bitReader) read6Bits() (int, bool) {
 func (br *bitReader) readBits(numBits int) (uint64, bool) {
 	if numBits == 0 {
 		return 0, true
+	}
+
+	if numBits <= br.bitCount {
+		shift := 64 - numBits
+		result := br.bitBuf >> shift
+		br.bitBuf <<= numBits
+		br.bitCount -= numBits
+
+		return result, true
 	}
 
 	var result uint64

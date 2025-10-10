@@ -763,6 +763,22 @@ make test
 make lint
 ```
 
+### Numeric Gorilla Decoder Benchmarks
+
+Automate baseline-versus-current comparisons for the Numeric Gorilla decoder:
+
+```bash
+make bench-gorilla-decoder BASELINE=HEAD~1
+```
+
+Optional variables:
+
+- `COUNT` – number of benchmark iterations (default: 10)
+- `OUTPUT` – directory to store results (default: `.benchmarks/<timestamp>`)
+- `EXTRA_FLAGS` – additional script flags (e.g., `--cpuprofile --memprofile`)
+
+The command wraps `scripts/bench_numeric_gorilla_decoder.sh` and now emits text (`comparison.txt`), CSV (`comparison.csv`), and markdown (`comparison.md`) summaries alongside the raw runs. Add `--cpuprofile` / `--memprofile` through `EXTRA_FLAGS` when deeper analysis is needed.
+
 ## Dependencies
 
 Mebo uses minimal, well-maintained dependencies:
