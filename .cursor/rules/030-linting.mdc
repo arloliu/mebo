@@ -1,0 +1,282 @@
+---
+description: Linter rules and code quality standards (golangci-lint configuration)
+globs: ["**/*.go"]
+alwaysApply: false
+---
+
+# Linting Rules & Quality Standards
+
+## Overview
+
+This project uses comprehensive `golangci-lint` configuration with strict rules to maintain high code quality. All code must pass linting before being committed.
+
+## Running Linters
+
+```bash
+# Run all linters
+make lint
+
+# Fix auto-fixable issues
+make lint-fix
+
+# Run specific linter
+golangci-lint run --disable-all --enable=revive
+```
+
+## Code Quality Rules
+
+### Function Complexity
+
+- **Maximum function length**: 100 lines (revive)
+  - Prefer functions under 50 lines
+  - Break down complex logic into smaller functions
+
+- **Cyclomatic complexity**: Maximum 22 per function (cyclop)
+  - Reduce nested if/switch statements
+  - Extract complex conditions into named functions
+
+- **Package complexity**: Average should be under 15.0
+  - Keep packages focused on single responsibilities
+
+### Function Best Practices
+
+- **Naked returns**: Allowed only in functions ≤40 lines (nakedret)
+  ```go
+  // OK in short functions
+  func getValues() (x, y int) {
+      x, y = 1, 2
+      return // OK if function ≤40 lines
+  }
+
+  // Not OK in long functions
+  func complexFunction() (x, y, z int) {
+      // ... 50+ lines of code ...
+      return // BAD: too long for naked return
+  }
+  ```
+
+- **Context handling**: Always pass context as first parameter (context-as-argument)
+  ```go
+  // GOOD
+  func DoWork(ctx context.Context, data []byte) error
+
+  // BAD
+  func DoWork(data []byte, ctx context.Context) error
+  ```
+
+- **Import shadowing**: Avoid shadowing package names (import-shadowing)
+  ```go
+  // BAD
+  func processData(encoding string) { // Shadows "encoding" package
+      // ...
+  }
+
+  // GOOD
+  func processData(encodingType string) {
+      // ...
+  }
+  ```
+
+## Security & Safety
+
+### Type Assertions
+
+**ALWAYS** use comma-ok idiom for type assertions:
+
+```go
+// GOOD
+if config, ok := value.(Config); ok {
+    // Use config
+}
+
+// BAD - Will panic on wrong type
+config := value.(Config)
+```
+
+### Resource Management
+
+- **SQL operations**: Always close `sql.Rows` and `sql.Stmt` (sqlclosecheck, rowserrcheck)
+  ```go
+  rows, err := db.Query("SELECT * FROM users")
+  if err != nil {
+      return err
+  }
+  defer rows.Close() // Required
+  ```
+
+- **HTTP responses**: Always close response bodies (bodyclose)
+  ```go
+  resp, err := http.Get(url)
+  if err != nil {
+      return err
+  }
+  defer resp.Body.Close() // Required
+  ```
+
+### Error Handling
+
+- **Nil checks**: Avoid returning nil error with invalid value (nilnil)
+  ```go
+  // BAD
+  func getData() (*Data, error) {
+      return nil, nil // Invalid state
+  }
+
+  // GOOD
+  func getData() (*Data, error) {
+      return &Data{}, nil
+  }
+  ```
+
+- **Error wrapping**: Use proper error wrapping (errorlint)
+  ```go
+  // GOOD
+  if errors.Is(err, ErrNotFound) { ... }
+  if errors.As(err, &target) { ... }
+
+  // BAD
+  if err == ErrNotFound { ... }
+  ```
+
+## Performance & Memory
+
+### Pre-allocation
+
+Consider pre-allocating slices when size is known (prealloc):
+
+```go
+// GOOD
+items := make([]Item, 0, expectedSize)
+for i := 0; i < expectedSize; i++ {
+    items = append(items, createItem(i))
+}
+
+// Less optimal (multiple allocations)
+var items []Item
+for i := 0; i < expectedSize; i++ {
+    items = append(items, createItem(i))
+}
+```
+
+### Unnecessary Operations
+
+- **Unnecessary conversions**: Remove unnecessary type conversions (unconvert)
+  ```go
+  var x int = 5
+  y := int(x) // Unnecessary conversion
+  ```
+
+- **Wasted assignments**: Avoid assignments that are never used (wastedassign)
+  ```go
+  x := 5 // BAD if x is reassigned before use
+  x = 10
+  ```
+
+## Code Style
+
+### Naming Conventions
+
+- **Variable naming**: Follow Go conventions, avoid stuttering
+  ```go
+  // GOOD
+  type User struct { Name string }
+  func (u User) GetName() string // Not GetUserName
+
+  // BAD - Stuttering
+  type User struct { UserName string }
+  func (u User) GetUserName() string
+  ```
+
+- **Receiver naming**: Use consistent, short receiver names
+  ```go
+  // GOOD
+  func (e *Encoder) Write() { }
+  func (e *Encoder) Read() { }
+
+  // BAD - Inconsistent
+  func (enc *Encoder) Write() { }
+  func (e *Encoder) Read() { }
+  ```
+
+- **Printf functions**: Name printf-like functions with 'f' suffix (goprintffuncname)
+  ```go
+  // GOOD
+  func Errorf(format string, args ...interface{}) error
+
+  // BAD
+  func Error(format string, args ...interface{}) error
+  ```
+
+### Comment Style
+
+- **Comment spacing**: Use proper spacing in comments (comment-spacings)
+  ```go
+  // GOOD
+  // This is a proper comment
+
+  //BAD - no space after //
+  //This is bad
+  ```
+
+### Standard Library Usage
+
+Use standard library variables/constants when available (usestdlibvars):
+
+```go
+// GOOD
+http.MethodPost
+http.StatusOK
+
+// BAD
+const MethodPost = "POST"
+const StatusOK = 200
+```
+
+## Error Naming
+
+- Prefix sentinel errors with "Err": `ErrNotFound`, `ErrInvalidInput`
+- Suffix error types with "Error": `ValidationError`, `ParseError`
+
+```go
+// GOOD
+var ErrNotFound = errors.New("not found")
+type ValidationError struct { ... }
+
+// BAD
+var NotFound = errors.New("not found")
+type Validation struct { ... }
+```
+
+## Blocked Dependencies
+
+Do not use these deprecated packages. Use the specified alternatives:
+
+| Blocked Package | Use Instead |
+|----------------|-------------|
+| `github.com/golang/protobuf` | `google.golang.org/protobuf` |
+| `github.com/satori/go.uuid` | `github.com/google/uuid` |
+| `github.com/gofrs/uuid` | `github.com/google/uuid` |
+
+## Test File Exclusions
+
+The following linters are disabled for test files:
+- `bodyclose`: HTTP response body closing
+- `dupl`: Duplicate code detection
+- `gosec`: Security checks
+- `noctx`: Context usage in HTTP requests
+
+## Quick Reference
+
+Common linter fixes:
+
+```bash
+# Fix imports
+goimports -w .
+
+# Fix formatting
+gofmt -w -s .
+
+# Run specific linters
+golangci-lint run --enable-only=errcheck
+golangci-lint run --enable-only=revive
+```

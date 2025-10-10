@@ -1,0 +1,77 @@
+---
+description: Clean and concise commit message guidelines
+alwaysApply: true
+---
+
+# Commit Message Rules
+
+## Format
+
+```
+<type>(<scope>): <subject>
+
+[optional body]
+
+[optional footer]
+```
+
+## Rules
+
+1. **Subject line: 70 characters max**
+2. **Imperative mood**: "add" not "added" or "adds"
+3. **No period** at the end
+4. **Lowercase** first word after type
+5. **Body: 72 characters per line** (if needed)
+6. **One blank line** between subject and body
+
+## Types
+
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation only
+- `refactor`: Code restructuring
+- `perf`: Performance improvement
+- `test`: Adding tests
+- `chore`: Maintenance
+- `ci`: CI/CD changes
+
+## Scope
+
+Package name: `blob`, `compress`, `encoding`, `section`, `measure`
+
+## Examples
+
+### Good ✅
+
+```
+feat(blob): add gorilla compression
+
+fix(encoding): prevent panic on empty data
+
+docs: add cursor rules in mdc format
+
+refactor(measure): simplify json input parsing
+```
+
+### Bad ❌
+
+```
+feat(blob): This commit adds a new feature for gorilla compression support with extensive documentation and examples.
+
+Fixed a bug.
+
+Updated documentation to include comprehensive Cursor AI rules converted from GitHub Copilot instructions with MDC format featuring contextual application via glob patterns.
+```
+
+## Body Guidelines (Optional)
+
+Use body only when subject isn't enough:
+
+```
+feat(measure): add real-world data input
+
+Support column-based and row-based JSON formats.
+Auto-detects format and validates data.
+```
+
+**Keep it short. Get to the point.**

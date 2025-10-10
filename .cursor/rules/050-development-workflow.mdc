@@ -1,0 +1,285 @@
+---
+description: Development workflow, branching, commits, and code review conventions
+alwaysApply: true
+---
+
+# Development Workflow
+
+## Branch Naming Conventions
+
+Use descriptive branch names with the following prefixes:
+
+- `feat/` - New features
+  - Example: `feat/add-gorilla-compression`
+  - Example: `feat/support-json-input`
+
+- `fix/` - Bug fixes
+  - Example: `fix/decoder-panic-on-empty-data`
+  - Example: `fix/memory-leak-in-encoder`
+
+- `docs/` - Documentation updates
+  - Example: `docs/update-api-examples`
+  - Example: `docs/add-performance-guide`
+
+- `chore/` - Maintenance tasks
+  - Example: `chore/update-dependencies`
+  - Example: `chore/cleanup-test-files`
+
+- `test/` - Test-related changes
+  - Example: `test/add-benchmark-suite`
+  - Example: `test/improve-coverage`
+
+- `refactor/` - Code refactoring
+  - Example: `refactor/simplify-decoder-logic`
+  - Example: `refactor/extract-common-utilities`
+
+- `perf/` - Performance improvements
+  - Example: `perf/optimize-gorilla-decoder`
+  - Example: `perf/reduce-allocations`
+
+## Commit Message Format
+
+Follow the Conventional Commits specification:
+
+### Format
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+### Type
+
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation changes
+- `style`: Code style changes (formatting, missing semicolons, etc.)
+- `refactor`: Code refactoring
+- `perf`: Performance improvements
+- `test`: Adding or updating tests
+- `chore`: Maintenance tasks
+- `ci`: CI/CD changes
+- `build`: Build system changes
+
+### Scope (Optional)
+
+The scope should be the name of the package or component affected:
+
+- `blob`
+- `compress`
+- `encoding`
+- `section`
+- `measure`
+- `examples`
+
+### Subject
+
+- Use imperative mood ("add" not "added")
+- Keep under 50 characters
+- Don't capitalize first letter
+- No period at the end
+
+### Examples
+
+**Simple commit:**
+```
+feat(blob): add gorilla compression support
+```
+
+**With body:**
+```
+feat(measure): add real-world data input support
+
+Add comprehensive JSON input functionality for analyzing
+actual production metrics. Supports both column-based
+and row-based formats with auto-detection.
+```
+
+**With breaking changes:**
+```
+feat(encoding)!: change decoder interface to return iterators
+
+BREAKING CHANGE: Decoder methods now return iter.Seq instead
+of slices. Update all decoder usage to use range loops.
+
+Before:
+  values := decoder.AllValues(data)
+  for _, v := range values { ... }
+
+After:
+  for v := range decoder.All(data, count) { ... }
+```
+
+**Bug fix:**
+```
+fix(compress): prevent panic on nil decompressor
+
+Add nil check before calling decompressor methods.
+Fixes issue where nil decompressor would cause panic
+during blob decoding.
+
+Fixes #123
+```
+
+## Code Review Guidelines
+
+### For Authors
+
+1. **Self-review first**
+   - Review your own changes before requesting review
+   - Run tests and linters locally
+   - Ensure documentation is updated
+
+2. **Keep PRs focused**
+   - One feature/fix per PR
+   - Prefer smaller, incremental changes
+   - Split large changes into multiple PRs
+
+3. **Write descriptive PR descriptions**
+   - Explain what and why, not just how
+   - Include before/after examples
+   - Link related issues
+
+4. **Respond promptly to feedback**
+   - Address comments within 24 hours
+   - Ask questions if feedback is unclear
+   - Push new commits, don't force push until approved
+
+### For Reviewers
+
+1. **Review for correctness, performance, and maintainability**
+   - Does the code do what it's supposed to?
+   - Are there performance implications?
+   - Is it maintainable and well-documented?
+
+2. **Check test coverage**
+   - Are new features tested?
+   - Are edge cases covered?
+   - Do tests actually test the feature?
+
+3. **Verify documentation**
+   - Are exported functions documented?
+   - Is the README updated if needed?
+   - Are examples provided?
+
+4. **Ensure error handling**
+   - Are errors handled appropriately?
+   - Are error messages helpful?
+   - Are edge cases considered?
+
+5. **Be constructive**
+   - Explain the "why" behind suggestions
+   - Offer alternatives when criticizing
+   - Acknowledge good solutions
+
+## Pre-commit Checklist
+
+Before committing code, ensure:
+
+- [ ] Code compiles without errors
+- [ ] All tests pass (`make test`)
+- [ ] Linters pass (`make lint`)
+- [ ] New code has tests (aim for >80% coverage)
+- [ ] Exported functions are documented
+- [ ] Examples are updated if needed
+- [ ] No debug code or console.log statements
+- [ ] No commented-out code
+- [ ] Git commit message follows convention
+
+## Testing Workflow
+
+### Running Tests
+
+```bash
+# Run all tests
+make test
+
+# Run tests with coverage
+make test-coverage
+
+# Run specific package tests
+go test ./blob/...
+
+# Run specific test
+go test -run TestEncoderWrite ./blob/
+
+# Run tests with race detector
+go test -race ./...
+
+# Run benchmarks
+make bench
+
+# Run specific benchmark
+go test -bench=BenchmarkEncoder -benchmem ./blob/
+```
+
+## Development Environment
+
+### Makefile Commands
+
+```bash
+# Build
+make build
+
+# Test
+make test
+make test-coverage
+make test-race
+
+# Lint
+make lint
+make lint-fix
+
+# Benchmarks
+make bench
+
+# Clean
+make clean
+
+# Help
+make help
+```
+
+## Release Process
+
+### Versioning
+
+Follow [Semantic Versioning](https://semver.org/):
+
+- **MAJOR**: Incompatible API changes
+- **MINOR**: New functionality, backward compatible
+- **PATCH**: Bug fixes, backward compatible
+
+### Release Steps
+
+1. Update `CHANGELOG.md`
+2. Update version in code if applicable
+3. Create release commit: `chore: release v1.2.3`
+4. Tag the release: `git tag -a v1.2.3 -m "Release v1.2.3"`
+5. Push tags: `git push --tags`
+6. Create GitHub release with changelog
+
+## Troubleshooting
+
+### Common Issues
+
+**Tests fail with "context deadline exceeded":**
+- Increase test timeout: `go test -timeout 60s`
+- Check for goroutine leaks
+
+**Linter errors:**
+- Run `make lint-fix` for auto-fixable issues
+- Check specific linter documentation for manual fixes
+
+**Build fails:**
+- Clean build cache: `go clean -cache`
+- Update dependencies: `go mod tidy`
+- Check Go version: `go version` (requires 1.24+)
+
+**Benchmark variance:**
+- Run benchmarks multiple times
+- Use `benchstat` for statistical comparison
+- Ensure machine is idle during benchmarking

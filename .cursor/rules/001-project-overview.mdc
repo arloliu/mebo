@@ -1,0 +1,50 @@
+---
+description: Mebo project overview, architecture, and domain context
+alwaysApply: true
+---
+
+# Mebo Project Overview
+
+## About Mebo
+
+Mebo is a high-performance, space-efficient binary format for storing time-series metric data. The design is optimized for scenarios with many metrics but relatively few data points per metric (e.g., 150 metrics × 10 points), providing excellent compression ratios and fast lookup performance.
+
+## Key Features
+
+- **Hash-Based Identification**: Metrics are identified by 64-bit xxHash64 hashes for fast lookups with zero collision risk
+- **Columnar Storage**: Timestamps and values are stored separately for optimal compression and access patterns
+- **Flexible Encoding**: Per-blob configurable encoding strategies for both timestamps and values
+- **Memory Efficiency**: Fixed-size structures enable single-pass encoding and efficient binary search
+
+## Technology Stack
+
+- **Language**: Go >=1.24.0
+- **Module**: github.com/arloliu/mebo
+- **Architecture**: Columnar time-series storage with pluggable encoders
+
+## Project Structure
+
+```
+.
+├── .github/              # GitHub workflows and configurations
+├── .cursor/              # Cursor IDE rules and configurations
+│   └── rules/            # Organized rule files (MDC format)
+├── internal/             # Private application and library code
+├── blob/                 # Blob encoding/decoding
+├── compress/             # Compression codecs
+├── encoding/             # Columnar encoding
+├── section/              # Section headers and metadata
+├── examples/             # Usage examples
+├── _tests/               # Test utilities and benchmarks
+│   └── measure/          # Compression measurement tool
+└── README.md
+```
+
+## Domain Context
+
+When working on this codebase:
+- Understand that "metrics" are time-series identifiers (e.g., cpu.usage, memory.total)
+- "Points" are individual timestamp-value pairs
+- "Blobs" are encoded chunks of metric data
+- Typical use case: 100-200 metrics with 10-200 points each per blob
+- Focus on compression ratio vs decompression speed tradeoffs

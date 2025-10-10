@@ -1,0 +1,179 @@
+---
+description: File structure and code organization standards for Go files
+globs: ["**/*.go"]
+alwaysApply: false
+---
+
+# File Organization Rules
+
+## File Content Order
+
+**ALL Go source files MUST follow this declaration order:**
+
+| Order | Code Element | Convention/Reason |
+|-------|--------------|-------------------|
+| 1 | **Package declaration** | `package name` |
+| 2 | **Imports** | Grouped: standard library, external, internal |
+| 3 | **Constants** (`const`) | Grouped together, exported first |
+| 4 | **Variables** (`var`) | Grouped together, exported first |
+| 5 | **Types** (`type`) | Structs, interfaces, custom types. Exported first |
+| 6 | **Factory Functions** | `NewType() *Type` immediately after type declaration |
+| 7 | **Exported Functions** | Public standalone functions (not methods) |
+| 8 | **Unexported Functions** | Private helper functions (not methods) |
+| 9 | **Exported Methods** | Methods on types `(t *Type) Method()`. Group by type |
+| 10 | **Unexported Methods** | Private methods `(t *Type) helper()`. Group by type |
+
+### Example Structure
+
+```go
+package blob
+
+import (
+    "fmt"          // standard library
+    "time"
+
+    "external/pkg" // external packages
+
+    "github.com/arloliu/mebo/internal/hash" // internal packages
+)
+
+// Constants
+const (
+    MaxSize = 1024
+    minSize = 64
+)
+
+// Variables
+var (
+    DefaultConfig = Config{...}
+    cache = make(map[string]string)
+)
+
+// Exported Types
+type Config struct {
+    Size int
+}
+
+type Reader interface {
+    Read() error
+}
+
+// Unexported Types
+type internalState struct {
+    data []byte
+}
+
+// Factory Functions (immediately after type)
+func NewConfig() *Config {
+    return &Config{}
+}
+
+// Exported Functions
+func ProcessData(data []byte) error {
+    return nil
+}
+
+// Unexported Functions
+func validateData(data []byte) bool {
+    return len(data) > 0
+}
+
+// Exported Methods (grouped by type)
+func (c *Config) Validate() error {
+    return c.validate()
+}
+
+func (c *Config) Size() int {
+    return c.Size
+}
+
+// Unexported Methods (grouped by type)
+func (c *Config) validate() error {
+    return nil
+}
+```
+
+### Key Ordering Rules
+
+- ✅ Group related items together (all constants, all types, all methods for same receiver)
+- ✅ Exported items come before unexported items within each category
+- ✅ Factory functions (`NewX`) come immediately after the type they construct
+- ✅ Methods are grouped by receiver type, not alphabetically
+- ✅ Maintain logical grouping over strict alphabetical ordering
+
+## 3-File Maximum Rule
+
+**Each type, struct, or logical component should have at most 3 Go source files:**
+
+1. **Implementation file** - Contains the main logic, types, and methods
+   - Example: `numeric_raw.go`, `ts_delta.go`, `blob.go`
+
+2. **Test file** (`*_test.go`) - Contains unit tests for the implementation
+   - Example: `numeric_raw_test.go`, `ts_delta_test.go`, `blob_test.go`
+
+3. **Benchmark file** (`*_bench_test.go`) - Contains performance benchmarks (optional)
+   - Example: `numeric_bench_test.go`, `ts_delta_bench_test.go`, `blob_bench_test.go`
+
+### Principles
+
+- ✅ Each encoder, decoder, or major component follows this 3-file pattern
+- ✅ Tests belong with their implementation (no cross-cutting test files)
+- ✅ Related code stays together by type/component
+- ❌ Avoid creating additional files like `*_reuse_test.go`, `*_helper_test.go`, etc.
+- ❌ No cross-cutting test files that test multiple unrelated types
+
+### Benefits
+
+- **Predictability**: Easy to find where code lives
+- **Organization**: Related code stays together by component
+- **Navigation**: Developers know exactly where to look
+- **Maintainability**: Prevents file sprawl and confusion
+- **Consistency**: Uniform structure across all packages
+
+### Example Structure
+
+```
+encoding/
+├── numeric_raw.go              # Implementation
+├── numeric_raw_test.go         # Unit tests
+├── numeric_bench_test.go       # Benchmarks
+├── ts_delta.go                 # Implementation
+├── ts_delta_test.go            # Unit tests
+├── ts_delta_bench_test.go      # Benchmarks
+└── tag.go                      # Implementation
+    ├── tag_test.go             # Unit tests
+    └── tag_bench_test.go       # Benchmarks
+```
+
+### Allowed Exceptions
+
+- Utility files like `columnar.go`, `varstring.go` for shared functionality
+- Package-level constants/types file (e.g., `types.go`, `const.go`)
+- If a component doesn't need benchmarks, 2 files (impl + test) is fine
+
+## Import Organization
+
+Group imports into three sections separated by blank lines:
+
+```go
+import (
+    // Standard library
+    "context"
+    "fmt"
+    "time"
+
+    // External dependencies
+    "github.com/external/package"
+
+    // Internal packages
+    "github.com/arloliu/mebo/internal/hash"
+    "github.com/arloliu/mebo/internal/pool"
+)
+```
+
+## File Size Guidelines
+
+- Keep files under 500 lines when possible
+- Split large files by logical component, not arbitrarily
+- If a file grows too large, consider if it's doing too much
+- Each file should have a clear, single responsibility

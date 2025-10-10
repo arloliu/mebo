@@ -1,0 +1,230 @@
+---
+description: Documentation standards and godoc format for exported Go APIs
+globs: ["**/*.go", "!**/*_test.go", "!**/*_bench_test.go"]
+alwaysApply: false
+---
+
+# Documentation Standards
+
+## General Principles
+
+- Use clear and concise comments
+- Document all exported functions, types, and constants
+- Use Go doc comments (start with the name of the item being documented)
+- Include examples in documentation when helpful
+- Keep documentation up to date with code changes
+
+## Godoc Format for Functions and Methods
+
+**ALL exported functions and methods MUST follow this standardized format:**
+
+```go
+// FunctionName provides a brief one-line description of what the function does.
+//
+// Optional: More detailed description explaining the purpose, behavior, and usage.
+// This section can span multiple paragraphs and include implementation details,
+// algorithm descriptions, or other relevant context.
+//
+// Parameters:
+//   - param1: Description of the first parameter and its constraints
+//   - param2: Description of the second parameter and its expected values
+//
+// Returns:
+//   - returnType1: Description of what the first return value represents
+//   - error: Description of error conditions
+//
+// Example:
+//
+//	encoder := NewEncoder()
+//	data := []byte("example")
+//	result, err := encoder.Process(data)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+func FunctionName(param1 Type1, param2 Type2) (returnType1, error) {
+    // implementation
+}
+```
+
+## Documentation Structure Requirements
+
+1. **First line**: Brief description starting with the function/method name
+2. **Blank line**: Separates the summary from detailed description
+3. **Detailed description**: Optional but recommended for complex functions
+4. **Blank line**: Before Parameters section
+5. **Parameters section**: List all parameters with clear descriptions
+   - Use bullet list format with `-` for each parameter
+   - Describe constraints, expected values, and special cases
+6. **Blank line**: Before Returns section
+7. **Returns section**: List all return values with descriptions
+   - Describe what each return value represents
+   - Explain error conditions for error returns
+   - For iterators, mention what the iterator yields
+8. **Example section**: Optional but highly recommended
+   - Show realistic usage scenarios
+   - Include error handling when applicable
+   - Use proper indentation (tab character)
+
+## Examples by Function Type
+
+### Constructor Function
+
+```go
+// NewTimestampEncoder creates a new timestamp encoder using the specified endian engine.
+//
+// The encoder uses delta-of-delta compression to minimize storage space for sequential
+// timestamps. This provides 60-87% space savings compared to raw encoding for regular
+// interval data.
+//
+// Parameters:
+//   - engine: Endian engine for byte order (typically little-endian)
+//
+// Returns:
+//   - *TimestampEncoder: A new encoder instance ready for timestamp encoding
+//
+// Example:
+//
+//	encoder := NewTimestampEncoder(endian.GetLittleEndianEngine())
+//	encoder.Write(time.Now().UnixMicro())
+//	data := encoder.Bytes()
+func NewTimestampEncoder(engine endian.EndianEngine) *TimestampEncoder {
+    // implementation
+}
+```
+
+### Method with Parameters
+
+```go
+// Write encodes a single timestamp using delta-of-delta compression.
+//
+// The timestamp is encoded based on its position:
+//   - First timestamp: Full varint-encoded microseconds (5-9 bytes)
+//   - Second timestamp: Delta from first (1-9 bytes)
+//   - Subsequent timestamps: Delta-of-delta (1-9 bytes)
+//
+// Parameters:
+//   - timestampUs: Timestamp in microseconds since Unix epoch
+func (e *TimestampEncoder) Write(timestampUs int64) {
+    // implementation
+}
+```
+
+### Method Returning Multiple Values
+
+```go
+// At retrieves the timestamp at the specified index from the encoded data.
+//
+// This method provides efficient random access by decoding only up to the
+// target index. For sequential access, use All() iterator instead.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampEncoder.Bytes()
+//   - index: Zero-based index of the timestamp to retrieve
+//   - count: Total number of timestamps in the encoded data
+//
+// Returns:
+//   - int64: The timestamp at the specified index (microseconds since Unix epoch)
+//   - bool: true if the index exists and was successfully decoded, false otherwise
+//
+// Example:
+//
+//	decoder := NewTimestampDecoder()
+//	timestamp, ok := decoder.At(encodedData, 5, 10)
+//	if ok {
+//	    fmt.Printf("Timestamp at index 5: %v\n", time.UnixMicro(timestamp))
+//	}
+func (d TimestampDecoder) At(data []byte, index int, count int) (int64, bool) {
+    // implementation
+}
+```
+
+### Method Returning Iterator
+
+```go
+// All returns an iterator that yields all timestamps from the encoded data.
+//
+// This method provides zero-allocation iteration using Go's iter.Seq pattern.
+// The iterator processes data sequentially without creating intermediate slices.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampEncoder.Bytes()
+//   - count: Expected number of timestamps (used for optimization)
+//
+// Returns:
+//   - iter.Seq[int64]: Iterator yielding decoded timestamps (microseconds since Unix epoch)
+//
+// Example:
+//
+//	decoder := NewTimestampDecoder()
+//	for ts := range decoder.All(encodedData, expectedCount) {
+//	    fmt.Printf("Timestamp: %v\n", time.UnixMicro(ts))
+//	    if someCondition {
+//	        break // Can break early if needed
+//	    }
+//	}
+func (d TimestampDecoder) All(data []byte, count int) iter.Seq[int64] {
+    // implementation
+}
+```
+
+## Common Patterns
+
+- **No parameters**: Omit Parameters section (e.g., `Bytes()`, `Len()`, `Size()`)
+- **No return values**: Omit Returns section (e.g., `Write()`, `Reset()`)
+- **Error returns**: Always describe error conditions in Returns section
+- **Simple getters**: Can have minimal documentation if self-explanatory
+- **Complex algorithms**: Include algorithm description before Parameters section
+
+## Type Documentation
+
+```go
+// Encoder provides efficient encoding of time-series data using columnar storage.
+//
+// The encoder supports multiple encoding strategies for both timestamps and values,
+// allowing optimization for different data patterns. Common strategies include
+// delta-of-delta for timestamps and Gorilla compression for values.
+type Encoder struct {
+    // unexported fields
+}
+```
+
+## Package Documentation
+
+Every package should have a `doc.go` file:
+
+```go
+// Package blob provides efficient encoding and decoding of time-series metric data.
+//
+// This package implements a columnar storage format optimized for scenarios with
+// many metrics but relatively few data points per metric. Key features include:
+//
+//   - Hash-based metric identification using xxHash64
+//   - Separate encoding strategies for timestamps and values
+//   - Zero-allocation decoding for hot paths
+//   - Binary search support for random access
+//
+// Basic usage:
+//
+//	encoder := blob.NewNumericEncoder(startTime)
+//	encoder.StartMetricID(metricID, pointCount)
+//	encoder.AddDataPoint(timestamp, value, "")
+//	encoder.EndMetric()
+//	data, err := encoder.Finish()
+package blob
+```
+
+## Comment Style
+
+### Inline Comments
+
+```go
+// Good: Explains why, not what
+age := time.Since(created).Hours() / 24 // Convert hours to days
+
+// Bad: States the obvious
+age := time.Since(created).Hours() / 24 // Calculate age in days
+```
+
+## Reference Implementation
+
+See `internal/encoding/metric_names.go` for the canonical implementation of this documentation format.

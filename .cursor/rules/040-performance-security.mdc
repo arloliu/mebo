@@ -1,0 +1,321 @@
+---
+description: Performance optimization and security guidelines for critical paths
+globs: [
+  "internal/encoding/**/*.go",
+  "blob/**/*.go",
+  "compress/**/*.go",
+  "!**/*_test.go",
+  "!**/*_bench_test.go"
+]
+alwaysApply: false
+---
+
+# Performance & Security Guidelines
+
+## Performance Guidelines
+
+### Profiling First
+
+- **Always profile before optimizing**
+- Use `pprof` for CPU and memory profiling
+- Use benchmarks to measure improvements
+- Focus on hot paths identified by profiling
+
+```bash
+# CPU profiling
+go test -bench=. -cpuprofile=cpu.prof
+go tool pprof cpu.prof
+
+# Memory profiling
+go test -bench=. -memprofile=mem.prof
+go tool pprof mem.prof
+
+# Benchmark comparison
+go test -bench=. -benchmem > old.txt
+# Make changes
+go test -bench=. -benchmem > new.txt
+benchstat old.txt new.txt
+```
+
+### Hot Path Optimization
+
+For performance-critical code paths:
+
+#### 1. Prefer Branchless Code
+
+```go
+// GOOD: Branchless
+result := base + (offset * int(condition))
+mask := -int(condition)  // 0 or -1
+result := (value & mask) | (defaultValue & ^mask)
+
+// AVOID in hot paths: Branches
+if condition {
+    result = base + offset
+} else {
+    result = base
+}
+```
+
+#### 2. Write for Inlining
+
+```go
+// GOOD: Small, simple functions that inline
+func add(a, b int) int {
+    return a + b
+}
+
+// AVOID: Complex functions that don't inline
+func complexCalculation(a, b int) int {
+    // ... 50+ lines of code ...
+    // Too large to inline
+}
+```
+
+Check inlining:
+```bash
+go build -gcflags=-m 2>&1 | grep inline
+```
+
+#### 3. Minimize Interface Usage in Hot Paths
+
+```go
+// GOOD for hot paths: Direct type
+type FastProcessor struct {
+    encoder *ConcreteEncoder
+}
+
+func (p *FastProcessor) Process(data []byte) {
+    p.encoder.Encode(data)  // Direct call, can inline
+}
+
+// LESS OPTIMAL for hot paths: Interface
+type Processor struct {
+    encoder Encoder  // Interface
+}
+
+func (p *Processor) Process(data []byte) {
+    p.encoder.Encode(data)  // Interface call, cannot inline
+}
+```
+
+**Note**: Use interfaces where appropriate for testability and flexibility. Only avoid them in proven hot paths.
+
+#### 4. Pass Small Structs by Value
+
+```go
+// GOOD: Small struct passed by value
+type Point struct {
+    X, Y float64
+}
+
+func Distance(p1, p2 Point) float64 {  // Pass by value
+    dx := p2.X - p1.X
+    dy := p2.Y - p1.Y
+    return math.Sqrt(dx*dx + dy*dy)
+}
+
+// Use pointers when:
+// - Struct is large (>64 bytes)
+// - You need to modify the struct
+// - You want pointer receivers for consistency
+```
+
+### Memory Management
+
+#### Pre-allocation
+
+```go
+// GOOD: Pre-allocate with known capacity
+func processItems(count int) []Result {
+    results := make([]Result, 0, count)
+    for i := 0; i < count; i++ {
+        results = append(results, process(i))
+    }
+    return results
+}
+```
+
+#### String Concatenation
+
+```go
+// GOOD: strings.Builder for multiple concatenations
+var b strings.Builder
+b.Grow(estimatedSize)  // Pre-allocate if size known
+for _, s := range strings {
+    b.WriteString(s)
+}
+result := b.String()
+
+// AVOID: + operator in loops
+result := ""
+for _, s := range strings {
+    result += s  // Creates new string each iteration
+}
+```
+
+#### Buffer Pooling
+
+```go
+// GOOD: Reuse buffers via sync.Pool
+var bufferPool = sync.Pool{
+    New: func() interface{} {
+        return new(bytes.Buffer)
+    },
+}
+
+func process(data []byte) []byte {
+    buf := bufferPool.Get().(*bytes.Buffer)
+    defer func() {
+        buf.Reset()
+        bufferPool.Put(buf)
+    }()
+
+    buf.Write(data)
+    return buf.Bytes()
+}
+```
+
+### Concurrency
+
+#### Goroutines
+
+```go
+// GOOD: Proper goroutine management
+func processItems(items []Item) error {
+    var wg sync.WaitGroup
+    errCh := make(chan error, len(items))
+
+    for _, item := range items {
+        wg.Add(1)
+        go func(item Item) {
+            defer wg.Done()
+            if err := process(item); err != nil {
+                errCh <- err
+            }
+        }(item)
+    }
+
+    wg.Wait()
+    close(errCh)
+
+    for err := range errCh {
+        return err
+    }
+    return nil
+}
+```
+
+#### Context Handling
+
+```go
+// GOOD: Proper context usage
+func processWithTimeout(ctx context.Context, data []byte) error {
+    ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+
+    done := make(chan error, 1)
+    go func() {
+        done <- heavyWork(data)
+    }()
+
+    select {
+    case err := <-done:
+        return err
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+```
+
+#### Atomic Operations
+
+```go
+// GOOD: Atomic for simple counters
+type Counter struct {
+    count int64
+}
+
+func (c *Counter) Increment() {
+    atomic.AddInt64(&c.count, 1)
+}
+
+func (c *Counter) Get() int64 {
+    return atomic.LoadInt64(&c.count)
+}
+```
+
+## Security Guidelines
+
+### Input Validation
+
+```go
+// GOOD: Validate all input
+func processData(data []byte) error {
+    if len(data) == 0 {
+        return fmt.Errorf("data cannot be empty")
+    }
+    if len(data) > MaxDataSize {
+        return fmt.Errorf("data exceeds maximum size of %d bytes", MaxDataSize)
+    }
+
+    return nil
+}
+```
+
+### Sensitive Data
+
+```go
+// GOOD: Don't log sensitive data
+log.Printf("Processing user: %s", userID)  // OK
+
+// GOOD: Clear sensitive data after use
+password := []byte("secret")
+defer func() {
+    for i := range password {
+        password[i] = 0
+    }
+}()
+```
+
+### Path Traversal Prevention
+
+```go
+// GOOD: Validate and clean paths
+func readFile(filename string) ([]byte, error) {
+    // Clean the path
+    cleanPath := filepath.Clean(filename)
+
+    // Ensure it's within allowed directory
+    if !strings.HasPrefix(cleanPath, allowedDir) {
+        return nil, fmt.Errorf("path traversal attempt")
+    }
+
+    return os.ReadFile(cleanPath)
+}
+```
+
+### Rate Limiting
+
+```go
+// GOOD: Implement rate limiting
+import "golang.org/x/time/rate"
+
+type Service struct {
+    limiter *rate.Limiter
+}
+
+func NewService(rps int) *Service {
+    return &Service{
+        limiter: rate.NewLimiter(rate.Limit(rps), rps),
+    }
+}
+
+func (s *Service) Handle(ctx context.Context, req Request) error {
+    if !s.limiter.Allow() {
+        return fmt.Errorf("rate limit exceeded")
+    }
+
+    return s.process(req)
+}
+```

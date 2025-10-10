@@ -1,0 +1,142 @@
+---
+description: Go coding style guidelines and modern idioms
+globs: ["**/*.go"]
+alwaysApply: false
+---
+
+# Go Style Guidelines
+
+## Follow Official Standards
+
+- Follow the [official Go style guide](https://golang.org/doc/effective_go.html)
+- Use `goimports` for formatting and import management
+- Use `golangci-lint` for comprehensive code quality checks
+
+## Modern Go Idioms
+
+- Use `any` instead of `interface{}` for empty interfaces
+- Use `slices` and `maps` packages from the standard library for common operations
+- Use `sync` package for synchronization primitives
+- Prefer atomic operations from `sync/atomic` for simple counters and flags
+- Prefer `errors.Is` and `errors.As` for error handling
+- Use `context` package for request-scoped values, cancellation, and timeouts
+
+## Naming Conventions
+
+- **Package names**: lowercase, short, descriptive (e.g., `blob`, `compress`, `encoding`)
+- **Functions**: CamelCase for exported, camelCase for unexported
+- **Variables**: camelCase for all variables
+- **Constants**: CamelCase for package-level constants
+- **Receiver names**: short (1-2 letters) and consistent across all methods
+  - Example: `(e *Encoder)`, `(d *Decoder)`, `(b *Blob)`
+
+## Loop Patterns (forlooprange rule)
+
+CORRECT usage:
+```go
+// When you need the index
+for i := range items {
+    process(i, items[i])
+}
+
+// When you don't need index or value
+for range items {
+    doSomething()
+}
+
+// Benchmarks (Go 1.24+)
+for b.Loop() {
+    benchmarkedCode()
+}
+
+// Simple iteration (Go 1.22+)
+for range 10 {
+    repeat()
+}
+```
+
+INCORRECT usage:
+```go
+// Don't declare unused index variable
+for i := range items {  // BAD if not using i
+    doSomething()
+}
+```
+
+## Code Organization
+
+- Keep functions small and focused (max 100 lines, prefer under 50)
+- Function complexity should not exceed 22 (cyclomatic complexity)
+- Package average complexity should stay under 15.0
+- Use meaningful variable and function names
+- Group related functionality in the same package
+- Separate concerns using interfaces
+- Use dependency injection for better testability
+- Avoid naked returns in functions longer than 40 lines
+- Use struct field tags for marshaling/unmarshaling
+
+## Error Handling
+
+Always handle errors explicitly:
+
+```go
+func processData(data []byte) (*Result, error) {
+    if len(data) == 0 {
+        return nil, fmt.Errorf("data cannot be empty")
+    }
+
+    result, err := parseData(data)
+    if err != nil {
+        return nil, fmt.Errorf("failed to parse data: %w", err)
+    }
+
+    // Type assertion with comma-ok idiom (required!)
+    if config, ok := result.Config.(MyConfig); ok {
+        return &Result{Config: config}, nil
+    }
+
+    return nil, fmt.Errorf("invalid config type")
+}
+```
+
+**Error Handling Rules:**
+- Always check errors (enforced by errcheck)
+- Always use comma-ok idiom for type assertions
+- Wrap errors with context using `fmt.Errorf` with `%w` verb
+- Return errors as the last return value
+- Use early returns to reduce nesting
+- Prefix sentinel errors with "Err" (e.g., `ErrNotFound`)
+- Suffix error types with "Error" (e.g., `ValidationError`)
+
+## Best Practices
+
+- Prefer standard library when possible
+- Pre-allocate slices when size is known
+- Pre-allocate maps when size is known
+- Try to pre-allocate as much as possible
+- Use dependency injection for testability
+- Document all exported items
+- Validate all input data
+
+## Performance-Focused Coding
+
+This project is performance-critical. Follow these guidelines:
+
+- **Prefer branchless code** in hot path functions
+- **Write for inlining**: Keep functions small and simple
+- **Avoid over-using interfaces** in performance-critical paths (interface calls have overhead)
+- **Pass by value** for small structs unless you specifically need pointer receivers
+- **Profile before optimizing** but be aware of common performance pitfalls
+
+Example of branchless code:
+```go
+// GOOD: Branchless
+result := base + (offset * int(condition))
+
+// AVOID in hot paths: Branches
+if condition {
+    result = base + offset
+} else {
+    result = base
+}
+```
