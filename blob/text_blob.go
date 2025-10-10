@@ -768,7 +768,7 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 			return 0, 0, fmt.Errorf("invalid timestamp length: expected 8, got %d", length)
 		}
 
-		ts := int64(b.engine.Uint64(data[offset : offset+8])) //nolint:gosec
+		ts := int64(b.Engine().Uint64(data[offset : offset+8])) //nolint:gosec
 		*lastTs = ts
 
 		return ts, 1 + length, nil // 1 byte for length prefix + 8 bytes for timestamp

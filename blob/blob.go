@@ -71,7 +71,6 @@ type BlobReader interface {
 // blobBase contains common fields and methods shared by NumericBlob and TextBlob.
 // This is an internal type for code reuse and is not exposed in the public API.
 type blobBase struct {
-	engine          endian.EndianEngine // Will be replaced with cached engine
 	startTimeMicros int64               // Unix timestamp in microseconds (optimized from time.Time)
 	flags           uint16              // Packed flags: endian, tsEnc, valEnc, tag, etc. (optimized)
 	tsEncType       format.EncodingType // Timestamp encoding type

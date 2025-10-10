@@ -429,12 +429,13 @@ func (b NumericBlob) timestampAtFromEntry(entry section.NumericIndexEntry, index
 
 	switch b.tsEncType { //nolint: exhaustive
 	case format.TypeRaw:
+		engine := b.Engine()
 		if b.sameByteOrder {
-			decoder := ienc.NewTimestampRawUnsafeDecoder(b.engine)
+			decoder := ienc.NewTimestampRawUnsafeDecoder(engine)
 			return decoder.At(tsBytes, index, count)
 		}
 
-		decoder := ienc.NewTimestampRawDecoder(b.engine)
+		decoder := ienc.NewTimestampRawDecoder(engine)
 
 		return decoder.At(tsBytes, index, count)
 	case format.TypeDelta:
@@ -470,12 +471,13 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 		}
 		valBytes = b.valPayload[valStart:valEnd]
 
+		engine := b.Engine()
 		if b.sameByteOrder {
-			decoder := ienc.NewNumericRawUnsafeDecoder(b.engine)
+			decoder := ienc.NewNumericRawUnsafeDecoder(engine)
 			return decoder.At(valBytes, index, count)
 		}
 
-		decoder := ienc.NewNumericRawDecoder(b.engine)
+		decoder := ienc.NewNumericRawDecoder(engine)
 
 		return decoder.At(valBytes, index, count)
 	case format.TypeGorilla:
@@ -505,7 +507,7 @@ func (b NumericBlob) tagAtFromEntry(entry section.NumericIndexEntry, index int) 
 	tagBytes := b.tagPayload[tagStart:]
 
 	// Tags always support random access
-	decoder := ienc.NewTagDecoder(b.engine)
+	decoder := ienc.NewTagDecoder(b.Engine())
 
 	return decoder.At(tagBytes, index, count)
 }
@@ -554,12 +556,13 @@ func (b NumericBlob) allDataPointsRaw(tsBytes, valBytes, tagBytes []byte, count 
 	var tsDecoder encoding.ColumnarDecoder[int64]
 	var valDecoder encoding.ColumnarDecoder[float64]
 
+	engine := b.Engine()
 	if b.sameByteOrder {
-		tsDecoder = ienc.NewTimestampRawUnsafeDecoder(b.engine)
-		valDecoder = ienc.NewNumericRawUnsafeDecoder(b.engine)
+		tsDecoder = ienc.NewTimestampRawUnsafeDecoder(engine)
+		valDecoder = ienc.NewNumericRawUnsafeDecoder(engine)
 	} else {
-		tsDecoder = ienc.NewTimestampRawDecoder(b.engine)
-		valDecoder = ienc.NewNumericRawDecoder(b.engine)
+		tsDecoder = ienc.NewTimestampRawDecoder(engine)
+		valDecoder = ienc.NewNumericRawDecoder(engine)
 	}
 
 	return func(yield func(int, NumericDataPoint) bool) {
@@ -585,7 +588,7 @@ func (b NumericBlob) allDataPointsRaw(tsBytes, valBytes, tagBytes []byte, count 
 
 		// Tags enabled: Use tag iterator to avoid O(N²) cost of repeated At() calls
 		// Tag At() must scan from start each time due to varint encoding
-		tagDecoder := ienc.NewTagDecoder(b.engine)
+		tagDecoder := ienc.NewTagDecoder(b.Engine())
 		tagIter := tagDecoder.All(tagBytes, count)
 
 		i := 0
@@ -615,10 +618,11 @@ func (b NumericBlob) allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes []byte, c
 	var tsDecoder ienc.TimestampDeltaDecoder
 	var valDecoder encoding.ColumnarDecoder[float64]
 
+	engine := b.Engine()
 	if b.sameByteOrder {
-		valDecoder = ienc.NewNumericRawUnsafeDecoder(b.engine)
+		valDecoder = ienc.NewNumericRawUnsafeDecoder(engine)
 	} else {
-		valDecoder = ienc.NewNumericRawDecoder(b.engine)
+		valDecoder = ienc.NewNumericRawDecoder(engine)
 	}
 
 	return func(yield func(int, NumericDataPoint) bool) {
@@ -645,7 +649,7 @@ func (b NumericBlob) allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes []byte, c
 		}
 
 		// Tags enabled: Use iterators for ts (required) and tags (faster than At())
-		tagDecoder := ienc.NewTagDecoder(b.engine)
+		tagDecoder := ienc.NewTagDecoder(b.Engine())
 		tsIter := tsDecoder.All(tsBytes, count)
 		tagIter := tagDecoder.All(tagBytes, count)
 
@@ -737,7 +741,7 @@ func (b NumericBlob) allDataPointsDeltaGorilla(tsBytes, valBytes, tagBytes []byt
 		}
 
 		// Tags enabled: Use iterators for all three
-		tagDecoder := ienc.NewTagDecoder(b.engine)
+		tagDecoder := ienc.NewTagDecoder(b.Engine())
 		tsIter := tsDecoder.All(tsBytes, count)
 		valIter := valDecoder.All(valBytes, count)
 		tagIter := tagDecoder.All(tagBytes, count)
@@ -794,10 +798,11 @@ func (b NumericBlob) allDataPointsRawGorilla(tsBytes, valBytes, tagBytes []byte,
 	var tsDecoder encoding.ColumnarDecoder[int64]
 	var valDecoder ienc.NumericGorillaDecoder
 
+	engine := b.Engine()
 	if b.sameByteOrder {
-		tsDecoder = ienc.NewTimestampRawUnsafeDecoder(b.engine)
+		tsDecoder = ienc.NewTimestampRawUnsafeDecoder(engine)
 	} else {
-		tsDecoder = ienc.NewTimestampRawDecoder(b.engine)
+		tsDecoder = ienc.NewTimestampRawDecoder(engine)
 	}
 
 	return func(yield func(int, NumericDataPoint) bool) {
@@ -826,7 +831,7 @@ func (b NumericBlob) allDataPointsRawGorilla(tsBytes, valBytes, tagBytes []byte,
 		}
 
 		// Tags enabled: Use iterators for val and tags, At() for ts
-		tagDecoder := ienc.NewTagDecoder(b.engine)
+		tagDecoder := ienc.NewTagDecoder(b.Engine())
 		valIter := valDecoder.All(valBytes, count)
 		tagIter := tagDecoder.All(tagBytes, count)
 
@@ -929,12 +934,13 @@ func (b NumericBlob) allDataPointsGeneric(tsBytes, valBytes, tagBytes []byte, co
 func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64] {
 	switch b.tsEncType { //nolint: exhaustive
 	case format.TypeRaw:
+		engine := b.Engine()
 		if b.sameByteOrder {
-			decoder := ienc.NewTimestampRawUnsafeDecoder(b.engine)
+			decoder := ienc.NewTimestampRawUnsafeDecoder(engine)
 			return decoder.All(tsBytes, count)
 		}
 
-		decoder := ienc.NewTimestampRawDecoder(b.engine)
+		decoder := ienc.NewTimestampRawDecoder(engine)
 
 		return decoder.All(tsBytes, count)
 	case format.TypeDelta:
@@ -950,12 +956,13 @@ func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64]
 func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] {
 	switch b.ValueEncoding() { //nolint: exhaustive
 	case format.TypeRaw:
+		engine := b.Engine()
 		if b.sameByteOrder {
-			decoder := ienc.NewNumericRawUnsafeDecoder(b.engine)
+			decoder := ienc.NewNumericRawUnsafeDecoder(engine)
 			return decoder.All(valBytes, count)
 		}
 
-		decoder := ienc.NewNumericRawDecoder(b.engine)
+		decoder := ienc.NewNumericRawDecoder(engine)
 
 		return decoder.All(valBytes, count)
 	case format.TypeGorilla:

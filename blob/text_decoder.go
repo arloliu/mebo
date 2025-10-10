@@ -81,7 +81,6 @@ func (d *TextDecoder) Decode() (TextBlob, error) {
 
 	blob := TextBlob{
 		blobBase: blobBase{
-			engine:          d.engine,           // Keep for backward compatibility during transition
 			startTimeMicros: d.header.StartTime, // Direct int64 assignment (optimized)
 			sameByteOrder:   endian.CompareNativeEndian(d.engine),
 			tsEncType:       d.header.Flag.GetTimestampEncoding(),

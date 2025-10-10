@@ -138,7 +138,7 @@ func TestNumericDecoder_Decode(t *testing.T) {
 		require.Len(t, blob.index.byID, 2)
 		require.NotEmpty(t, blob.tsPayload)
 		require.NotEmpty(t, blob.valPayload)
-		require.NotNil(t, blob.engine)
+		require.NotNil(t, blob.Engine())
 	})
 
 	t.Run("ValidDecode_DeltaEncoding", func(t *testing.T) {

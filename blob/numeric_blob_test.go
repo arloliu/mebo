@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
@@ -226,7 +225,6 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 		// Create empty blob
 		blob := NumericBlob{
 			blobBase: blobBase{
-				engine:    endian.GetLittleEndianEngine(),
 				tsEncType: format.TypeRaw,
 			},
 			index: indexMaps[section.NumericIndexEntry]{
@@ -255,7 +253,6 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 
 		blob := NumericBlob{
 			blobBase: blobBase{
-				engine:    endian.GetLittleEndianEngine(),
 				tsEncType: format.TypeRaw,
 			},
 			index: indexMaps[section.NumericIndexEntry]{
@@ -284,7 +281,6 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 
 		blob := NumericBlob{
 			blobBase: blobBase{
-				engine:    endian.GetLittleEndianEngine(),
 				tsEncType: format.TypeRaw,
 			},
 			index: indexMaps[section.NumericIndexEntry]{
