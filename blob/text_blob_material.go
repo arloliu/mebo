@@ -56,31 +56,35 @@ func (b TextBlob) Materialize() MaterializedTextBlob {
 		names: make(map[string]uint64),
 	}
 
-	// Decode all metrics
+	// Decode all metrics using optimized direct decoding
 	for metricID, entry := range b.index.byID {
-		// Pre-allocate slices with known capacity
-		count := entry.Count
-		timestamps := make([]int64, 0, count)
-		values := make([]string, 0, count)
+		// Pre-allocate slices with exact size for direct indexing (no append overhead)
+		count := int(entry.Count)
+		timestamps := make([]int64, count)
+		values := make([]string, count)
 		var tags []string
 		if b.HasTag() {
-			tags = make([]string, 0, count)
+			tags = make([]string, count)
 		}
 
-		// Decode timestamps
+		// Decode using optimized decoders with direct slice indexing
+		idx := 0
 		for ts := range b.allTimestampsFromEntry(entry) {
-			timestamps = append(timestamps, ts)
+			timestamps[idx] = ts
+			idx++
 		}
 
-		// Decode values
+		idx = 0
 		for val := range b.allValuesFromEntry(entry) {
-			values = append(values, val)
+			values[idx] = val
+			idx++
 		}
 
-		// Decode tags (if enabled)
 		if b.HasTag() {
+			idx = 0
 			for tag := range b.allTagsFromEntry(entry) {
-				tags = append(tags, tag)
+				tags[idx] = tag
+				idx++
 			}
 		}
 
@@ -311,29 +315,33 @@ func (b TextBlob) MaterializeMetric(metricID uint64) (MaterializedTextMetric, bo
 		return MaterializedTextMetric{}, false
 	}
 
-	// Pre-allocate slices with known capacity
-	count := entry.Count
-	timestamps := make([]int64, 0, count)
-	values := make([]string, 0, count)
+	// Pre-allocate slices with exact size for direct indexing (no append overhead)
+	count := int(entry.Count)
+	timestamps := make([]int64, count)
+	values := make([]string, count)
 	var tags []string
 	if b.HasTag() {
-		tags = make([]string, 0, count)
+		tags = make([]string, count)
 	}
 
-	// Decode timestamps
+	// Decode using optimized decoders with direct slice indexing
+	idx := 0
 	for ts := range b.allTimestampsFromEntry(entry) {
-		timestamps = append(timestamps, ts)
+		timestamps[idx] = ts
+		idx++
 	}
 
-	// Decode values
+	idx = 0
 	for val := range b.allValuesFromEntry(entry) {
-		values = append(values, val)
+		values[idx] = val
+		idx++
 	}
 
-	// Decode tags (if enabled)
 	if b.HasTag() {
+		idx = 0
 		for tag := range b.allTagsFromEntry(entry) {
-			tags = append(tags, tag)
+			tags[idx] = tag
+			idx++
 		}
 	}
 
