@@ -325,14 +325,19 @@ func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool)
 //	    fmt.Printf("Tag at index 5: %s\n", tag)
 //	}
 func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
-	// Return empty string if tags are not enabled
-	if !b.HasTag() {
-		return "", false
-	}
-
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return "", false
+	}
+
+	// Check bounds first
+	if index < 0 || index >= int(entry.Count) {
+		return "", false
+	}
+
+	// Return empty string if tags are not enabled
+	if !b.HasTag() {
+		return "", true
 	}
 
 	return b.tagAtFromEntry(entry, index)
@@ -346,14 +351,19 @@ func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 //   - The metric name doesn't exist in this blob
 //   - The index is out of bounds
 func (b NumericBlob) TagAtByName(metricName string, index int) (string, bool) {
-	// Return empty string if tags are not enabled
-	if !b.HasTag() {
-		return "", false
-	}
-
 	entry, ok := b.lookupMetricEntry(metricName)
 	if !ok {
 		return "", false
+	}
+
+	// Check bounds first
+	if index < 0 || index >= int(entry.Count) {
+		return "", false
+	}
+
+	// Return empty string if tags are not enabled
+	if !b.HasTag() {
+		return "", true
 	}
 
 	return b.tagAtFromEntry(entry, index)
@@ -377,7 +387,7 @@ func (b NumericBlob) allFromEntry(entry section.NumericIndexEntry) iter.Seq2[int
 	// Get timestamp, value, and tag byte slices
 	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 	valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-	
+
 	var tagBytes []byte
 	if b.HasTag() && len(b.tagPayload) > 0 {
 		tagBytes = b.tagPayload[entry.TagOffset : entry.TagOffset+entry.TagLength]
