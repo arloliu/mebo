@@ -59,7 +59,7 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 	// Decode all metrics using optimized direct decoding
 	for metricID, entry := range b.index.byID {
 		// Pre-allocate slices with exact size for direct indexing (no append overhead)
-		count := int(entry.Count)
+		count := entry.Count
 		timestamps := make([]int64, count)
 		values := make([]float64, count)
 		var tags []string
@@ -316,7 +316,7 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetr
 	}
 
 	// Pre-allocate slices with exact size for direct indexing (no append overhead)
-	count := int(entry.Count)
+	count := entry.Count
 	timestamps := make([]int64, count)
 	values := make([]float64, count)
 	var tags []string

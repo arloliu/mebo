@@ -331,7 +331,7 @@ func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 	}
 
 	// Check bounds first
-	if index < 0 || index >= int(entry.Count) {
+	if index < 0 || index >= entry.Count {
 		return "", false
 	}
 
@@ -357,7 +357,7 @@ func (b NumericBlob) TagAtByName(metricName string, index int) (string, bool) {
 	}
 
 	// Check bounds first
-	if index < 0 || index >= int(entry.Count) {
+	if index < 0 || index >= entry.Count {
 		return "", false
 	}
 
