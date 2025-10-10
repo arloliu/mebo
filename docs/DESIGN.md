@@ -11,7 +11,6 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 - **Columnar Storage:** Timestamps and values are stored separately for optimal compression and access patterns
 - **Flexible Encoding:** Per-blob configurable encoding strategies for both timestamps and values
 - **Memory Efficiency:** Fixed-size structures enable single-pass encoding and O(1) hash map lookups
-- **Data Integrity:** Built-in CRC32 checksum for corruption detection
 
 ## Physical Layout
 
@@ -102,8 +101,6 @@ type Header struct {
 	ValuePayloadOffset uint32
 	// MetricCount is the number of unique metrics stored in the blob, max to 65535.
 	MetricCount uint32
-	// Checksum is a CRC32 checksum of the entire blob, with this field set to 0.
-	Checksum [4]byte
 }
 ```
 

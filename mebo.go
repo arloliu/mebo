@@ -13,7 +13,6 @@
 //   - Optional compression (None, Zstd, S2, LZ4)
 //   - Tag support for additional metadata
 //   - Memory-efficient fixed-size structures
-//   - Built-in CRC32 checksums for data integrity
 //
 // # Basic Usage
 //
