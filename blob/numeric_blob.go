@@ -337,7 +337,7 @@ func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 
 	// Return empty string if tags are not enabled
 	if !b.HasTag() {
-		return "", true
+		return "", false
 	}
 
 	return b.tagAtFromEntry(entry, index)
@@ -363,7 +363,7 @@ func (b NumericBlob) TagAtByName(metricName string, index int) (string, bool) {
 
 	// Return empty string if tags are not enabled
 	if !b.HasTag() {
-		return "", true
+		return "", false
 	}
 
 	return b.tagAtFromEntry(entry, index)

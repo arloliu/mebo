@@ -1527,3 +1527,284 @@ func TestBlobSet_MaterializeEmptyBlobSet(t *testing.T) {
 		require.False(t, ok, "should return false for non-existent metric name")
 	})
 }
+
+// TestBlobSet_TagSupport_Comprehensive tests all BlobSet methods with various tag support scenarios
+func TestBlobSet_TagSupport_Comprehensive(t *testing.T) {
+	startTime := time.Now()
+
+	t.Run("TagsDisabled_AllMethods", func(t *testing.T) {
+		// Create numeric blob with tags disabled (default)
+		numericEncoder, err := NewNumericEncoder(startTime)
+		require.NoError(t, err)
+
+		err = numericEncoder.StartMetricID(12345, 2)
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(1000, 1.1, "ignored_tag1")
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(2000, 2.2, "ignored_tag2")
+		require.NoError(t, err)
+		err = numericEncoder.EndMetric()
+		require.NoError(t, err)
+
+		numericData, err := numericEncoder.Finish()
+		require.NoError(t, err)
+
+		// Create text blob with tags disabled (default)
+		textEncoder, err := NewTextEncoder(startTime)
+		require.NoError(t, err)
+
+		err = textEncoder.StartMetricID(67890, 2)
+		require.NoError(t, err)
+		err = textEncoder.AddDataPoint(3000, "value1", "ignored_tag3")
+		require.NoError(t, err)
+		err = textEncoder.AddDataPoint(4000, "value2", "ignored_tag4")
+		require.NoError(t, err)
+		err = textEncoder.EndMetric()
+		require.NoError(t, err)
+
+		textData, err := textEncoder.Finish()
+		require.NoError(t, err)
+
+		// Create blob set
+		blobSet, err := DecodeBlobSet(numericData, textData)
+		require.NoError(t, err)
+
+		// Test NumericAt - should return false when tags are disabled
+		_, ok := blobSet.NumericAt(12345, 0)
+		require.False(t, ok, "NumericAt should return false when tags are disabled")
+
+		_, ok = blobSet.NumericAt(12345, 1)
+		require.False(t, ok, "NumericAt should return false when tags are disabled")
+
+		// Test TextAt - should return false when tags are disabled
+		_, ok = blobSet.TextAt(67890, 0)
+		require.False(t, ok, "TextAt should return false when tags are disabled")
+
+		_, ok = blobSet.TextAt(67890, 1)
+		require.False(t, ok, "TextAt should return false when tags are disabled")
+
+		// Test out of bounds
+		_, ok = blobSet.NumericAt(12345, 2)
+		require.False(t, ok, "NumericAt should return false for out of bounds index")
+
+		_, ok = blobSet.TextAt(67890, 2)
+		require.False(t, ok, "TextAt should return false for out of bounds index")
+
+		// Test non-existent metrics
+		_, ok = blobSet.NumericAt(99999, 0)
+		require.False(t, ok, "NumericAt should return false for non-existent metric")
+
+		_, ok = blobSet.TextAt(99999, 0)
+		require.False(t, ok, "TextAt should return false for non-existent metric")
+	})
+
+	t.Run("TagsEnabled_AllMethods", func(t *testing.T) {
+		// Create numeric blob with tags enabled
+		numericEncoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = numericEncoder.StartMetricID(12345, 2)
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(1000, 1.1, "tag1")
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(2000, 2.2, "tag2")
+		require.NoError(t, err)
+		err = numericEncoder.EndMetric()
+		require.NoError(t, err)
+
+		numericData, err := numericEncoder.Finish()
+		require.NoError(t, err)
+
+		// Create text blob with tags enabled
+		textEncoder, err := NewTextEncoder(startTime, WithTextTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = textEncoder.StartMetricID(67890, 2)
+		require.NoError(t, err)
+		err = textEncoder.AddDataPoint(3000, "value1", "tag3")
+		require.NoError(t, err)
+		err = textEncoder.AddDataPoint(4000, "value2", "tag4")
+		require.NoError(t, err)
+		err = textEncoder.EndMetric()
+		require.NoError(t, err)
+
+		textData, err := textEncoder.Finish()
+		require.NoError(t, err)
+
+		// Create blob set
+		blobSet, err := DecodeBlobSet(numericData, textData)
+		require.NoError(t, err)
+
+		// Test NumericAt - should return true with preserved tags when tags are enabled
+		dp, ok := blobSet.NumericAt(12345, 0)
+		require.True(t, ok, "NumericAt should return true when tags are enabled")
+		require.Equal(t, int64(1000), dp.Ts)
+		require.Equal(t, 1.1, dp.Val)
+		require.Equal(t, "tag1", dp.Tag, "Tag should be preserved when tags are enabled")
+
+		dp, ok = blobSet.NumericAt(12345, 1)
+		require.True(t, ok, "NumericAt should return true when tags are enabled")
+		require.Equal(t, int64(2000), dp.Ts)
+		require.Equal(t, 2.2, dp.Val)
+		require.Equal(t, "tag2", dp.Tag, "Tag should be preserved when tags are enabled")
+
+		// Test TextAt - should return true with preserved tags when tags are enabled
+		dp2, ok := blobSet.TextAt(67890, 0)
+		require.True(t, ok, "TextAt should return true when tags are enabled")
+		require.Equal(t, int64(3000), dp2.Ts)
+		require.Equal(t, "value1", dp2.Val)
+		require.Equal(t, "tag3", dp2.Tag, "Tag should be preserved when tags are enabled")
+
+		dp2, ok = blobSet.TextAt(67890, 1)
+		require.True(t, ok, "TextAt should return true when tags are enabled")
+		require.Equal(t, int64(4000), dp2.Ts)
+		require.Equal(t, "value2", dp2.Val)
+		require.Equal(t, "tag4", dp2.Tag, "Tag should be preserved when tags are enabled")
+
+		// Test out of bounds
+		_, ok = blobSet.NumericAt(12345, 2)
+		require.False(t, ok, "NumericAt should return false for out of bounds index")
+
+		_, ok = blobSet.TextAt(67890, 2)
+		require.False(t, ok, "TextAt should return false for out of bounds index")
+	})
+
+	t.Run("MixedTagSupport", func(t *testing.T) {
+		// Create numeric blob with tags disabled
+		numericEncoderDisabled, err := NewNumericEncoder(startTime)
+		require.NoError(t, err)
+
+		err = numericEncoderDisabled.StartMetricID(11111, 1)
+		require.NoError(t, err)
+		err = numericEncoderDisabled.AddDataPoint(1000, 1.1, "ignored_tag")
+		require.NoError(t, err)
+		err = numericEncoderDisabled.EndMetric()
+		require.NoError(t, err)
+
+		numericDataDisabled, err := numericEncoderDisabled.Finish()
+		require.NoError(t, err)
+
+		// Create numeric blob with tags enabled
+		numericEncoderEnabled, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = numericEncoderEnabled.StartMetricID(22222, 1)
+		require.NoError(t, err)
+		err = numericEncoderEnabled.AddDataPoint(2000, 2.2, "preserved_tag")
+		require.NoError(t, err)
+		err = numericEncoderEnabled.EndMetric()
+		require.NoError(t, err)
+
+		numericDataEnabled, err := numericEncoderEnabled.Finish()
+		require.NoError(t, err)
+
+		// Create blob set with mixed tag support
+		blobSet, err := DecodeBlobSet(numericDataDisabled, numericDataEnabled)
+		require.NoError(t, err)
+
+		// Test metric with tags disabled - should return false
+		_, ok := blobSet.NumericAt(11111, 0)
+		require.False(t, ok, "NumericAt should return false when tags are disabled")
+
+		// Test metric with tags enabled - should return true with preserved tag
+		dp, ok := blobSet.NumericAt(22222, 0)
+		require.True(t, ok, "NumericAt should return true when tags are enabled")
+		require.Equal(t, int64(2000), dp.Ts)
+		require.Equal(t, 2.2, dp.Val)
+		require.Equal(t, "preserved_tag", dp.Tag, "Tag should be preserved when tags are enabled")
+	})
+
+	t.Run("EmptyTagsOptimization", func(t *testing.T) {
+		// Create numeric blob with tags enabled but empty tags
+		// The encoder will automatically disable tags due to optimization
+		numericEncoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = numericEncoder.StartMetricID(12345, 2)
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(1000, 1.1, "") // Empty tag
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(2000, 2.2, "") // Empty tag
+		require.NoError(t, err)
+		err = numericEncoder.EndMetric()
+		require.NoError(t, err)
+
+		numericData, err := numericEncoder.Finish()
+		require.NoError(t, err)
+
+		// Create blob set
+		blobSet, err := DecodeBlobSet(numericData)
+		require.NoError(t, err)
+
+		// Test that the optimization automatically disabled tags
+		// So the methods should return false even though we initially enabled tags
+		_, ok := blobSet.NumericAt(12345, 0)
+		require.False(t, ok, "NumericAt should return false when tags are automatically disabled due to empty tags")
+
+		_, ok = blobSet.NumericAt(12345, 1)
+		require.False(t, ok, "NumericAt should return false when tags are automatically disabled due to empty tags")
+	})
+
+	t.Run("DeltaEncoding_WithTagsDisabled", func(t *testing.T) {
+		// Create numeric blob with delta encoding and tags disabled
+		numericEncoder, err := NewNumericEncoder(startTime, WithTimestampEncoding(format.TypeDelta))
+		require.NoError(t, err)
+
+		err = numericEncoder.StartMetricID(12345, 2)
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(1000, 1.1, "ignored_tag")
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(2000, 2.2, "ignored_tag")
+		require.NoError(t, err)
+		err = numericEncoder.EndMetric()
+		require.NoError(t, err)
+
+		numericData, err := numericEncoder.Finish()
+		require.NoError(t, err)
+
+		// Create blob set
+		blobSet, err := DecodeBlobSet(numericData)
+		require.NoError(t, err)
+
+		// Test NumericAt with delta encoding and tags disabled
+		_, ok := blobSet.NumericAt(12345, 0)
+		require.False(t, ok, "NumericAt should return false when tags are disabled")
+
+		_, ok = blobSet.NumericAt(12345, 1)
+		require.False(t, ok, "NumericAt should return false when tags are disabled")
+	})
+
+	t.Run("EdgeCases", func(t *testing.T) {
+		// Create a simple blob for edge case testing
+		numericEncoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
+		require.NoError(t, err)
+
+		err = numericEncoder.StartMetricID(12345, 1)
+		require.NoError(t, err)
+		err = numericEncoder.AddDataPoint(1000, 1.1, "tag1")
+		require.NoError(t, err)
+		err = numericEncoder.EndMetric()
+		require.NoError(t, err)
+
+		numericData, err := numericEncoder.Finish()
+		require.NoError(t, err)
+
+		blobSet, err := DecodeBlobSet(numericData)
+		require.NoError(t, err)
+
+		// Test negative index
+		_, ok := blobSet.NumericAt(12345, -1)
+		require.False(t, ok, "NumericAt should return false for negative index")
+
+		// Test non-existent metric
+		_, ok = blobSet.NumericAt(99999, 0)
+		require.False(t, ok, "NumericAt should return false for non-existent metric")
+
+		// Test valid case
+		dp, ok := blobSet.NumericAt(12345, 0)
+		require.True(t, ok, "NumericAt should return true for valid metric and index")
+		require.Equal(t, int64(1000), dp.Ts)
+		require.Equal(t, 1.1, dp.Val)
+		require.Equal(t, "tag1", dp.Tag)
+	})
+}

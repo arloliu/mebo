@@ -699,7 +699,7 @@ func (bs BlobSet) NumericAt(metricID uint64, index int) (NumericDataPoint, bool)
 			ts, tsOk := blob.TimestampAt(metricID, localIndex)
 			val, valOk := blob.ValueAt(metricID, localIndex)
 			tag, tagOk := blob.TagAt(metricID, localIndex)
-			if tsOk && valOk && tagOk {
+			if tsOk && valOk && (blob.HasTag() && tagOk) {
 				return NumericDataPoint{Ts: ts, Val: val, Tag: tag}, true
 			}
 
@@ -727,7 +727,7 @@ func (bs BlobSet) NumericAtByName(metricName string, index int) (NumericDataPoin
 			ts, tsOk := blob.TimestampAtByName(metricName, localIndex)
 			val, valOk := blob.ValueAtByName(metricName, localIndex)
 			tag, tagOk := blob.TagAtByName(metricName, localIndex)
-			if tsOk && valOk && tagOk {
+			if tsOk && valOk && (blob.HasTag() && tagOk) {
 				return NumericDataPoint{Ts: ts, Val: val, Tag: tag}, true
 			}
 
@@ -755,7 +755,7 @@ func (bs BlobSet) TextAt(metricID uint64, index int) (TextDataPoint, bool) {
 			ts, tsOk := blob.TimestampAt(metricID, localIndex)
 			val, valOk := blob.ValueAt(metricID, localIndex)
 			tag, tagOk := blob.TagAt(metricID, localIndex)
-			if tsOk && valOk && tagOk {
+			if tsOk && valOk && (blob.HasTag() && tagOk) {
 				return TextDataPoint{Ts: ts, Val: val, Tag: tag}, true
 			}
 
@@ -783,7 +783,7 @@ func (bs BlobSet) TextAtByName(metricName string, index int) (TextDataPoint, boo
 			ts, tsOk := blob.TimestampAtByName(metricName, localIndex)
 			val, valOk := blob.ValueAtByName(metricName, localIndex)
 			tag, tagOk := blob.TagAtByName(metricName, localIndex)
-			if tsOk && valOk && tagOk {
+			if tsOk && valOk && (blob.HasTag() && tagOk) {
 				return TextDataPoint{Ts: ts, Val: val, Tag: tag}, true
 			}
 
