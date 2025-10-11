@@ -35,7 +35,7 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 ├── encoding/             # Columnar encoding
 ├── section/              # Section headers and metadata
 ├── examples/             # Usage examples
-├── _tests/               # Test utilities and benchmarks
+├── tests/                # Test utilities and benchmarks
 │   └── measure/          # Compression measurement tool
 └── README.md
 ```

@@ -27,15 +27,16 @@ type EncodingConfig struct {
 }
 
 var (
-	// Data sizes: 10, 100, 250 points per metric
-	// Note: 200 metrics × 250 points = 50,000 < 65,535 (uint16 offset limit with safety margin)
+	// Data sizes: 10, 20, 50, 100, 200 points per metric
 	benchmarkSizes = []struct {
 		name   string
 		points int
 	}{
 		{"10pts", 10},
+		{"20pts", 20},
+		{"50pts", 50},
 		{"100pts", 100},
-		{"250pts", 250},
+		{"200pts", 200},
 	}
 
 	// Mebo encoding combinations: Programmatically generated

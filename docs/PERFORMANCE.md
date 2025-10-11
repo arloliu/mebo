@@ -785,7 +785,7 @@ encoder, _ := mebo.NewNumericEncoder(
    - Value redundancy elimination (Gorilla)
    - Specialized for monitoring use cases
 
-**See detailed benchmarks:** [Full Benchmark Report](../_tests/fbs_compare/BENCHMARK_REPORT.md)
+**See detailed benchmarks:** [Full Benchmark Report](../tests/fbs_compare/BENCHMARK_REPORT.md)
 
 ### Mebo vs Prometheus TSDB
 

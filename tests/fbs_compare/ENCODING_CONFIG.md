@@ -3,6 +3,7 @@
 ## Overview
 
 The benchmark suite uses a 3-dimensional encoding configuration system that independently controls:
+
 1. **Timestamp Encoding** - How timestamps are encoded
 2. **Timestamp Compression** - How timestamp payload is compressed
 3. **Value Compression** - How value payload is compressed
@@ -10,21 +11,18 @@ The benchmark suite uses a 3-dimensional encoding configuration system that inde
 ## Configuration Format
 
 ```
-{timestamp_encoding}-{timestamp_compression}-{value_compression}
+{timestamp_encoding}-{timestamp_compression}-{value_encoding}-{value_compression}
 ```
-
-**Examples:**
-- `delta-zstd-zstd` - Delta-of-delta encoding with Zstd compression on both payloads
-- `delta-none-zstd` - Delta-of-delta encoding with no timestamp compression but Zstd on values
-- `raw-none-none` - Raw encoding with no compression (baseline)
 
 ## Encoding Dimensions
 
 ### 1. Timestamp Encoding
+
 - **`raw`** - 8 bytes per timestamp (fixed size, int64 microseconds)
 - **`delta`** - Delta-of-delta encoding (variable size, varint compressed)
 
 ### 2. Timestamp Compression
+
 Applied to the timestamp payload after encoding:
 - **`none`** - No compression
 - **`zstd`** - Zstandard compression (best ratio, slower)
@@ -32,6 +30,7 @@ Applied to the timestamp payload after encoding:
 - **`lz4`** - LZ4 compression (fastest, moderate ratio)
 
 ### 3. Value Compression
+
 Applied to the value payload (always raw float64):
 - **`none`** - No compression
 - **`zstd`** - Zstandard compression (best ratio, slower)
@@ -41,6 +40,7 @@ Applied to the value payload (always raw float64):
 ## Encoding Sets
 
 ### Essential Set (10 configs)
+
 Used by **performance benchmarks** for faster execution:
 
 ```go
@@ -48,6 +48,7 @@ meboEncodings = generateMeboEncodings(false)
 ```
 
 **Configs:**
+
 1. `mebo/raw-none-none` - Baseline
 2. `mebo/delta-none-none` - Pure DoD effect
 3. `mebo/raw-zstd-none` - Isolate timestamp compression on raw
@@ -60,6 +61,7 @@ meboEncodings = generateMeboEncodings(false)
 10. `mebo/delta-lz4-lz4` - LZ4 comparison
 
 ### Full Set (32 configs)
+
 Used by **size comparison tests** for comprehensive analysis:
 
 ```go
@@ -67,6 +69,7 @@ meboEncodingsFull = generateMeboEncodings(true)
 ```
 
 **Complete Cartesian Product:**
+
 - 2 timestamp encodings (`raw`, `delta`)
 - × 4 timestamp compressions (`none`, `zstd`, `s2`, `lz4`)
 - × 4 value compressions (`none`, `zstd`, `s2`, `lz4`)
@@ -75,6 +78,7 @@ meboEncodingsFull = generateMeboEncodings(true)
 ## Usage Examples
 
 ### In Benchmarks
+
 ```go
 for _, enc := range meboEncodings {
     name := fmt.Sprintf("%s/%s", size.name, enc.name)
@@ -88,6 +92,7 @@ for _, enc := range meboEncodings {
 ```
 
 ### In Size Tests
+
 ```go
 configs := meboEncodingsFull // Use full set for comprehensive analysis
 for _, config := range configs {

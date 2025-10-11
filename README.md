@@ -411,7 +411,7 @@ Comprehensive benchmarks with 200 metrics × 250 points (50,000 data points):
 
 **Key Insight**: Mebo's counter-intuitive result - Gorilla-compressed data (358 μs) iterates **2.3× faster** than raw uncompressed data (816 μs) due to reduced memory bandwidth requirements.
 
-**See detailed benchmarks**: [Full Benchmark Report](_tests/fbs_compare/BENCHMARK_REPORT.md)
+**See detailed benchmarks**: [Full Benchmark Report](tests/fbs_compare/BENCHMARK_REPORT.md)
 
 ## Encoding Strategies
 
@@ -727,7 +727,7 @@ We welcome contributions! Before starting:
 
 - 📚 [API Documentation](https://pkg.go.dev/github.com/arloliu/mebo)
 - 📖 [Design Document](docs/DESIGN.md)
-- 🧪 [Benchmark Report](_tests/fbs_compare/BENCHMARK_REPORT.md)
+- 🧪 [Benchmark Report](tests/fbs_compare/BENCHMARK_REPORT.md)
 - 💡 [Examples](examples/)
   - [Blob Set Demo](examples/blob_set_demo/) - Multi-blob queries and materialization
 

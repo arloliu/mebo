@@ -7,36 +7,36 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 
 	"github.com/arloliu/mebo/compress"
-	"github.com/arloliu/mebo/tests/fbs_compare/fbs/textblob"
+	"github.com/arloliu/mebo/tests/fbscompare/fbs/numericblob"
 )
 
-// FBSTextBlob wraps FlatBuffers-encoded text metric data with optional compression.
-// This provides an API similar to mebo's TextBlob for fair benchmarking.
+// FBSBlob wraps FlatBuffers-encoded metric data with optional compression.
+// This provides an API similar to mebo's NumericBlob for fair benchmarking.
 //
 // Real-world usage pattern:
-// 1. EncodeTextFBS() - creates blob with optional compression
+// 1. EncodeFBS() - creates blob with optional compression
 // 2. Decode() - decompresses data ONCE and caches it
 // 3. All/AllTimestamps/AllValues/ValueAt/TimestampAt - uses cached data (no repeated decompression)
-type FBSTextBlob struct {
+type FBSBlob struct {
 	data           []byte // Raw FlatBuffers data
 	compressed     []byte // Compressed FlatBuffers data (if compression is used)
 	compression    string // Compression type: "none", "zstd", "s2", "lz4"
 	codec          compress.Codec
-	decodedData    []byte                // Cached decompressed data after Decode()
-	decodedMetrics *textblob.TextBlobSet // Cached FlatBuffers root
-	decoded        bool                  // Whether Decode() has been called
+	decodedData    []byte                        // Cached decompressed data after Decode()
+	decodedMetrics *numericblob.NumericMetricSet // Cached FlatBuffers root
+	decoded        bool                          // Whether Decode() has been called
 }
 
-// TextMetricData represents a single text metric with its timestamps and values.
-type TextMetricData struct {
+// MetricData represents a single metric with its timestamps and values.
+type MetricData struct {
 	ID         uint64
 	Timestamps []int64
-	Values     []string
-	Tags       []string
+	Values     []float64
 }
 
-// EncodeTextFBS creates a FlatBuffers blob from text metric data.
-func EncodeTextFBS(metrics []TextMetricData, compression string) (*FBSTextBlob, error) {
+// EncodeFBS creates a FlatBuffers blob from metric data.
+// The data map keys are metric IDs, values are (timestamps, values) pairs.
+func EncodeFBS(metrics []MetricData, compression string) (*FBSBlob, error) {
 	if len(metrics) == 0 {
 		return nil, fmt.Errorf("no metrics to encode")
 	}
@@ -52,68 +52,47 @@ func EncodeTextFBS(metrics []TextMetricData, compression string) (*FBSTextBlob, 
 		}
 
 		// Create timestamp vector
-		textblob.TextMetricStartTimestampVector(builder, len(metric.Timestamps))
+		numericblob.NumericMetricStartTimestampVector(builder, len(metric.Timestamps))
 		for i := len(metric.Timestamps) - 1; i >= 0; i-- {
 			builder.PrependInt64(metric.Timestamps[i])
 		}
 		tsOffset := builder.EndVector(len(metric.Timestamps))
 
 		// Create value vector
-		valueOffsets := make([]flatbuffers.UOffsetT, len(metric.Values))
-		for i := range metric.Values {
-			valueOffsets[i] = builder.CreateString(metric.Values[i])
-		}
-		textblob.TextMetricStartValueVector(builder, len(metric.Values))
-		for i := len(valueOffsets) - 1; i >= 0; i-- {
-			builder.PrependUOffsetT(valueOffsets[i])
+		numericblob.NumericMetricStartValueVector(builder, len(metric.Values))
+		for i := len(metric.Values) - 1; i >= 0; i-- {
+			builder.PrependFloat64(metric.Values[i])
 		}
 		valOffset := builder.EndVector(len(metric.Values))
 
-		// Create tag vector if tags exist
-		var tagOffset flatbuffers.UOffsetT
-		if len(metric.Tags) > 0 {
-			tagOffsets := make([]flatbuffers.UOffsetT, len(metric.Tags))
-			for i := range metric.Tags {
-				tagOffsets[i] = builder.CreateString(metric.Tags[i])
-			}
-			textblob.TextMetricStartTagVector(builder, len(metric.Tags))
-			for i := len(tagOffsets) - 1; i >= 0; i-- {
-				builder.PrependUOffsetT(tagOffsets[i])
-			}
-			tagOffset = builder.EndVector(len(metric.Tags))
-		}
-
 		// Create metric
-		textblob.TextMetricStart(builder)
-		textblob.TextMetricAddId(builder, metric.ID)
-		textblob.TextMetricAddTimestamp(builder, tsOffset)
-		textblob.TextMetricAddValue(builder, valOffset)
-		if len(metric.Tags) > 0 {
-			textblob.TextMetricAddTag(builder, tagOffset)
-		}
-		metricOffsets = append(metricOffsets, textblob.TextMetricEnd(builder))
+		numericblob.NumericMetricStart(builder)
+		numericblob.NumericMetricAddId(builder, metric.ID)
+		numericblob.NumericMetricAddTimestamp(builder, tsOffset)
+		numericblob.NumericMetricAddValue(builder, valOffset)
+		metricOffsets = append(metricOffsets, numericblob.NumericMetricEnd(builder))
 	}
 
 	// Create metrics vector
-	textblob.TextBlobSetStartMetricsVector(builder, len(metricOffsets))
+	numericblob.NumericMetricSetStartMetricsVector(builder, len(metricOffsets))
 	for i := len(metricOffsets) - 1; i >= 0; i-- {
 		builder.PrependUOffsetT(metricOffsets[i])
 	}
 	metricsVecOffset := builder.EndVector(len(metricOffsets))
 
-	// Create blob set
-	textblob.TextBlobSetStart(builder)
-	textblob.TextBlobSetAddMetrics(builder, metricsVecOffset)
-	blobSetOffset := textblob.TextBlobSetEnd(builder)
+	// Create metric set
+	numericblob.NumericMetricSetStart(builder)
+	numericblob.NumericMetricSetAddMetrics(builder, metricsVecOffset)
+	metricSetOffset := numericblob.NumericMetricSetEnd(builder)
 
 	// Finish building
-	builder.Finish(blobSetOffset)
+	builder.Finish(metricSetOffset)
 
 	// Get the raw bytes
 	rawData := builder.FinishedBytes()
 
 	// Apply compression if needed
-	blob := &FBSTextBlob{
+	blob := &FBSBlob{
 		data:        rawData,
 		compression: compression,
 	}
@@ -128,7 +107,7 @@ func EncodeTextFBS(metrics []TextMetricData, compression string) (*FBSTextBlob, 
 }
 
 // applyCompression compresses the raw FlatBuffers data.
-func (b *FBSTextBlob) applyCompression() error {
+func (b *FBSBlob) applyCompression() error {
 	var codec compress.Codec
 	switch b.compression {
 	case "zstd":
@@ -155,7 +134,7 @@ func (b *FBSTextBlob) applyCompression() error {
 }
 
 // decompress returns decompressed FlatBuffers data (internal use only).
-func (b *FBSTextBlob) decompress() ([]byte, error) {
+func (b *FBSBlob) decompress() ([]byte, error) {
 	if b.compression == "none" {
 		return b.data, nil
 	}
@@ -170,7 +149,7 @@ func (b *FBSTextBlob) decompress() ([]byte, error) {
 // Decode decompresses the blob data once and caches it for subsequent operations.
 // This mirrors the real-world usage pattern: decompress once, then use many times.
 // Must be called before any All/AllTimestamps/AllValues/ValueAt/TimestampAt operations.
-func (b *FBSTextBlob) Decode() error {
+func (b *FBSBlob) Decode() error {
 	if b.decoded {
 		return nil // Already decoded
 	}
@@ -181,15 +160,15 @@ func (b *FBSTextBlob) Decode() error {
 	}
 
 	b.decodedData = data
-	blobSet := textblob.GetRootAsTextBlobSet(data, 0)
-	b.decodedMetrics = blobSet
+	metricSet := numericblob.GetRootAsNumericMetricSet(data, 0)
+	b.decodedMetrics = metricSet
 	b.decoded = true
 
 	return nil
 }
 
 // Size returns the size of the encoded blob (compressed if compression is used).
-func (b *FBSTextBlob) Size() int {
+func (b *FBSBlob) Size() int {
 	if b.compression != "none" && len(b.compressed) > 0 {
 		return len(b.compressed)
 	}
@@ -198,20 +177,20 @@ func (b *FBSTextBlob) Size() int {
 }
 
 // UncompressedSize returns the size of the raw FlatBuffers data.
-func (b *FBSTextBlob) UncompressedSize() int {
+func (b *FBSBlob) UncompressedSize() int {
 	return len(b.data)
 }
 
 // findMetric finds a metric by ID in the decoded FlatBuffers data.
 // Note: Decode() must be called first.
-func (b *FBSTextBlob) findMetric(metricID uint64) (*textblob.TextMetric, error) {
+func (b *FBSBlob) findMetric(metricID uint64) (*numericblob.NumericMetric, error) {
 	if !b.decoded {
 		return nil, fmt.Errorf("blob not decoded, call Decode() first")
 	}
 
 	numMetrics := b.decodedMetrics.MetricsLength()
 
-	var metric textblob.TextMetric
+	var metric numericblob.NumericMetric
 	for i := 0; i < numMetrics; i++ {
 		if b.decodedMetrics.Metrics(&metric, i) && metric.Id() == metricID {
 			return &metric, nil
@@ -224,7 +203,7 @@ func (b *FBSTextBlob) findMetric(metricID uint64) (*textblob.TextMetric, error) 
 // AllMetricIDs returns all metric IDs in the blob.
 // This is useful for iterating through all metrics in benchmarks.
 // Note: Decode() must be called first.
-func (b *FBSTextBlob) AllMetricIDs() ([]uint64, error) {
+func (b *FBSBlob) AllMetricIDs() ([]uint64, error) {
 	if !b.decoded {
 		return nil, fmt.Errorf("blob not decoded, call Decode() first")
 	}
@@ -232,7 +211,7 @@ func (b *FBSTextBlob) AllMetricIDs() ([]uint64, error) {
 	numMetrics := b.decodedMetrics.MetricsLength()
 	ids := make([]uint64, 0, numMetrics)
 
-	var metric textblob.TextMetric
+	var metric numericblob.NumericMetric
 	for i := 0; i < numMetrics; i++ {
 		if b.decodedMetrics.Metrics(&metric, i) {
 			ids = append(ids, metric.Id())
@@ -243,19 +222,19 @@ func (b *FBSTextBlob) AllMetricIDs() ([]uint64, error) {
 }
 
 // All returns an iterator over all (timestamp, value) pairs for the given metric.
-// This mirrors mebo's TextBlob.All() API.
-func (b *FBSTextBlob) All(metricID uint64) iter.Seq2[int64, string] {
+// This mirrors mebo's NumericBlob.All() API.
+func (b *FBSBlob) All(metricID uint64) iter.Seq2[int64, float64] {
 	metric, err := b.findMetric(metricID)
 	if err != nil {
-		return func(yield func(int64, string) bool) {}
+		return func(yield func(int64, float64) bool) {}
 	}
 
 	count := metric.TimestampLength()
 
-	return func(yield func(int64, string) bool) {
+	return func(yield func(int64, float64) bool) {
 		for i := 0; i < count; i++ {
 			ts := metric.Timestamp(i)
-			val := string(metric.Value(i))
+			val := metric.Value(i)
 			if !yield(ts, val) {
 				return
 			}
@@ -264,8 +243,8 @@ func (b *FBSTextBlob) All(metricID uint64) iter.Seq2[int64, string] {
 }
 
 // AllTimestamps returns an iterator over all timestamps for the given metric.
-// This mirrors mebo's TextBlob.AllTimestamps() API.
-func (b *FBSTextBlob) AllTimestamps(metricID uint64) iter.Seq[int64] {
+// This mirrors mebo's NumericBlob.AllTimestamps() API.
+func (b *FBSBlob) AllTimestamps(metricID uint64) iter.Seq[int64] {
 	metric, err := b.findMetric(metricID)
 	if err != nil {
 		return func(yield func(int64) bool) {}
@@ -283,18 +262,18 @@ func (b *FBSTextBlob) AllTimestamps(metricID uint64) iter.Seq[int64] {
 }
 
 // AllValues returns an iterator over all values for the given metric.
-// This mirrors mebo's TextBlob.AllValues() API.
-func (b *FBSTextBlob) AllValues(metricID uint64) iter.Seq[string] {
+// This mirrors mebo's NumericBlob.AllValues() API.
+func (b *FBSBlob) AllValues(metricID uint64) iter.Seq[float64] {
 	metric, err := b.findMetric(metricID)
 	if err != nil {
-		return func(yield func(string) bool) {}
+		return func(yield func(float64) bool) {}
 	}
 
 	count := metric.ValueLength()
 
-	return func(yield func(string) bool) {
+	return func(yield func(float64) bool) {
 		for i := 0; i < count; i++ {
-			if !yield(string(metric.Value(i))) {
+			if !yield(metric.Value(i)) {
 				return
 			}
 		}
@@ -302,8 +281,8 @@ func (b *FBSTextBlob) AllValues(metricID uint64) iter.Seq[string] {
 }
 
 // TimestampAt returns the timestamp at the given index for the metric.
-// This mirrors mebo's TextBlob.TimestampAt() API.
-func (b *FBSTextBlob) TimestampAt(metricID uint64, index int) (int64, error) {
+// This mirrors mebo's NumericBlob.TimestampAt() API.
+func (b *FBSBlob) TimestampAt(metricID uint64, index int) (int64, error) {
 	metric, err := b.findMetric(metricID)
 	if err != nil {
 		return 0, err
@@ -317,31 +296,16 @@ func (b *FBSTextBlob) TimestampAt(metricID uint64, index int) (int64, error) {
 }
 
 // ValueAt returns the value at the given index for the metric.
-// This mirrors mebo's TextBlob.ValueAt() API.
-func (b *FBSTextBlob) ValueAt(metricID uint64, index int) (string, error) {
+// This mirrors mebo's NumericBlob.ValueAt() API.
+func (b *FBSBlob) ValueAt(metricID uint64, index int) (float64, error) {
 	metric, err := b.findMetric(metricID)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 
 	if index < 0 || index >= metric.ValueLength() {
-		return "", fmt.Errorf("index %d out of range [0, %d)", index, metric.ValueLength())
+		return 0, fmt.Errorf("index %d out of range [0, %d)", index, metric.ValueLength())
 	}
 
-	return string(metric.Value(index)), nil
-}
-
-// TagAt returns the tag at the given index for the metric.
-// This mirrors mebo's TextBlob.TagAt() API.
-func (b *FBSTextBlob) TagAt(metricID uint64, index int) (string, error) {
-	metric, err := b.findMetric(metricID)
-	if err != nil {
-		return "", err
-	}
-
-	if index < 0 || index >= metric.TagLength() {
-		return "", fmt.Errorf("index %d out of range [0, %d)", index, metric.TagLength())
-	}
-
-	return string(metric.Tag(index)), nil
+	return metric.Value(index), nil
 }

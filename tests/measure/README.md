@@ -4,13 +4,13 @@
 
 ### Simulated Data
 ```bash
-cd _tests/measure
+cd tests/measure
 go run . -metrics 200 -max-points 200 -value-jitter 5 -ts-jitter 2
 ```
 
 ### Real-World Data
 ```bash
-cd _tests/measure
+cd tests/measure
 # With microsecond timestamps (default)
 go run . -input-file production_metrics.json
 
