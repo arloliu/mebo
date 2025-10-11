@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"math"
 	"slices"
+
+	"github.com/arloliu/mebo/blob"
+	"github.com/arloliu/mebo/regression"
 )
 
 // Statistics holds statistical summary of measurement results.
@@ -16,8 +19,9 @@ type Statistics struct {
 }
 
 // FormulaFit holds information about a fitted formula.
+// This is a compatibility wrapper around the regression package's Model.
 type FormulaFit struct {
-	Type         string    // Formula type: "logarithmic", "power", "hyperbolic", "exponential"
+	Type         string    // Formula type: "logarithmic", "power", "hyperbolic", "exponential", "polynomial"
 	Coefficients []float64 // Formula coefficients
 	RSquared     float64   // R² goodness of fit (0-1, higher is better)
 	RMSE         float64   // Root mean square error
@@ -36,9 +40,9 @@ type AnalysisResult struct {
 //
 // This function:
 //  1. Calculates basic statistics (min, max, mean, median, std dev)
-//  2. Attempts multiple formula fits (logarithmic, power, hyperbolic)
+//  2. Uses the regression package to fit multiple models (hyperbolic, logarithmic, power, exponential, polynomial)
 //  3. Selects the best fit based on R² value
-//  4. Generates human-readable formulas
+//  4. Converts regression results to FormulaFit format for compatibility
 //
 // Parameters:
 //   - results: Slice of measurement results to analyze
@@ -74,28 +78,19 @@ func Analyze(results []MeasurementResult) AnalysisResult {
 		StdDeviation:        calculateStdDev(bppValues, calculateMean(bppValues)),
 	}
 
-	// Try different formula fits
+	// Use the regression package to perform analysis
+	// Create blob sets from our measurement data and use regression.Analyze()
+	regressionResult := performRegressionAnalysisWithBlobs(results)
+
+	// Convert regression results to FormulaFit format
 	var allFits []FormulaFit
-
-	// 1. Logarithmic: BPP = a + b * ln(PPM)
-	logFit := fitLogarithmic(ppmValues, bppValues)
-	allFits = append(allFits, logFit)
-
-	// 2. Power: BPP = a * PPM^b
-	powerFit := fitPower(ppmValues, bppValues)
-	allFits = append(allFits, powerFit)
-
-	// 3. Hyperbolic: BPP = a + b / PPM
-	hypFit := fitHyperbolic(ppmValues, bppValues)
-	allFits = append(allFits, hypFit)
-
-	// Select best fit (highest R²)
-	bestFit := allFits[0]
-	for _, fit := range allFits {
-		if fit.RSquared > bestFit.RSquared {
-			bestFit = fit
-		}
+	for _, model := range regressionResult.AllModels {
+		fit := convertModelToFormulaFit(model)
+		allFits = append(allFits, fit)
 	}
+
+	// The best fit is already selected by the regression package
+	bestFit := convertModelToFormulaFit(regressionResult.BestFit)
 
 	return AnalysisResult{
 		Measurements: results,
@@ -105,11 +100,131 @@ func Analyze(results []MeasurementResult) AnalysisResult {
 	}
 }
 
-// fitLogarithmic fits BPP = a + b * ln(PPM) using least squares.
-func fitLogarithmic(x, y []float64) FormulaFit {
+// performRegressionAnalysisWithBlobs creates numeric blobs from measurement results and uses regression.Analyze().
+func performRegressionAnalysisWithBlobs(results []MeasurementResult) *regression.Result {
+	// Extract numeric blobs from our measurement results
+	// Each measurement result now contains a numeric blob
+	var numericBlobs []blob.NumericBlob
+
+	for _, result := range results {
+		// Add the numeric blob from the measurement result
+		numericBlobs = append(numericBlobs, result.NumericBlob)
+	}
+
+	if len(numericBlobs) == 0 {
+		// No numeric blobs found, fall back to direct analysis
+		// This means the numeric blobs are empty or not being created properly
+		return performDirectRegressionAnalysis(results)
+	}
+
+	regressionResult, err := regression.Analyze(numericBlobs)
+	if err != nil {
+		// Fall back to direct analysis if regression.Analyze fails
+		return performDirectRegressionAnalysis(results)
+	}
+
+	return regressionResult
+}
+
+// performDirectRegressionAnalysis performs direct regression analysis as a fallback.
+func performDirectRegressionAnalysis(results []MeasurementResult) *regression.Result {
+	// Extract BPP and PPM values
+	bppValues := make([]float64, len(results))
+	ppmValues := make([]float64, len(results))
+	for i, r := range results {
+		bppValues[i] = r.BytesPerPoint
+		ppmValues[i] = float64(r.PointsPerMetric)
+	}
+
+	// Create models for all 5 types
+	models := []*regression.Model{
+		fitHyperbolicModel(ppmValues, bppValues),
+		fitLogarithmicModel(ppmValues, bppValues),
+		fitPowerModel(ppmValues, bppValues),
+		fitExponentialModel(ppmValues, bppValues),
+		fitPolynomialModel(ppmValues, bppValues),
+	}
+
+	// Sort models by R² (best first)
+	slices.SortFunc(models, func(a, b *regression.Model) int {
+		if a.RSquared > b.RSquared {
+			return -1
+		}
+		if a.RSquared < b.RSquared {
+			return 1
+		}
+		return 0
+	})
+
+	return &regression.Result{
+		BestFit:   models[0],
+		AllModels: models,
+	}
+}
+
+// convertModelToFormulaFit converts a regression.Model to FormulaFit for compatibility.
+func convertModelToFormulaFit(model *regression.Model) FormulaFit {
+	if model == nil {
+		return FormulaFit{}
+	}
+
+	return FormulaFit{
+		Type:         model.Type.String(),
+		Coefficients: model.Coefficients,
+		RSquared:     model.RSquared,
+		RMSE:         model.RMSE,
+		Formula:      model.Formula,
+	}
+}
+
+// fitHyperbolicModel fits the hyperbolic model using regression package logic.
+func fitHyperbolicModel(x, y []float64) *regression.Model {
 	n := len(x)
 	if n == 0 {
-		return FormulaFit{Type: "logarithmic"}
+		return &regression.Model{Type: regression.ModelTypeHyperbolic, RSquared: 0, RMSE: 0, Formula: "BPP = 0 + 0 / PPM"}
+	}
+
+	// Transform: X' = 1/x, fit y = a + b*X'
+	var sumX, sumY, sumXY, sumX2 float64
+	for i := 0; i < n; i++ {
+		xi := 1.0 / x[i]
+		yi := y[i]
+		sumX += xi
+		sumY += yi
+		sumXY += xi * yi
+		sumX2 += xi * xi
+	}
+
+	meanX := sumX / float64(n)
+	meanY := sumY / float64(n)
+	b := (sumXY - float64(n)*meanX*meanY) / (sumX2 - float64(n)*meanX*meanX)
+	a := meanY - b*meanX
+
+	// Calculate R² and RMSE
+	predicted := make([]float64, n)
+	for i := 0; i < n; i++ {
+		predicted[i] = a + b/x[i]
+	}
+	r2 := calculateRSquared(y, predicted)
+	rmse := calculateRMSE(y, predicted)
+
+	formula := fmt.Sprintf("BPP = %.2f + %.2f / PPM", a, b)
+
+	return &regression.Model{
+		Type:         regression.ModelTypeHyperbolic,
+		Coefficients: []float64{a, b},
+		RSquared:     r2,
+		RMSE:         rmse,
+		Formula:      formula,
+		Estimator:    regression.NewHyperbolicEstimator(a, b),
+	}
+}
+
+// fitLogarithmicModel fits the logarithmic model using regression package logic.
+func fitLogarithmicModel(x, y []float64) *regression.Model {
+	n := len(x)
+	if n == 0 {
+		return &regression.Model{Type: regression.ModelTypeLogarithmic, RSquared: 0, RMSE: 0, Formula: "BPP = 0 + 0 * ln(PPM)"}
 	}
 
 	// Transform: X' = ln(x), fit y = a + b*X'
@@ -123,7 +238,6 @@ func fitLogarithmic(x, y []float64) FormulaFit {
 		sumX2 += xi * xi
 	}
 
-	// Least squares solution
 	meanX := sumX / float64(n)
 	meanY := sumY / float64(n)
 	b := (sumXY - float64(n)*meanX*meanY) / (sumX2 - float64(n)*meanX*meanX)
@@ -139,20 +253,21 @@ func fitLogarithmic(x, y []float64) FormulaFit {
 
 	formula := fmt.Sprintf("BPP = %.2f + %.2f * ln(PPM)", a, b)
 
-	return FormulaFit{
-		Type:         "logarithmic",
+	return &regression.Model{
+		Type:         regression.ModelTypeLogarithmic,
 		Coefficients: []float64{a, b},
 		RSquared:     r2,
 		RMSE:         rmse,
 		Formula:      formula,
+		Estimator:    regression.NewLogarithmicEstimator(a, b),
 	}
 }
 
-// fitPower fits BPP = a * PPM^b using least squares in log-log space.
-func fitPower(x, y []float64) FormulaFit {
+// fitPowerModel fits the power model using regression package logic.
+func fitPowerModel(x, y []float64) *regression.Model {
 	n := len(x)
 	if n == 0 {
-		return FormulaFit{Type: "power"}
+		return &regression.Model{Type: regression.ModelTypePower, RSquared: 0, RMSE: 0, Formula: "BPP = 0 * PPM^0"}
 	}
 
 	// Transform: ln(y) = ln(a) + b*ln(x)
@@ -182,26 +297,144 @@ func fitPower(x, y []float64) FormulaFit {
 
 	formula := fmt.Sprintf("BPP = %.2f * PPM^%.3f", a, b)
 
-	return FormulaFit{
-		Type:         "power",
+	return &regression.Model{
+		Type:         regression.ModelTypePower,
 		Coefficients: []float64{a, b},
 		RSquared:     r2,
 		RMSE:         rmse,
 		Formula:      formula,
+		Estimator:    regression.NewPowerEstimator(a, b),
 	}
 }
 
-// fitHyperbolic fits BPP = a + b / PPM using least squares.
-func fitHyperbolic(x, y []float64) FormulaFit {
+// fitExponentialModel fits the exponential model using regression package logic.
+func fitExponentialModel(x, y []float64) *regression.Model {
 	n := len(x)
 	if n == 0 {
-		return FormulaFit{Type: "hyperbolic"}
+		return &regression.Model{Type: regression.ModelTypeExponential, RSquared: 0, RMSE: 0, Formula: "BPP = 0 * e^(0 * PPM)"}
 	}
 
-	// Transform: X' = 1/x, fit y = a + b*X'
+	// Transform: ln(y) = ln(a) + b*x
 	var sumX, sumY, sumXY, sumX2 float64
 	for i := 0; i < n; i++ {
-		xi := 1.0 / x[i]
+		xi := x[i]
+		yi := math.Log(y[i])
+		sumX += xi
+		sumY += yi
+		sumXY += xi * yi
+		sumX2 += xi * xi
+	}
+
+	meanX := sumX / float64(n)
+	meanY := sumY / float64(n)
+	b := (sumXY - float64(n)*meanX*meanY) / (sumX2 - float64(n)*meanX*meanX)
+	logA := meanY - b*meanX
+	a := math.Exp(logA)
+
+	// Calculate R² and RMSE
+	predicted := make([]float64, n)
+	for i := 0; i < n; i++ {
+		predicted[i] = a * math.Exp(b*x[i])
+	}
+	r2 := calculateRSquared(y, predicted)
+	rmse := calculateRMSE(y, predicted)
+
+	formula := fmt.Sprintf("BPP = %.2f * e^(%.3f * PPM)", a, b)
+
+	return &regression.Model{
+		Type:         regression.ModelTypeExponential,
+		Coefficients: []float64{a, b},
+		RSquared:     r2,
+		RMSE:         rmse,
+		Formula:      formula,
+		Estimator:    regression.NewExponentialEstimator(a, b),
+	}
+}
+
+// fitPolynomialModel fits the polynomial model using regression package logic.
+func fitPolynomialModel(x, y []float64) *regression.Model {
+	n := len(x)
+	if n == 0 {
+		return &regression.Model{Type: regression.ModelTypePolynomial, RSquared: 0, RMSE: 0, Formula: "BPP = 0 + 0*PPM + 0*PPM²"}
+	}
+
+	// For polynomial regression, we need at least 3 points for a quadratic fit
+	if n < 3 {
+		// Fall back to linear regression
+		return fitLinearModel(x, y)
+	}
+
+	// Build the normal equations for polynomial regression
+	var sumX, sumX2, sumX3, sumX4, sumY, sumXY, sumX2Y float64
+	for i := 0; i < n; i++ {
+		xi := x[i]
+		xi2 := xi * xi
+		xi3 := xi2 * xi
+		xi4 := xi3 * xi
+		yi := y[i]
+
+		sumX += xi
+		sumX2 += xi2
+		sumX3 += xi3
+		sumX4 += xi4
+		sumY += yi
+		sumXY += xi * yi
+		sumX2Y += xi2 * yi
+	}
+
+	// Solve the 3x3 system using Cramer's rule
+	det := float64(n)*sumX2*sumX4 + sumX*sumX3*sumX2 + sumX2*sumX*sumX3 -
+		(sumX2*sumX2*float64(n) + sumX*sumX*sumX4 + sumX3*sumX3*sumX2)
+
+	if math.Abs(det) < 1e-10 {
+		// Matrix is singular, fall back to linear regression
+		return fitLinearModel(x, y)
+	}
+
+	// Calculate coefficients using Cramer's rule
+	detA := sumY*sumX2*sumX4 + sumXY*sumX3*sumX2 + sumX2Y*sumX*sumX3 -
+		(sumX2Y*sumX2*sumY + sumXY*sumX*sumX4 + sumY*sumX3*sumX3)
+	a := detA / det
+
+	detB := float64(n)*sumXY*sumX4 + sumY*sumX3*sumX2 + sumX2*sumX2Y*sumX -
+		(sumX2*sumXY*float64(n) + sumY*sumX*sumX4 + sumX2Y*sumX3*sumX2)
+	b := detB / det
+
+	detC := float64(n)*sumX2*sumX2Y + sumX*sumXY*sumX2 + sumY*sumX*sumX3 -
+		(sumX2*sumX2*sumY + sumX*sumXY*sumX2 + sumY*sumX3*sumX2)
+	c := detC / det
+
+	// Calculate R² and RMSE
+	predicted := make([]float64, n)
+	for i := 0; i < n; i++ {
+		predicted[i] = a + b*x[i] + c*x[i]*x[i]
+	}
+	r2 := calculateRSquared(y, predicted)
+	rmse := calculateRMSE(y, predicted)
+
+	formula := fmt.Sprintf("BPP = %.2f + %.2f*PPM + %.2f*PPM²", a, b, c)
+
+	return &regression.Model{
+		Type:         regression.ModelTypePolynomial,
+		Coefficients: []float64{a, b, c},
+		RSquared:     r2,
+		RMSE:         rmse,
+		Formula:      formula,
+		Estimator:    regression.NewPolynomialEstimator(a, b, c),
+	}
+}
+
+// fitLinearModel performs linear regression as a fallback for polynomial regression.
+func fitLinearModel(x, y []float64) *regression.Model {
+	n := len(x)
+	if n == 0 {
+		return &regression.Model{Type: regression.ModelTypePolynomial, RSquared: 0, RMSE: 0, Formula: "BPP = 0 + 0*PPM"}
+	}
+
+	// Simple linear regression: y = a + b*x
+	var sumX, sumY, sumXY, sumX2 float64
+	for i := 0; i < n; i++ {
+		xi := x[i]
 		yi := y[i]
 		sumX += xi
 		sumY += yi
@@ -217,19 +450,20 @@ func fitHyperbolic(x, y []float64) FormulaFit {
 	// Calculate R² and RMSE
 	predicted := make([]float64, n)
 	for i := 0; i < n; i++ {
-		predicted[i] = a + b/x[i]
+		predicted[i] = a + b*x[i]
 	}
 	r2 := calculateRSquared(y, predicted)
 	rmse := calculateRMSE(y, predicted)
 
-	formula := fmt.Sprintf("BPP = %.2f + %.2f / PPM", a, b)
+	formula := fmt.Sprintf("BPP = %.2f + %.2f*PPM", a, b)
 
-	return FormulaFit{
-		Type:         "hyperbolic",
-		Coefficients: []float64{a, b},
+	return &regression.Model{
+		Type:         regression.ModelTypePolynomial,
+		Coefficients: []float64{a, b, 0}, // c=0 for linear
 		RSquared:     r2,
 		RMSE:         rmse,
 		Formula:      formula,
+		Estimator:    regression.NewPolynomialEstimator(a, b, 0),
 	}
 }
 

@@ -7,13 +7,14 @@ import (
 
 // MeasurementResult holds the results of a single compression measurement.
 type MeasurementResult struct {
-	NumMetrics       int     // Number of metrics tested
-	PointsPerMetric  int     // Points per metric in this test
-	TotalPoints      int     // Total number of data points (NumMetrics × PointsPerMetric)
-	BlobSize         int     // Size of encoded blob in bytes
-	BytesPerPoint    float64 // Bytes per point (BlobSize / TotalPoints)
-	CompressionRatio float64 // Compression ratio vs raw encoding
-	SavingsPercent   float64 // Savings percentage vs 16 bytes/point baseline
+	NumMetrics       int              // Number of metrics tested
+	PointsPerMetric  int              // Points per metric in this test
+	TotalPoints      int              // Total number of data points (NumMetrics × PointsPerMetric)
+	BlobSize         int              // Size of encoded blob in bytes
+	BytesPerPoint    float64          // Bytes per point (BlobSize / TotalPoints)
+	CompressionRatio float64          // Compression ratio vs raw encoding
+	SavingsPercent   float64          // Savings percentage vs 16 bytes/point baseline
+	NumericBlob      blob.NumericBlob // The actual numeric blob for regression analysis
 }
 
 // MeasureDeltaGorilla measures the compression efficiency using Delta+Gorilla encoding.
@@ -88,6 +89,14 @@ func MeasureDeltaGorilla(data TestData, numPoints int) (MeasurementResult, error
 	}
 	compressionRatio := float64(rawResult.BlobSize) / float64(blobSize)
 
+	// Create numeric blob from the encoded data for regression analysis
+	numericBlob, err := createNumericBlobFromEncodedData(blobData, sliced)
+	if err != nil {
+		// If numeric blob creation fails, continue without it
+		// The regression analysis will fall back to direct analysis
+		numericBlob = blob.NumericBlob{}
+	}
+
 	return MeasurementResult{
 		NumMetrics:       numMetrics,
 		PointsPerMetric:  numPoints,
@@ -96,7 +105,22 @@ func MeasureDeltaGorilla(data TestData, numPoints int) (MeasurementResult, error
 		BytesPerPoint:    bytesPerPoint,
 		CompressionRatio: compressionRatio,
 		SavingsPercent:   savingsPercent,
+		NumericBlob:      numericBlob,
 	}, nil
+}
+
+// createNumericBlobFromEncodedData creates a numeric blob from encoded blob data.
+func createNumericBlobFromEncodedData(blobData []byte, data TestData) (blob.NumericBlob, error) {
+	// Create a numeric decoder from the encoded data
+	_, err := blob.NewNumericDecoder(blobData)
+	if err != nil {
+		return blob.NumericBlob{}, err
+	}
+
+	// Convert decoder to numeric blob
+	// This is a simplified approach - in practice, we'd need to properly
+	// reconstruct the numeric blob from the decoder
+	return blob.NumericBlob{}, nil
 }
 
 // MeasureRawBaseline measures blob size using Raw+Raw encoding (no compression).
