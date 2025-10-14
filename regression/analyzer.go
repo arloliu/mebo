@@ -7,6 +7,8 @@ import (
 	"slices"
 
 	"github.com/arloliu/mebo/blob"
+	"github.com/arloliu/mebo/format"
+	iopts "github.com/arloliu/mebo/internal/options"
 )
 
 // Analyze aggregates all blobs and returns a single best-fit model.
@@ -30,22 +32,14 @@ import (
 //	}
 //	bpp := result.BestFit.Estimator.Estimate(100.0) // Estimate BPP for 100 PPM
 func Analyze(blobs []blob.NumericBlob) (*Result, error) {
-	if len(blobs) == 0 {
-		return nil, errors.New("no blobs provided")
-	}
-
-	// Extract data points from all blobs
-	ppmValues, bppValues, err := extractDataPoints(blobs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract data points: %w", err)
-	}
-
-	if len(ppmValues) == 0 {
-		return nil, errors.New("no data points found in blobs")
-	}
-
-	// Perform regression analysis
-	return performRegression(ppmValues, bppValues)
+	// Default to Delta timestamps + Gorilla values (no compression), matching README methodology
+	return AnalyzeWithOptions(
+		blobs,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+	)
 }
 
 // AnalyzeEach analyzes each blob separately and returns per-blob models.
@@ -71,121 +65,74 @@ func Analyze(blobs []blob.NumericBlob) (*Result, error) {
 //	    fmt.Printf("Blob %d: %s\n", i, result.BestFit)
 //	}
 func AnalyzeEach(blobs []blob.NumericBlob) ([]*Result, error) {
+	// Default encodings matching Analyze()
+	return AnalyzeEachWithOptions(
+		blobs,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+	)
+}
+
+// AnalyzeWithOptions is the options-based API for analysis.
+func AnalyzeWithOptions(blobs []blob.NumericBlob, opts ...AnalyzeOption) (*Result, error) {
 	if len(blobs) == 0 {
 		return nil, errors.New("no blobs provided")
 	}
 
+	cfg := defaultAnalyzeConfig()
+	if err := iopts.Apply(&cfg, opts...); err != nil {
+		return nil, err
+	}
+
+	mres, err := chunkAndMeasureWithConfig(blobs, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to measure PPM/BPP via re-encoding: %w", err)
+	}
+	if len(mres.PPM) == 0 {
+		return nil, errors.New("no data points found in blobs")
+	}
+
+	res, err := performRegression(mres.PPM, mres.BPP)
+	if err != nil {
+		return nil, err
+	}
+	res.ChunkPPMs = mres.PPMInt
+
+	return res, nil
+}
+
+// AnalyzeEachWithOptions analyzes each blob separately using options.
+func AnalyzeEachWithOptions(blobs []blob.NumericBlob, opts ...AnalyzeOption) ([]*Result, error) {
+	if len(blobs) == 0 {
+		return nil, errors.New("no blobs provided")
+	}
+
+	cfg := defaultAnalyzeConfig()
+	if err := iopts.Apply(&cfg, opts...); err != nil {
+		return nil, err
+	}
+
 	results := make([]*Result, len(blobs))
-
 	for i, b := range blobs {
-		// For single blob, we need to create multiple data points
-		// by sampling different PPM values from the blob's metrics
-		ppmValues, bppValues, err := extractDataPointsFromBlob(b)
+		mres, err := chunkAndMeasureWithConfig([]blob.NumericBlob{b}, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to extract data points from blob %d: %w", i, err)
+			return nil, fmt.Errorf("failed to measure blob %d: %w", i, err)
 		}
-
-		if len(ppmValues) == 0 {
+		if len(mres.PPM) == 0 {
 			return nil, fmt.Errorf("no data points found in blob %d", i)
 		}
 
-		// Perform regression analysis for this blob
-		result, err := performRegression(ppmValues, bppValues)
-		if err != nil {
-			return nil, fmt.Errorf("failed to analyze blob %d: %w", i, err)
+		result, regErr := performRegression(mres.PPM, mres.BPP)
+		if regErr != nil {
+			return nil, fmt.Errorf("failed to analyze blob %d: %w", i, regErr)
 		}
-
+		result.ChunkPPMs = mres.PPMInt
 		results[i] = result
 	}
 
 	return results, nil
-}
-
-// extractDataPoints extracts PPM and BPP values from all blobs.
-//
-// This function aggregates data points from multiple blobs to create a single
-// dataset for regression analysis. It combines all metrics from all blobs
-// to provide a comprehensive view of the compression efficiency relationship.
-//
-// Parameters:
-//   - blobs: Slice of numeric blobs to analyze
-//
-// Returns:
-//   - ppmValues: Points per metric values from all blobs
-//   - bppValues: Bytes per point values from all blobs
-//   - err: Error if data extraction fails
-func extractDataPoints(blobs []blob.NumericBlob) (ppmValues, bppValues []float64, err error) {
-	var allPPM, allBPP []float64
-
-	for i, b := range blobs {
-		ppmValues, bppValues, err := extractDataPointsFromBlob(b)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to extract data points from blob %d: %w", i, err)
-		}
-
-		allPPM = append(allPPM, ppmValues...)
-		allBPP = append(allBPP, bppValues...)
-	}
-
-	return allPPM, allBPP, nil
-}
-
-// extractDataPointsFromBlob extracts PPM and BPP values from a single blob.
-//
-// This function creates multiple data points by sampling different PPM values
-// from the blob's metrics to enable regression analysis. For each metric in
-// the blob, it calculates the points per metric (PPM) and estimates the bytes
-// per point (BPP) based on the blob's total size and point count.
-//
-// Parameters:
-//   - b: Single numeric blob to analyze
-//
-// Returns:
-//   - ppmValues: Points per metric for each metric in the blob
-//   - bppValues: Estimated bytes per point for each metric
-//   - err: Error if data extraction fails
-//
-// Note: BPP estimation uses a simplified approach based on total blob size
-// and point count. For production use, consider storing actual blob sizes.
-func extractDataPointsFromBlob(b blob.NumericBlob) (ppmValues, bppValues []float64, err error) {
-	// Get blob size - we need to get the raw blob data size
-	// Since we don't have direct access to the raw bytes, we'll estimate based on the blob structure
-	// For now, we'll use a simplified approach by getting the total points and estimating size
-	metricIDs := b.MetricIDs()
-	if len(metricIDs) == 0 {
-		return nil, nil, errors.New("no metrics found in blob")
-	}
-
-	// Calculate total points and estimate blob size
-	totalPoints := 0
-	for _, metricID := range metricIDs {
-		totalPoints += b.Len(metricID)
-	}
-
-	if totalPoints == 0 {
-		return nil, nil, errors.New("no data points found in blob")
-	}
-
-	// Estimate blob size based on the structure
-	// This is a simplified estimation - in practice, you might want to store the actual blob size
-	estimatedBlobSize := totalPoints * 16 // Rough estimate: 8 bytes timestamp + 8 bytes value
-
-	// Calculate PPM and BPP for each metric
-	var localPPM, localBPP []float64
-
-	for _, metricID := range metricIDs {
-		pointCount := b.Len(metricID)
-		if pointCount > 0 {
-			// Calculate PPM and BPP for this metric
-			ppm := float64(pointCount)
-			bpp := float64(estimatedBlobSize) / float64(totalPoints) // Share blob size across all metrics
-
-			localPPM = append(localPPM, ppm)
-			localBPP = append(localBPP, bpp)
-		}
-	}
-
-	return localPPM, localBPP, nil
 }
 
 // performRegression performs regression analysis on the given data points.

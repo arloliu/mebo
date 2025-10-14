@@ -6,17 +6,17 @@
 //
 // # Key Features
 //
-//   - **Multiple Model Types**: Supports hyperbolic, logarithmic, and power regression models
-//   - **Automatic Model Selection**: Chooses the best-fit model based on R² coefficient
-//   - **Production-Ready**: Works directly with encoded mebo blobs
-//   - **Flexible Analysis**: Supports both aggregated and per-blob analysis
-//   - **Precise Sampling**: Intelligent PPM sampling based on input data characteristics
+//   - Multiple model types: Supports hyperbolic, logarithmic, and power regression models
+//   - Automatic model selection: Chooses the best-fit model based on R² coefficient
+//   - Production-ready: Works directly with encoded mebo blobs
+//   - Flexible analysis: Supports both aggregated and per-blob analysis
+//   - Precise sampling: Intelligent PPM sampling based on input data characteristics
 //
 // # Usage Patterns
 //
 // ## Basic Analysis
 //
-// Analyze multiple blobs together to get a single best-fit model:
+// Analyze multiple blobs together to get a single best-fit model (default Delta+Gorilla):
 //
 //	blobs := []blob.NumericBlob{blob1, blob2, blob3}
 //	result, err := regression.Analyze(blobs)
@@ -28,9 +28,21 @@
 //	estimator := result.BestFit.Estimator
 //	bpp := estimator.Estimate(100.0) // Estimate BPP for 100 PPM
 //
+// ## Options API (encodings and compression)
+//
+// Use functional options to set encodings and compression:
+//
+//	result, err := regression.AnalyzeWithOptions(
+//	    blobs,
+//	    regression.WithTimestampEncoding(format.TypeDelta),
+//	    regression.WithValueEncoding(format.TypeGorilla),
+//	    regression.WithTimestampCompression(format.CompressionNone),
+//	    regression.WithValueCompression(format.CompressionZstd),
+//	)
+//
 // ## Per-Blob Analysis
 //
-// Analyze each blob separately for drift detection:
+// Analyze each blob separately for drift detection (explicit encodings):
 //
 //	results, err := regression.AnalyzeEach(blobs)
 //	if err != nil {
@@ -53,23 +65,24 @@
 //
 // The package supports three regression models:
 //
-//   - **Hyperbolic**: BPP = a + b / PPM (typically best for mebo data)
-//   - **Logarithmic**: BPP = a + b * ln(PPM)
-//   - **Power**: BPP = a * PPM^b
+//   - Hyperbolic: BPP = a + b / PPM (typically best for mebo data)
+//   - Logarithmic: BPP = a + b * ln(PPM)
+//   - Power: BPP = a * PPM^b
 //
 // The best-fit model is automatically selected based on the highest R² coefficient.
 //
 // # Performance Characteristics
 //
-//   - **Analysis Time**: O(n) where n is the total number of data points across all blobs
-//   - **Memory Usage**: Minimal - processes blobs sequentially without loading all data into memory
-//   - **Accuracy**: R² typically > 0.98 for hyperbolic model with sufficient data points
+//   - Analysis time: O(n) where n is the total number of data points across all blobs
+//   - Memory usage: Minimal - processes blobs sequentially without loading all data into memory
+//   - Accuracy: R² typically > 0.98 for hyperbolic model with sufficient data points
 //
 // # Formula Derivation Methodology
 //
 // The regression analysis follows the methodology described in the mebo measurement tool:
 //
-//  1. Extract PPM and BPP pairs from each blob's metrics
+//  1. Flatten data via re-encoding: for a set of PPM chunk sizes, rebuild synthetic blobs
+//     using the specified encodings and compute BPP = totalEncodedBytes / totalPoints
 //  2. Apply least-squares regression to fit each model type
 //  3. Calculate R² and RMSE for model comparison
 //  4. Select the model with the highest R² as the best fit
@@ -79,11 +92,11 @@
 //
 // # Production Use Cases
 //
-//   - **Storage Planning**: Predict storage costs for production workloads
-//   - **Configuration Tuning**: Choose optimal blob sizes based on historical data
-//   - **Cost Optimization**: Balance write frequency vs storage efficiency
-//   - **Capacity Planning**: Estimate infrastructure requirements
-//   - **Drift Detection**: Monitor formula changes over time to detect data pattern shifts
+//   - Storage planning: Predict storage costs for production workloads
+//   - Configuration tuning: Choose optimal blob sizes based on historical data
+//   - Cost optimization: Balance write frequency vs storage efficiency
+//   - Capacity planning: Estimate infrastructure requirements
+//   - Drift detection: Monitor formula changes over time to detect data pattern shifts
 //
 // # Example: Continuous Improvement
 //

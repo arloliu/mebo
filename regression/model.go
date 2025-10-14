@@ -52,11 +52,15 @@ func (m *Model) String() string {
 // Fields:
 //   - BestFit: The model with the highest R² value (automatically selected)
 //   - AllModels: All fitted models ranked by R² (best first)
+//   - ChunkPPMs: PPM chunk sizes used to generate (PPM, BPP) points
 type Result struct {
 	// BestFit is the best-fit model (highest R²).
 	BestFit *Model
 	// AllModels contains all candidate models ranked by R² (best first).
 	AllModels []*Model
+	// ChunkPPMs holds the PPM chunk sizes used to generate (PPM, BPP) points.
+	// This provides transparency into how data points were constructed.
+	ChunkPPMs []int
 }
 
 // String returns a string representation of the result.

@@ -15,8 +15,14 @@ func ExampleAnalyze() {
 	// Create some test blobs (in production, these would be your actual encoded blobs)
 	blobs := createExampleBlobs()
 
-	// Analyze all blobs together to get a single best-fit model
-	result, err := regression.Analyze(blobs)
+	// Analyze all blobs together to get a single best-fit model using options
+	result, err := regression.AnalyzeWithOptions(
+		blobs,
+		regression.WithTimestampEncoding(format.TypeDelta),
+		regression.WithValueEncoding(format.TypeGorilla),
+		regression.WithTimestampCompression(format.CompressionNone),
+		regression.WithValueCompression(format.CompressionNone),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -25,6 +31,7 @@ func ExampleAnalyze() {
 	fmt.Printf("Best-fit model: %s\n", result.BestFit)
 	fmt.Printf("Formula: %s\n", result.BestFit.Formula)
 	fmt.Printf("R²: %.4f\n", result.BestFit.RSquared)
+	fmt.Printf("Chunk PPMs: %v\n", result.ChunkPPMs)
 
 	// Use the estimator to predict blob size for different PPM values
 	estimator := result.BestFit.Estimator
@@ -32,11 +39,12 @@ func ExampleAnalyze() {
 	fmt.Printf("Estimated BPP for 200 PPM: %.2f\n", estimator.Estimate(200.0))
 
 	// Output:
-	// Best-fit model: Model{Type: hyperbolic, R²: 0.0000, RMSE: 0.0000, Formula: BPP = 16.00 + 0.00 / PPM}
-	// Formula: BPP = 16.00 + 0.00 / PPM
-	// R²: 0.0000
-	// Estimated BPP for 100 PPM: 16.00
-	// Estimated BPP for 200 PPM: 16.00
+	// Best-fit model: Model{Type: hyperbolic, R²: 0.9853, RMSE: 1.1019, Formula: BPP = 8.19 + 28.48 / PPM}
+	// Formula: BPP = 8.19 + 28.48 / PPM
+	// R²: 0.9853
+	// Chunk PPMs: [1 2 5 10 20 50 100 150 200]
+	// Estimated BPP for 100 PPM: 8.48
+	// Estimated BPP for 200 PPM: 8.34
 }
 
 // ExampleAnalyzeEach demonstrates per-blob analysis for drift detection.
@@ -44,8 +52,14 @@ func ExampleAnalyzeEach() {
 	// Create test blobs representing different time periods
 	blobs := createExampleBlobs()
 
-	// Analyze each blob separately to detect formula drift
-	results, err := regression.AnalyzeEach(blobs)
+	// Analyze each blob separately to detect formula drift (using options)
+	results, err := regression.AnalyzeEachWithOptions(
+		blobs,
+		regression.WithTimestampEncoding(format.TypeDelta),
+		regression.WithValueEncoding(format.TypeGorilla),
+		regression.WithTimestampCompression(format.CompressionNone),
+		regression.WithValueCompression(format.CompressionNone),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -63,12 +77,12 @@ func ExampleAnalyzeEach() {
 	}
 
 	// Output:
-	// Blob 0: hyperbolic (R²=0.0000)
-	//   Coefficients: a=12.59, b=170.67
-	// Blob 1: hyperbolic (R²=0.0000)
-	//   Coefficients: a=16.00, b=-0.00
-	// Blob 2: hyperbolic (R²=0.0000)
-	//   Coefficients: a=16.00, b=0.00
+	// Blob 0: hyperbolic (R²=0.9855)
+	//   Coefficients: a=8.64, b=29.42
+	// Blob 1: hyperbolic (R²=0.9838)
+	//   Coefficients: a=8.34, b=28.46
+	// Blob 2: hyperbolic (R²=0.9844)
+	//   Coefficients: a=8.29, b=28.08
 }
 
 // ExampleNewHyperbolicEstimator demonstrates how to use the Estimator interface.
@@ -125,23 +139,23 @@ func ExampleAnalyze_modelComparison() {
 
 	// Output:
 	// Model comparison (ranked by R²):
-	// 1. hyperbolic: R²=0.0000, RMSE=0.0000
-	//    Formula: BPP = 16.00 + 0.00 / PPM
-	// 2. logarithmic: R²=0.0000, RMSE=0.0000
-	//    Formula: BPP = 16.00 + 0.00 * ln(PPM)
-	// 3. power: R²=0.0000, RMSE=0.0000
-	//    Formula: BPP = 16.00 * PPM^-0.000
-	// 4. exponential: R²=0.0000, RMSE=0.0000
-	//    Formula: BPP = 16.00 * e^(0.000 * PPM)
-	// 5. polynomial: R²=0.0000, RMSE=4.9434
-	//    Formula: BPP = -0.00 + 0.12*PPM + 0.00*PPM²
+	// 1. hyperbolic: R²=0.9853, RMSE=1.1019
+	//    Formula: BPP = 8.19 + 28.48 / PPM
+	// 2. power: R²=0.8573, RMSE=3.4376
+	//    Formula: BPP = 26.79 * PPM^-0.270
+	// 3. logarithmic: R²=0.7623, RMSE=4.4368
+	//    Formula: BPP = 27.08 + -4.39 * ln(PPM)
+	// 4. exponential: R²=0.3050, RMSE=7.5860
+	//    Formula: BPP = 16.25 * e^(-0.005 * PPM)
+	// 5. polynomial: R²=-2.0909, RMSE=15.9985
+	//    Formula: BPP = -0.00 + 0.05*PPM + 0.00*PPM²
 	//
 	// Predictions for 100 PPM:
-	//   hyperbolic: 16.00 BPP
-	//   logarithmic: 16.00 BPP
-	//   power: 16.00 BPP
-	//   exponential: 16.00 BPP
-	//   polynomial: 11.83 BPP
+	//   hyperbolic: 8.48 BPP
+	//   power: 7.71 BPP
+	//   logarithmic: 6.85 BPP
+	//   exponential: 9.94 BPP
+	//   polynomial: 4.89 BPP
 }
 
 // createExampleBlobs creates example blobs for demonstration purposes.
