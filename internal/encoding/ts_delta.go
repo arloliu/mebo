@@ -469,7 +469,7 @@ func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 			return
 		}
 
-		delta := int64(zigzag>>1) ^ -int64(zigzag&1) //nolint:gosec
+		delta := decodeZigZag64(zigzag)
 		curTS += delta
 		if !yield(curTS) {
 			return
@@ -483,7 +483,7 @@ func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 			}
 			offset = nextOffset
 
-			deltaOfDelta := int64(deltaZigzag>>1) ^ -int64(deltaZigzag&1) //nolint:gosec
+			deltaOfDelta := decodeZigZag64(deltaZigzag)
 			prevDelta += deltaOfDelta
 			curTS += prevDelta
 
@@ -545,7 +545,7 @@ func (d TimestampDeltaDecoder) At(data []byte, index int, count int) (int64, boo
 		return 0, false
 	}
 
-	delta := int64(zigzag>>1) ^ -int64(zigzag&1) //nolint:gosec
+	delta := decodeZigZag64(zigzag)
 	curTS += delta
 	if index == 1 {
 		return curTS, true
@@ -560,7 +560,7 @@ func (d TimestampDeltaDecoder) At(data []byte, index int, count int) (int64, boo
 		}
 		offset = nextOffset
 
-		deltaOfDelta := int64(deltaZigzag>>1) ^ -int64(deltaZigzag&1) //nolint:gosec
+		deltaOfDelta := decodeZigZag64(deltaZigzag)
 		prevDelta += deltaOfDelta
 		curTS += prevDelta
 	}
@@ -581,30 +581,49 @@ func (d TimestampDeltaDecoder) At(data []byte, index int, count int) (int64, boo
 //   - uint64: The decoded unsigned integer value
 //   - int: The new offset after reading the varint
 //   - bool: true if decoding was successful, false otherwise
+
 func decodeVarint64(data []byte, offset int) (uint64, int, bool) {
 	if offset >= len(data) {
 		return 0, offset, false
 	}
 
-	b0 := data[offset]
+	cur := offset
+	b0 := data[cur]
+	cur++
 	if b0 < 0x80 {
-		return uint64(b0), offset + 1, true
+		return uint64(b0), cur, true
 	}
 
-	if offset+1 >= len(data) {
+	if cur >= len(data) {
 		return 0, offset, false
 	}
 
-	b1 := data[offset+1]
+	b1 := data[cur]
+	cur++
 	value := uint64(b0&0x7f) | uint64(b1&0x7f)<<7
 	if b1 < 0x80 {
-		return value, offset + 2, true
+		return value, cur, true
 	}
 
-	value, n := binary.Uvarint(data[offset:])
-	if n <= 0 {
-		return 0, offset, false
+	shift := uint(14)
+	for i := 2; i < binary.MaxVarintLen64; i++ {
+		if cur >= len(data) {
+			return 0, offset, false
+		}
+
+		b := data[cur]
+		cur++
+		value |= uint64(b&0x7f) << shift
+		if b < 0x80 {
+			return value, cur, true
+		}
+		shift += 7
 	}
 
-	return value, offset + n, true
+	return 0, offset, false
+}
+
+// decodeZigZag64 reverses zigzag encoding using branchless bit operations.
+func decodeZigZag64(value uint64) int64 {
+	return int64((value >> 1) ^ -(value & 1)) //nolint:gosec
 }

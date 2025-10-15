@@ -217,6 +217,106 @@ func BenchmarkTimestampDeltaDecoder_All_VarintSizes(b *testing.B) {
 	}
 }
 
+type decoderBenchmarkCase struct {
+	name    string
+	encoded []byte
+	count   int
+}
+
+var decoderBenchmarkCases = initDecoderBenchmarkCases()
+
+func initDecoderBenchmarkCases() []decoderBenchmarkCase {
+	type datasetSpec struct {
+		name     string
+		generate func() []int64
+	}
+
+	data := []datasetSpec{
+		{
+			name: "Regular_1s_10k",
+			generate: func() []int64 {
+				return generateSequentialFromBase(10_000, 1_000_000)
+			},
+		},
+		{
+			name: "Regular_1s_250",
+			generate: func() []int64 {
+				return generateSequentialFromBase(250, 1_000_000)
+			},
+		},
+		{
+			name: "Jitter_5pct_5k",
+			generate: func() []int64 {
+				return generateTimestampsWithJitter(5_000, 1_000_000, 0.05)
+			},
+		},
+		{
+			name: "BurstyTraffic_12k",
+			generate: func() []int64 {
+				return generateBurstyTimestamps(12_000)
+			},
+		},
+		{
+			name: "DailyCycle_24h",
+			generate: func() []int64 {
+				return generateDiurnalTimestamps(24 * 60)
+			},
+		},
+		{
+			name: "ClockResetEvents_8k",
+			generate: func() []int64 {
+				return generateClockResetTimestamps(8_000)
+			},
+		},
+		{
+			name: "HighVariance_2k",
+			generate: func() []int64 {
+				return generateHighVarianceTimestamps(2_000)
+			},
+		},
+	}
+
+	cases := make([]decoderBenchmarkCase, 0, len(data))
+	for _, spec := range data {
+		timestamps := spec.generate()
+		if len(timestamps) == 0 {
+			continue
+		}
+		encoded := encodeTimestampsNoAlloc(timestamps)
+		cases = append(cases, decoderBenchmarkCase{
+			name:    spec.name,
+			encoded: encoded,
+			count:   len(timestamps),
+		})
+	}
+
+	return cases
+}
+
+func BenchmarkTimestampDeltaDecoder_All_Suite(b *testing.B) {
+	decoder := NewTimestampDeltaDecoder()
+
+	for _, cs := range decoderBenchmarkCases {
+		caseData := cs
+		b.Run(caseData.name, func(b *testing.B) {
+			b.ReportAllocs()
+			if caseData.count > 0 {
+				b.SetBytes(int64(caseData.count * 8))
+			}
+
+			for b.Loop() {
+				produced := 0
+				for range decoder.All(caseData.encoded, caseData.count) {
+					produced++
+				}
+				if produced != caseData.count {
+					b.Fatalf("expected %d timestamps, got %d", caseData.count, produced)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkTimestampDeltaDecoder_vs_Slice(b *testing.B) {
 	// Generate test data
 	timestamps := make([]int64, 1000)
@@ -674,6 +774,160 @@ func BenchmarkTimestampEncodingSizeRealWorld(b *testing.B) {
 }
 
 // === Helper Functions for Size Benchmarks ===
+
+const decoderDatasetBaseTimestamp = int64(1_700_000_000_000_000)
+
+func encodeTimestampsNoAlloc(timestamps []int64) []byte {
+	encoder := NewTimestampDeltaEncoder()
+	encoder.WriteSlice(timestamps)
+	encoded := append([]byte(nil), encoder.Bytes()...)
+	encoder.Finish()
+
+	return encoded
+}
+
+func generateSequentialFromBase(count int, intervalUs int64) []int64 {
+	if count <= 0 {
+		return nil
+	}
+
+	ts := make([]int64, count)
+	current := decoderDatasetBaseTimestamp
+	for i := range ts {
+		ts[i] = current
+		current += intervalUs
+	}
+
+	return ts
+}
+
+func generateBurstyTimestamps(count int) []int64 {
+	if count <= 0 {
+		return nil
+	}
+
+	const (
+		burstIntervalUs = 10_000    // 10ms between points inside burst
+		gapIntervalUs   = 2_000_000 // 2s between bursts
+		burstSize       = 64
+	)
+
+	ts := make([]int64, count)
+	current := decoderDatasetBaseTimestamp
+	for i := range ts {
+		ts[i] = current
+		if (i+1)%burstSize == 0 {
+			current += gapIntervalUs
+		} else {
+			current += burstIntervalUs
+		}
+	}
+
+	return ts
+}
+
+func generateDiurnalTimestamps(minutes int) []int64 {
+	if minutes <= 0 {
+		return nil
+	}
+
+	const (
+		minuteUs         int64 = 60_000_000
+		busyInterval     int64 = 30_000_000
+		offPeakInterval  int64 = minuteUs * 3
+		shoulderInterval int64 = minuteUs
+	)
+
+	ts := make([]int64, minutes)
+	current := decoderDatasetBaseTimestamp
+	for i := range ts {
+		ts[i] = current
+		hour := (i / 60) % 24
+
+		var interval int64
+		switch {
+		case hour >= 0 && hour < 5:
+			interval = offPeakInterval
+		case hour >= 5 && hour < 8:
+			interval = minuteUs * 2
+		case hour >= 8 && hour < 18:
+			interval = busyInterval
+		case hour >= 18 && hour < 22:
+			interval = minuteUs
+		default:
+			interval = minuteUs * 2
+		}
+
+		jitter := int64(((i*97)%7)-3) * 5_000_000
+		current += interval + jitter
+	}
+
+	return ts
+}
+
+func generateClockResetTimestamps(count int) []int64 {
+	if count <= 0 {
+		return nil
+	}
+
+	const baseInterval int64 = 1_000_000
+	const resetInterval int64 = 200_000
+
+	ts := make([]int64, count)
+	current := decoderDatasetBaseTimestamp
+	for i := range ts {
+		ts[i] = current
+		if i != 0 && i%500 == 0 {
+			current -= resetInterval
+		} else {
+			cycle := i % 6
+			var interval int64
+			switch cycle {
+			case 0, 1:
+				interval = baseInterval
+			case 2, 3:
+				interval = baseInterval + 250_000
+			default:
+				interval = baseInterval - 150_000
+			}
+			current += interval
+		}
+	}
+
+	return ts
+}
+
+func generateHighVarianceTimestamps(count int) []int64 {
+	if count <= 0 {
+		return nil
+	}
+
+	ts := make([]int64, count)
+	current := decoderDatasetBaseTimestamp
+	for i := range ts {
+		ts[i] = current
+		switch i % 8 {
+		case 0:
+			current += 1_000_000
+		case 1:
+			current += 10_000_000
+		case 2:
+			current += 500_000
+		case 3:
+			current += 60_000_000
+		case 4:
+			current += 5_000_000
+		case 5:
+			current += 250_000
+		case 6:
+			current += 1_500_000
+		default:
+			current += 90_000_000
+		}
+	}
+
+	return ts
+}
 
 func generateTimestampsWithJitter(count int, intervalUs int64, jitterPct float64) []int64 {
 	timestamps := make([]int64, count)
