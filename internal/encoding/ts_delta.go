@@ -17,6 +17,7 @@ import (
 //   - Storing subsequent timestamps as delta-of-delta (difference between consecutive deltas)
 //   - Using zigzag encoding to efficiently handle negative values
 //   - Using varint encoding to minimize bytes for small values
+//   - Using fixed buffer allocation estimates for optimal performance
 //
 // Typical compression characteristics:
 //   - First timestamp: 5-9 bytes (varint-encoded microseconds)
@@ -41,15 +42,11 @@ import (
 //   - prevDelta: Previous delta for delta-of-delta calculation
 //   - buf: Output buffer accumulating encoded data
 //   - count: Number of timestamps encoded
-//   - avgEncodedSize: Smoothed rolling average of encoded varint byte length
-//   - maxEncodedSize: Largest observed encoded length (safety bound)
 type TimestampDeltaEncoder struct {
-	prevTS         int64
-	prevDelta      int64
-	buf            *pool.ByteBuffer
-	count          int
-	avgEncodedSize float32
-	maxEncodedSize uint8
+	prevTS    int64
+	prevDelta int64
+	buf       *pool.ByteBuffer
+	count     int
 }
 
 var _ encoding.ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
@@ -98,9 +95,7 @@ var _ encoding.ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
 //	data := encoder.Bytes()  // ~8 bytes total vs 24 bytes raw (67% savings)
 func NewTimestampDeltaEncoder() *TimestampDeltaEncoder {
 	return &TimestampDeltaEncoder{
-		buf:            pool.GetBlobBuffer(),
-		avgEncodedSize: 2.0,
-		maxEncodedSize: 2,
+		buf: pool.GetBlobBuffer(),
 	}
 }
 
@@ -245,15 +240,12 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 func (e *TimestampDeltaEncoder) appendUnsigned(value uint64) {
 	if value <= 0x7F {
 		e.appendSingleByte(byte(value))
-		e.observeEncodedSize(1)
 		return
 	}
 
 	const maxLen = binary.MaxVarintLen64
 	e.buf.Grow(maxLen)
-	prevLen := len(e.buf.B)
 	e.buf.B = binary.AppendUvarint(e.buf.B, value)
-	e.observeEncodedSize(len(e.buf.B) - prevLen)
 }
 
 func (e *TimestampDeltaEncoder) appendSingleByte(b byte) {
@@ -262,48 +254,29 @@ func (e *TimestampDeltaEncoder) appendSingleByte(b byte) {
 	e.buf.B[idx] = b
 }
 
-func (e *TimestampDeltaEncoder) observeEncodedSize(n int) {
-	if n <= 0 {
-		return
-	}
-
-	if e.avgEncodedSize == 0 {
-		e.avgEncodedSize = float32(n)
-		if n > binary.MaxVarintLen64 {
-			n = binary.MaxVarintLen64
-		}
-		e.maxEncodedSize = uint8(n) //nolint:gosec
-
-		return
-	}
-
-	const smoothing = 0.25
-	e.avgEncodedSize = e.avgEncodedSize*(1-smoothing) + float32(n)*smoothing
-	if n > int(e.maxEncodedSize) {
-		if n > binary.MaxVarintLen64 {
-			n = binary.MaxVarintLen64
-		}
-		e.maxEncodedSize = uint8(n) //nolint:gosec
-	}
-}
-
+// reserveFor pre-allocates buffer space using fixed estimates for optimal performance.
+//
+// The fixed approach provides predictable performance without the overhead of
+// dynamic observation and floating-point arithmetic during encoding.
 func (e *TimestampDeltaEncoder) reserveFor(count int) {
 	if count <= 0 || e.buf == nil {
 		return
 	}
 
-	avg := e.avgEncodedSize
-	if avg <= 0 {
-		avg = 2.0
-	}
-
-	perEntry := int(avg + 0.999)
+	// Use fixed estimates based on typical time-series patterns:
+	// - First timestamp: ~6 bytes (varint-encoded microseconds)
+	// - Second timestamp: ~3 bytes (delta)
+	// - Regular intervals: ~1.5 bytes average (delta-of-delta)
+	// - Conservative estimate: 3 bytes per timestamp
+	perEntry := 3
 	if perEntry < 1 {
 		perEntry = 1
 	}
 
-	if upperBound := int(e.maxEncodedSize); upperBound > perEntry {
-		perEntry = upperBound
+	// Conservative upper bound for irregular data
+	const maxPerEntry = 5
+	if maxPerEntry > perEntry {
+		perEntry = maxPerEntry
 	}
 
 	reserve := perEntry*count + binary.MaxVarintLen64
@@ -379,8 +352,6 @@ func (e *TimestampDeltaEncoder) Size() int {
 func (e *TimestampDeltaEncoder) Reset() {
 	e.prevTS = 0
 	e.prevDelta = 0
-	e.avgEncodedSize = 2.0
-	e.maxEncodedSize = 2
 }
 
 // Finish finalizes the encoding process and returns buffer resources to the pool.
@@ -400,8 +371,6 @@ func (e *TimestampDeltaEncoder) Finish() {
 	e.prevTS = 0
 	e.prevDelta = 0
 	e.count = 0
-	e.avgEncodedSize = 2.0
-	e.maxEncodedSize = 2
 }
 
 // TimestampDeltaDecoder provides high-performance decoding of delta-of-delta compressed timestamps.
