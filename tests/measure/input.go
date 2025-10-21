@@ -78,7 +78,7 @@ func LoadInputData(filename string, timeUnit TimeUnit) (*TestData, error) {
 	}
 
 	// Try to parse as a generic JSON to detect format
-	var genericData map[string]interface{}
+	var genericData map[string]any
 	if err := json.Unmarshal(fileData, &genericData); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
@@ -88,13 +88,13 @@ func LoadInputData(filename string, timeUnit TimeUnit) (*TestData, error) {
 		return nil, errors.New("JSON must contain a 'metrics' array")
 	}
 
-	metricsArray, ok := metrics.([]interface{})
+	metricsArray, ok := metrics.([]any)
 	if !ok || len(metricsArray) == 0 {
 		return nil, errors.New("'metrics' must be a non-empty array")
 	}
 
 	// Detect format by checking the first metric
-	firstMetric, ok := metricsArray[0].(map[string]interface{})
+	firstMetric, ok := metricsArray[0].(map[string]any)
 	if !ok {
 		return nil, errors.New("invalid metric format")
 	}
