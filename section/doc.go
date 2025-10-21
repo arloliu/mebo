@@ -29,20 +29,20 @@
 //	│  - StartTime (8 bytes)                                  │
 //	│  - Offsets (12 bytes): index, timestamp, value, tag     │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Metric Names Payload (variable, optional)              │
+//	│ Metric Names Payload (variable, optional)               │
 //	│  - Only present when collision detected                 │
 //	│  - Length-prefixed strings                              │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Index (N × 16 bytes, fixed per entry)                  │
+//	│ Index (N × 16 bytes, fixed per entry)                   │
 //	│  - One entry per metric                                 │
 //	│  - MetricID, offsets, count                             │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Padding (0-7 bytes, for 8-byte alignment)              │
+//	│ Padding (0-7 bytes, for 8-byte alignment)               │
 //	├─────────────────────────────────────────────────────────┤
 //	│ Timestamp Payload (variable)                            │
 //	│  - Encoded + compressed timestamps                      │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Padding (0-7 bytes, for 8-byte alignment)              │
+//	│ Padding (0-7 bytes, for 8-byte alignment)               │
 //	├─────────────────────────────────────────────────────────┤
 //	│ Value Payload (variable)                                │
 //	│  - Encoded + compressed values                          │

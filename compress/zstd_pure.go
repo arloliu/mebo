@@ -14,7 +14,7 @@ import (
 // "The decoder has been designed to operate without allocations after a warmup.
 // This means that you should store the decoder for best performance."
 var zstdDecoderPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		decoder, err := zstd.NewReader(nil,
 			zstd.WithDecoderConcurrency(1), // Single-threaded for predictable performance
 			zstd.WithDecoderLowmem(false),  // Use more memory for better performance
@@ -29,7 +29,7 @@ var zstdDecoderPool = sync.Pool{
 
 // zstdEncoderPool pools zstd encoders for reuse to eliminate allocation overhead.
 var zstdEncoderPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		encoder, err := zstd.NewWriter(nil,
 			zstd.WithEncoderLevel(zstd.SpeedDefault),
 			zstd.WithEncoderCRC(false), // Disable CRC for performance
