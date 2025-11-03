@@ -1808,3 +1808,317 @@ func TestBlobSet_TagSupport_Comprehensive(t *testing.T) {
 		require.Equal(t, "tag1", dp.Tag)
 	})
 }
+
+// TestBlobSet_MetricLen tests MetricLen and MetricLenByName methods
+func TestBlobSet_MetricLen(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create numeric blobs
+	numericBlobs := make([]NumericBlob, 3)
+	for i := range 3 {
+		metricName := fmt.Sprintf("metric%d", i+1)
+		metricID := hash.ID(metricName)
+		blobTime := startTime.Add(time.Duration(i) * time.Hour)
+
+		encoder, err := NewNumericEncoder(blobTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		)
+		require.NoError(t, err)
+
+		// metric1: 3 points, metric2: 5 points, metric3: 2 points
+		count := []int{3, 5, 2}[i]
+		require.NoError(t, encoder.StartMetricID(metricID, count))
+		for j := range count {
+			ts := blobTime.Add(time.Duration(j) * time.Minute).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, float64(i*10+j), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		numericBlobs[i], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	// Create text blobs
+	textBlobs := make([]TextBlob, 2)
+	for i := range 2 {
+		metricName := fmt.Sprintf("text_metric%d", i+1)
+		metricID := hash.ID(metricName)
+		blobTime := startTime.Add(time.Duration(i+3) * time.Hour)
+
+		encoder, err := NewTextEncoder(blobTime)
+		require.NoError(t, err)
+
+		// text_metric1: 4 points, text_metric2: 3 points
+		count := []int{4, 3}[i]
+		require.NoError(t, encoder.StartMetricID(metricID, count))
+		for j := range count {
+			ts := blobTime.Add(time.Duration(j) * time.Minute).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, fmt.Sprintf("val%d", j), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewTextDecoder(data)
+		require.NoError(t, err)
+
+		textBlobs[i], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	blobSet := NewBlobSet(numericBlobs, textBlobs)
+
+	t.Run("MetricLen for numeric metrics", func(t *testing.T) {
+		require.Equal(t, 3, blobSet.MetricLen(hash.ID("metric1")))
+		require.Equal(t, 5, blobSet.MetricLen(hash.ID("metric2")))
+		require.Equal(t, 2, blobSet.MetricLen(hash.ID("metric3")))
+	})
+
+	t.Run("MetricLen for text metrics", func(t *testing.T) {
+		require.Equal(t, 4, blobSet.MetricLen(hash.ID("text_metric1")))
+		require.Equal(t, 3, blobSet.MetricLen(hash.ID("text_metric2")))
+	})
+
+	t.Run("MetricLen for non-existent metric", func(t *testing.T) {
+		require.Equal(t, 0, blobSet.MetricLen(hash.ID("non_existent")))
+		require.Equal(t, 0, blobSet.MetricLen(99999))
+	})
+
+	t.Run("MetricLenByName for numeric metrics", func(t *testing.T) {
+		require.Equal(t, 3, blobSet.MetricLenByName("metric1"))
+		require.Equal(t, 5, blobSet.MetricLenByName("metric2"))
+		require.Equal(t, 2, blobSet.MetricLenByName("metric3"))
+	})
+
+	t.Run("MetricLenByName for text metrics", func(t *testing.T) {
+		require.Equal(t, 4, blobSet.MetricLenByName("text_metric1"))
+		require.Equal(t, 3, blobSet.MetricLenByName("text_metric2"))
+	})
+
+	t.Run("MetricLenByName for non-existent metric", func(t *testing.T) {
+		require.Equal(t, 0, blobSet.MetricLenByName("non_existent"))
+	})
+
+	t.Run("Empty BlobSet", func(t *testing.T) {
+		emptySet := NewBlobSet(nil, nil)
+		require.Equal(t, 0, emptySet.MetricLen(hash.ID("metric1")))
+		require.Equal(t, 0, emptySet.MetricLenByName("metric1"))
+	})
+}
+
+// TestBlobSet_IsNumericMetric tests IsNumericMetric and IsNumericMetricByName methods
+func TestBlobSet_IsNumericMetric(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create a numeric blob
+	numericEncoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+	)
+	require.NoError(t, err)
+	numericID := hash.ID("numeric_metric")
+	require.NoError(t, numericEncoder.StartMetricID(numericID, 2))
+	require.NoError(t, numericEncoder.AddDataPoint(startTime.UnixMicro(), 1.0, ""))
+	require.NoError(t, numericEncoder.AddDataPoint(startTime.Add(time.Minute).UnixMicro(), 2.0, ""))
+	require.NoError(t, numericEncoder.EndMetric())
+	numericData, err := numericEncoder.Finish()
+	require.NoError(t, err)
+	numericDecoder, err := NewNumericDecoder(numericData)
+	require.NoError(t, err)
+	numericBlob, err := numericDecoder.Decode()
+	require.NoError(t, err)
+
+	// Create a text blob
+	textEncoder, err := NewTextEncoder(startTime)
+	require.NoError(t, err)
+	textID := hash.ID("text_metric")
+	require.NoError(t, textEncoder.StartMetricID(textID, 2))
+	require.NoError(t, textEncoder.AddDataPoint(startTime.UnixMicro(), "val1", ""))
+	require.NoError(t, textEncoder.AddDataPoint(startTime.Add(time.Minute).UnixMicro(), "val2", ""))
+	require.NoError(t, textEncoder.EndMetric())
+	textData, err := textEncoder.Finish()
+	require.NoError(t, err)
+	textDecoder, err := NewTextDecoder(textData)
+	require.NoError(t, err)
+	textBlob, err := textDecoder.Decode()
+	require.NoError(t, err)
+
+	blobSet := NewBlobSet([]NumericBlob{numericBlob}, []TextBlob{textBlob})
+
+	t.Run("IsNumericMetric", func(t *testing.T) {
+		require.True(t, blobSet.IsNumericMetric(numericID))
+		require.False(t, blobSet.IsNumericMetric(textID))
+		require.False(t, blobSet.IsNumericMetric(99999))
+	})
+
+	t.Run("IsNumericMetricByName", func(t *testing.T) {
+		require.True(t, blobSet.IsNumericMetricByName("numeric_metric"))
+		require.False(t, blobSet.IsNumericMetricByName("text_metric"))
+		require.False(t, blobSet.IsNumericMetricByName("non_existent"))
+	})
+
+	t.Run("IsTextMetric", func(t *testing.T) {
+		require.True(t, blobSet.IsTextMetric(textID))
+		require.False(t, blobSet.IsTextMetric(numericID))
+		require.False(t, blobSet.IsTextMetric(99999))
+	})
+
+	t.Run("IsTextMetricByName", func(t *testing.T) {
+		require.True(t, blobSet.IsTextMetricByName("text_metric"))
+		require.False(t, blobSet.IsTextMetricByName("numeric_metric"))
+		require.False(t, blobSet.IsTextMetricByName("non_existent"))
+	})
+
+	t.Run("Empty BlobSet", func(t *testing.T) {
+		emptySet := NewBlobSet(nil, nil)
+		require.False(t, emptySet.IsNumericMetric(numericID))
+		require.False(t, emptySet.IsNumericMetricByName("numeric_metric"))
+		require.False(t, emptySet.IsTextMetric(textID))
+		require.False(t, emptySet.IsTextMetricByName("text_metric"))
+	})
+}
+
+// TestBlobSet_MetricDuration tests MetricDuration and MetricDurationByName methods
+func TestBlobSet_MetricDuration(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create numeric blobs with known time spans
+	// Blob 1: metric1, 0-2 minutes (2 minute span)
+	// Blob 2: metric1, 1 hour to 1h2m (2 minute span)
+	// Total span: 0 to 1h2m = 62 minutes
+	numericBlobs := make([]NumericBlob, 2)
+	for i := range 2 {
+		metricID := hash.ID("metric1")
+		blobTime := startTime.Add(time.Duration(i) * time.Hour)
+
+		encoder, err := NewNumericEncoder(blobTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		)
+		require.NoError(t, err)
+
+		require.NoError(t, encoder.StartMetricID(metricID, 3))
+		for j := range 3 {
+			ts := blobTime.Add(time.Duration(j) * time.Minute).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, float64(j), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		numericBlobs[i], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	// Create text blobs with known time spans
+	// Blob 1: text_metric1, 2h0m to 2h3m (3 minute span)
+	// Blob 2: text_metric1, 3h0m to 3h3m (3 minute span)
+	// Total span: 2h0m to 3h3m = 63 minutes
+	textBlobs := make([]TextBlob, 2)
+	for i := range 2 {
+		metricID := hash.ID("text_metric1")
+		blobTime := startTime.Add(time.Duration(i+2) * time.Hour)
+
+		encoder, err := NewTextEncoder(blobTime)
+		require.NoError(t, err)
+
+		require.NoError(t, encoder.StartMetricID(metricID, 4))
+		for j := range 4 {
+			ts := blobTime.Add(time.Duration(j) * time.Minute).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, fmt.Sprintf("val%d", j), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewTextDecoder(data)
+		require.NoError(t, err)
+
+		textBlobs[i], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	blobSet := NewBlobSet(numericBlobs, textBlobs)
+
+	t.Run("MetricDuration for numeric metric across multiple blobs", func(t *testing.T) {
+		duration := blobSet.MetricDuration(hash.ID("metric1"))
+		// First point: startTime + 0
+		// Last point: startTime + 1h2m
+		// Duration is returned in microseconds
+		expectedDuration := int64(62 * time.Minute / time.Microsecond)
+		require.Equal(t, expectedDuration, duration)
+	})
+
+	t.Run("MetricDuration for text metric across multiple blobs", func(t *testing.T) {
+		duration := blobSet.MetricDuration(hash.ID("text_metric1"))
+		// First point: startTime + 2h0m
+		// Last point: startTime + 3h3m
+		// Duration is returned in microseconds
+		expectedDuration := int64(63 * time.Minute / time.Microsecond)
+		require.Equal(t, expectedDuration, duration)
+	})
+
+	t.Run("MetricDuration for non-existent metric", func(t *testing.T) {
+		duration := blobSet.MetricDuration(hash.ID("non_existent"))
+		require.Equal(t, int64(0), duration)
+	})
+
+	t.Run("MetricDurationByName for numeric metric", func(t *testing.T) {
+		duration := blobSet.MetricDurationByName("metric1")
+		expectedDuration := int64(62 * time.Minute / time.Microsecond)
+		require.Equal(t, expectedDuration, duration)
+	})
+
+	t.Run("MetricDurationByName for text metric", func(t *testing.T) {
+		duration := blobSet.MetricDurationByName("text_metric1")
+		expectedDuration := int64(63 * time.Minute / time.Microsecond)
+		require.Equal(t, expectedDuration, duration)
+	})
+
+	t.Run("MetricDurationByName for non-existent metric", func(t *testing.T) {
+		duration := blobSet.MetricDurationByName("non_existent")
+		require.Equal(t, int64(0), duration)
+	})
+
+	t.Run("Empty BlobSet", func(t *testing.T) {
+		emptySet := NewBlobSet(nil, nil)
+		require.Equal(t, int64(0), emptySet.MetricDuration(hash.ID("metric1")))
+		require.Equal(t, int64(0), emptySet.MetricDurationByName("metric1"))
+	})
+
+	t.Run("Single data point metric", func(t *testing.T) {
+		// Create a blob with single data point
+		singleEncoder, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		)
+		require.NoError(t, err)
+		singleID := hash.ID("single_metric")
+		require.NoError(t, singleEncoder.StartMetricID(singleID, 1))
+		require.NoError(t, singleEncoder.AddDataPoint(startTime.UnixMicro(), 1.0, ""))
+		require.NoError(t, singleEncoder.EndMetric())
+		singleData, err := singleEncoder.Finish()
+		require.NoError(t, err)
+		singleDecoder, err := NewNumericDecoder(singleData)
+		require.NoError(t, err)
+		singleBlob, err := singleDecoder.Decode()
+		require.NoError(t, err)
+
+		singleSet := NewBlobSet([]NumericBlob{singleBlob}, nil)
+		duration := singleSet.MetricDuration(singleID)
+		require.Equal(t, int64(0), duration, "Single data point should have 0 duration")
+	})
+}

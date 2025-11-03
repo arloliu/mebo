@@ -307,3 +307,97 @@ func (s NumericBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	// Index is beyond the total count across all blobs
 	return "", false
 }
+
+// MetricLen returns the total number of data points for the given metric ID across all blobs.
+//
+// This method sums up the data point counts from all blobs that contain the metric.
+//
+// Parameters:
+//   - metricID: The metric ID to query
+//
+// Returns:
+//   - int: Total number of data points, or 0 if the metric doesn't exist in any blob
+//
+// Example:
+//
+//	blobSet, _ := NewNumericBlobSet(blobs)
+//	totalPoints := blobSet.MetricLen(metricID)
+//	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
+func (s NumericBlobSet) MetricLen(metricID uint64) int {
+	totalLen := 0
+	for i := range s.blobs {
+		if s.blobs[i].HasMetricID(metricID) {
+			totalLen += s.blobs[i].Len(metricID)
+		}
+	}
+
+	return totalLen
+}
+
+// MetricLenByName returns the total number of data points for the given metric name across all blobs.
+//
+// This method sums up the data point counts from all blobs that contain the metric.
+//
+// Parameters:
+//   - metricName: The metric name to query
+//
+// Returns:
+//   - int: Total number of data points, or 0 if the metric doesn't exist in any blob
+//
+// Example:
+//
+//	blobSet, _ := NewNumericBlobSet(blobs)
+//	totalPoints := blobSet.MetricLenByName("cpu.usage")
+//	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
+func (s NumericBlobSet) MetricLenByName(metricName string) int {
+	totalLen := 0
+	for i := range s.blobs {
+		if s.blobs[i].HasMetricName(metricName) {
+			totalLen += s.blobs[i].LenByName(metricName)
+		}
+	}
+
+	return totalLen
+}
+
+// MetricDuration calculates the time span for the given metric ID across all blobs.
+//
+// The duration is calculated as the difference between the first timestamp in the
+// first blob containing this metric and the last timestamp in the last blob containing
+// this metric. Only blobs that contain the metric are considered.
+//
+// Parameters:
+//   - metricID: The metric ID to query
+//
+// Returns:
+//   - int64: Duration in timestamp units (e.g., microseconds if timestamps are in microseconds),
+//     or 0 if the metric doesn't exist or has fewer than 2 data points
+//
+// Example:
+//
+//	duration := blobSet.MetricDuration(metricID)
+//	fmt.Printf("Metric spans %d timestamp units\n", duration)
+func (s NumericBlobSet) MetricDuration(metricID uint64) int64 {
+	return calculateDuration(s.blobs, metricID)
+}
+
+// MetricDurationByName calculates the time span for the given metric name across all blobs.
+//
+// The duration is calculated as the difference between the first timestamp in the
+// first blob containing this metric and the last timestamp in the last blob containing
+// this metric. Only blobs that contain the metric are considered.
+//
+// Parameters:
+//   - metricName: The metric name to query
+//
+// Returns:
+//   - int64: Duration in timestamp units (e.g., microseconds if timestamps are in microseconds),
+//     or 0 if the metric doesn't exist or has fewer than 2 data points
+//
+// Example:
+//
+//	duration := blobSet.MetricDurationByName("cpu.usage")
+//	fmt.Printf("Metric spans %d timestamp units\n", duration)
+func (s NumericBlobSet) MetricDurationByName(metricName string) int64 {
+	return calculateDurationByName(s.blobs, metricName)
+}

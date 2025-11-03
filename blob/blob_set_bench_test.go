@@ -2,6 +2,7 @@ package blob
 
 import (
 	"math/rand/v2"
+	"strconv"
 	"testing"
 	"time"
 
@@ -437,7 +438,7 @@ func BenchmarkBlobSet_Iteration_FullScan(b *testing.B) {
 		pointsPerMetric = 100
 	)
 
-	blobs, err := createBlobsWithSameMetrics(numBlobs, metricsPerBlob, pointsPerMetric)
+	blobs, err := createBlobsWithSameMetricsRaw(numBlobs, metricsPerBlob, pointsPerMetric)
 	if err != nil {
 		b.Fatalf("Failed to create blobs: %v", err)
 	}
@@ -773,13 +774,15 @@ func BenchmarkBlobSet_GlobalIndexing_Overhead(b *testing.B) {
 	blobCounts := []int{1, 2, 5, 10, 20}
 
 	for _, numBlobs := range blobCounts {
-		b.Run("Blobs_"+string(rune('0'+numBlobs)), func(b *testing.B) {
-			blobs, err := createBlobsWithSameMetrics(numBlobs, metricsPerBlob, pointsPerMetric)
+		b.Run("Blobs_"+strconv.Itoa(numBlobs), func(b *testing.B) {
+			// Use raw encoding to allow efficient materialization and predictable value layout
+			blobs, err := createBlobsWithSameMetricsRaw(numBlobs, metricsPerBlob, pointsPerMetric)
 			if err != nil {
 				b.Fatalf("Failed to create blobs: %v", err)
 			}
 
 			set := NewBlobSet(blobs, nil)
+			mat := set.MaterializeNumeric()
 
 			metricIDs := blobs[0].MetricIDs()
 			if len(metricIDs) == 0 {
@@ -791,12 +794,12 @@ func BenchmarkBlobSet_GlobalIndexing_Overhead(b *testing.B) {
 			b.ReportAllocs()
 
 			for b.Loop() {
-				// Access middle point to test global indexing
-				point, ok := set.NumericAt(testMetricID, pointsPerMetric/2)
+				// Access middle point to test global indexing over materialized set
+				val, ok := mat.ValueAt(testMetricID, pointsPerMetric/2)
 				if !ok {
 					b.Fatal("Failed to access point")
 				}
-				_ = point.Val
+				_ = val
 			}
 		})
 	}
@@ -1277,4 +1280,637 @@ func createTextBlobsWithIDs(numBlobs int, metricIDs []uint64, pointsPerMetric in
 	}
 
 	return blobs, nil
+}
+
+// createTextBlobsWithSameMetrics creates text blobs with the same metrics across all blobs
+func createTextBlobsWithSameMetrics(numBlobs, metricsPerBlob, pointsPerMetric int) ([]TextBlob, error) {
+	blobs := make([]TextBlob, numBlobs)
+	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for blobIdx := range numBlobs {
+		startTime := baseTime.Add(time.Duration(blobIdx) * time.Hour)
+		encoder, err := NewTextEncoder(startTime)
+		if err != nil {
+			return nil, err
+		}
+
+		for metricIdx := range metricsPerBlob {
+			metricName := generateMetricName("metric", metricIdx)
+			metricID := hash.ID(metricName)
+
+			if err := encoder.StartMetricID(metricID, pointsPerMetric); err != nil {
+				return nil, err
+			}
+
+			for pointIdx := range pointsPerMetric {
+				ts := startTime.Add(time.Duration(pointIdx) * time.Minute).UnixMicro()
+				val := "value_" + generateMetricName("", pointIdx)
+				if err := encoder.AddDataPoint(ts, val, ""); err != nil {
+					return nil, err
+				}
+			}
+
+			if err := encoder.EndMetric(); err != nil {
+				return nil, err
+			}
+		}
+
+		blobBytes, err := encoder.Finish()
+		if err != nil {
+			return nil, err
+		}
+
+		decoder, err := NewTextDecoder(blobBytes)
+		if err != nil {
+			return nil, err
+		}
+
+		blob, err := decoder.Decode()
+		if err != nil {
+			return nil, err
+		}
+
+		blobs[blobIdx] = blob
+	}
+
+	return blobs, nil
+}
+
+// createBlobsWithSameMetricsRaw creates numeric blobs where all blobs contain the same metrics
+// and uses raw encodings to enable O(1) random access for TimestampAt/ValueAt.
+func createBlobsWithSameMetricsRaw(numBlobs, metricsPerBlob, pointsPerMetric int) ([]NumericBlob, error) {
+	blobs := make([]NumericBlob, numBlobs)
+	baseTime := time.Now()
+
+	// Pre-generate metric IDs to ensure consistency across blobs
+	metricIDs := make([]uint64, metricsPerBlob)
+	for m := range metricsPerBlob {
+		metricName := generateMetricName("shared", m)
+		metricIDs[m] = hash.ID(metricName)
+	}
+
+	for blobIdx := range numBlobs {
+		startTime := baseTime.Add(time.Duration(blobIdx) * time.Hour)
+		encoder, err := NewNumericEncoder(
+			startTime,
+			WithTimestampEncoding(format.TypeRaw),
+			WithValueEncoding(format.TypeRaw),
+			WithTimestampCompression(format.CompressionNone),
+			WithValueCompression(format.CompressionNone),
+			WithTagsEnabled(true),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		for m, metricID := range metricIDs {
+			if err := encoder.StartMetricID(metricID, pointsPerMetric); err != nil {
+				return nil, err
+			}
+
+			for i := range pointsPerMetric {
+				ts := int64(blobIdx*1000000 + i*1000)
+				val := float64(i) + float64(m)*100
+				if err := encoder.AddDataPoint(ts, val, "t"); err != nil {
+					return nil, err
+				}
+			}
+
+			if err := encoder.EndMetric(); err != nil {
+				return nil, err
+			}
+		}
+
+		blobBytes, err := encoder.Finish()
+		if err != nil {
+			return nil, err
+		}
+
+		decoder, err := NewNumericDecoder(blobBytes)
+		if err != nil {
+			return nil, err
+		}
+
+		blob, err := decoder.Decode()
+		if err != nil {
+			return nil, err
+		}
+
+		blobs[blobIdx] = blob
+	}
+
+	return blobs, nil
+}
+
+// ==============================================================================
+// Benchmark: Helper Methods (MetricLen, IsNumericMetric, MetricDuration)
+// ==============================================================================
+
+func BenchmarkBlobSet_MetricLen(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		metricsPerBlob  int
+		pointsPerMetric int
+	}{
+		{"2Blobs_10Metrics_100Points", 2, 10, 100},
+		{"5Blobs_50Metrics_100Points", 5, 50, 100},
+		{"10Blobs_100Metrics_100Points", 10, 100, 100},
+		{"20Blobs_150Metrics_100Points", 20, 150, 100},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create numeric blobs
+			numericBlobs, err := createBlobsWithSameMetrics(
+				bm.numBlobs,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create numeric blobs: %v", err)
+			}
+
+			// Create text blobs
+			textBlobs, err := createTextBlobsWithSameMetrics(
+				bm.numBlobs/2, // Fewer text blobs
+				bm.metricsPerBlob/2,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create text blobs: %v", err)
+			}
+
+			set := NewBlobSet(numericBlobs, textBlobs)
+
+			// Get test metric IDs
+			numericMetricID := numericBlobs[0].MetricIDs()[0]
+			textMetricID := textBlobs[0].MetricIDs()[0]
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// Test both numeric and text metrics
+				_ = set.MetricLen(numericMetricID)
+				_ = set.MetricLen(textMetricID)
+			}
+		})
+	}
+}
+
+func BenchmarkBlobSet_MetricLenByName(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		metricsPerBlob  int
+		pointsPerMetric int
+	}{
+		{"2Blobs_10Metrics_100Points", 2, 10, 100},
+		{"5Blobs_50Metrics_100Points", 5, 50, 100},
+		{"10Blobs_100Metrics_100Points", 10, 100, 100},
+		{"20Blobs_150Metrics_100Points", 20, 150, 100},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create numeric blobs
+			numericBlobs, err := createBlobsWithSameMetrics(
+				bm.numBlobs,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create numeric blobs: %v", err)
+			}
+
+			// Create text blobs
+			textBlobs, err := createTextBlobsWithSameMetrics(
+				bm.numBlobs/2,
+				bm.metricsPerBlob/2,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create text blobs: %v", err)
+			}
+
+			set := NewBlobSet(numericBlobs, textBlobs)
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// Test both numeric and text metrics by name
+				_ = set.MetricLenByName("metric_0")
+				_ = set.MetricLenByName("metric_50")
+			}
+		})
+	}
+}
+
+func BenchmarkBlobSet_IsNumericMetric(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		metricsPerBlob  int
+		pointsPerMetric int
+	}{
+		{"2Blobs_10Metrics_100Points", 2, 10, 100},
+		{"5Blobs_50Metrics_100Points", 5, 50, 100},
+		{"10Blobs_100Metrics_100Points", 10, 100, 100},
+		{"20Blobs_150Metrics_100Points", 20, 150, 100},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create numeric and text blobs
+			numericBlobs, err := createBlobsWithSameMetrics(
+				bm.numBlobs,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create numeric blobs: %v", err)
+			}
+
+			textBlobs, err := createTextBlobsWithSameMetrics(
+				bm.numBlobs/2,
+				bm.metricsPerBlob/2,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create text blobs: %v", err)
+			}
+
+			set := NewBlobSet(numericBlobs, textBlobs)
+
+			// Get test metric IDs
+			numericMetricID := numericBlobs[0].MetricIDs()[0]
+			textMetricID := textBlobs[0].MetricIDs()[0]
+			nonExistentID := hash.ID("non_existent_metric")
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// Test existing numeric metric (fast path)
+				_ = set.IsNumericMetric(numericMetricID)
+				// Test text metric (should return false after checking numeric blobs)
+				_ = set.IsNumericMetric(textMetricID)
+				// Test non-existent metric (worst case)
+				_ = set.IsNumericMetric(nonExistentID)
+			}
+		})
+	}
+}
+
+func BenchmarkBlobSet_IsNumericMetricByName(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		metricsPerBlob  int
+		pointsPerMetric int
+	}{
+		{"2Blobs_10Metrics_100Points", 2, 10, 100},
+		{"5Blobs_50Metrics_100Points", 5, 50, 100},
+		{"10Blobs_100Metrics_100Points", 10, 100, 100},
+		{"20Blobs_150Metrics_100Points", 20, 150, 100},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create numeric and text blobs
+			numericBlobs, err := createBlobsWithSameMetrics(
+				bm.numBlobs,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create numeric blobs: %v", err)
+			}
+
+			textBlobs, err := createTextBlobsWithSameMetrics(
+				bm.numBlobs/2,
+				bm.metricsPerBlob/2,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create text blobs: %v", err)
+			}
+
+			set := NewBlobSet(numericBlobs, textBlobs)
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// Test existing numeric metric (fast path)
+				_ = set.IsNumericMetricByName("metric_0")
+				// Test non-existent metric (worst case)
+				_ = set.IsNumericMetricByName("non_existent_metric")
+			}
+		})
+	}
+}
+
+func BenchmarkBlobSet_IsTextMetric(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		metricsPerBlob  int
+		pointsPerMetric int
+	}{
+		{"2Blobs_10Metrics_100Points", 2, 10, 100},
+		{"5Blobs_50Metrics_100Points", 5, 50, 100},
+		{"10Blobs_100Metrics_100Points", 10, 100, 100},
+		{"20Blobs_150Metrics_100Points", 20, 150, 100},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create numeric and text blobs
+			numericBlobs, err := createBlobsWithSameMetrics(
+				bm.numBlobs,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create numeric blobs: %v", err)
+			}
+
+			textBlobs, err := createTextBlobsWithSameMetrics(
+				bm.numBlobs/2,
+				bm.metricsPerBlob/2,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create text blobs: %v", err)
+			}
+
+			set := NewBlobSet(numericBlobs, textBlobs)
+
+			// Get test metric IDs
+			textMetricID := textBlobs[0].MetricIDs()[0]
+			nonExistentID := hash.ID("non_existent_metric")
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// Test existing text metric
+				_ = set.IsTextMetric(textMetricID)
+				// Test non-existent metric (worst case)
+				_ = set.IsTextMetric(nonExistentID)
+			}
+		})
+	}
+}
+
+func BenchmarkBlobSet_MetricDuration(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		metricsPerBlob  int
+		pointsPerMetric int
+	}{
+		{"2Blobs_10Metrics_100Points", 2, 10, 100},
+		{"5Blobs_50Metrics_100Points", 5, 50, 100},
+		{"10Blobs_100Metrics_100Points", 10, 100, 100},
+		{"20Blobs_150Metrics_100Points", 20, 150, 100},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create numeric blobs with time gaps
+			numericBlobs, err := createBlobsWithSameMetrics(
+				bm.numBlobs,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create numeric blobs: %v", err)
+			}
+
+			// Create text blobs with time gaps
+			textBlobs, err := createTextBlobsWithSameMetrics(
+				bm.numBlobs/2,
+				bm.metricsPerBlob/2,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create text blobs: %v", err)
+			}
+
+			set := NewBlobSet(numericBlobs, textBlobs)
+
+			// Get test metric IDs
+			numericMetricID := numericBlobs[0].MetricIDs()[0]
+			textMetricID := textBlobs[0].MetricIDs()[0]
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// Test numeric metric duration
+				_ = set.MetricDuration(numericMetricID)
+				// Test text metric duration
+				_ = set.MetricDuration(textMetricID)
+			}
+		})
+	}
+}
+
+func BenchmarkBlobSet_MetricDurationByName(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		metricsPerBlob  int
+		pointsPerMetric int
+	}{
+		{"2Blobs_10Metrics_100Points", 2, 10, 100},
+		{"5Blobs_50Metrics_100Points", 5, 50, 100},
+		{"10Blobs_100Metrics_100Points", 10, 100, 100},
+		{"20Blobs_150Metrics_100Points", 20, 150, 100},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create numeric blobs with time gaps
+			numericBlobs, err := createBlobsWithSameMetrics(
+				bm.numBlobs,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create numeric blobs: %v", err)
+			}
+
+			// Create text blobs with time gaps
+			textBlobs, err := createTextBlobsWithSameMetrics(
+				bm.numBlobs/2,
+				bm.metricsPerBlob/2,
+				bm.pointsPerMetric,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create text blobs: %v", err)
+			}
+
+			set := NewBlobSet(numericBlobs, textBlobs)
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// Test numeric metric duration by name
+				_ = set.MetricDurationByName("metric_0")
+				// Test text metric duration by name
+				_ = set.MetricDurationByName("metric_50")
+			}
+		})
+	}
+}
+
+// BenchmarkBlobSet_MetricDuration_WorstCase benchmarks the worst case scenario
+// where the metric appears in the last blob only
+func BenchmarkBlobSet_MetricDuration_WorstCase(b *testing.B) {
+	benchmarks := []struct {
+		name     string
+		numBlobs int
+	}{
+		{"5Blobs", 5},
+		{"10Blobs", 10},
+		{"20Blobs", 20},
+		{"50Blobs", 50},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			// Create blobs where target metric only appears in the last blob
+			numericBlobs := make([]NumericBlob, bm.numBlobs)
+			startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+			for i := range bm.numBlobs {
+				blobTime := startTime.Add(time.Duration(i) * time.Hour)
+				encoder, err := NewNumericEncoder(blobTime,
+					WithTimestampEncoding(format.TypeDelta),
+					WithValueEncoding(format.TypeGorilla),
+				)
+				if err != nil {
+					b.Fatalf("Failed to create encoder: %v", err)
+				}
+
+				// For all blobs except the last, add a different metric
+				var metricName string
+				if i < bm.numBlobs-1 {
+					metricName = "other_metric"
+				} else {
+					metricName = "target_metric" // Target metric only in last blob
+				}
+
+				metricID := hash.ID(metricName)
+				if err := encoder.StartMetricID(metricID, 100); err != nil {
+					b.Fatalf("Failed to start metric: %v", err)
+				}
+
+				for j := range 100 {
+					ts := blobTime.Add(time.Duration(j) * time.Minute).UnixMicro()
+					if err := encoder.AddDataPoint(ts, float64(j), ""); err != nil {
+						b.Fatalf("Failed to add data point: %v", err)
+					}
+				}
+
+				if err := encoder.EndMetric(); err != nil {
+					b.Fatalf("Failed to end metric: %v", err)
+				}
+
+				data, err := encoder.Finish()
+				if err != nil {
+					b.Fatalf("Failed to finish encoder: %v", err)
+				}
+
+				decoder, err := NewNumericDecoder(data)
+				if err != nil {
+					b.Fatalf("Failed to create decoder: %v", err)
+				}
+
+				numericBlobs[i], err = decoder.Decode()
+				if err != nil {
+					b.Fatalf("Failed to decode: %v", err)
+				}
+			}
+
+			set := NewBlobSet(numericBlobs, nil)
+			targetID := hash.ID("target_metric")
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				// This should scan all blobs and find metric only in the last one
+				duration := set.MetricDuration(targetID)
+				if duration == 0 {
+					b.Fatal("Expected non-zero duration")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkBlobSet_HelperMethods_Combined benchmarks a realistic mixed workload
+func BenchmarkBlobSet_HelperMethods_Combined(b *testing.B) {
+	// Create a realistic blob set with mixed numeric and text blobs
+	numericBlobs, err := createBlobsWithSameMetrics(10, 100, 100)
+	if err != nil {
+		b.Fatalf("Failed to create numeric blobs: %v", err)
+	}
+
+	textBlobs, err := createTextBlobsWithSameMetrics(5, 50, 100)
+	if err != nil {
+		b.Fatalf("Failed to create text blobs: %v", err)
+	}
+
+	set := NewBlobSet(numericBlobs, textBlobs)
+
+	// Get test metric IDs
+	numericMetricID := numericBlobs[0].MetricIDs()[0]
+	textMetricID := textBlobs[0].MetricIDs()[0]
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for b.Loop() {
+		// Simulate a realistic query pattern:
+		// 1. Check if metric is numeric
+		isNumeric := set.IsNumericMetric(numericMetricID)
+		if !isNumeric {
+			b.Fatal("Expected numeric metric")
+		}
+
+		// 2. Get metric length
+		length := set.MetricLen(numericMetricID)
+		if length == 0 {
+			b.Fatal("Expected non-zero length")
+		}
+
+		// 3. Get metric duration (may be 0 if timestamps don't span multiple blobs)
+		_ = set.MetricDuration(numericMetricID)
+
+		// 4. Check text metric
+		isText := set.IsTextMetric(textMetricID)
+		if !isText {
+			b.Fatal("Expected text metric")
+		}
+
+		// 5. Get text metric length by ID
+		textLength := set.MetricLen(textMetricID)
+		if textLength == 0 {
+			b.Fatal("Expected non-zero text length")
+		}
+
+		// 6. Check if a metric is not numeric (should be text)
+		isNumericText := set.IsNumericMetric(textMetricID)
+		if isNumericText {
+			b.Fatal("Text metric should not be numeric")
+		}
+	}
 }

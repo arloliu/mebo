@@ -1016,3 +1016,346 @@ func (bs BlobSet) NumericBlobs() []NumericBlob {
 func (bs BlobSet) TextBlobs() []TextBlob {
 	return bs.textBlobs
 }
+
+// MetricLen returns the total number of data points for the given metric ID across all blobs.
+//
+// This method searches both numeric and text blobs, checking numeric blobs first.
+// Once the metric is found in a blob type, it only sums up counts from that type.
+//
+// Parameters:
+//   - metricID: The metric ID to query
+//
+// Returns:
+//   - int: Total number of data points, or 0 if the metric doesn't exist in any blob
+//
+// Example:
+//
+//	blobSet := NewBlobSet(numericBlobs, textBlobs)
+//	totalPoints := blobSet.MetricLen(metricID)
+//	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
+func (bs BlobSet) MetricLen(metricID uint64) int {
+	totalLen := 0
+
+	for i := range bs.numericBlobs {
+		if bs.numericBlobs[i].HasMetricID(metricID) {
+			totalLen += bs.numericBlobs[i].Len(metricID)
+		}
+	}
+
+	if totalLen > 0 {
+		return totalLen
+	}
+
+	for i := range bs.textBlobs {
+		if bs.textBlobs[i].HasMetricID(metricID) {
+			totalLen += bs.textBlobs[i].Len(metricID)
+		}
+	}
+
+	return totalLen
+}
+
+// MetricLenByName returns the total number of data points for the given metric name across all blobs.
+//
+// This method searches both numeric and text blobs, checking numeric blobs first.
+// Once the metric is found in a blob type, it only sums up counts from that type.
+//
+// Parameters:
+//   - metricName: The metric name to query
+//
+// Returns:
+//   - int: Total number of data points, or 0 if the metric doesn't exist in any blob
+//
+// Example:
+//
+//	blobSet := NewBlobSet(numericBlobs, textBlobs)
+//	totalPoints := blobSet.MetricLenByName("cpu.usage")
+//	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
+func (bs BlobSet) MetricLenByName(metricName string) int {
+	totalLen := 0
+
+	for i := range bs.numericBlobs {
+		if bs.numericBlobs[i].HasMetricName(metricName) {
+			totalLen += bs.numericBlobs[i].LenByName(metricName)
+		}
+	}
+
+	if totalLen > 0 {
+		return totalLen
+	}
+
+	for i := range bs.textBlobs {
+		if bs.textBlobs[i].HasMetricName(metricName) {
+			totalLen += bs.textBlobs[i].LenByName(metricName)
+		}
+	}
+
+	return totalLen
+}
+
+// IsNumericMetric checks if the given metric ID exists in any numeric blob.
+//
+// Parameters:
+//   - metricID: The metric ID to check
+//
+// Returns:
+//   - bool: true if the metric exists in at least one numeric blob, false otherwise
+//
+// Example:
+//
+//	if blobSet.IsNumericMetric(metricID) {
+//	    // Process as numeric metric
+//	}
+func (bs BlobSet) IsNumericMetric(metricID uint64) bool {
+	for i := range bs.numericBlobs {
+		if bs.numericBlobs[i].HasMetricID(metricID) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsNumericMetricByName checks if the given metric name exists in any numeric blob.
+//
+// Parameters:
+//   - metricName: The metric name to check
+//
+// Returns:
+//   - bool: true if the metric exists in at least one numeric blob, false otherwise
+//
+// Example:
+//
+//	if blobSet.IsNumericMetricByName("cpu.usage") {
+//	    // Process as numeric metric
+//	}
+func (bs BlobSet) IsNumericMetricByName(metricName string) bool {
+	for i := range bs.numericBlobs {
+		if bs.numericBlobs[i].HasMetricName(metricName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsTextMetric checks if the given metric ID exists in any text blob.
+//
+// Parameters:
+//   - metricID: The metric ID to check
+//
+// Returns:
+//   - bool: true if the metric exists in at least one text blob, false otherwise
+//
+// Example:
+//
+//	if blobSet.IsTextMetric(metricID) {
+//	    // Process as text metric
+//	}
+func (bs BlobSet) IsTextMetric(metricID uint64) bool {
+	for i := range bs.textBlobs {
+		if bs.textBlobs[i].HasMetricID(metricID) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsTextMetricByName checks if the given metric name exists in any text blob.
+//
+// Parameters:
+//   - metricName: The metric name to check
+//
+// Returns:
+//   - bool: true if the metric exists in at least one text blob, false otherwise
+//
+// Example:
+//
+//	if blobSet.IsTextMetricByName("log.message") {
+//	    // Process as text metric
+//	}
+func (bs BlobSet) IsTextMetricByName(metricName string) bool {
+	for i := range bs.textBlobs {
+		if bs.textBlobs[i].HasMetricName(metricName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// MetricDuration calculates the time span for the given metric ID across all blobs.
+//
+// The duration is calculated as the difference between the first timestamp in the
+// first blob containing this metric and the last timestamp in the last blob containing
+// this metric. Only blobs that contain the metric are considered.
+//
+// Parameters:
+//   - metricID: The metric ID to query
+//
+// Returns:
+//   - int64: Duration in timestamp units (e.g., microseconds if timestamps are in microseconds),
+//     or 0 if the metric doesn't exist or has fewer than 2 data points
+//
+// Example:
+//
+//	duration := blobSet.MetricDuration(metricID)
+//	fmt.Printf("Metric spans %d timestamp units\n", duration)
+func (bs BlobSet) MetricDuration(metricID uint64) int64 {
+	duration := calculateDuration(bs.numericBlobs, metricID)
+	if duration > 0 {
+		return duration
+	}
+
+	return calculateDuration(bs.textBlobs, metricID)
+}
+
+// MetricDurationByName calculates the time span for the given metric name across all blobs.
+//
+// The duration is calculated as the difference between the first timestamp in the
+// first blob containing this metric and the last timestamp in the last blob containing
+// this metric. Only blobs that contain the metric are considered.
+//
+// Parameters:
+//   - metricName: The metric name to query
+//
+// Returns:
+//   - int64: Duration in timestamp units (e.g., microseconds if timestamps are in microseconds),
+//     or 0 if the metric doesn't exist or has fewer than 2 data points
+//
+// Example:
+//
+//	duration := blobSet.MetricDurationByName("cpu.usage")
+//	fmt.Printf("Metric spans %d timestamp units\n", duration)
+func (bs BlobSet) MetricDurationByName(metricName string) int64 {
+	duration := calculateDurationByName(bs.numericBlobs, metricName)
+	if duration > 0 {
+		return duration
+	}
+
+	return calculateDurationByName(bs.textBlobs, metricName)
+}
+
+// blobAccessor defines the interface for accessing blob metadata and timestamps.
+// This interface enables generic duration calculation without performance overhead.
+type blobAccessor[T any] interface {
+	HasMetricID(metricID uint64) bool
+	HasMetricName(metricName string) bool
+	Len(metricID uint64) int
+	LenByName(metricName string) int
+	TimestampAt(metricID uint64, index int) (int64, bool)
+	TimestampAtByName(metricName string, index int) (int64, bool)
+}
+
+// calculateDuration is a generic helper that calculates metric duration across a slice of blobs.
+// This function is inlined by the compiler for zero overhead compared to duplicated code.
+//
+// Performance: Optimized bi-directional search - finds first from start, last from end.
+// Average case: O(n/2) when metric is in middle blobs. Best case: O(2) when in first and last.
+func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) int64 {
+	if len(blobs) == 0 {
+		return 0
+	}
+
+	// Find first blob containing the metric (forward search)
+	firstIdx := -1
+	for i := range blobs {
+		if blobs[i].HasMetricID(metricID) {
+			firstIdx = i
+			break // Stop as soon as we find the first
+		}
+	}
+
+	if firstIdx == -1 {
+		return 0 // Metric not found
+	}
+
+	// Find last blob containing the metric (reverse search)
+	lastIdx := firstIdx // Default to first if it's the only one
+	for i := len(blobs) - 1; i > firstIdx; i-- {
+		if blobs[i].HasMetricID(metricID) {
+			lastIdx = i
+			break // Stop as soon as we find the last
+		}
+	}
+
+	// Get first timestamp from first blob
+	firstTimestamp, ok := blobs[firstIdx].TimestampAt(metricID, 0)
+	if !ok {
+		return 0
+	}
+
+	// Get last timestamp from last blob
+	lastBlobLen := blobs[lastIdx].Len(metricID)
+	if lastBlobLen == 0 {
+		return 0
+	}
+
+	lastTimestamp, ok := blobs[lastIdx].TimestampAt(metricID, lastBlobLen-1)
+	if !ok {
+		return 0
+	}
+
+	if lastTimestamp > firstTimestamp {
+		return lastTimestamp - firstTimestamp
+	}
+
+	return 0
+}
+
+// calculateDurationByName is a generic helper that calculates metric duration by name across a slice of blobs.
+// This function is inlined by the compiler for zero overhead compared to duplicated code.
+//
+// Performance: Optimized bi-directional search - finds first from start, last from end.
+// Average case: O(n/2) when metric is in middle blobs. Best case: O(2) when in first and last.
+func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string) int64 {
+	if len(blobs) == 0 {
+		return 0
+	}
+
+	// Find first blob containing the metric (forward search)
+	firstIdx := -1
+	for i := range blobs {
+		if blobs[i].HasMetricName(metricName) {
+			firstIdx = i
+			break // Stop as soon as we find the first
+		}
+	}
+
+	if firstIdx == -1 {
+		return 0 // Metric not found
+	}
+
+	// Find last blob containing the metric (reverse search)
+	lastIdx := firstIdx // Default to first if it's the only one
+	for i := len(blobs) - 1; i > firstIdx; i-- {
+		if blobs[i].HasMetricName(metricName) {
+			lastIdx = i
+			break // Stop as soon as we find the last
+		}
+	}
+
+	// Get first timestamp from first blob
+	firstTimestamp, ok := blobs[firstIdx].TimestampAtByName(metricName, 0)
+	if !ok {
+		return 0
+	}
+
+	// Get last timestamp from last blob
+	lastBlobLen := blobs[lastIdx].LenByName(metricName)
+	if lastBlobLen == 0 {
+		return 0
+	}
+
+	lastTimestamp, ok := blobs[lastIdx].TimestampAtByName(metricName, lastBlobLen-1)
+	if !ok {
+		return 0
+	}
+
+	if lastTimestamp > firstTimestamp {
+		return lastTimestamp - firstTimestamp
+	}
+
+	return 0
+}
