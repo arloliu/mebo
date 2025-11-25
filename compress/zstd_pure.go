@@ -1,5 +1,3 @@
-//go:build !cgo
-
 package compress
 
 import (
@@ -23,6 +21,7 @@ var zstdDecoderPool = sync.Pool{
 			// This should never happen with valid options
 			panic(fmt.Sprintf("failed to create zstd decoder for pool: %v", err))
 		}
+
 		return decoder
 	},
 }
@@ -38,6 +37,7 @@ var zstdEncoderPool = sync.Pool{
 			// This should never happen with valid options
 			panic(fmt.Sprintf("failed to create zstd encoder for pool: %v", err))
 		}
+
 		return encoder
 	},
 }
@@ -46,7 +46,7 @@ var zstdEncoderPool = sync.Pool{
 // Uses a pooled encoder for better performance (eliminates allocation overhead).
 func (c ZstdCompressor) Compress(data []byte) ([]byte, error) {
 	// Get encoder from pool (reuses "warmed up" encoder)
-	encoder := zstdEncoderPool.Get().(*zstd.Encoder)
+	encoder, _ := zstdEncoderPool.Get().(*zstd.Encoder)
 	defer zstdEncoderPool.Put(encoder)
 
 	// EncodeAll is stateless - safe to use with pooled encoder
@@ -66,7 +66,7 @@ func (c ZstdCompressor) Decompress(data []byte) ([]byte, error) {
 	}
 
 	// Get decoder from pool (reuses "warmed up" decoder)
-	decoder := zstdDecoderPool.Get().(*zstd.Decoder)
+	decoder, _ := zstdDecoderPool.Get().(*zstd.Decoder)
 	defer zstdDecoderPool.Put(decoder)
 
 	// DecodeAll is stateless - safe to use with pooled decoder
