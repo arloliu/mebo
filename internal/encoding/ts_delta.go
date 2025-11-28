@@ -47,6 +47,7 @@ type TimestampDeltaEncoder struct {
 	prevDelta int64
 	buf       *pool.ByteBuffer
 	count     int
+	seqCount  int
 }
 
 var _ encoding.ColumnarEncoder[int64] = (*TimestampDeltaEncoder)(nil)
@@ -125,8 +126,9 @@ func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 	}
 
 	e.count++
+	e.seqCount++
 
-	if e.count == 1 {
+	if e.seqCount == 1 {
 		// First timestamp: write full value (no zigzag, just varint)
 		e.appendUnsigned(uint64(timestampUs)) //nolint:gosec
 		e.prevTS = timestampUs
@@ -138,7 +140,7 @@ func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 	delta := timestampUs - e.prevTS
 
 	var valToEncode int64
-	if e.count == 2 {
+	if e.seqCount == 2 {
 		// Second timestamp: encode delta
 		valToEncode = delta
 		e.prevDelta = delta
@@ -194,7 +196,9 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 		return
 	}
 
+	currentSeqCount := e.seqCount
 	e.count += tsLen
+	e.seqCount += tsLen
 	e.reserveFor(tsLen)
 
 	prevTS := e.prevTS
@@ -202,15 +206,16 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 	startIdx := 0
 
 	// Handle first timestamp if this is initial write
-	if e.prevTS == 0 {
+	if currentSeqCount == 0 {
 		ts := timestampsUs[0]
 		e.appendUnsigned(uint64(ts)) //nolint:gosec
 		prevTS = ts
 		startIdx = 1
+		currentSeqCount++
 	}
 
 	// Handle second timestamp (first delta) if we have it
-	if startIdx < tsLen && prevDelta == 0 {
+	if startIdx < tsLen && currentSeqCount == 1 {
 		ts := timestampsUs[startIdx]
 		delta := ts - prevTS
 		zigzag := (delta << 1) ^ (delta >> 63)
@@ -352,6 +357,7 @@ func (e *TimestampDeltaEncoder) Size() int {
 func (e *TimestampDeltaEncoder) Reset() {
 	e.prevTS = 0
 	e.prevDelta = 0
+	e.seqCount = 0
 }
 
 // Finish finalizes the encoding process and returns buffer resources to the pool.
@@ -371,6 +377,7 @@ func (e *TimestampDeltaEncoder) Finish() {
 	e.prevTS = 0
 	e.prevDelta = 0
 	e.count = 0
+	e.seqCount = 0
 }
 
 // TimestampDeltaDecoder provides high-performance decoding of delta-of-delta compressed timestamps.

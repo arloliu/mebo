@@ -14,54 +14,6 @@ import (
 
 // ==============================================================================
 // Helper Functions
-func createTestBlob(t *testing.T, tsEncoding, valEncoding format.EncodingType) NumericBlob { //nolint: unparam
-	blobTS := time.Now()
-	encoder, err := NewNumericEncoder(blobTS,
-		WithTimestampEncoding(tsEncoding),
-		WithValueEncoding(valEncoding))
-	require.NoError(t, err)
-
-	// Metric 1: Multiple data points
-	err = encoder.StartMetricID(12345, 3)
-	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTS.UnixMicro(), 1.5, "")
-	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTS.Add(time.Second).UnixMicro(), 2.5, "")
-	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTS.Add(2*time.Second).UnixMicro(), 3.5, "")
-	require.NoError(t, err)
-	err = encoder.EndMetric()
-	require.NoError(t, err)
-
-	// Metric 2: Single data point
-	err = encoder.StartMetricID(67890, 1)
-	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTS.Add(3*time.Second).UnixMicro(), 4.5, "")
-	require.NoError(t, err)
-	err = encoder.EndMetric()
-	require.NoError(t, err)
-
-	// Metric 3: Different timestamps
-	err = encoder.StartMetricID(11111, 2)
-	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTS.Add(-time.Second).UnixMicro(), 5.5, "")
-	require.NoError(t, err)
-	err = encoder.AddDataPoint(blobTS.Add(5*time.Second).UnixMicro(), 6.5, "")
-	require.NoError(t, err)
-	err = encoder.EndMetric()
-	require.NoError(t, err)
-
-	data, err := encoder.Finish()
-	require.NoError(t, err)
-
-	decoder, err := NewNumericDecoder(data)
-	require.NoError(t, err)
-
-	blob, err := decoder.Decode()
-	require.NoError(t, err)
-
-	return blob
-}
 
 func createTestEncoder(t *testing.T) *NumericEncoder {
 	encoder, err := NewNumericEncoder(time.Now())

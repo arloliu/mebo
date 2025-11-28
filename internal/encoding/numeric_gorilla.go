@@ -223,6 +223,7 @@ func (e *NumericGorillaEncoder) Size() int {
 func (e *NumericGorillaEncoder) Reset() {
 	e.bitBuf = 0
 	e.bitCount = 0
+	e.count = 0
 	e.prevValue = 0
 	e.prevLeading = 0
 	e.prevTrailing = 0

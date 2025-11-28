@@ -187,27 +187,44 @@ func TestTimestampDeltaEncoder_WriteSlice_LargeDeltas(t *testing.T) {
 
 func TestTimestampDeltaEncoder_Reset(t *testing.T) {
 	encoder := NewTimestampDeltaEncoder()
-	timestamps := []int64{1672531200000000, 1672531201000000}
+	timestamps1 := []int64{1672531200000000, 1672531201000000}
 
-	// Write some data
-	encoder.WriteSlice(timestamps)
+	// Write first sequence
+	encoder.WriteSlice(timestamps1)
 	require.Equal(t, 2, encoder.Len())
-	require.Greater(t, encoder.Size(), 0)
+	size1 := encoder.Size()
+	require.Greater(t, size1, 0)
 
-	// Reset should clear state but not buffer
+	// Reset should clear sequence state but not buffer or total count
 	encoder.Reset()
-	require.Equal(t, 2, encoder.Len())    // Len unchanged after Reset
-	require.Greater(t, encoder.Size(), 0) // Size unchanged after Reset
-	require.NotEmpty(t, encoder.Bytes())  // Bytes unchanged after Reset
+	require.Equal(t, 2, encoder.Len())      // Len unchanged after Reset
+	require.Equal(t, size1, encoder.Size()) // Size unchanged after Reset
 
-	// Write new data should start fresh delta chain
-	newTimestamps := []int64{1672531300000000, 1672531301000000} // Different base time
-	encoder.WriteSlice(newTimestamps)
+	// Write second sequence (different base time)
+	timestamps2 := []int64{1672531300000000, 1672531301000000}
+	encoder.WriteSlice(timestamps2)
 	require.Equal(t, 4, encoder.Len()) // 2 + 2 timestamps
 
-	// The data should contain both sequences
+	size2 := encoder.Size()
+	require.Greater(t, size2, size1)
+
+	// Verify the data contains two independent sequences
 	data := encoder.Bytes()
-	require.Greater(t, len(data), 0)
+
+	// Verify first sequence
+	decoder := NewTimestampDeltaDecoder()
+	decoded1 := make([]int64, 0, 2)
+	for ts := range decoder.All(data[:size1], 2) {
+		decoded1 = append(decoded1, ts)
+	}
+	require.Equal(t, timestamps1, decoded1)
+
+	// Verify second sequence (should be decodable as a fresh sequence from the offset)
+	decoded2 := make([]int64, 0, 2)
+	for ts := range decoder.All(data[size1:], 2) {
+		decoded2 = append(decoded2, ts)
+	}
+	require.Equal(t, timestamps2, decoded2)
 }
 
 func TestTimestampDeltaEncoder_Finish(t *testing.T) {

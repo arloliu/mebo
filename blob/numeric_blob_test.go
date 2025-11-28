@@ -180,38 +180,109 @@ func TestNumericBlob_EmptyBlob(t *testing.T) {
 }
 
 // ==============================================================================
+// Helper Functions
+// ==============================================================================
+
+type testMetricData struct {
+	id         uint64
+	timestamps []int64
+	values     []float64
+}
+
+func createTestBlob(t *testing.T, tsEncoding, valEncoding format.EncodingType) (NumericBlob, []testMetricData) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(tsEncoding),
+		WithValueEncoding(valEncoding))
+	require.NoError(t, err)
+
+	metrics := []testMetricData{
+		{
+			id: 12345,
+			timestamps: []int64{
+				startTime.UnixMicro(),
+				startTime.Add(time.Second).UnixMicro(),
+				startTime.Add(2 * time.Second).UnixMicro(),
+			},
+			values: []float64{1.5, 2.5, 3.5},
+		},
+		{
+			id: 67890,
+			timestamps: []int64{
+				startTime.Add(3 * time.Second).UnixMicro(),
+			},
+			values: []float64{4.5},
+		},
+		{
+			id: 11111,
+			timestamps: []int64{
+				startTime.Add(-time.Second).UnixMicro(),
+				startTime.Add(5 * time.Second).UnixMicro(),
+			},
+			values: []float64{5.5, 6.5},
+		},
+	}
+
+	for _, m := range metrics {
+		err = encoder.StartMetricID(m.id, len(m.timestamps))
+		require.NoError(t, err)
+		for i := range m.timestamps {
+			err = encoder.AddDataPoint(m.timestamps[i], m.values[i], "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	return blob, metrics
+}
+
+// ==============================================================================
 // NumericBlob Tests - AllTimestamps Methods
 // ==============================================================================
 
 func TestNumericBlob_AllTimestamps(t *testing.T) {
 	t.Run("ValidMetricID_RawEncoding", func(t *testing.T) {
-		blob := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+		blob, metrics := createTestBlob(t, format.TypeRaw, format.TypeRaw)
 
-		// Test existing metric ID
+		// Test existing metric ID (12345 is index 0 in metrics)
+		expected := metrics[0]
+		require.Equal(t, uint64(12345), expected.id)
+
 		timestamps := make([]int64, 0)
-		for ts := range blob.AllTimestamps(12345) {
+		for ts := range blob.AllTimestamps(expected.id) {
 			timestamps = append(timestamps, ts)
 		}
-		require.Len(t, timestamps, 3)
-
-		// Verify timestamps are in order
-		require.True(t, timestamps[0] < timestamps[1])
-		require.True(t, timestamps[1] < timestamps[2])
+		require.Len(t, timestamps, len(expected.timestamps))
+		require.Equal(t, expected.timestamps, timestamps)
 	})
 
 	t.Run("ValidMetricID_DeltaEncoding", func(t *testing.T) {
-		blob := createTestBlob(t, format.TypeDelta, format.TypeRaw)
+		blob, metrics := createTestBlob(t, format.TypeDelta, format.TypeRaw)
 
-		// Test existing metric ID
+		// Test existing metric ID (67890 is index 1 in metrics)
+		expected := metrics[1]
+		require.Equal(t, uint64(67890), expected.id)
+
 		timestamps := make([]int64, 0)
-		for ts := range blob.AllTimestamps(67890) {
+		for ts := range blob.AllTimestamps(expected.id) {
 			timestamps = append(timestamps, ts)
 		}
-		require.Len(t, timestamps, 1)
+		require.Len(t, timestamps, len(expected.timestamps))
+		require.Equal(t, expected.timestamps, timestamps)
 	})
 
 	t.Run("NonExistentMetricID", func(t *testing.T) {
-		blob := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+		blob, _ := createTestBlob(t, format.TypeRaw, format.TypeRaw)
 
 		// Test non-existent metric ID
 		count := 0
@@ -299,68 +370,216 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 	})
 
 	t.Run("MultipleMetrics", func(t *testing.T) {
-		blob := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+		blob, metrics := createTestBlob(t, format.TypeRaw, format.TypeRaw)
 
 		// Test all metrics
-		metricIDs := []uint64{11111, 12345, 67890} // Should be sorted by encoder
-		expectedCounts := []int{2, 3, 1}
+		// Note: metrics slice in createTestBlob is:
+		// 0: 12345 (3 points)
+		// 1: 67890 (1 point)
+		// 2: 11111 (2 points)
 
-		for i, metricID := range metricIDs {
+		// The encoder sorts metrics by ID when finishing?
+		// Let's check the implementation of Finish().
+		// It iterates over indexEntries which are appended in order of StartMetricID calls.
+		// So order should be preserved as added: 12345, 67890, 11111.
+
+		for _, m := range metrics {
 			count := 0
-			for range blob.AllTimestamps(metricID) {
+			timestamps := make([]int64, 0)
+			for ts := range blob.AllTimestamps(m.id) {
 				count++
+				timestamps = append(timestamps, ts)
 			}
-			require.Equal(t, expectedCounts[i], count, "Metric ID %d should have %d timestamps", metricID, expectedCounts[i])
+			require.Equal(t, len(m.timestamps), count, "Metric ID %d should have %d timestamps", m.id, len(m.timestamps))
+			require.Equal(t, m.timestamps, timestamps, "Metric ID %d timestamps mismatch", m.id)
 		}
 	})
 }
 
-func TestNumericBlob_allRawTimestamps(t *testing.T) {
+func TestNumericBlob_AllRawTimestamps(t *testing.T) {
 	t.Run("SameByteOrder", func(t *testing.T) {
-		blob := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+		blob, metrics := createTestBlob(t, format.TypeRaw, format.TypeRaw)
 
 		// For same byte order, should use fast path
 		require.True(t, blob.sameByteOrder)
 
+		expected := metrics[0] // 12345
 		timestamps := make([]int64, 0)
-		for ts := range blob.AllTimestamps(12345) {
+		for ts := range blob.AllTimestamps(expected.id) {
 			timestamps = append(timestamps, ts)
 		}
-		require.Len(t, timestamps, 3)
+		require.Len(t, timestamps, len(expected.timestamps))
+		require.Equal(t, expected.timestamps, timestamps)
 	})
 
 	t.Run("DifferentByteOrder", func(t *testing.T) {
 		// Test the slow path by creating blob with different byte order setting
 		// Note: This test simulates different byte order without actually corrupting data
-		blob := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+		blob, metrics := createTestBlob(t, format.TypeRaw, format.TypeRaw)
 		originalSameByteOrder := blob.sameByteOrder
 		blob.sameByteOrder = false // Force slow path
 
+		expected := metrics[0] // 12345
 		// Verify we still get timestamps (slow path should work)
 		timestamps := make([]int64, 0)
-		for ts := range blob.AllTimestamps(12345) {
+		for ts := range blob.AllTimestamps(expected.id) {
 			timestamps = append(timestamps, ts)
 		}
-		require.Len(t, timestamps, 3)
+		require.Len(t, timestamps, len(expected.timestamps))
+		require.Equal(t, expected.timestamps, timestamps)
 
 		// Restore original setting for good measure
 		blob.sameByteOrder = originalSameByteOrder
 	})
 }
 
-func TestNumericBlob_allDeltaTimestamps(t *testing.T) {
+func TestNumericBlob_AllDeltaTimestamps(t *testing.T) {
 	t.Run("DeltaEncoding", func(t *testing.T) {
-		blob := createTestBlob(t, format.TypeDelta, format.TypeRaw)
+		blob, metrics := createTestBlob(t, format.TypeDelta, format.TypeRaw)
 
+		expected := metrics[0] // 12345
 		timestamps := make([]int64, 0)
-		for ts := range blob.AllTimestamps(12345) {
+		for ts := range blob.AllTimestamps(expected.id) {
 			timestamps = append(timestamps, ts)
 		}
-		require.Len(t, timestamps, 3)
+		require.Len(t, timestamps, len(expected.timestamps))
+		require.Equal(t, expected.timestamps, timestamps)
+	})
+}
 
-		// Verify timestamps are in order
-		require.True(t, timestamps[0] < timestamps[1])
-		require.True(t, timestamps[1] < timestamps[2])
+// ==============================================================================
+// NumericBlob Tests - AllValues Methods
+// ==============================================================================
+
+func TestNumericBlob_AllValues(t *testing.T) {
+	t.Run("ValidMetricID_RawEncoding", func(t *testing.T) {
+		blob, metrics := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+
+		// Test existing metric ID (12345 is index 0 in metrics)
+		expected := metrics[0]
+		require.Equal(t, uint64(12345), expected.id)
+
+		values := make([]float64, 0)
+		for v := range blob.AllValues(expected.id) {
+			values = append(values, v)
+		}
+		require.Len(t, values, len(expected.values))
+		require.Equal(t, expected.values, values)
+	})
+
+	t.Run("ValidMetricID_GorillaEncoding", func(t *testing.T) {
+		blob, metrics := createTestBlob(t, format.TypeRaw, format.TypeGorilla)
+
+		// Test existing metric ID (12345 is index 0 in metrics)
+		expected := metrics[0]
+		require.Equal(t, uint64(12345), expected.id)
+
+		values := make([]float64, 0)
+		for v := range blob.AllValues(expected.id) {
+			values = append(values, v)
+		}
+		require.Len(t, values, len(expected.values))
+		require.Equal(t, expected.values, values)
+	})
+
+	t.Run("NonExistentMetricID", func(t *testing.T) {
+		blob, _ := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+
+		// Test non-existent metric ID
+		count := 0
+		for range blob.AllValues(99999) {
+			count++
+		}
+		require.Equal(t, 0, count)
+	})
+
+	t.Run("EmptyIndexEntries", func(t *testing.T) {
+		// Create empty blob
+		blob := NumericBlob{
+			blobBase: blobBase{
+				tsEncType: format.TypeRaw,
+			},
+			index: indexMaps[section.NumericIndexEntry]{
+				byID: make(map[uint64]section.NumericIndexEntry),
+			},
+			tsPayload:  []byte{},
+			valPayload: []byte{},
+		}
+
+		count := 0
+		for range blob.AllValues(12345) {
+			count++
+		}
+		require.Equal(t, 0, count)
+	})
+
+	t.Run("ZeroCount", func(t *testing.T) {
+		// Create blob with entry that has zero count
+		entry := section.NumericIndexEntry{
+			MetricID:        12345,
+			Count:           0,
+			TimestampOffset: 0,
+			ValueOffset:     0,
+		}
+
+		blob := NumericBlob{
+			blobBase: blobBase{
+				tsEncType: format.TypeRaw,
+			},
+			index: indexMaps[section.NumericIndexEntry]{
+				byID: map[uint64]section.NumericIndexEntry{entry.MetricID: entry},
+			},
+			tsPayload:  []byte{0, 0, 0, 0, 0, 0, 0, 0}, // Some data
+			valPayload: []byte{},
+		}
+
+		count := 0
+		for range blob.AllValues(12345) {
+			count++
+		}
+		require.Equal(t, 0, count)
+	})
+
+	t.Run("InsufficientPayloadData", func(t *testing.T) {
+		// Create blob with entry that requires more data than available
+		entry := section.NumericIndexEntry{
+			MetricID:        12345,
+			Count:           2, // Requires 16 bytes (2 * 8) for Raw encoding
+			TimestampOffset: 0,
+			ValueOffset:     0,
+		}
+
+		blob := NumericBlob{
+			blobBase: blobBase{
+				tsEncType: format.TypeRaw,
+			},
+			index: indexMaps[section.NumericIndexEntry]{
+				byID: map[uint64]section.NumericIndexEntry{entry.MetricID: entry},
+			},
+			tsPayload:  []byte{},
+			valPayload: []byte{0, 0, 0, 0}, // Only 4 bytes
+		}
+
+		count := 0
+		for range blob.AllValues(12345) {
+			count++
+		}
+		require.Equal(t, 0, count)
+	})
+
+	t.Run("MultipleMetrics", func(t *testing.T) {
+		blob, metrics := createTestBlob(t, format.TypeRaw, format.TypeRaw)
+
+		for _, m := range metrics {
+			count := 0
+			values := make([]float64, 0)
+			for v := range blob.AllValues(m.id) {
+				count++
+				values = append(values, v)
+			}
+			require.Equal(t, len(m.values), count, "Metric ID %d should have %d values", m.id, len(m.values))
+			require.Equal(t, m.values, values, "Metric ID %d values mismatch", m.id)
+		}
 	})
 }
 
@@ -766,6 +985,163 @@ func TestNumericBlob_All_DeltaGorilla(t *testing.T) {
 		}
 		require.Equal(t, 1, count, "should return exactly 1 data point")
 	})
+}
+
+func TestNumericBlob_DeltaGorilla_Scenarios(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		metrics []struct { //nolint:revive
+			name       string
+			id         uint64
+			timestamps []int64
+			values     []float64
+		}
+	}{
+		{
+			name: "MultipleMetrics_SinglePoint",
+			metrics: []struct {
+				name       string
+				id         uint64
+				timestamps []int64
+				values     []float64
+			}{
+				{
+					name:       "metric.one",
+					id:         hash.ID("metric.one"),
+					timestamps: []int64{startTime.UnixMicro()},
+					values:     []float64{10.0},
+				},
+				{
+					name:       "metric.two",
+					id:         hash.ID("metric.two"),
+					timestamps: []int64{startTime.Add(1 * time.Minute).UnixMicro()},
+					values:     []float64{20.0},
+				},
+				{
+					name:       "metric.three",
+					id:         hash.ID("metric.three"),
+					timestamps: []int64{startTime.Add(2 * time.Minute).UnixMicro()},
+					values:     []float64{30.0},
+				},
+			},
+		},
+		{
+			name: "MultipleMetrics_MultiplePoints",
+			metrics: []struct {
+				name       string
+				id         uint64
+				timestamps []int64
+				values     []float64
+			}{
+				{
+					name: "metric.multi.one",
+					id:   hash.ID("metric.multi.one"),
+					timestamps: []int64{
+						startTime.UnixMicro(),
+						startTime.Add(1 * time.Second).UnixMicro(),
+						startTime.Add(2 * time.Second).UnixMicro(),
+					},
+					values: []float64{10.0, 11.0, 12.0},
+				},
+				{
+					name: "metric.multi.two",
+					id:   hash.ID("metric.multi.two"),
+					timestamps: []int64{
+						startTime.Add(1 * time.Minute).UnixMicro(),
+						startTime.Add(1*time.Minute + 1*time.Second).UnixMicro(),
+					},
+					values: []float64{20.0, 21.0},
+				},
+			},
+		},
+		{
+			name: "MultipleMetrics_MixedPoints",
+			metrics: []struct {
+				name       string
+				id         uint64
+				timestamps []int64
+				values     []float64
+			}{
+				{
+					name:       "metric.mixed.single1",
+					id:         hash.ID("metric.mixed.single1"),
+					timestamps: []int64{startTime.UnixMicro()},
+					values:     []float64{100.0},
+				},
+				{
+					name: "metric.mixed.multi",
+					id:   hash.ID("metric.mixed.multi"),
+					timestamps: []int64{
+						startTime.Add(10 * time.Second).UnixMicro(),
+						startTime.Add(20 * time.Second).UnixMicro(),
+						startTime.Add(30 * time.Second).UnixMicro(),
+					},
+					values: []float64{200.0, 200.0, 200.0}, // Constant values
+				},
+				{
+					name:       "metric.mixed.single2",
+					id:         hash.ID("metric.mixed.single2"),
+					timestamps: []int64{startTime.Add(1 * time.Minute).UnixMicro()},
+					values:     []float64{300.0},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create encoder with Delta+Gorilla configuration
+			encoder, err := NewNumericEncoder(startTime,
+				WithTimestampEncoding(format.TypeDelta),
+				WithValueEncoding(format.TypeGorilla),
+			)
+			require.NoError(t, err)
+
+			// Encode all metrics
+			for _, m := range tt.metrics {
+				err = encoder.StartMetricID(m.id, len(m.timestamps))
+				require.NoError(t, err)
+
+				for i := range m.timestamps {
+					err = encoder.AddDataPoint(m.timestamps[i], m.values[i], "")
+					require.NoError(t, err)
+				}
+
+				err = encoder.EndMetric()
+				require.NoError(t, err)
+			}
+
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+
+			// Decode
+			decoder, err := NewNumericDecoder(data)
+			require.NoError(t, err)
+			blob, err := decoder.Decode()
+			require.NoError(t, err)
+
+			// Verify encoding types
+			require.Equal(t, format.TypeDelta, blob.tsEncType, "should use delta timestamp encoding")
+			require.Equal(t, format.TypeGorilla, blob.ValueEncoding(), "should use gorilla value encoding")
+
+			// Verify each metric can be retrieved independently
+			for _, m := range tt.metrics {
+				var gotTimestamps []int64
+				var gotValues []float64
+
+				for _, dp := range blob.All(m.id) {
+					gotTimestamps = append(gotTimestamps, dp.Ts)
+					gotValues = append(gotValues, dp.Val)
+				}
+
+				require.Equal(t, len(m.timestamps), len(gotTimestamps), "metric: %s count mismatch", m.name)
+				require.Equal(t, m.timestamps, gotTimestamps, "metric: %s timestamps mismatch", m.name)
+				require.Equal(t, m.values, gotValues, "metric: %s values mismatch", m.name)
+			}
+		})
+	}
 }
 
 func TestNumericBlob_All_MultipleMetrics(t *testing.T) {
@@ -2334,7 +2710,7 @@ func TestNumericBlobOffsetLimit(t *testing.T) {
 
 			// Test accessing the LAST metric (metric #98 or #99) at a middle index
 			lastMetricID := uint64(1000 + tt.numMetrics - 1)
-			testIndex := 56 // This is the failing index from the benchmark
+			testIndex := 56
 
 			val, ok := blob.ValueAt(lastMetricID, testIndex)
 

@@ -39,12 +39,12 @@ func ExampleAnalyze() {
 	fmt.Printf("Estimated BPP for 200 PPM: %.2f\n", estimator.Estimate(200.0))
 
 	// Output:
-	// Best-fit model: Model{Type: hyperbolic, R²: 0.9853, RMSE: 1.1019, Formula: BPP = 8.19 + 28.48 / PPM}
-	// Formula: BPP = 8.19 + 28.48 / PPM
-	// R²: 0.9853
+	// Best-fit model: Model{Type: hyperbolic, R²: 0.9976, RMSE: 0.4043, Formula: BPP = 7.83 + 26.07 / PPM}
+	// Formula: BPP = 7.83 + 26.07 / PPM
+	// R²: 0.9976
 	// Chunk PPMs: [1 2 5 10 20 50 100 150 200]
-	// Estimated BPP for 100 PPM: 8.48
-	// Estimated BPP for 200 PPM: 8.34
+	// Estimated BPP for 100 PPM: 8.09
+	// Estimated BPP for 200 PPM: 7.96
 }
 
 // ExampleAnalyzeEach demonstrates per-blob analysis for drift detection.
@@ -77,12 +77,12 @@ func ExampleAnalyzeEach() {
 	}
 
 	// Output:
-	// Blob 0: hyperbolic (R²=0.9855)
-	//   Coefficients: a=8.64, b=29.42
-	// Blob 1: hyperbolic (R²=0.9838)
-	//   Coefficients: a=8.34, b=28.46
-	// Blob 2: hyperbolic (R²=0.9844)
-	//   Coefficients: a=8.29, b=28.08
+	// Blob 0: hyperbolic (R²=0.9974)
+	//   Coefficients: a=8.06, b=27.63
+	// Blob 1: hyperbolic (R²=0.9972)
+	//   Coefficients: a=7.86, b=26.27
+	// Blob 2: hyperbolic (R²=0.9976)
+	//   Coefficients: a=7.88, b=25.69
 }
 
 // ExampleNewHyperbolicEstimator demonstrates how to use the Estimator interface.
@@ -139,23 +139,23 @@ func ExampleAnalyze_modelComparison() {
 
 	// Output:
 	// Model comparison (ranked by R²):
-	// 1. hyperbolic: R²=0.9853, RMSE=1.1019
-	//    Formula: BPP = 8.19 + 28.48 / PPM
-	// 2. power: R²=0.8573, RMSE=3.4376
-	//    Formula: BPP = 26.79 * PPM^-0.270
-	// 3. logarithmic: R²=0.7623, RMSE=4.4368
-	//    Formula: BPP = 27.08 + -4.39 * ln(PPM)
-	// 4. exponential: R²=0.3050, RMSE=7.5860
-	//    Formula: BPP = 16.25 * e^(-0.005 * PPM)
-	// 5. polynomial: R²=-2.0909, RMSE=15.9985
+	// 1. hyperbolic: R²=0.9976, RMSE=0.4043
+	//    Formula: BPP = 7.83 + 26.07 / PPM
+	// 2. power: R²=0.8173, RMSE=3.5390
+	//    Formula: BPP = 24.16 * PPM^-0.252
+	// 3. logarithmic: R²=0.7288, RMSE=4.3123
+	//    Formula: BPP = 24.79 + -3.91 * ln(PPM)
+	// 4. exponential: R²=0.2801, RMSE=7.0253
+	//    Formula: BPP = 15.10 * e^(-0.004 * PPM)
+	// 5. polynomial: R²=-2.1903, RMSE=14.7891
 	//    Formula: BPP = -0.00 + 0.05*PPM + 0.00*PPM²
 	//
 	// Predictions for 100 PPM:
-	//   hyperbolic: 8.48 BPP
-	//   power: 7.71 BPP
-	//   logarithmic: 6.85 BPP
-	//   exponential: 9.94 BPP
-	//   polynomial: 4.89 BPP
+	//   hyperbolic: 8.09 BPP
+	//   power: 7.59 BPP
+	//   logarithmic: 6.79 BPP
+	//   exponential: 9.64 BPP
+	//   polynomial: 4.84 BPP
 }
 
 // createExampleBlobs creates example blobs for demonstration purposes.
