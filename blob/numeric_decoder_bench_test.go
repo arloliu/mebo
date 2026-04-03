@@ -8,6 +8,160 @@ import (
 	"github.com/arloliu/mebo/section"
 )
 
+// BenchmarkSharedTimestamps_DecodeOnly isolates decoder overhead from iterator cost.
+func BenchmarkSharedTimestamps_DecodeOnly(b *testing.B) {
+	scenarios := []sharedTimestampBenchmarkScenario{
+		{name: "150metrics_10points_DefaultCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: true},
+		{name: "150metrics_10points_NoCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: false},
+		{name: "150metrics_100points_DefaultCompression", metricCount: 150, pointsPerMetric: 100, compressionEnabled: true},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			for _, sharedEnabled := range []bool{false, true} {
+				modeName := "V1_Default"
+				if sharedEnabled {
+					modeName = "V2_SharedTimestamps"
+				}
+
+				data := createSharedTimestampBenchmarkData(b, sc, sharedEnabled)
+				b.Run(modeName, func(b *testing.B) {
+					b.ReportAllocs()
+					b.SetBytes(int64(len(data)))
+					b.ResetTimer()
+
+					for b.Loop() {
+						decoder, err := NewNumericDecoder(data)
+						if err != nil {
+							b.Fatal(err)
+						}
+
+						blob, err := decoder.Decode()
+						if err != nil {
+							b.Fatal(err)
+						}
+
+						if blob.MetricCount() != sc.metricCount {
+							b.Fatalf("unexpected metric count: got %d want %d", blob.MetricCount(), sc.metricCount)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkSharedTimestamps_DecodeAndIterate benchmarks full decode followed by
+// iterating every point from every metric for repeated-timestamp workloads.
+func BenchmarkSharedTimestamps_DecodeAndIterate(b *testing.B) {
+	scenarios := []sharedTimestampBenchmarkScenario{
+		{name: "150metrics_10points_DefaultCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: true},
+		{name: "150metrics_10points_NoCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: false},
+		{name: "150metrics_100points_DefaultCompression", metricCount: 150, pointsPerMetric: 100, compressionEnabled: true},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			for _, sharedEnabled := range []bool{false, true} {
+				modeName := "V1_Default"
+				if sharedEnabled {
+					modeName = "V2_SharedTimestamps"
+				}
+
+				data := createSharedTimestampBenchmarkData(b, sc, sharedEnabled)
+				b.Run(modeName, func(b *testing.B) {
+					b.ReportAllocs()
+					b.SetBytes(int64(len(data)))
+					b.ResetTimer()
+
+					for b.Loop() {
+						decoder, err := NewNumericDecoder(data)
+						if err != nil {
+							b.Fatal(err)
+						}
+
+						blob, err := decoder.Decode()
+						if err != nil {
+							b.Fatal(err)
+						}
+
+						pointCount := 0
+						totalValue := 0.0
+						for metricIdx := range sc.metricCount {
+							for _, dp := range blob.All(uint64(metricIdx + 1)) {
+								pointCount++
+								totalValue += dp.Val
+							}
+						}
+
+						if pointCount != sc.metricCount*sc.pointsPerMetric {
+							b.Fatalf("unexpected point count: got %d want %d", pointCount, sc.metricCount*sc.pointsPerMetric)
+						}
+						if totalValue < 0 {
+							b.Fatal("unexpected negative total value")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkSharedTimestamps_Mixed_DecodeAndIterate measures decode plus full
+// iteration for workloads combining shared groups with unique timestamp streams.
+func BenchmarkSharedTimestamps_Mixed_DecodeAndIterate(b *testing.B) {
+	scenarios := []mixedSharedTimestampBenchmarkScenario{
+		{name: "150metrics_10points_3groups_30unique_DefaultCompression", metricCount: 150, pointsPerMetric: 10, sharedGroupCount: 3, uniqueMetricCount: 30, compressionEnabled: true},
+		{name: "150metrics_10points_3groups_30unique_NoCompression", metricCount: 150, pointsPerMetric: 10, sharedGroupCount: 3, uniqueMetricCount: 30, compressionEnabled: false},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			for _, sharedEnabled := range []bool{false, true} {
+				modeName := "V1_Default"
+				if sharedEnabled {
+					modeName = "V2_SharedTimestamps"
+				}
+
+				data := createMixedSharedTimestampBenchmarkData(b, sc, sharedEnabled)
+				b.Run(modeName, func(b *testing.B) {
+					b.ReportAllocs()
+					b.SetBytes(int64(len(data)))
+					b.ResetTimer()
+
+					for b.Loop() {
+						decoder, err := NewNumericDecoder(data)
+						if err != nil {
+							b.Fatal(err)
+						}
+
+						blob, err := decoder.Decode()
+						if err != nil {
+							b.Fatal(err)
+						}
+
+						pointCount := 0
+						totalValue := 0.0
+						for metricIdx := range sc.metricCount {
+							for _, dp := range blob.All(uint64(metricIdx + 1)) {
+								pointCount++
+								totalValue += dp.Val
+							}
+						}
+
+						if pointCount != sc.metricCount*sc.pointsPerMetric {
+							b.Fatalf("unexpected point count: got %d want %d", pointCount, sc.metricCount*sc.pointsPerMetric)
+						}
+						if totalValue < 0 {
+							b.Fatal("unexpected negative total value")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 // BenchmarkNumericDecoder_Decode benchmarks the full decode operation
 // to measure the impact of slice pre-allocation optimization.
 func BenchmarkNumericDecoder_Decode(b *testing.B) {

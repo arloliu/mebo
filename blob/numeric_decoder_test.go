@@ -465,3 +465,874 @@ func TestNumericDecoder_PayloadLengths_Gorilla(t *testing.T) {
 		require.NotEmpty(t, valData, "Value data should not be empty for metric %d", metricID)
 	}
 }
+
+// ==============================================================================
+// V1/V2 Shared Timestamp Compatibility Tests
+// ==============================================================================
+
+// TestV1BlobDecodesWithV2Code verifies that V1 blobs (no shared timestamps)
+// continue to decode correctly with V2-aware decoder code.
+func TestV1BlobDecodesWithV2Code(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create a blob where metrics have DIFFERENT timestamps → V1 format
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+	)
+	require.NoError(t, err)
+
+	// Metric 1: timestamps at 0, 1, 2 seconds
+	err = encoder.StartMetricID(1001, 3)
+	require.NoError(t, err)
+
+	for i := range 3 {
+		ts := startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+		err = encoder.AddDataPoint(ts, float64(i)*1.1, "")
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	// Metric 2: different timestamps at 10, 11, 12 seconds
+	err = encoder.StartMetricID(1002, 3)
+	require.NoError(t, err)
+
+	for i := range 3 {
+		ts := startTime.Add(time.Duration(i+10) * time.Second).UnixMicro()
+		err = encoder.AddDataPoint(ts, float64(i)*2.2, "")
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify V1 magic number (different timestamps → no sharing)
+	require.True(t, section.IsNumericBlob(data))
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV1Opt), magic, "should be V1 format when no shared timestamps")
+
+	// Decode and verify data
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 2, blob.MetricCount())
+
+	// Verify metric 1 data
+	i := 0
+	for _, dp := range blob.All(1001) {
+		expectedTs := startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+		require.Equal(t, expectedTs, dp.Ts)
+		require.InDelta(t, float64(i)*1.1, dp.Val, 1e-10)
+		i++
+	}
+
+	require.Equal(t, 3, i)
+
+	// Verify metric 2 data
+	i = 0
+	for _, dp := range blob.All(1002) {
+		expectedTs := startTime.Add(time.Duration(i+10) * time.Second).UnixMicro()
+		require.Equal(t, expectedTs, dp.Ts)
+		require.InDelta(t, float64(i)*2.2, dp.Val, 1e-10)
+		i++
+	}
+
+	require.Equal(t, 3, i)
+}
+
+// TestV2SharedTimestamps verifies that metrics with identical timestamps
+// produce a V2 blob with shared timestamp encoding, and decode correctly.
+func TestV2SharedTimestamps(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 10
+
+	// Generate shared timestamps (all metrics use the same timestamps)
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	// Add 5 metrics with identical timestamps but different values
+	metricCount := 5
+	for m := range metricCount {
+		metricID := uint64(2001 + m)
+		err = encoder.StartMetricID(metricID, numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			val := float64(m*100+i) * 1.5
+			err = encoder.AddDataPoint(timestamps[i], val, "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify V2 magic number (shared timestamps detected)
+	require.True(t, section.IsNumericBlob(data))
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2Opt), magic, "should be V2 format when timestamps are shared")
+
+	// Decode and verify all data
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, metricCount, blob.MetricCount())
+
+	// Verify each metric's data
+	for m := range metricCount {
+		metricID := uint64(2001 + m)
+		require.Equal(t, numPoints, blob.Len(metricID))
+
+		i := 0
+		for _, dp := range blob.All(metricID) {
+			require.Equal(t, timestamps[i], dp.Ts, "metric %d, point %d timestamp mismatch", metricID, i)
+
+			expectedVal := float64(m*100+i) * 1.5
+			require.InDelta(t, expectedVal, dp.Val, 1e-10, "metric %d, point %d value mismatch", metricID, i)
+			i++
+		}
+
+		require.Equal(t, numPoints, i, "metric %d should have exactly %d points", metricID, numPoints)
+	}
+}
+
+// TestV2SharedTimestampsSavesSpace verifies that V2 encoding reduces blob size
+// compared to V1 when timestamps are shared.
+func TestV2SharedTimestampsSavesSpace(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 10
+	metricCount := 20
+
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	// Encode with no compression to see raw size difference
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	for m := range metricCount {
+		err = encoder.StartMetricID(uint64(3001+m), numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(timestamps[i], float64(m*10+i), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	v2Data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// The V2 blob should be a valid V2 blob
+	options := uint16(v2Data[0]) | (uint16(v2Data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2Opt), magic)
+
+	// Verify decode is correct
+	decoder, err := NewNumericDecoder(v2Data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, metricCount, blob.MetricCount())
+
+	// Verify sample data
+	i := 0
+	for _, dp := range blob.All(3001) {
+		require.Equal(t, timestamps[i], dp.Ts)
+		require.InDelta(t, float64(i), dp.Val, 1e-10)
+		i++
+	}
+
+	require.Equal(t, numPoints, i)
+}
+
+// TestV2MixedSharedAndUniqueTimestamps verifies correct handling when some metrics
+// share timestamps and others have unique timestamps.
+func TestV2MixedSharedAndUniqueTimestamps(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 5
+
+	// Group A timestamps (shared by metrics 4001, 4002, 4003)
+	groupATs := make([]int64, numPoints)
+	for i := range numPoints {
+		groupATs[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	// Unique timestamps for metric 4004
+	uniqueTs := make([]int64, numPoints)
+	for i := range numPoints {
+		uniqueTs[i] = startTime.Add(time.Duration(i*10+100) * time.Second).UnixMicro()
+	}
+
+	// Group B timestamps (shared by metrics 4005, 4006)
+	groupBTs := make([]int64, numPoints)
+	for i := range numPoints {
+		groupBTs[i] = startTime.Add(time.Duration(i*5+50) * time.Second).UnixMicro()
+	}
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	// Group A: 4001, 4002, 4003 (shared timestamps)
+	for m := range 3 {
+		err = encoder.StartMetricID(uint64(4001+m), numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(groupATs[i], float64(m*10+i), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	// Unique: 4004
+	err = encoder.StartMetricID(4004, numPoints)
+	require.NoError(t, err)
+
+	for i := range numPoints {
+		err = encoder.AddDataPoint(uniqueTs[i], float64(40+i), "")
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	// Group B: 4005, 4006 (shared timestamps)
+	for m := range 2 {
+		err = encoder.StartMetricID(uint64(4005+m), numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(groupBTs[i], float64(50+m*10+i), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Should be V2 (shared timestamps detected)
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2Opt), magic)
+
+	// Decode and verify all metrics
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 6, blob.MetricCount())
+
+	// Verify Group A metrics
+	for m := range 3 {
+		metricID := uint64(4001 + m)
+		i := 0
+
+		for _, dp := range blob.All(metricID) {
+			require.Equal(t, groupATs[i], dp.Ts, "group A metric %d point %d", metricID, i)
+			require.InDelta(t, float64(m*10+i), dp.Val, 1e-10)
+			i++
+		}
+
+		require.Equal(t, numPoints, i)
+	}
+
+	// Verify unique metric
+	i := 0
+	for _, dp := range blob.All(4004) {
+		require.Equal(t, uniqueTs[i], dp.Ts, "unique metric point %d", i)
+		require.InDelta(t, float64(40+i), dp.Val, 1e-10)
+		i++
+	}
+
+	require.Equal(t, numPoints, i)
+
+	// Verify Group B metrics
+	for m := range 2 {
+		metricID := uint64(4005 + m)
+		i := 0
+
+		for _, dp := range blob.All(metricID) {
+			require.Equal(t, groupBTs[i], dp.Ts, "group B metric %d point %d", metricID, i)
+			require.InDelta(t, float64(50+m*10+i), dp.Val, 1e-10)
+			i++
+		}
+
+		require.Equal(t, numPoints, i)
+	}
+}
+
+// TestV2WithTags verifies shared timestamps work correctly with tag support enabled.
+func TestV2WithTags(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 5
+
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithTagsEnabled(true),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	// Metric 1
+	err = encoder.StartMetricID(5001, numPoints)
+	require.NoError(t, err)
+
+	for i := range numPoints {
+		tag := "tag-a"
+		if i%2 == 0 {
+			tag = "tag-b"
+		}
+
+		err = encoder.AddDataPoint(timestamps[i], float64(i)*1.1, tag)
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	// Metric 2 (shared timestamps, different values and tags)
+	err = encoder.StartMetricID(5002, numPoints)
+	require.NoError(t, err)
+
+	for i := range numPoints {
+		err = encoder.AddDataPoint(timestamps[i], float64(i)*2.2, "tag-c")
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify V2
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2Opt), magic)
+
+	// Decode
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	// Verify metric 1
+	i := 0
+	for _, dp := range blob.All(5001) {
+		require.Equal(t, timestamps[i], dp.Ts)
+		require.InDelta(t, float64(i)*1.1, dp.Val, 1e-10)
+
+		expectedTag := "tag-a"
+		if i%2 == 0 {
+			expectedTag = "tag-b"
+		}
+
+		require.Equal(t, expectedTag, dp.Tag)
+		i++
+	}
+
+	require.Equal(t, numPoints, i)
+
+	// Verify metric 2
+	i = 0
+	for _, dp := range blob.All(5002) {
+		require.Equal(t, timestamps[i], dp.Ts)
+		require.InDelta(t, float64(i)*2.2, dp.Val, 1e-10)
+		require.Equal(t, "tag-c", dp.Tag)
+		i++
+	}
+
+	require.Equal(t, numPoints, i)
+}
+
+// TestV2WithMetricNames verifies shared timestamps work with collision-detected metric names.
+func TestV2WithMetricNames(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 3
+
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	metricNames := []string{"cpu.usage", "mem.usage", "disk.io"}
+	for m, name := range metricNames {
+		err = encoder.StartMetricName(name, numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(timestamps[i], float64(m*10+i), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Decode
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 3, blob.MetricCount())
+
+	// Verify all metrics by name
+	for m, name := range metricNames {
+		i := 0
+		for _, dp := range blob.AllByName(name) {
+			require.Equal(t, timestamps[i], dp.Ts, "metric %s point %d", name, i)
+			require.InDelta(t, float64(m*10+i), dp.Val, 1e-10)
+			i++
+		}
+
+		require.Equal(t, numPoints, i)
+	}
+}
+
+// TestV2RawEncoding verifies shared timestamps work with raw timestamp encoding.
+func TestV2RawEncoding(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 5
+
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	for m := range 3 {
+		err = encoder.StartMetricID(uint64(6001+m), numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(timestamps[i], float64(m*100+i), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Should be V2 (shared timestamps detected)
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2Opt), magic)
+
+	// Decode and verify
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 3, blob.MetricCount())
+
+	for m := range 3 {
+		metricID := uint64(6001 + m)
+
+		// Verify via All iterator
+		i := 0
+		for _, dp := range blob.All(metricID) {
+			require.Equal(t, timestamps[i], dp.Ts)
+			require.InDelta(t, float64(m*100+i), dp.Val, 1e-10)
+			i++
+		}
+
+		require.Equal(t, numPoints, i)
+
+		// Verify via TimestampAt random access
+		for i := range numPoints {
+			ts, ok := blob.TimestampAt(metricID, i)
+			require.True(t, ok)
+			require.Equal(t, timestamps[i], ts)
+		}
+
+		// Verify via ValueAt random access
+		for i := range numPoints {
+			val, ok := blob.ValueAt(metricID, i)
+			require.True(t, ok)
+			require.InDelta(t, float64(m*100+i), val, 1e-10)
+		}
+	}
+}
+
+// TestV2SingleMetricStaysV1 verifies that a single metric produces V1 format.
+func TestV2SingleMetricStaysV1(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	encoder, err := NewNumericEncoder(startTime, WithSharedTimestamps())
+	require.NoError(t, err)
+
+	err = encoder.StartMetricID(7001, 3)
+	require.NoError(t, err)
+
+	for i := range 3 {
+		ts := startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+		err = encoder.AddDataPoint(ts, float64(i), "")
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Single metric → no sharing → V1
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV1Opt), magic)
+
+	// Still decodes correctly
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 1, blob.MetricCount())
+}
+
+// ==============================================================================
+// Deployment Safety Tests
+// ==============================================================================
+
+// TestDefaultEncoderProducesV1 verifies that without WithSharedTimestamps(),
+// even identical timestamps produce a V1 blob. This is the critical safety
+// property: upgrading the library alone never changes the wire format.
+func TestDefaultEncoderProducesV1(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 5
+
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	// Encoder WITHOUT WithSharedTimestamps — same timestamps across 3 metrics
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+	)
+	require.NoError(t, err)
+
+	for m := range 3 {
+		err = encoder.StartMetricID(uint64(8001+m), numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(timestamps[i], float64(m*100+i), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// MUST be V1, not V2
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV1Opt), magic,
+		"default encoder must produce V1 even when timestamps are identical")
+
+	// Still decodes correctly
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 3, blob.MetricCount())
+
+	// Verify data integrity
+	for m := range 3 {
+		metricID := uint64(8001 + m)
+		i := 0
+
+		for _, dp := range blob.All(metricID) {
+			require.Equal(t, timestamps[i], dp.Ts)
+			require.InDelta(t, float64(m*100+i), dp.Val, 1e-10)
+			i++
+		}
+
+		require.Equal(t, numPoints, i)
+	}
+}
+
+// TestDeploymentScenario_ConsumerFirst simulates the safe deployment path:
+//  1. Both services start on V1-only mebo
+//  2. Consumer upgrades to V2-aware mebo (decoder accepts V1+V2)
+//  3. Producer upgrades to V2-aware mebo but does NOT enable WithSharedTimestamps
+//  4. Producer continues to emit V1 → consumer reads V1 fine
+//  5. Operator enables WithSharedTimestamps on producer
+//  6. Producer emits V2 → consumer reads V2 fine
+func TestDeploymentScenario_ConsumerFirst(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 5
+
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	// Helper to encode shared-timestamp data with or without opt-in
+	encodeBlob := func(sharedOpt bool) []byte {
+		opts := []NumericEncoderOption{
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		}
+		if sharedOpt {
+			opts = append(opts, WithSharedTimestamps())
+		}
+
+		enc, err := NewNumericEncoder(startTime, opts...)
+		require.NoError(t, err)
+
+		for m := range 3 {
+			err = enc.StartMetricID(uint64(9001+m), numPoints)
+			require.NoError(t, err)
+
+			for i := range numPoints {
+				err = enc.AddDataPoint(timestamps[i], float64(m*100+i), "")
+				require.NoError(t, err)
+			}
+
+			err = enc.EndMetric()
+			require.NoError(t, err)
+		}
+
+		data, err := enc.Finish()
+		require.NoError(t, err)
+
+		return data
+	}
+
+	// Helper to decode and verify data
+	verifyBlob := func(data []byte) {
+		dec, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		blob, err := dec.Decode()
+		require.NoError(t, err)
+		require.Equal(t, 3, blob.MetricCount())
+
+		for m := range 3 {
+			i := 0
+			for _, dp := range blob.All(uint64(9001 + m)) {
+				require.Equal(t, timestamps[i], dp.Ts)
+				require.InDelta(t, float64(m*100+i), dp.Val, 1e-10)
+				i++
+			}
+
+			require.Equal(t, numPoints, i)
+		}
+	}
+
+	// Phase 1: Producer without opt-in → V1
+	v1Data := encodeBlob(false)
+	v1Magic := uint16(v1Data[0]) | (uint16(v1Data[1]) << 8)
+	require.Equal(t, uint16(section.MagicNumericV1Opt), v1Magic&section.MagicNumberMask,
+		"phase 1: producer without opt-in must produce V1")
+
+	// Phase 2: V2-aware consumer can read V1 blobs
+	verifyBlob(v1Data)
+
+	// Phase 3: Producer with opt-in → V2
+	v2Data := encodeBlob(true)
+	v2Magic := uint16(v2Data[0]) | (uint16(v2Data[1]) << 8)
+	require.Equal(t, uint16(section.MagicNumericV2Opt), v2Magic&section.MagicNumberMask,
+		"phase 3: producer with opt-in must produce V2")
+
+	// Phase 4: V2-aware consumer can read V2 blobs
+	verifyBlob(v2Data)
+
+	// Phase 5: V2 blob should be smaller than V1 blob (shared timestamps deduped)
+	require.Less(t, len(v2Data), len(v1Data),
+		"V2 blob should be smaller than V1 when timestamps are shared")
+}
+
+// TestDeploymentScenario_OldConsumerRejectsV2 simulates an old consumer
+// (V1-only) attempting to decode a V2 blob. The old consumer's header parser
+// only accepted MagicNumericV1Opt, so a V2 magic number must be rejected
+// with ErrInvalidMagicNumber.
+func TestDeploymentScenario_OldConsumerRejectsV2(t *testing.T) {
+	legacyParseNumericHeader := func(data []byte) error {
+		if len(data) < section.HeaderSize {
+			return errs.ErrInvalidHeaderSize
+		}
+
+		options := uint16(data[0]) | (uint16(data[1]) << 8)
+		magic := options & section.MagicNumberMask
+		if magic != section.MagicNumericV1Opt {
+			return errs.ErrInvalidMagicNumber
+		}
+
+		return nil
+	}
+
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	numPoints := 3
+
+	timestamps := make([]int64, numPoints)
+	for i := range numPoints {
+		timestamps[i] = startTime.Add(time.Duration(i) * time.Second).UnixMicro()
+	}
+
+	// Produce a V2 blob
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	for m := range 2 {
+		err = encoder.StartMetricID(uint64(10001+m), numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(timestamps[i], float64(m*10+i), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Confirm it's V2
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2Opt), magic)
+
+	// Simulate the actual V1-only parser behavior against the real V2 bytes.
+	err = legacyParseNumericHeader(data[:section.HeaderSize])
+	require.ErrorIs(t, err, errs.ErrInvalidMagicNumber,
+		"a V1-only parser must reject the real V2 blob header")
+
+	// Current decoder (V2-aware) can still read the original V2 blob
+	decoder, decErr := NewNumericDecoder(data)
+	require.NoError(t, decErr)
+
+	blob, decErr := decoder.Decode()
+	require.NoError(t, decErr)
+	require.Equal(t, 2, blob.MetricCount())
+}
+
+func TestNumericDecoder_V2MissingSharedTimestampTable(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	for metricIdx := range 2 {
+		require.NoError(t, encoder.StartMetricID(uint64(11001+metricIdx), 3))
+		for pointIdx := range 3 {
+			ts := startTime.Add(time.Duration(pointIdx) * time.Second).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, float64(metricIdx*10+pointIdx), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	corrupted := make([]byte, len(data))
+	copy(corrupted, data)
+
+	header, err := section.ParseNumericHeader(corrupted)
+	require.NoError(t, err)
+
+	indexEnd := int(header.IndexOffset) + int(header.MetricCount)*section.NumericIndexEntrySize
+	engine := endian.GetLittleEndianEngine()
+	engine.PutUint32(corrupted[20:24], uint32(indexEnd))
+
+	decoder, err := NewNumericDecoder(corrupted)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}

@@ -1,9 +1,12 @@
 package blob
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/cespare/xxhash/v2"
 
 	"github.com/arloliu/mebo/encoding"
 	"github.com/arloliu/mebo/errs"
@@ -104,6 +107,12 @@ type NumericEncoder struct {
 	cleanupTS  func()
 	cleanupVal func()
 	cleanupTag func()
+}
+
+// tsGroup represents a group of metrics sharing identical timestamp sequences.
+type tsGroup struct {
+	canonicalIdx int   // index in indexEntries of the canonical metric
+	sharedIdxs   []int // indices of metrics sharing the canonical's timestamps
 }
 
 // encoderState tracks offset and length state for a single encoder (timestamp, value, or tag).
@@ -507,8 +516,28 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Set actual metric count in cloned header now that encoding is complete
 	finalHeader.MetricCount = uint32(len(e.indexEntries)) //nolint: gosec
 
+	// Detect shared timestamp groups and build V2 format if opt-in enabled
+	rawTsBytes := e.tsEncoder.Bytes()
+
+	var sharedTable section.SharedTimestampTable
+	var sharedTableSize int
+
+	if e.sharedTimestamps {
+		sharedGroups := e.detectSharedTimestamps(rawTsBytes)
+
+		if len(sharedGroups) > 0 {
+			var dedupTsBytes []byte
+			dedupTsBytes, sharedTable = e.buildDedupTsPayload(rawTsBytes, sharedGroups)
+			rawTsBytes = dedupTsBytes
+			sharedTableSize = sharedTable.Size()
+
+			// Set V2 magic number
+			finalHeader.Flag.Options = (finalHeader.Flag.Options &^ section.MagicNumberMask) | section.MagicNumericV2Opt
+		}
+	}
+
 	// Compress timestamp and value payloads
-	tsPayload, err := e.tsCodec.Compress(e.tsEncoder.Bytes())
+	tsPayload, err := e.tsCodec.Compress(rawTsBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compress timestamp payload: %w", err)
 	}
@@ -538,9 +567,9 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 		finalHeader.IndexOffset = uint32(section.HeaderSize + len(metricNamesPayload)) //nolint: gosec
 	}
 
-	// Calculate TimestampPayloadOffset based on actual index entries count
+	// Calculate TimestampPayloadOffset based on actual index entries count and shared table
 	indexEntriesSize := section.NumericIndexEntrySize * len(e.indexEntries)
-	finalHeader.TimestampPayloadOffset = finalHeader.IndexOffset + uint32(indexEntriesSize) //nolint: gosec
+	finalHeader.TimestampPayloadOffset = finalHeader.IndexOffset + uint32(indexEntriesSize) + uint32(sharedTableSize) //nolint: gosec
 
 	// Set value payload offset in header, it records the value payload offset after the timestamp payload.
 	// The size of timestamp payload is the compressed size.
@@ -551,7 +580,7 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	finalHeader.TagPayloadOffset = finalHeader.ValuePayloadOffset + uint32(len(valPayload)) //nolint: gosec
 
 	// Pre-calculate exact size (reuse indexEntriesSize from above)
-	blobSize := section.HeaderSize + len(metricNamesPayload) + indexEntriesSize + len(tsPayload) + len(valPayload) + len(tagPayload)
+	blobSize := section.HeaderSize + len(metricNamesPayload) + indexEntriesSize + sharedTableSize + len(tsPayload) + len(valPayload) + len(tagPayload)
 
 	// Allocate exact-size buffer for the final blob
 	// No need for pooled buffer since we return this directly to caller
@@ -573,6 +602,11 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	}
 	offset += indexEntriesSize
 
+	// Write shared timestamp table (if V2 with sharing)
+	if sharedTableSize > 0 {
+		offset = sharedTable.WriteToSlice(blob, offset, e.engine)
+	}
+
 	// Copy timestamp payload
 	offset += copy(blob[offset:], tsPayload)
 
@@ -583,6 +617,175 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	copy(blob[offset:], tagPayload)
 
 	return blob, nil
+}
+
+// detectSharedTimestamps scans all metrics' encoded timestamp byte ranges and groups
+// metrics with identical timestamp sequences. Returns nil if no sharing is detected.
+//
+// Parameters:
+//   - allTsBytes: Complete encoded timestamp payload from tsEncoder.Bytes()
+//
+// Returns:
+//   - []tsGroup: Groups with at least one shared metric, or nil if no sharing
+func (e *NumericEncoder) detectSharedTimestamps(allTsBytes []byte) []tsGroup {
+	metricCount := len(e.indexEntries)
+	if metricCount < 2 {
+		return nil
+	}
+
+	// Compute absolute offsets from delta offsets in index entries
+	absOffsets := make([]int, metricCount)
+	acc := 0
+
+	for i := range metricCount {
+		acc += e.indexEntries[i].TimestampOffset
+		absOffsets[i] = acc
+	}
+
+	// Compute lengths from consecutive offsets
+	tsLengths := make([]int, metricCount)
+	for i := range metricCount {
+		if i < metricCount-1 {
+			tsLengths[i] = absOffsets[i+1] - absOffsets[i]
+		} else {
+			tsLengths[i] = len(allTsBytes) - absOffsets[i]
+		}
+	}
+
+	// Group by (hash, length) with bytes.Equal verification
+	type hashKey struct {
+		hash   uint64
+		length int
+	}
+
+	seen := make(map[hashKey][]int) // value = candidate indices into groups slice
+	groups := make([]tsGroup, 0, metricCount)
+
+	for i := range metricCount {
+		start := absOffsets[i]
+		end := start + tsLengths[i]
+		tsSlice := allTsBytes[start:end]
+
+		h := xxhash.Sum64(tsSlice)
+		key := hashKey{hash: h, length: tsLengths[i]}
+
+		if candidateGroupIdxs, exists := seen[key]; exists {
+			for _, gIdx := range candidateGroupIdxs {
+				canon := groups[gIdx]
+				canonStart := absOffsets[canon.canonicalIdx]
+				canonEnd := canonStart + tsLengths[canon.canonicalIdx]
+
+				if bytes.Equal(tsSlice, allTsBytes[canonStart:canonEnd]) {
+					groups[gIdx].sharedIdxs = append(groups[gIdx].sharedIdxs, i)
+
+					goto nextMetric
+				}
+			}
+		}
+
+		// New unique group
+		seen[key] = append(seen[key], len(groups))
+		groups = append(groups, tsGroup{canonicalIdx: i})
+
+	nextMetric:
+	}
+
+	// Filter to only groups with actual sharing
+	var shared []tsGroup
+	for i := range groups {
+		if len(groups[i].sharedIdxs) > 0 {
+			shared = append(shared, groups[i])
+		}
+	}
+
+	return shared
+}
+
+// buildDedupTsPayload builds a deduplicated timestamp payload and updates index entries'
+// TimestampOffset deltas. Only canonical metrics' timestamp bytes are included; shared
+// metrics' data is removed.
+//
+// Parameters:
+//   - allTsBytes: Original encoded timestamp payload
+//   - groups: Shared timestamp groups from detectSharedTimestamps
+//
+// Returns:
+//   - []byte: Deduplicated timestamp payload
+//   - section.SharedTimestampTable: Table mapping shared metrics to their canonical metrics
+func (e *NumericEncoder) buildDedupTsPayload(allTsBytes []byte, groups []tsGroup) ([]byte, section.SharedTimestampTable) {
+	metricCount := len(e.indexEntries)
+
+	// Build absolute offsets and lengths from current delta encoding
+	absOffsets := make([]int, metricCount)
+	acc := 0
+
+	for i := range metricCount {
+		acc += e.indexEntries[i].TimestampOffset
+		absOffsets[i] = acc
+	}
+
+	tsLengths := make([]int, metricCount)
+	for i := range metricCount {
+		if i < metricCount-1 {
+			tsLengths[i] = absOffsets[i+1] - absOffsets[i]
+		} else {
+			tsLengths[i] = len(allTsBytes) - absOffsets[i]
+		}
+	}
+
+	// Mark shared metrics
+	isShared := make([]bool, metricCount)
+	for _, g := range groups {
+		for _, idx := range g.sharedIdxs {
+			isShared[idx] = true
+		}
+	}
+
+	// Estimate deduplicated payload size
+	dedupSize := 0
+	for i := range metricCount {
+		if !isShared[i] {
+			dedupSize += tsLengths[i]
+		}
+	}
+
+	// Build deduplicated tsPayload: only non-shared metrics contribute data
+	newTsPayload := make([]byte, 0, dedupSize)
+	newAbsOffsets := make([]int, metricCount)
+	writePos := 0
+
+	for i := range metricCount {
+		newAbsOffsets[i] = writePos
+
+		if !isShared[i] {
+			start := absOffsets[i]
+			end := start + tsLengths[i]
+			newTsPayload = append(newTsPayload, allTsBytes[start:end]...)
+			writePos += tsLengths[i]
+		}
+	}
+
+	// Recompute delta offsets from new absolute offsets
+	lastOffset := 0
+	for i := range metricCount {
+		delta := newAbsOffsets[i] - lastOffset
+		e.indexEntries[i].TimestampOffset = delta
+		lastOffset = newAbsOffsets[i]
+	}
+
+	// Build SharedTimestampTable
+	table := section.SharedTimestampTable{
+		Groups: make([]section.SharedTimestampGroup, len(groups)),
+	}
+
+	for i, g := range groups {
+		table.Groups[i] = section.SharedTimestampGroup{
+			CanonicalIndex: g.canonicalIdx,
+			SharedIndices:  g.sharedIdxs,
+		}
+	}
+
+	return newTsPayload, table
 }
 
 // AddDataPoint adds a single timestamp-value pair to the current started metric being encoded.

@@ -32,12 +32,13 @@ const (
 // concrete encoders to focus on their specific encoding logic while reusing
 // common configuration and state management.
 type NumericEncoderConfig struct {
-	header       *section.NumericHeader
-	indexEntries []section.NumericIndexEntry
-	tsCodec      compress.Codec
-	valCodec     compress.Codec
-	tagCodec     compress.Codec
-	engine       endian.EndianEngine
+	header           *section.NumericHeader
+	indexEntries     []section.NumericIndexEntry
+	tsCodec          compress.Codec
+	valCodec         compress.Codec
+	tagCodec         compress.Codec
+	engine           endian.EndianEngine
+	sharedTimestamps bool // opt-in for V2 shared timestamp encoding
 }
 
 // NewNumericEncoderConfig creates a new NumericEncoderConfig with the given start time.
@@ -265,5 +266,20 @@ func WithValueCompression(comp format.CompressionType) NumericEncoderOption {
 func WithTagsEnabled(enabled bool) NumericEncoderOption {
 	return options.NoError(func(cfg *NumericEncoderConfig) {
 		cfg.setTagsEnabled(enabled)
+	})
+}
+
+// WithSharedTimestamps enables V2 shared timestamp encoding.
+//
+// When enabled, the encoder detects metrics with identical timestamp sequences
+// and stores the timestamps only once, reducing blob size significantly when
+// many metrics share the same collection timestamps.
+//
+// IMPORTANT: All consumers must be upgraded to a mebo version that supports V2
+// decoding before enabling this on producers. The decoder accepts both V1 and V2
+// formats, so upgrade consumers first, then enable this option on producers.
+func WithSharedTimestamps() NumericEncoderOption {
+	return options.NoError(func(cfg *NumericEncoderConfig) {
+		cfg.sharedTimestamps = true
 	})
 }

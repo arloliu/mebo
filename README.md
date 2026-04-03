@@ -48,6 +48,7 @@ This design makes Mebo ideal for:
 - 🧵 **Thread-Safe**: Immutable blobs, safe concurrent reads
 - 🎨 **Type Support**: Numeric (float64) and text (string) metrics
 - 🗂️ **BlobSet Support**: Unified access across multiple blobs with global indexing
+- 🔗 **Shared Timestamps**: V2 encoding deduplicates identical timestamp sequences across metrics (24-73% size savings)
 
 ## Installation
 
@@ -491,6 +492,23 @@ encoder, _ := mebo.NewDefaultTextEncoder(time.Now())
 **Configuration**: Delta timestamps, Zstd compression
 **Result**: 8.71 bytes/point (85% savings for typical text)
 
+### Shared Timestamps (Space-Optimized)
+
+```go
+encoder, _ := mebo.NewNumericEncoder(time.Now(),
+    blob.WithTimestampEncoding(format.TypeDelta),
+    blob.WithValueEncoding(format.TypeGorilla),
+    blob.WithSharedTimestamps(),
+)
+```
+
+**Configuration**: V2 format with shared timestamp deduplication
+**Result**: 24-73% smaller blobs when many metrics share the same collection timestamps
+
+When enabled, the encoder detects metrics with identical timestamp sequences and stores the timestamps only once. This is ideal for monitoring workloads where all metrics are collected at the same intervals.
+
+**Important**: All consumers must be upgraded to a mebo version that supports V2 decoding **before** enabling this on producers. The decoder accepts both V1 and V2 formats, so upgrade consumers first, then enable this option on producers.
+
 ## Advanced Usage
 
 ### BlobSet: Unified Multi-Blob Access
@@ -665,7 +683,8 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 9. **Materialize wisely**: Only materialize when random access pattern justifies the cost (>100 accesses).
 10. **Monitor memory**: Materialization can use significant memory for large datasets (~16 bytes/point).
 11. **Use tags judiciously**: Tags add 8-16 bytes overhead per point; only enable when needed.
-11. **Profile your workload**: Test different configurations with your actual data to find optimal settings.
+12. **Enable shared timestamps**: When most metrics share the same collection schedule, use `WithSharedTimestamps()` for 24-73% size savings with minimal decode overhead (~5-11%). Upgrade all consumers to V2-capable versions before enabling on producers.
+13. **Profile your workload**: Test different configurations with your actual data to find optimal settings.
 
 ## Thread Safety
 

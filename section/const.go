@@ -16,6 +16,7 @@ const (
 
 	// Magic numbers (bits 4-15)
 	MagicNumericV1Opt = 0xEA10 // MagicNumericV1Opt is a version 1 magic number for float blob format.
+	MagicNumericV2Opt = 0xEA20 // MagicNumericV2Opt is a version 2 magic number for float blob format with shared timestamps.
 	MagicTextV1Opt    = 0xEB10 // MagicTextV1 is a version 1 magic number for text blob format.
 
 	// Timestamp encodings (bits 0-3) - using types package constants

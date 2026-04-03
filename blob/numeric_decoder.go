@@ -133,6 +133,21 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		return blob, err
 	}
 
+	// Step 3.5: If V2 format, parse and apply shared timestamp table
+	if d.header.Flag.IsV2() {
+		indexEnd := indexOffset + d.metricCount*section.NumericIndexEntrySize
+		sharedTableEnd := int(d.header.TimestampPayloadOffset)
+
+		if sharedTableEnd <= indexEnd {
+			return blob, fmt.Errorf("%w: V2 blob missing shared timestamp table", errs.ErrInvalidSharedTimestampTable)
+		}
+
+		sharedTableData := d.data[indexEnd:sharedTableEnd]
+		if err := section.ApplySharedTimestampTable(sharedTableData, d.engine, d.metricCount, indexEntries); err != nil {
+			return blob, fmt.Errorf("failed to parse shared timestamp table: %w", err)
+		}
+	}
+
 	// Step 4: Build index entry map
 	blob.index.byID = make(map[uint64]section.NumericIndexEntry, d.metricCount)
 	for _, entry := range indexEntries {

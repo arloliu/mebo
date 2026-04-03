@@ -21,7 +21,8 @@ The blob is structured as a single contiguous memory block with 8-byte aligned p
 | **Blob Header**            | 32 bytes (fixed)  | Metadata including flags, metric count, start time, and section offsets |
 | **Metric Names Payload**   | Variable (optional)| Length-prefixed metric name strings (only when bit 2 = 1)               |
 | **Metric Index**           | N × 16 bytes      | Array of IndexEntry structs with [Hash, Offsets, Count] in insertion order |
-| *(Padding)*                | 0-7 bytes         | Padding to 8-byte boundary alignment                                    |
+| **Shared Timestamp Table** | Variable (V2 only) | Deduplication table mapping metrics to canonical timestamp sequences       |
+| *(Padding)*                | 0-7 bytes          | Padding to 8-byte boundary alignment                                    |
 | **Timestamps Payload**     | Variable size     | All timestamps from all metrics, encoded + compressed                   |
 | *(Padding)*                | 0-7 bytes         | Padding to 8-byte boundary alignment                                    |
 | **Values Payload**         | Variable size     | All values from all metrics, encoded + compressed                       |
@@ -77,7 +78,7 @@ type FlagHeader struct {
 	// Bit 1 is endianness flag, 0 means little-endian, 1 means big-endian.
 	// Bit 2 is metric names payload flag, 0 means no payload, 1 means metric names included (collision detection).
 	// Bit 3 is reserved for future use, must be set to 0.
-	// Bit 4-15 are magic number 0xEA10 to identify the blob format.
+	// Bit 4-15 are magic number: 0xEA10 for V1, 0xEA20 for V2 (shared timestamps).
 	Options uint16
 
 	// EncodingType is an enum indicating the encoding used for this metric blob.
@@ -307,6 +308,97 @@ For typical workloads (150 metrics per blob):
 
 -   Built into Go standard library (no dependencies)
 -   Simple algorithm ensures cross-language compatibility
+
+### Shared Timestamp Table (V2 Only)
+
+**Purpose:** Deduplicate identical timestamp sequences across metrics to reduce blob size.
+
+**When Enabled:**
+- `Flag.Options` bits 4-15 contain magic `0xEA20` (V2 format) instead of `0xEA10` (V1)
+- Encoder must be created with `WithSharedTimestamps()` option
+- Only present when the encoder detects two or more metrics sharing identical encoded timestamp bytes
+
+**Motivation:**
+In typical monitoring workloads, many metrics are collected at the same intervals (e.g., all CPU/memory/disk metrics sampled every 10 seconds). Without deduplication, each metric stores its own copy of the timestamp sequence. With shared timestamps, identical sequences are stored once and referenced by all metrics that share them, achieving 24-73% blob size savings.
+
+**Detection Algorithm (Encoder):**
+1. After all metrics are encoded, hash each metric's encoded timestamp bytes using xxHash64 combined with byte length
+2. Group metrics by hash into candidate buckets (multi-slot open addressing)
+3. Verify candidates with `bytes.Equal` to eliminate hash collisions
+4. Groups with ≥2 members become shared timestamp groups
+5. The first member of each group becomes the "canonical" metric (stores the actual timestamps)
+6. Other members ("shared" metrics) have their timestamp bytes removed and reference the canonical
+
+**Binary Format:**
+
+The shared timestamp table is positioned between the Metric Index and the Timestamps Payload:
+
+```
+[GroupCount: uint16]
+  For each group:
+    [CanonicalIndex: uint16]    // Index of the canonical metric in the Metric Index
+    [MemberCount: uint16]       // Number of shared (non-canonical) members
+    [SharedIndices: uint16×N]   // Indices of shared metrics referencing this canonical
+```
+
+**Field Descriptions:**
+- `GroupCount` (uint16): Number of shared timestamp groups (0 = no deduplication)
+- `CanonicalIndex` (uint16): Metric index whose timestamp bytes are stored in the payload
+- `MemberCount` (uint16): Number of metrics sharing this canonical's timestamps
+- `SharedIndices` (uint16[]): Metric indices that share the canonical's timestamp data
+
+**Size Calculation:**
+```
+Size = 2 + Σ(2 + 2 + 2 × MemberCount_i)
+```
+
+**Example (3 groups, 150 metrics total, 140 sharing):**
+```
+GroupCount = 3
+  Group 0: Canonical=0, Members=[1, 2, 3, ..., 49]     (50 metrics share timestamps)
+  Group 1: Canonical=50, Members=[51, 52, ..., 99]      (50 metrics share timestamps)
+  Group 2: Canonical=100, Members=[101, 102, ..., 139]  (40 metrics share timestamps)
+  Metrics 140-149: unique timestamps (not in any group)
+
+Table size = 2 + (2+2+49×2) + (2+2+49×2) + (2+2+39×2) = 2 + 102 + 102 + 82 = 288 bytes
+Savings = 140 metrics × ~80 bytes/timestamp_sequence = ~11,200 bytes saved
+Net savings = 11,200 - 288 = ~10,912 bytes
+```
+
+**Decoder Behavior:**
+1. Check magic number in `Flag.Options`: `0xEA20` indicates V2 with possible shared timestamp table
+2. Read `GroupCount` from the table section
+3. For each group, read canonical index and shared member indices
+4. Apply: copy the canonical metric's timestamp offset and byte length to all shared members
+5. All metrics can then be decoded using normal V1 timestamp decoding logic
+
+**Validation Rules:**
+- No empty groups (MemberCount must be ≥1)
+- No duplicate canonical indices across groups
+- No self-references (canonical index must not appear in its own shared list)
+- No duplicate shared indices within a group
+- No cross-group reuse of shared indices
+- Canonical indices must not appear as shared members in other groups
+- No trailing bytes after the last group
+
+**Error Handling:**
+- Malformed table: `ErrInvalidSharedTimestampTable`
+- Any validation rule violation: `ErrInvalidSharedTimestampTable`
+
+**Performance:**
+- Encode overhead: One-time xxHash64 + bytes.Equal scan after all metrics are added
+- Decode overhead: ~3-8% additional time, +1 allocation (direct apply fast path)
+- The decoder uses `ApplySharedTimestampTable()` which parses and applies the table in a single pass without materializing an intermediate data structure
+
+**Backward Compatibility:**
+- V1 decoders safely reject V2 blobs (different magic number `0xEA20` vs `0xEA10`)
+- V2 decoders accept both V1 and V2 formats
+- **Upgrade strategy:** Deploy V2-capable consumers first, then enable `WithSharedTimestamps()` on producers
+
+**See Also:**
+- Implementation: `section/numeric_shared_ts.go`
+- Encoder integration: `blob/numeric_encoder.go` (`detectSharedTimestamps`, `buildDedupTsPayload`)
+- Encoder option: `blob/numeric_encoder_config.go` (`WithSharedTimestamps`)
 
 ### Data Payloads
 

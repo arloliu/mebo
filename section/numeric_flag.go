@@ -183,8 +183,16 @@ func (f *NumericFlag) SetValueCompression(compression format.CompressionType) {
 }
 
 // IsValidMagicNumber checks if the magic number is valid.
+// Accepts both V1 and V2 numeric magic numbers.
 func (f NumericFlag) IsValidMagicNumber() bool {
-	return f.GetMagicNumber() == MagicNumericV1Opt
+	magic := f.GetMagicNumber()
+
+	return magic == MagicNumericV1Opt || magic == MagicNumericV2Opt
+}
+
+// IsV2 returns whether this flag indicates a V2 format blob.
+func (f NumericFlag) IsV2() bool {
+	return f.GetMagicNumber() == MagicNumericV2Opt
 }
 
 // IsValidEncoding checks if the encoding types are valid.

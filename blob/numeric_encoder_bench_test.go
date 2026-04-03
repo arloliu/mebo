@@ -7,6 +7,268 @@ import (
 	"github.com/arloliu/mebo/format"
 )
 
+type sharedTimestampBenchmarkScenario struct {
+	name               string
+	metricCount        int
+	pointsPerMetric    int
+	compressionEnabled bool
+}
+
+type mixedSharedTimestampBenchmarkScenario struct {
+	name               string
+	metricCount        int
+	pointsPerMetric    int
+	sharedGroupCount   int
+	uniqueMetricCount  int
+	compressionEnabled bool
+}
+
+// BenchmarkSharedTimestamps_EncodedSize reports end-to-end blob size deltas
+// between the default V1 encoding and opt-in V2 shared timestamp encoding.
+func BenchmarkSharedTimestamps_EncodedSize(b *testing.B) {
+	scenarios := []sharedTimestampBenchmarkScenario{
+		{name: "150metrics_10points_DefaultCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: true},
+		{name: "150metrics_10points_NoCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: false},
+		{name: "150metrics_100points_DefaultCompression", metricCount: 150, pointsPerMetric: 100, compressionEnabled: true},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			v1Data := createSharedTimestampBenchmarkData(b, sc, false)
+			v2Data := createSharedTimestampBenchmarkData(b, sc, true)
+
+			savedBytes := len(v1Data) - len(v2Data)
+			savedPct := 0.0
+			if len(v1Data) > 0 {
+				savedPct = float64(savedBytes) * 100 / float64(len(v1Data))
+			}
+
+			b.ResetTimer()
+			for b.Loop() {
+				_ = savedBytes
+			}
+
+			b.ReportMetric(float64(len(v1Data)), "v1-bytes")
+			b.ReportMetric(float64(len(v2Data)), "v2-bytes")
+			b.ReportMetric(float64(savedBytes), "saved-bytes")
+			b.ReportMetric(savedPct, "saved-pct")
+		})
+	}
+}
+
+// BenchmarkSharedTimestamps_Encode benchmarks the encoder on repeated-timestamp
+// workloads with and without the shared timestamp optimization enabled.
+func BenchmarkSharedTimestamps_Encode(b *testing.B) {
+	scenarios := []sharedTimestampBenchmarkScenario{
+		{name: "150metrics_10points_DefaultCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: true},
+		{name: "150metrics_10points_NoCompression", metricCount: 150, pointsPerMetric: 10, compressionEnabled: false},
+		{name: "150metrics_100points_DefaultCompression", metricCount: 150, pointsPerMetric: 100, compressionEnabled: true},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			for _, sharedEnabled := range []bool{false, true} {
+				modeName := "V1_Default"
+				if sharedEnabled {
+					modeName = "V2_SharedTimestamps"
+				}
+
+				b.Run(modeName, func(b *testing.B) {
+					sample := createSharedTimestampBenchmarkData(b, sc, sharedEnabled)
+					b.ReportAllocs()
+					b.SetBytes(int64(len(sample)))
+					b.ResetTimer()
+
+					for b.Loop() {
+						_ = createSharedTimestampBenchmarkData(b, sc, sharedEnabled)
+					}
+
+					b.ReportMetric(float64(len(sample)), "blob-bytes")
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkSharedTimestamps_Mixed_EncodedSize reports blob size deltas for a
+// workload where some metrics share timestamps in groups and others remain unique.
+func BenchmarkSharedTimestamps_Mixed_EncodedSize(b *testing.B) {
+	scenarios := []mixedSharedTimestampBenchmarkScenario{
+		{name: "150metrics_10points_3groups_30unique_DefaultCompression", metricCount: 150, pointsPerMetric: 10, sharedGroupCount: 3, uniqueMetricCount: 30, compressionEnabled: true},
+		{name: "150metrics_10points_3groups_30unique_NoCompression", metricCount: 150, pointsPerMetric: 10, sharedGroupCount: 3, uniqueMetricCount: 30, compressionEnabled: false},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			v1Data := createMixedSharedTimestampBenchmarkData(b, sc, false)
+			v2Data := createMixedSharedTimestampBenchmarkData(b, sc, true)
+
+			savedBytes := len(v1Data) - len(v2Data)
+			savedPct := 0.0
+			if len(v1Data) > 0 {
+				savedPct = float64(savedBytes) * 100 / float64(len(v1Data))
+			}
+
+			b.ResetTimer()
+			for b.Loop() {
+				_ = savedBytes
+			}
+
+			b.ReportMetric(float64(len(v1Data)), "v1-bytes")
+			b.ReportMetric(float64(len(v2Data)), "v2-bytes")
+			b.ReportMetric(float64(savedBytes), "saved-bytes")
+			b.ReportMetric(savedPct, "saved-pct")
+		})
+	}
+}
+
+// BenchmarkSharedTimestamps_Mixed_Encode benchmarks encoding on mixed
+// shared/unique timestamp workloads.
+func BenchmarkSharedTimestamps_Mixed_Encode(b *testing.B) {
+	scenarios := []mixedSharedTimestampBenchmarkScenario{
+		{name: "150metrics_10points_3groups_30unique_DefaultCompression", metricCount: 150, pointsPerMetric: 10, sharedGroupCount: 3, uniqueMetricCount: 30, compressionEnabled: true},
+		{name: "150metrics_10points_3groups_30unique_NoCompression", metricCount: 150, pointsPerMetric: 10, sharedGroupCount: 3, uniqueMetricCount: 30, compressionEnabled: false},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			for _, sharedEnabled := range []bool{false, true} {
+				modeName := "V1_Default"
+				if sharedEnabled {
+					modeName = "V2_SharedTimestamps"
+				}
+
+				b.Run(modeName, func(b *testing.B) {
+					sample := createMixedSharedTimestampBenchmarkData(b, sc, sharedEnabled)
+					b.ReportAllocs()
+					b.SetBytes(int64(len(sample)))
+					b.ResetTimer()
+
+					for b.Loop() {
+						_ = createMixedSharedTimestampBenchmarkData(b, sc, sharedEnabled)
+					}
+
+					b.ReportMetric(float64(len(sample)), "blob-bytes")
+				})
+			}
+		})
+	}
+}
+
+func createSharedTimestampBenchmarkData(tb testing.TB, sc sharedTimestampBenchmarkScenario, sharedEnabled bool) []byte {
+	tb.Helper()
+
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	options := makeSharedTimestampBenchmarkOptions(sc.compressionEnabled, sharedEnabled)
+
+	encoder, err := NewNumericEncoder(startTime, options...)
+	if err != nil {
+		tb.Fatalf("failed to create encoder: %v", err)
+	}
+
+	for metricIdx := range sc.metricCount {
+		err = encoder.StartMetricID(uint64(metricIdx+1), sc.pointsPerMetric)
+		if err != nil {
+			tb.Fatalf("failed to start metric %d: %v", metricIdx, err)
+		}
+
+		for pointIdx := range sc.pointsPerMetric {
+			ts := startTime.Add(time.Duration(pointIdx) * time.Second).UnixMicro()
+			value := float64(metricIdx*1000 + pointIdx)
+			err = encoder.AddDataPoint(ts, value, "")
+			if err != nil {
+				tb.Fatalf("failed to add point %d for metric %d: %v", pointIdx, metricIdx, err)
+			}
+		}
+
+		err = encoder.EndMetric()
+		if err != nil {
+			tb.Fatalf("failed to end metric %d: %v", metricIdx, err)
+		}
+	}
+
+	data, err := encoder.Finish()
+	if err != nil {
+		tb.Fatalf("failed to finish encoding: %v", err)
+	}
+
+	return data
+}
+
+func createMixedSharedTimestampBenchmarkData(tb testing.TB, sc mixedSharedTimestampBenchmarkScenario, sharedEnabled bool) []byte {
+	tb.Helper()
+
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	options := makeSharedTimestampBenchmarkOptions(sc.compressionEnabled, sharedEnabled)
+
+	encoder, err := NewNumericEncoder(startTime, options...)
+	if err != nil {
+		tb.Fatalf("failed to create encoder: %v", err)
+	}
+
+	sharedMetricCount := sc.metricCount - sc.uniqueMetricCount
+	if sharedMetricCount < 0 {
+		tb.Fatalf("invalid mixed scenario: shared metric count cannot be negative")
+	}
+	if sharedMetricCount > 0 && sc.sharedGroupCount <= 0 {
+		tb.Fatalf("invalid mixed scenario: sharedGroupCount must be > 0 when shared metrics exist")
+	}
+
+	for metricIdx := range sc.metricCount {
+		err = encoder.StartMetricID(uint64(metricIdx+1), sc.pointsPerMetric)
+		if err != nil {
+			tb.Fatalf("failed to start metric %d: %v", metricIdx, err)
+		}
+
+		for pointIdx := range sc.pointsPerMetric {
+			var ts int64
+			if metricIdx < sharedMetricCount {
+				groupIdx := metricIdx % sc.sharedGroupCount
+				ts = startTime.Add(time.Duration(groupIdx*1000+pointIdx) * time.Second).UnixMicro()
+			} else {
+				uniqueIdx := metricIdx - sharedMetricCount
+				ts = startTime.Add(time.Duration(10000+uniqueIdx*1000+pointIdx) * time.Second).UnixMicro()
+			}
+
+			value := float64(metricIdx*1000 + pointIdx)
+			err = encoder.AddDataPoint(ts, value, "")
+			if err != nil {
+				tb.Fatalf("failed to add point %d for metric %d: %v", pointIdx, metricIdx, err)
+			}
+		}
+
+		err = encoder.EndMetric()
+		if err != nil {
+			tb.Fatalf("failed to end metric %d: %v", metricIdx, err)
+		}
+	}
+
+	data, err := encoder.Finish()
+	if err != nil {
+		tb.Fatalf("failed to finish encoding: %v", err)
+	}
+
+	return data
+}
+
+func makeSharedTimestampBenchmarkOptions(compressionEnabled, sharedEnabled bool) []NumericEncoderOption {
+	options := []NumericEncoderOption{
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+	}
+	if !compressionEnabled {
+		options = append(options,
+			WithTimestampCompression(format.CompressionNone),
+			WithValueCompression(format.CompressionNone),
+		)
+	}
+	if sharedEnabled {
+		options = append(options, WithSharedTimestamps())
+	}
+
+	return options
+}
+
 // Benchmark AddFromRows with large metrics (testing batching mechanism)
 func BenchmarkAddFromRows_LargeMetrics(b *testing.B) {
 	type DataPoint struct {

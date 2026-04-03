@@ -30,4 +30,5 @@ var (
 	ErrInvalidMetricNamesPayload     = errors.New("invalid metric names payload")
 	ErrInvalidMetricNamesCount       = errors.New("invalid metric names count")
 	ErrMixedIdentifierMode           = errors.New("cannot mix StartMetricID and StartMetricName in the same encoder")
+	ErrInvalidSharedTimestampTable   = errors.New("invalid shared timestamp table")
 )
