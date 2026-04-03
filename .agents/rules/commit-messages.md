@@ -1,6 +1,6 @@
 ---
-description: Clean and concise commit message guidelines
-alwaysApply: true
+description: "Commit message format and conventions. Use when writing git commit messages."
+applyTo: "**"
 ---
 
 # Commit Message Rules
@@ -59,8 +59,6 @@ refactor(measure): simplify json input parsing
 feat(blob): This commit adds a new feature for gorilla compression support with extensive documentation and examples.
 
 Fixed a bug.
-
-Updated documentation to include comprehensive Cursor AI rules converted from GitHub Copilot instructions with MDC format featuring contextual application via glob patterns.
 ```
 
 ## Body Guidelines (Optional)

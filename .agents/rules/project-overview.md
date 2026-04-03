@@ -1,6 +1,6 @@
 ---
-description: Mebo project overview, architecture, and domain context
-alwaysApply: true
+description: "Mebo project overview, architecture, and domain context. Use when working on any file in the mebo project."
+applyTo: "**"
 ---
 
 # Mebo Project Overview
@@ -27,8 +27,7 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 ```
 .
 ├── .github/              # GitHub workflows and configurations
-├── .cursor/              # Cursor IDE rules and configurations
-│   └── rules/            # Organized rule files (MDC format)
+├── .agents/              # Agent instructions (converted from .cursor/rules)
 ├── internal/             # Private application and library code
 ├── blob/                 # Blob encoding/decoding
 ├── compress/             # Compression codecs

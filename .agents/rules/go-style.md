@@ -1,7 +1,6 @@
 ---
-description: Go coding style guidelines and modern idioms
-globs: ["**/*.go"]
-alwaysApply: false
+description: "Go coding style guidelines and modern idioms. Use when writing or modifying Go source files."
+applyTo: "**/*.go"
 ---
 
 # Go Style Guidelines

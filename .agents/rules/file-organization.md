@@ -1,7 +1,6 @@
 ---
-description: File structure and code organization standards for Go files
-globs: ["**/*.go"]
-alwaysApply: false
+description: "File structure and code organization standards for Go files. Use when creating or reorganizing Go source files."
+applyTo: "**/*.go"
 ---
 
 # File Organization Rules
@@ -106,13 +105,8 @@ func (c *Config) validate() error {
 **Each type, struct, or logical component should have at most 3 Go source files:**
 
 1. **Implementation file** - Contains the main logic, types, and methods
-   - Example: `numeric_raw.go`, `ts_delta.go`, `blob.go`
-
 2. **Test file** (`*_test.go`) - Contains unit tests for the implementation
-   - Example: `numeric_raw_test.go`, `ts_delta_test.go`, `blob_test.go`
-
 3. **Benchmark file** (`*_bench_test.go`) - Contains performance benchmarks (optional)
-   - Example: `numeric_bench_test.go`, `ts_delta_bench_test.go`, `blob_bench_test.go`
 
 ### Principles
 
@@ -121,29 +115,6 @@ func (c *Config) validate() error {
 - ✅ Related code stays together by type/component
 - ❌ Avoid creating additional files like `*_reuse_test.go`, `*_helper_test.go`, etc.
 - ❌ No cross-cutting test files that test multiple unrelated types
-
-### Benefits
-
-- **Predictability**: Easy to find where code lives
-- **Organization**: Related code stays together by component
-- **Navigation**: Developers know exactly where to look
-- **Maintainability**: Prevents file sprawl and confusion
-- **Consistency**: Uniform structure across all packages
-
-### Example Structure
-
-```
-encoding/
-├── numeric_raw.go              # Implementation
-├── numeric_raw_test.go         # Unit tests
-├── numeric_bench_test.go       # Benchmarks
-├── ts_delta.go                 # Implementation
-├── ts_delta_test.go            # Unit tests
-├── ts_delta_bench_test.go      # Benchmarks
-└── tag.go                      # Implementation
-    ├── tag_test.go             # Unit tests
-    └── tag_bench_test.go       # Benchmarks
-```
 
 ### Allowed Exceptions
 

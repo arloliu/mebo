@@ -1,7 +1,6 @@
 ---
-description: Testing guidelines and best practices for Go test files
-globs: ["**/*_test.go", "**/*_bench_test.go"]
-alwaysApply: false
+description: "Testing guidelines and best practices for Go test files. Use when writing unit tests or benchmarks."
+applyTo: "**/*_test.go"
 ---
 
 # Testing Guidelines
@@ -159,10 +158,6 @@ Use `t.Setenv()` instead of `os.Setenv()`:
 func TestWithEnvVar(t *testing.T) {
     // GOOD: Automatically cleaned up
     t.Setenv("MY_VAR", "value")
-
-    // BAD: Manual cleanup required
-    // os.Setenv("MY_VAR", "value")
-    // defer os.Unsetenv("MY_VAR")
 }
 ```
 
@@ -173,18 +168,9 @@ Use `t.Parallel()` for independent tests:
 ```go
 func TestIndependentFeature(t *testing.T) {
     t.Parallel() // Runs concurrently with other parallel tests
-
     // Test code here
 }
 ```
-
-## Test Organization
-
-### Test File Naming
-
-- Unit tests: `<filename>_test.go`
-- Benchmarks: `<filename>_bench_test.go`
-- Examples: Include in `<filename>_test.go` or create `example_test.go`
 
 ### Testable Examples
 
@@ -196,53 +182,5 @@ func ExampleEncoder_Write() {
     encoder.Write([]byte("hello"))
     fmt.Println(encoder.Len())
     // Output: 5
-}
-```
-
-## Linter Exclusions for Tests
-
-Test files are excluded from certain linters:
-- `bodyclose`: HTTP response body closing
-- `dupl`: Duplicate code detection
-- `gosec`: Security checks
-- `noctx`: Context usage
-
-This allows for more flexible test code without compromising production code quality.
-
-## Coverage Guidelines
-
-- Aim for >80% code coverage
-- Focus on critical paths and error handling
-- Don't test getters/setters unless they have logic
-- Test exported APIs thoroughly
-- Integration tests should complement unit tests
-- Use coverage tools: `go test -cover -coverprofile=coverage.out`
-
-## Mocking
-
-Use testify mock for complex dependencies:
-
-```go
-import "github.com/stretchr/testify/mock"
-
-type MockReader struct {
-    mock.Mock
-}
-
-func (m *MockReader) Read(p []byte) (int, error) {
-    args := m.Called(p)
-    return args.Int(0), args.Error(1)
-}
-
-func TestWithMock(t *testing.T) {
-    mockReader := new(MockReader)
-    mockReader.On("Read", mock.Anything).Return(10, nil)
-
-    // Use mock in test
-    n, err := mockReader.Read(make([]byte, 10))
-    require.NoError(t, err)
-    assert.Equal(t, 10, n)
-
-    mockReader.AssertExpectations(t)
 }
 ```
