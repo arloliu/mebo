@@ -58,6 +58,14 @@ bench:
 	@echo "Running benchmarks..."
 	@go test ./... -bench=. -benchmem -run=^$$ -timeout=$(TEST_TIMEOUT)
 
+## bench-measure: Run encoding benchmark matrix and save JSON results
+bench-measure:
+	@echo "Running encoding benchmark matrix..."
+	@mkdir -p .benchmarks
+	@cd tests/measurev2 && go run . -pretty -verbose -output ../../.benchmarks/measure_results.json
+	@echo "Results saved to .benchmarks/measure_results.json"
+
+
 ## bench-gorilla-decoder: Compare Numeric Gorilla decoder benchmarks against a baseline commit
 bench-gorilla-decoder:
 	@if [ -z "$(BASELINE)" ]; then \

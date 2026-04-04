@@ -1,3 +1,7 @@
+> ⚠️ **Deprecated**: This tool has been superseded by [`tests/measurev2/`](../measurev2/).
+> The v2 tool compares all 9 timestamp×value encoding combinations with structured JSON output.
+> See that directory for comprehensive encoding comparison benchmarks.
+
 # Compression Ratio Measurement Tool
 
 ## Quick Start
