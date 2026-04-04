@@ -934,18 +934,19 @@ func (e *NumericEncoder) buildDedupTsPayload(allTsBytes []byte, groups []tsGroup
 	return newTsPayload, table
 }
 
-// AddDataPoint adds a single timestamp-value pair to the current started metric being encoded.
+// AddDataPoint adds a single data point to the current started metric being encoded.
 //
 // This method is exclusive with AddDataPoints. Use AddDataPoints for bulk additions
 // for better performance.
 //
 // Parameters:
-//   - timestamp: Timestamp in microseconds since Unix epoch
-//   - value: Float64 metric value
-//   - tag: Optional tag string (ignored if tag support not enabled)
+//   - timestamp: Caller-defined timestamp value (e.g. microseconds since Unix epoch).
+//     The unit must be consistent across all data points in the blob.
+//   - value: Float64 metric value.
+//   - tag: Optional tag string (ignored if tag support is not enabled).
 //
 // Returns:
-//   - error: ErrTooManyDataPoints if adding would exceed claimed data point count
+//   - error: ErrTooManyDataPoints if adding would exceed claimed data point count.
 func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string) error {
 	if e.tsEncoder.Len()-e.ts.length >= e.claimed {
 		return errs.ErrTooManyDataPoints
@@ -965,20 +966,20 @@ func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string
 	return nil
 }
 
-// AddDataPoints adds multiple timestamp-value pairs to the current started metric being encoded.
+// AddDataPoints adds multiple data points to the current started metric being encoded.
 //
-// This method is more efficient than calling AddDataPoint multiple times. The tags parameter is
-// optional, but if provided its length must match timestamps and values. This method is exclusive
-// with AddDataPoint.
+// This method is more efficient than calling AddDataPoint multiple times. The tags parameter
+// is optional, but if provided its length must match timestamps and values.
 //
 // Parameters:
-//   - timestamps: Slice of timestamps in microseconds since Unix epoch
-//   - values: Slice of float64 metric values (must match timestamps length)
-//   - tags: Optional slice of tag strings (if provided, must match timestamps length)
+//   - timestamps: Slice of caller-defined timestamp values. The unit must be consistent
+//     across all data points in the blob (e.g. microseconds since Unix epoch).
+//   - values: Slice of float64 metric values (must have the same length as timestamps).
+//   - tags: Optional slice of tag strings (if non-empty, must have the same length as timestamps).
 //
 // Returns:
 //   - error: Length mismatch error if timestamps/values/tags lengths don't match,
-//     or ErrTooManyDataPoints if adding would exceed claimed data point count
+//     or ErrTooManyDataPoints if adding would exceed the claimed data point count.
 func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tags []string) error {
 	tsLen := len(timestamps)
 	valLen := len(values)

@@ -246,8 +246,13 @@ func (s TextBlobSet) TimeRange() (start, end time.Time) {
 	return s.blobs[0].StartTime(), s.blobs[len(s.blobs)-1].StartTime()
 }
 
-// BlobAt returns the blob at the specified index.
-// Returns nil if the index is out of bounds.
+// BlobAt returns a pointer to the blob at the specified index in chronological order.
+//
+// Parameters:
+//   - index: Zero-based index into the sorted blob slice.
+//
+// Returns:
+//   - *TextBlob: Pointer to the blob, or nil if the index is out of bounds.
 func (s TextBlobSet) BlobAt(index int) *TextBlob {
 	if index < 0 || index >= len(s.blobs) {
 		return nil
@@ -257,7 +262,11 @@ func (s TextBlobSet) BlobAt(index int) *TextBlob {
 }
 
 // Blobs returns all blobs in chronological order.
+//
 // The returned slice is a copy and can be safely modified without affecting the set.
+//
+// Returns:
+//   - []TextBlob: A copy of the internal blob slice sorted by start time.
 func (s TextBlobSet) Blobs() []TextBlob {
 	result := make([]TextBlob, len(s.blobs))
 	copy(result, s.blobs)

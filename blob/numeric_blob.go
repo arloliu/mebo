@@ -77,13 +77,15 @@ func (b NumericBlob) HasMetricName(metricName string) bool {
 	return b.index.HasMetricName(metricName)
 }
 
-// MetricIDs returns a slice of all metric IDs in the blob.
+// MetricIDs returns a cloned slice of all metric IDs in the blob.
+// The returned slice is safe to modify; it does not reference internal state.
 func (b NumericBlob) MetricIDs() []uint64 {
 	return b.index.MetricIDs()
 }
 
-// MetricNames returns a slice of all metric names in the blob.
-// Returns empty slice if the blob doesn't have metric names payload.
+// MetricNames returns a cloned slice of all metric names in the blob.
+// Returns an empty slice if the blob was encoded without metric names (i.e., using StartMetricID).
+// The returned slice is safe to modify; it does not reference internal state.
 func (b NumericBlob) MetricNames() []string {
 	return b.index.MetricNames()
 }
@@ -91,8 +93,8 @@ func (b NumericBlob) MetricNames() []string {
 // Len returns the number of data points for the given metric ID.
 // If the metric ID does not exist, it returns 0.
 //
-// It is useful for calculating the index cross multiple blobs without
-// needing to decode all timestamps or values.
+// It is useful for calculating global indices across multiple blobs without
+// needing to decode any timestamps or values.
 func (b NumericBlob) Len(metricID uint64) int {
 	return b.index.Len(metricID)
 }
@@ -113,9 +115,16 @@ func (b NumericBlob) LenByName(metricName string) int {
 // The index starts from 0 and increments for each data point.
 // NumericDataPoint contains timestamp, value, and optional tag.
 //
-// This is the most convenient way(but costly) to retrieve complete data points with their indices.
-// If you only need timestamps, values, or tags individually, use the specific methods
-// (AllTimestamps, AllValues, AllTags) for better performance.
+// Use this method when you need all three fields (timestamp, value, tag) together.
+// If you only need one field, prefer AllTimestamps, AllValues, or AllTags,
+// as they avoid constructing the full NumericDataPoint for each iteration step.
+//
+// Parameters:
+//   - metricID: The metric ID to iterate over.
+//
+// Returns:
+//   - iter.Seq2[int, NumericDataPoint]: Iterator yielding (0-based index, data point) pairs.
+//     Returns an empty iterator if the metric ID is not found.
 //
 // Example:
 //
@@ -131,7 +140,15 @@ func (b NumericBlob) All(metricID uint64) iter.Seq2[int, NumericDataPoint] {
 	return b.allFromEntry(entry)
 }
 
-// AllByName returns a sequence of (index, NumericDataPoint) for the given metric name.
+// AllByName returns an iterator over (index, NumericDataPoint) for the given metric name.
+// The index starts from 0 and increments for each data point.
+//
+// Parameters:
+//   - metricName: The metric name to look up.
+//
+// Returns:
+//   - iter.Seq2[int, NumericDataPoint]: Iterator yielding (0-based index, data point) pairs.
+//     Returns an empty iterator if the metric name is not found.
 //
 // Example:
 //
@@ -148,6 +165,13 @@ func (b NumericBlob) AllByName(metricName string) iter.Seq2[int, NumericDataPoin
 }
 
 // AllTimestamps returns an iterator over all timestamps for the given metric ID.
+//
+// Parameters:
+//   - metricID: The metric ID to iterate over.
+//
+// Returns:
+//   - iter.Seq[int64]: Iterator yielding decoded timestamps in insertion order.
+//     Returns an empty iterator if the metric ID is not found.
 func (b NumericBlob) AllTimestamps(metricID uint64) iter.Seq[int64] {
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {
@@ -169,7 +193,14 @@ func (b NumericBlob) AllTimestampsByName(metricName string) iter.Seq[int64] {
 	return b.allTimestampsFromEntry(entry)
 }
 
-// AllValues returns an iterator over all values for the given metric ID.
+// AllValues returns an iterator over all float64 values for the given metric ID.
+//
+// Parameters:
+//   - metricID: The metric ID to iterate over.
+//
+// Returns:
+//   - iter.Seq[float64]: Iterator yielding decoded values in insertion order.
+//     Returns an empty iterator if the metric ID is not found.
 func (b NumericBlob) AllValues(metricID uint64) iter.Seq[float64] {
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {

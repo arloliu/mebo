@@ -44,7 +44,16 @@ type NumericEncoderConfig struct {
 }
 
 // NewNumericEncoderConfig creates a new NumericEncoderConfig with the given start time.
+//
 // The encoder will grow dynamically as metrics are added, up to MaxMetricCount.
+// Index entry capacity starts at initialIndexCapacity and grows using an amortized
+// strategy to minimize allocations across small and large blobs alike.
+//
+// Parameters:
+//   - startTime: The reference start time recorded in the blob header.
+//
+// Returns:
+//   - *NumericEncoderConfig: A new encoder configuration ready for use.
 func NewNumericEncoderConfig(startTime time.Time) *NumericEncoderConfig {
 	header := section.NewNumericHeader(startTime)
 
@@ -227,7 +236,12 @@ const (
 type NumericEncoderOption = options.Option[*NumericEncoderConfig]
 
 // WithLittleEndian sets the encoder to use little-endian byte order.
-// It is the default option.
+//
+// It is the default byte order. Use WithBigEndian only when interoperability
+// with big-endian systems is required.
+//
+// Returns:
+//   - NumericEncoderOption: An option that configures little-endian byte order.
 func WithLittleEndian() NumericEncoderOption {
 	return options.NoError(func(c *NumericEncoderConfig) {
 		c.setEndianess(littleEndianOpt)
@@ -235,7 +249,12 @@ func WithLittleEndian() NumericEncoderOption {
 }
 
 // WithBigEndian sets the encoder to use big-endian byte order.
-// It rarely needs to be used unless interoperability with big-endian systems is required.
+//
+// This option is rarely needed. Prefer WithLittleEndian (the default) unless
+// interoperability with a big-endian system is explicitly required.
+//
+// Returns:
+//   - NumericEncoderOption: An option that configures big-endian byte order.
 func WithBigEndian() NumericEncoderOption {
 	return options.NoError(func(c *NumericEncoderConfig) {
 		c.setEndianess(bigEndianOpt)
@@ -243,6 +262,19 @@ func WithBigEndian() NumericEncoderOption {
 }
 
 // WithTimestampEncoding sets the timestamp encoding type for the encoder.
+//
+// Valid encoding types:
+//   - format.TypeRaw: No encoding; timestamps stored as raw 64-bit values.
+//   - format.TypeDelta: Delta-of-delta encoding; stores differences between consecutive timestamps as varints, ideal for regular intervals.
+//   - format.TypeDeltaPacked: Delta-of-delta encoding with Group Varint packing; better compression for irregular intervals.
+//
+// The default encoding is format.TypeDelta.
+//
+// Parameters:
+//   - enc: The encoding type to use for timestamps.
+//
+// Returns:
+//   - NumericEncoderOption: An option that sets the timestamp encoding, or an error if the encoding type is unsupported.
 func WithTimestampEncoding(enc format.EncodingType) NumericEncoderOption {
 	return options.New(func(c *NumericEncoderConfig) error {
 		return c.setTimestampEncoding(enc)
@@ -250,6 +282,19 @@ func WithTimestampEncoding(enc format.EncodingType) NumericEncoderOption {
 }
 
 // WithValueEncoding sets the value encoding type for the encoder.
+//
+// Valid encoding types:
+//   - format.TypeRaw: No encoding; values stored as raw 64-bit IEEE 754 floats.
+//   - format.TypeGorilla: Facebook Gorilla XOR encoding; excellent compression for slowly changing float values.
+//   - format.TypeChimp: Chimp encoding; improved variant of Gorilla with better compression for noisy or volatile values.
+//
+// The default encoding is format.TypeGorilla.
+//
+// Parameters:
+//   - enc: The encoding type to use for metric values.
+//
+// Returns:
+//   - NumericEncoderOption: An option that sets the value encoding, or an error if the encoding type is unsupported.
 func WithValueEncoding(enc format.EncodingType) NumericEncoderOption {
 	return options.New(func(c *NumericEncoderConfig) error {
 		return c.setValueEncoding(enc)
@@ -257,6 +302,21 @@ func WithValueEncoding(enc format.EncodingType) NumericEncoderOption {
 }
 
 // WithTimestampCompression sets the timestamp compression type for the encoder.
+//
+// Valid compression types:
+//   - format.CompressionNone: No compression; timestamps stored as-is after encoding.
+//   - format.CompressionZstd: Zstandard compression; best ratio, higher CPU cost.
+//   - format.CompressionS2: S2 compression; good ratio with lower CPU cost than Zstd.
+//   - format.CompressionLZ4: LZ4 compression; fastest decompression, moderate ratio.
+//
+// The default is format.CompressionNone. Compression is applied on top of the
+// selected timestamp encoding (see WithTimestampEncoding).
+//
+// Parameters:
+//   - comp: The compression type to apply to the encoded timestamp stream.
+//
+// Returns:
+//   - NumericEncoderOption: An option that sets the timestamp compression, or an error if the compression type is unsupported.
 func WithTimestampCompression(comp format.CompressionType) NumericEncoderOption {
 	return options.New(func(c *NumericEncoderConfig) error {
 		return c.setTimestampCompression(comp)
@@ -264,14 +324,38 @@ func WithTimestampCompression(comp format.CompressionType) NumericEncoderOption 
 }
 
 // WithValueCompression sets the value compression type for the encoder.
+//
+// Valid compression types:
+//   - format.CompressionNone: No compression; values stored as-is after encoding.
+//   - format.CompressionZstd: Zstandard compression; best ratio, higher CPU cost.
+//   - format.CompressionS2: S2 compression; good ratio with lower CPU cost than Zstd.
+//   - format.CompressionLZ4: LZ4 compression; fastest decompression, moderate ratio.
+//
+// The default is format.CompressionNone. Compression is applied on top of the
+// selected value encoding (see WithValueEncoding).
+//
+// Parameters:
+//   - comp: The compression type to apply to the encoded value stream.
+//
+// Returns:
+//   - NumericEncoderOption: An option that sets the value compression, or an error if the compression type is unsupported.
 func WithValueCompression(comp format.CompressionType) NumericEncoderOption {
 	return options.New(func(c *NumericEncoderConfig) error {
 		return c.setValueCompression(comp)
 	})
 }
 
-// WithTagsEnabled enables per-point tags when set to true.
-// Tags are stored as text strings with a maximum length of 255 characters.
+// WithTagsEnabled enables or disables per-point tag storage.
+//
+// When enabled, each data point may carry an associated text tag of up to
+// 255 characters. Tags are stored in a separate compressed payload and do
+// not affect timestamp or value encoding.
+//
+// Parameters:
+//   - enabled: Set to true to enable tag storage, false to disable it.
+//
+// Returns:
+//   - NumericEncoderOption: An option that enables or disables per-point tags.
 func WithTagsEnabled(enabled bool) NumericEncoderOption {
 	return options.NoError(func(cfg *NumericEncoderConfig) {
 		cfg.setTagsEnabled(enabled)

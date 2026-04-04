@@ -239,13 +239,14 @@ func (e *TextEncoder) StartMetricName(metricName string, numOfDataPoints int) er
 // If tags are enabled, the tag is encoded even if empty string.
 //
 // Parameters:
-//   - timestamp: Timestamp in microseconds since Unix epoch
-//   - value: Text value string (max 255 characters)
-//   - tag: Optional tag string (max 255 characters, ignored if tag support disabled)
+//   - timestamp: Caller-defined timestamp value (e.g. microseconds since Unix epoch).
+//     The unit must be consistent across all data points in the blob.
+//   - value: Text value string (max 255 characters).
+//   - tag: Optional tag string (max 255 characters, ignored if tag support is disabled).
 //
 // Returns:
 //   - error: ErrNoMetricStarted, value/tag length validation errors, or ErrTooManyDataPoints
-//     if adding would exceed claimed data point count
+//     if adding would exceed the claimed data point count.
 func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) error {
 	if e.curMetricID == 0 {
 		return errs.ErrNoMetricStarted
