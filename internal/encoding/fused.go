@@ -45,7 +45,7 @@ func FusedDeltaGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, fl
 			return
 		}
 
-		// --- Initialize timestamp delta-of-delta state ---
+		// Initialize timestamp delta-of-delta state
 		tsFirst, tsOffset, tsOk := decodeVarint64(tsData, 0)
 		if !tsOk {
 			return
@@ -57,7 +57,7 @@ func FusedDeltaGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, fl
 			seqCount: 1,
 		}
 
-		// --- Initialize Gorilla value state ---
+		// Initialize Gorilla value state
 		br := newBitReader(valData)
 		firstBits, valOk := br.readBits(64)
 		if !valOk {
@@ -70,12 +70,12 @@ func FusedDeltaGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, fl
 			prevFloat: math.Float64frombits(firstBits),
 		}
 
-		// --- Yield first data point ---
+		// Yield first data point
 		if !yield(ds.curTS, gs.prevFloat) {
 			return
 		}
 
-		// --- Decode remaining data points ---
+		// Decode remaining data points
 		for i := 1; i < count; i++ {
 			if !decodeDeltaTimestamp(&ds, tsData) {
 				return
@@ -111,7 +111,7 @@ func FusedDeltaGorillaTagAll(tsData, valData, tagData []byte, count int, tagYiel
 		return
 	}
 
-	// --- Initialize timestamp delta-of-delta state ---
+	// Initialize timestamp delta-of-delta state
 	tsFirst, tsOffset, tsOk := decodeVarint64(tsData, 0)
 	if !tsOk {
 		return
@@ -123,7 +123,7 @@ func FusedDeltaGorillaTagAll(tsData, valData, tagData []byte, count int, tagYiel
 		seqCount: 1,
 	}
 
-	// --- Initialize Gorilla value state ---
+	// Initialize Gorilla value state
 	br := newBitReader(valData)
 	firstBits, valOk := br.readBits(64)
 	if !valOk {
@@ -136,19 +136,19 @@ func FusedDeltaGorillaTagAll(tsData, valData, tagData []byte, count int, tagYiel
 		prevFloat: math.Float64frombits(firstBits),
 	}
 
-	// --- Initialize tag state ---
+	// Initialize tag state
 	tagOffset := 0
 	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
 	if !tagOk {
 		return
 	}
 
-	// --- Yield first data point ---
+	// Yield first data point
 	if !tagYield(0, ds.curTS, gs.prevFloat, tag) {
 		return
 	}
 
-	// --- Decode remaining data points ---
+	// Decode remaining data points
 	for i := 1; i < count; i++ {
 		if !decodeDeltaTimestamp(&ds, tsData) {
 			return
@@ -183,7 +183,7 @@ func FusedDeltaTagAll(tsData, tagData []byte, count int, yield func(int, int64, 
 		return
 	}
 
-	// --- Initialize timestamp delta-of-delta state ---
+	// Initialize timestamp delta-of-delta state
 	tsFirst, tsOffset, tsOk := decodeVarint64(tsData, 0)
 	if !tsOk {
 		return
@@ -195,19 +195,19 @@ func FusedDeltaTagAll(tsData, tagData []byte, count int, yield func(int, int64, 
 		seqCount: 1,
 	}
 
-	// --- Initialize tag state ---
+	// Initialize tag state
 	tagOffset := 0
 	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
 	if !tagOk {
 		return
 	}
 
-	// --- Yield first data point ---
+	// Yield first data point
 	if !yield(0, ds.curTS, tag) {
 		return
 	}
 
-	// --- Decode remaining data points ---
+	// Decode remaining data points
 	for i := 1; i < count; i++ {
 		if !decodeDeltaTimestamp(&ds, tsData) {
 			return
@@ -237,7 +237,7 @@ func FusedGorillaTagAll(valData, tagData []byte, count int, yield func(int, floa
 		return
 	}
 
-	// --- Initialize Gorilla value state ---
+	// Initialize Gorilla value state
 	br := newBitReader(valData)
 	firstBits, valOk := br.readBits(64)
 	if !valOk {
@@ -250,19 +250,19 @@ func FusedGorillaTagAll(valData, tagData []byte, count int, yield func(int, floa
 		prevFloat: math.Float64frombits(firstBits),
 	}
 
-	// --- Initialize tag state ---
+	// Initialize tag state
 	tagOffset := 0
 	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
 	if !tagOk {
 		return
 	}
 
-	// --- Yield first data point ---
+	// Yield first data point
 	if !yield(0, gs.prevFloat, tag) {
 		return
 	}
 
-	// --- Decode remaining data points ---
+	// Decode remaining data points
 	for i := 1; i < count; i++ {
 		if !decodeGorillaValue(&gs) {
 			return
@@ -378,6 +378,303 @@ func decodeGorillaValue(gs *gorillaState) bool {
 	shift := uint64(trailingBits) // #nosec G115 -- trailingBits constrained to [0,64]
 	gs.prevValue ^= meaningful << shift
 	gs.prevFloat = math.Float64frombits(gs.prevValue)
+
+	return true
+}
+
+// chimpState holds mutable state for Chimp XOR value decoding.
+type chimpState struct {
+	br            bitReader
+	prevValue     uint64
+	prevFloat     float64
+	storedLeading int
+}
+
+// FusedDeltaChimpAll returns an iterator that decodes delta-of-delta timestamps and
+// Chimp-compressed values in a single fused loop, avoiding iter.Pull overhead.
+//
+// This is the fused equivalent of synchronizing TimestampDeltaDecoder.All() and
+// NumericChimpDecoder.All() via iter.Pull, but with all state inlined into
+// a single loop iteration.
+//
+// Parameters:
+//   - tsData: Delta-of-delta encoded timestamp bytes
+//   - valData: Chimp XOR compressed value bytes
+//   - count: Number of data points to decode
+//
+// Returns:
+//   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
+func FusedDeltaChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
+	return func(yield func(int64, float64) bool) {
+		if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+			return
+		}
+
+		// Initialize timestamp delta-of-delta state
+		tsFirst, tsOffset, tsOk := decodeVarint64(tsData, 0)
+		if !tsOk {
+			return
+		}
+
+		ds := deltaState{
+			curTS:    int64(tsFirst), //nolint:gosec
+			offset:   tsOffset,
+			seqCount: 1,
+		}
+
+		// Initialize Chimp value state
+		var br bitReader
+		br.data = valData
+		firstBits, valOk := br.readBits(64)
+		if !valOk {
+			return
+		}
+
+		cs := chimpState{
+			br:            br,
+			prevValue:     firstBits,
+			prevFloat:     math.Float64frombits(firstBits),
+			storedLeading: 65,
+		}
+
+		// Yield first data point
+		if !yield(ds.curTS, cs.prevFloat) {
+			return
+		}
+
+		// Decode remaining data points
+		for i := 1; i < count; i++ {
+			if !decodeDeltaTimestamp(&ds, tsData) {
+				return
+			}
+
+			if !decodeChimpValue(&cs) {
+				return
+			}
+
+			if !yield(ds.curTS, cs.prevFloat) {
+				return
+			}
+		}
+	}
+}
+
+// FusedDeltaChimpTagAll decodes delta-of-delta timestamps, Chimp-compressed values,
+// and varint-prefixed tags in a single fused loop.
+//
+// Parameters:
+//   - tsData: Delta-of-delta encoded timestamp bytes
+//   - valData: Chimp XOR compressed value bytes
+//   - tagData: Varint length-prefixed tag bytes
+//   - count: Number of data points to decode
+//   - tagYield: Callback receiving (index, timestamp, value, tag)
+func FusedDeltaChimpTagAll(tsData, valData, tagData []byte, count int, tagYield func(int, int64, float64, string) bool) {
+	if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+		return
+	}
+
+	// Initialize timestamp delta-of-delta state
+	tsFirst, tsOffset, tsOk := decodeVarint64(tsData, 0)
+	if !tsOk {
+		return
+	}
+
+	ds := deltaState{
+		curTS:    int64(tsFirst), //nolint:gosec
+		offset:   tsOffset,
+		seqCount: 1,
+	}
+
+	// Initialize Chimp value state
+	var br bitReader
+	br.data = valData
+	firstBits, valOk := br.readBits(64)
+	if !valOk {
+		return
+	}
+
+	cs := chimpState{
+		br:            br,
+		prevValue:     firstBits,
+		prevFloat:     math.Float64frombits(firstBits),
+		storedLeading: 65,
+	}
+
+	// Initialize tag state
+	tagOffset := 0
+	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	// Yield first data point
+	if !tagYield(0, ds.curTS, cs.prevFloat, tag) {
+		return
+	}
+
+	// Decode remaining data points
+	for i := 1; i < count; i++ {
+		if !decodeDeltaTimestamp(&ds, tsData) {
+			return
+		}
+
+		if !decodeChimpValue(&cs) {
+			return
+		}
+
+		tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+		if !tagOk {
+			return
+		}
+
+		if !tagYield(i, ds.curTS, cs.prevFloat, tag) {
+			return
+		}
+	}
+}
+
+// FusedChimpTagAll decodes Chimp-compressed values and tags in a single fused loop.
+// Timestamps are not decoded here (caller uses At() for raw timestamps).
+//
+// Parameters:
+//   - valData: Chimp XOR compressed value bytes
+//   - tagData: Varint length-prefixed tag bytes
+//   - count: Number of data points to decode
+//   - yield: Callback receiving (index, value, tag)
+func FusedChimpTagAll(valData, tagData []byte, count int, yield func(int, float64, string) bool) {
+	if count == 0 || len(valData) == 0 {
+		return
+	}
+
+	// Initialize Chimp value state
+	var br bitReader
+	br.data = valData
+	firstBits, valOk := br.readBits(64)
+	if !valOk {
+		return
+	}
+
+	cs := chimpState{
+		br:            br,
+		prevValue:     firstBits,
+		prevFloat:     math.Float64frombits(firstBits),
+		storedLeading: 65,
+	}
+
+	// Initialize tag state
+	tagOffset := 0
+	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	// Yield first data point
+	if !yield(0, cs.prevFloat, tag) {
+		return
+	}
+
+	// Decode remaining data points
+	for i := 1; i < count; i++ {
+		if !decodeChimpValue(&cs) {
+			return
+		}
+
+		tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+		if !tagOk {
+			return
+		}
+
+		if !yield(i, cs.prevFloat, tag) {
+			return
+		}
+	}
+}
+
+// decodeChimpValue decodes a single value from a Chimp XOR compressed stream,
+// updating the state in place.
+//
+// Parameters:
+//   - cs: Mutable Chimp decoder state
+//
+// Returns true if decoding succeeded.
+func decodeChimpValue(cs *chimpState) bool {
+	flag, ok := cs.br.read2Bits()
+	if !ok {
+		return false
+	}
+
+	switch flag {
+	case 0: // Value unchanged
+		cs.storedLeading = 65
+
+	case 1: // Trailing-zero optimized
+		leadingBucket, ok := cs.br.read3Bits()
+		if !ok {
+			return false
+		}
+
+		leading := chimpLeadingDecode[leadingBucket]
+
+		sigBitsCount, ok := cs.br.read6Bits()
+		if !ok {
+			return false
+		}
+
+		sigBits := sigBitsCount
+		if sigBits == 0 {
+			sigBits = 64
+		}
+
+		meaningful, ok := cs.br.readBits(sigBits)
+		if !ok {
+			return false
+		}
+
+		trailingZeros := 64 - leading - sigBits
+		if trailingZeros < 0 {
+			return false
+		}
+
+		cs.prevValue ^= meaningful << trailingZeros
+		cs.prevFloat = math.Float64frombits(cs.prevValue)
+		cs.storedLeading = 65
+
+	case 2: // Reuse previous leading
+		if cs.storedLeading > 64 {
+			return false
+		}
+
+		sigBits := 64 - cs.storedLeading
+
+		meaningful, ok := cs.br.readBits(sigBits)
+		if !ok {
+			return false
+		}
+
+		cs.prevValue ^= meaningful
+		cs.prevFloat = math.Float64frombits(cs.prevValue)
+
+	case 3: // New leading
+		leadingBucket, ok := cs.br.read3Bits()
+		if !ok {
+			return false
+		}
+
+		leading := chimpLeadingDecode[leadingBucket]
+		cs.storedLeading = leading
+		sigBits := 64 - leading
+
+		meaningful, ok := cs.br.readBits(sigBits)
+		if !ok {
+			return false
+		}
+
+		cs.prevValue ^= meaningful
+		cs.prevFloat = math.Float64frombits(cs.prevValue)
+
+	default:
+		return false
+	}
 
 	return true
 }

@@ -1117,6 +1117,48 @@ func (br *bitReader) countLeadingZeroBits(maxCount int) (int, bool) {
 	return count, true
 }
 
+// read2Bits reads exactly 2 bits with fast path.
+//
+// Optimized for reading Chimp 2-bit flag fields.
+// Fast path: If buffer has ≥2 bits, extract directly.
+// Slow path: Fall back to readBits(2) if buffer needs refilling.
+//
+// Returns:
+//   - The 2-bit value (0-3) as uint64 and true if successful
+//   - Zero and false if insufficient data is available
+func (br *bitReader) read2Bits() (uint64, bool) {
+	if br.bitCount >= 2 {
+		br.bitCount -= 2
+		val := (br.bitBuf >> 62) & 0x03
+		br.bitBuf <<= 2
+
+		return val, true
+	}
+
+	return br.readBits(2)
+}
+
+// read3Bits reads exactly 3 bits with fast path.
+//
+// Optimized for reading Chimp 3-bit leading-zero bucket fields.
+// Fast path: If buffer has ≥3 bits, extract directly.
+// Slow path: Fall back to readBits(3) if buffer needs refilling.
+//
+// Returns:
+//   - The 3-bit value (0-7) as uint64 and true if successful
+//   - Zero and false if insufficient data is available
+func (br *bitReader) read3Bits() (uint64, bool) {
+	if br.bitCount >= 3 {
+		br.bitCount -= 3
+		val := (br.bitBuf >> 61) & 0x07
+		br.bitBuf <<= 3
+
+		return val, true
+	}
+
+	return br.readBits(3)
+}
+
 // read5Bits reads exactly 5 bits with fast path.
 // This specialized version is optimized for reading leading zeros field (5 bits)
 // by eliminating the loop overhead of the generic readBits() function.
