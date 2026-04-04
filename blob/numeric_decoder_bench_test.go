@@ -457,3 +457,111 @@ func BenchmarkV2Layout_EncodedSize(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkSharedTsCache_AllTimestamps benchmarks AllTimestamps iteration
+// with and without the shared timestamp cache to measure the cache benefit.
+func BenchmarkSharedTsCache_AllTimestamps(b *testing.B) {
+	scenarios := []struct {
+		name    string
+		metrics int
+		points  int
+	}{
+		{"150metrics_10points", 150, 10},
+		{"150metrics_100points", 150, 100},
+		{"200metrics_200points", 200, 200},
+	}
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			// Create shared-TS blob
+			data := createSharedTimestampBenchmarkData(b, sharedTimestampBenchmarkScenario{
+				metricCount:        sc.metrics,
+				pointsPerMetric:    sc.points,
+				compressionEnabled: false,
+			}, true)
+
+			decoder, err := NewNumericDecoder(data)
+			if err != nil {
+				b.Fatal(err)
+			}
+			blob, err := decoder.Decode()
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			// Collect metric IDs for iteration
+			metricIDs := make([]uint64, sc.metrics)
+			for i := range sc.metrics {
+				metricIDs[i] = uint64(i + 1)
+			}
+
+			b.Run("AllTimestamps_WithCache", func(b *testing.B) {
+				b.ReportAllocs()
+				b.ResetTimer()
+
+				for b.Loop() {
+					total := int64(0)
+					for _, id := range metricIDs {
+						for ts := range blob.AllTimestamps(id) {
+							total += ts
+						}
+					}
+					if total == 0 {
+						b.Fatal("unexpected zero total")
+					}
+				}
+			})
+
+			// Create a blob WITHOUT cache for comparison (V1 with same timestamps)
+			dataV1 := createSharedTimestampBenchmarkData(b, sharedTimestampBenchmarkScenario{
+				metricCount:        sc.metrics,
+				pointsPerMetric:    sc.points,
+				compressionEnabled: false,
+			}, false)
+
+			decoderV1, err := NewNumericDecoder(dataV1)
+			if err != nil {
+				b.Fatal(err)
+			}
+			blobV1, err := decoderV1.Decode()
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			b.Run("AllTimestamps_NoCache_V1", func(b *testing.B) {
+				b.ReportAllocs()
+				b.ResetTimer()
+
+				for b.Loop() {
+					total := int64(0)
+					for _, id := range metricIDs {
+						for ts := range blobV1.AllTimestamps(id) {
+							total += ts
+						}
+					}
+					if total == 0 {
+						b.Fatal("unexpected zero total")
+					}
+				}
+			})
+
+			// Also benchmark AllValues to show it's unaffected
+			b.Run("AllValues_SharedTS", func(b *testing.B) {
+				b.ReportAllocs()
+				b.ResetTimer()
+
+				for b.Loop() {
+					total := float64(0)
+					for _, id := range metricIDs {
+						for val := range blob.AllValues(id) {
+							total += val
+						}
+					}
+					if total == 0 {
+						b.Fatal("unexpected zero total")
+					}
+				}
+			})
+		})
+	}
+}

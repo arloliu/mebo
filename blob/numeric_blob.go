@@ -23,11 +23,12 @@ type NumericDataPoint struct {
 
 // NumericBlob represents a decoded blob of float values with associated timestamps and optional tags.
 type NumericBlob struct {
-	blobBase                                        // Embedded base: engine, startTime, tsEncType, sameByteOrder, flags
-	index      indexMaps[section.NumericIndexEntry] // Metric ID/name → IndexEntry mappings
-	tsPayload  []byte
-	valPayload []byte
-	tagPayload []byte
+	blobBase                                           // Embedded base: engine, startTime, tsEncType, sameByteOrder, flags
+	index         indexMaps[section.NumericIndexEntry] // Metric ID/name → IndexEntry mappings
+	tsPayload     []byte
+	valPayload    []byte
+	tagPayload    []byte
+	sharedTsCache map[int][]int64 // Pre-decoded shared timestamps keyed by TimestampOffset (nil if no shared TS)
 }
 
 var _ BlobReader = NumericBlob{}
@@ -432,6 +433,17 @@ func (b NumericBlob) allFromEntry(entry section.NumericIndexEntry) iter.Seq2[int
 func (b NumericBlob) allTimestampsFromEntry(entry section.NumericIndexEntry) iter.Seq[int64] {
 	if entry.Count == 0 {
 		return func(yield func(int64) bool) {}
+	}
+
+	// Fast path: return cached pre-decoded timestamps for shared-TS metrics
+	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
+		return func(yield func(int64) bool) {
+			for _, ts := range cached {
+				if !yield(ts) {
+					return
+				}
+			}
+		}
 	}
 
 	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
