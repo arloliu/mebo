@@ -8,11 +8,12 @@ import (
 
 const (
 	// Bit masks
-	TagMask          = 0x0001 // Mask for tag bit (bit 0)
-	EndiannessMask   = 0x0002 // Mask for endianness bit (bit 1)
-	MetricNamesMask  = 0x0004 // Mask for metric names payload bit (bit 2)
-	ReservedBitsMask = 0x0008 // Mask for reserved bit (bit 3)
-	MagicNumberMask  = 0xFFF0 // Mask for magic number (bits 4-15)
+	TagMask              = 0x0001 // Mask for tag bit (bit 0)
+	EndiannessMask       = 0x0002 // Mask for endianness bit (bit 1)
+	MetricNamesMask      = 0x0004 // Mask for metric names payload bit (bit 2)
+	ReservedBitsMask     = 0x0008 // Mask for reserved bit (bit 3) — used by text flags
+	SharedTimestampsMask = 0x0008 // Mask for shared timestamps bit (bit 3) — used by numeric flags
+	MagicNumberMask      = 0xFFF0 // Mask for magic number (bits 4-15)
 
 	// Magic numbers (bits 4-15)
 	MagicNumericV1Opt = 0xEA10 // MagicNumericV1Opt is a version 1 magic number for float blob format.

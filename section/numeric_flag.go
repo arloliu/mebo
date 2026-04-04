@@ -34,6 +34,7 @@ var (
 	validValueEncodings = map[uint8]struct{}{
 		uint8(format.TypeRaw):     {},
 		uint8(format.TypeGorilla): {},
+		uint8(format.TypeChimp):   {},
 	}
 
 	validTimestampCompressions = map[uint8]struct{}{
@@ -110,6 +111,27 @@ func (f *NumericFlag) SetHasMetricNames(enabled bool) {
 		f.Options |= MetricNamesMask
 	} else {
 		f.Options &^= MetricNamesMask
+	}
+}
+
+// HasSharedTimestamps returns whether the shared timestamp table is present.
+//
+// When true, the blob contains a shared timestamp table between the index entries
+// and the timestamp payload. The decoder must parse this table to resolve
+// timestamp references for metrics that share timestamp sequences.
+//
+// Returns:
+//   - bool: true if shared timestamp table is present, false otherwise
+func (f NumericFlag) HasSharedTimestamps() bool {
+	return (f.Options & SharedTimestampsMask) != 0
+}
+
+// SetHasSharedTimestamps enables or disables the shared timestamp table flag.
+func (f *NumericFlag) SetHasSharedTimestamps(enabled bool) {
+	if enabled {
+		f.Options |= SharedTimestampsMask
+	} else {
+		f.Options &^= SharedTimestampsMask
 	}
 }
 

@@ -89,6 +89,12 @@ func ParseTextIndexEntry(data []byte, engine endian.EndianEngine) (TextIndexEntr
 	}, nil
 }
 
+// GetMetricID returns the metric ID for this entry.
+// This method is used by the generic indexMaps type for type-safe access.
+func (e TextIndexEntry) GetMetricID() uint64 {
+	return e.MetricID
+}
+
 // GetCount returns the count of data points for this metric.
 // This method is used by the generic indexMaps type for type-safe access.
 func (e TextIndexEntry) GetCount() uint32 {

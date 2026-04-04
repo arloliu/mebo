@@ -198,6 +198,16 @@ func ParseNumericIndexEntry(data []byte, engine endian.EndianEngine) (NumericInd
 	}, nil
 }
 
+// GetMetricID returns the metric ID for this entry.
+//
+// This method is used by the generic indexMaps type for type-safe access.
+//
+// Returns:
+//   - uint64: The 64-bit metric identifier
+func (e NumericIndexEntry) GetMetricID() uint64 {
+	return e.MetricID
+}
+
 // GetCount returns the count of data points for this metric.
 //
 // This method is used by the generic indexMaps type for type-safe access.

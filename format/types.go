@@ -8,8 +8,9 @@ type (
 
 const (
 	TypeRaw     EncodingType = 0x1 // TypeRaw represents raw data with no format.
-	TypeDelta   EncodingType = 0x2 // TypeDelta represents delta-of-delta encoding.
-	TypeGorilla EncodingType = 0x3 // TypeGorilla represents Gorilla encoding.
+	TypeDelta   EncodingType = 0x2 // TypeDelta represents delta-of-delta encoding for timestamps.
+	TypeGorilla EncodingType = 0x3 // TypeGorilla represents Gorilla encoding for numeric values.
+	TypeChimp   EncodingType = 0x4 // TypeChimp represents Chimp encoding for numeric values.
 
 	CompressionNone CompressionType = 0x1 // CompressionNone represents no compression.
 	CompressionZstd CompressionType = 0x2 // CompressionZstd represents Zstandard compression.
@@ -26,6 +27,8 @@ func (e EncodingType) String() string {
 		return "Delta"
 	case TypeGorilla:
 		return "Gorilla"
+	case TypeChimp:
+		return "Chimp"
 	default:
 		return "Unknown"
 	}
