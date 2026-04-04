@@ -477,6 +477,9 @@ func TestNumericEncoder_ConfigurationMethods(t *testing.T) {
 		err = encoder.setTimestampEncoding(format.TypeDelta)
 		require.NoError(t, err)
 
+		err = encoder.setTimestampEncoding(format.TypeDeltaPacked)
+		require.NoError(t, err)
+
 		err = encoder.setTimestampEncoding(format.TypeGorilla)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "encoding is not supported for timestamps")

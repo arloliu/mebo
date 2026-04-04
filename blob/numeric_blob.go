@@ -466,6 +466,9 @@ func (b NumericBlob) timestampAtFromEntry(entry section.NumericIndexEntry, index
 	case format.TypeDelta:
 		decoder := ienc.NewTimestampDeltaDecoder()
 		return decoder.At(tsBytes, index, count)
+	case format.TypeDeltaPacked:
+		var decoder ienc.TimestampDeltaPackedDecoder
+		return decoder.At(tsBytes, index, count)
 	default:
 		// Other encodings don't support random access
 		return 0, false
@@ -584,6 +587,18 @@ func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int
 	// Faster path: optimize for delta timestamps + raw values (common for time-series)
 	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeRaw {
 		return b.allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes, count)
+	}
+
+	// DeltaPacked paths: Group Varint timestamp encoding with various value encodings
+	if b.tsEncType == format.TypeDeltaPacked {
+		switch b.ValueEncoding() { //nolint: exhaustive
+		case format.TypeGorilla:
+			return b.allDataPointsDeltaPackedGorilla(tsBytes, valBytes, tagBytes, count)
+		case format.TypeChimp:
+			return b.allDataPointsDeltaPackedChimp(tsBytes, valBytes, tagBytes, count)
+		case format.TypeRaw:
+			return b.allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes, count)
+		}
 	}
 
 	// Generic fallback for other combinations, use iter.Pull for synchronization.
@@ -807,6 +822,111 @@ func (b NumericBlob) allDataPointsDeltaChimp(tsBytes, valBytes, tagBytes []byte,
 	}
 }
 
+// allDataPointsDeltaPackedRaw handles Group Varint packed timestamps with raw values.
+// Uses All() for timestamps (sequential) and At() for values (O(1) random access).
+func (b NumericBlob) allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
+	var tsDecoder ienc.TimestampDeltaPackedDecoder
+	var valDecoder encoding.ColumnarDecoder[float64]
+
+	engine := b.Engine()
+	if b.sameByteOrder {
+		valDecoder = ienc.NewNumericRawUnsafeDecoder(engine)
+	} else {
+		valDecoder = ienc.NewNumericRawDecoder(engine)
+	}
+
+	return func(yield func(int, NumericDataPoint) bool) {
+		if !b.HasTag() {
+			tsIter := tsDecoder.All(tsBytes, count)
+			i := 0
+			for ts := range tsIter {
+				val, _ := valDecoder.At(valBytes, i, count)
+
+				if !yield(i, NumericDataPoint{Ts: ts, Val: val}) {
+					break
+				}
+				i++
+			}
+
+			return
+		}
+
+		// Tags enabled: Use fused deltaPacked+tag decoder with raw value At()
+		ienc.FusedDeltaPackedTagAll(tsBytes, tagBytes, count, func(i int, ts int64, tag string) bool {
+			val, _ := valDecoder.At(valBytes, i, count)
+			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+		})
+	}
+}
+
+// allDataPointsDeltaPackedGorilla handles Group Varint packed timestamps with Gorilla values.
+//
+// Uses a fused decoder that inlines both Group Varint packed timestamp decoding and
+// Gorilla XOR value decoding into a single loop, eliminating iter.Pull overhead.
+//
+// Parameters:
+//   - tsBytes: Encoded timestamp data (Group Varint packed delta-of-delta format)
+//   - valBytes: Encoded value data (Gorilla XOR format)
+//   - tagBytes: Encoded tag data (varint strings)
+//   - count: Number of data points
+//
+// Returns:
+//   - iter.Seq2[int, NumericDataPoint]: Iterator yielding (index, data point) pairs
+func (b NumericBlob) allDataPointsDeltaPackedGorilla(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
+	return func(yield func(int, NumericDataPoint) bool) {
+		if !b.HasTag() {
+			fusedIter := ienc.FusedDeltaPackedGorillaAll(tsBytes, valBytes, count)
+			i := 0
+			for ts, val := range fusedIter {
+				if !yield(i, NumericDataPoint{Ts: ts, Val: val}) {
+					break
+				}
+				i++
+			}
+
+			return
+		}
+
+		ienc.FusedDeltaPackedGorillaTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
+			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+		})
+	}
+}
+
+// allDataPointsDeltaPackedChimp handles Group Varint packed timestamps with Chimp values.
+//
+// Uses a fused decoder that inlines both Group Varint packed timestamp decoding and
+// Chimp XOR value decoding into a single loop, eliminating iter.Pull overhead.
+//
+// Parameters:
+//   - tsBytes: Encoded timestamp data (Group Varint packed delta-of-delta format)
+//   - valBytes: Encoded value data (Chimp XOR format)
+//   - tagBytes: Encoded tag data (varint strings)
+//   - count: Number of data points
+//
+// Returns:
+//   - iter.Seq2[int, NumericDataPoint]: Iterator yielding (index, data point) pairs
+func (b NumericBlob) allDataPointsDeltaPackedChimp(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
+	return func(yield func(int, NumericDataPoint) bool) {
+		if !b.HasTag() {
+			fusedIter := ienc.FusedDeltaPackedChimpAll(tsBytes, valBytes, count)
+			i := 0
+			for ts, val := range fusedIter {
+				if !yield(i, NumericDataPoint{Ts: ts, Val: val}) {
+					break
+				}
+				i++
+			}
+
+			return
+		}
+
+		ienc.FusedDeltaPackedChimpTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
+			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+		})
+	}
+}
+
 // allDataPointsRawGorilla handles raw timestamps with Gorilla values.
 //
 // Uses At() for ts (O(1) direct memory access for raw encoding).
@@ -1017,6 +1137,10 @@ func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64]
 		return decoder.All(tsBytes, count)
 	case format.TypeDelta:
 		var decoder ienc.TimestampDeltaDecoder
+
+		return decoder.All(tsBytes, count)
+	case format.TypeDeltaPacked:
+		var decoder ienc.TimestampDeltaPackedDecoder
 
 		return decoder.All(tsBytes, count)
 	default:

@@ -27,8 +27,9 @@ type NumericFlag struct {
 
 var (
 	validTimestampEncodings = map[uint8]struct{}{
-		uint8(format.TypeRaw):   {},
-		uint8(format.TypeDelta): {},
+		uint8(format.TypeRaw):         {},
+		uint8(format.TypeDelta):       {},
+		uint8(format.TypeDeltaPacked): {},
 	}
 
 	validValueEncodings = map[uint8]struct{}{

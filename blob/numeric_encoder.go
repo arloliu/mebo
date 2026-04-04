@@ -178,7 +178,7 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	}
 
 	enc := encoder.header.Flag.ValueEncoding()
-	switch enc {
+	switch enc { //nolint:exhaustive // TypeDeltaPacked is timestamp-only encoding
 	case format.TypeRaw:
 		encoder.valEncoder = ienc.NewNumericRawEncoder(encoder.engine)
 	case format.TypeGorilla:
@@ -197,6 +197,8 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 		encoder.tsEncoder = ienc.NewTimestampRawEncoder(encoder.engine)
 	case format.TypeDelta:
 		encoder.tsEncoder = ienc.NewTimestampDeltaEncoder()
+	case format.TypeDeltaPacked:
+		encoder.tsEncoder = ienc.NewTimestampDeltaPackedEncoder()
 	default:
 		return nil, fmt.Errorf("invalid timestamp encoding: %s", enc.String())
 	}
@@ -367,6 +369,14 @@ func (e *NumericEncoder) EndMetric() error {
 	valEnc := e.header.Flag.ValueEncoding()
 	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp {
 		_ = e.valEncoder.Bytes() // Flush pending bits
+	}
+
+	// For Group Varint timestamp encoding (DeltaPacked), we need to flush any pending
+	// partial group BEFORE calculating lengths. Without this, pending values would not
+	// be included in Size() and would be lost on Reset().
+	tsEnc := e.header.Flag.TimestampEncoding()
+	if tsEnc == format.TypeDeltaPacked {
+		_ = e.tsEncoder.Bytes() // Flush pending group
 	}
 
 	// Calculate lengths and byte size of newly added data points since the last metric was ended.

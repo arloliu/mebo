@@ -63,7 +63,7 @@ func NewNumericEncoderConfig(startTime time.Time) *NumericEncoderConfig {
 // setTimestampEncoding sets the timestamp encoding type.
 func (c *NumericEncoderConfig) setTimestampEncoding(enc format.EncodingType) error {
 	switch enc {
-	case format.TypeRaw, format.TypeDelta:
+	case format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked:
 		c.header.Flag.SetTimestampEncoding(enc)
 		return nil
 	case format.TypeGorilla, format.TypeChimp:

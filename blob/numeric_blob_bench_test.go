@@ -414,6 +414,26 @@ func BenchmarkNumericBlob_All_EncodingCombinations(b *testing.B) {
 			tsEnc:  WithTimestampEncoding(format.TypeDelta),
 			valEnc: WithValueEncoding(format.TypeGorilla),
 		},
+		{
+			name:   "DeltaPackedRaw",
+			tsEnc:  WithTimestampEncoding(format.TypeDeltaPacked),
+			valEnc: WithValueEncoding(format.TypeRaw),
+		},
+		{
+			name:   "DeltaPackedGorilla",
+			tsEnc:  WithTimestampEncoding(format.TypeDeltaPacked),
+			valEnc: WithValueEncoding(format.TypeGorilla),
+		},
+		{
+			name:   "DeltaChimp",
+			tsEnc:  WithTimestampEncoding(format.TypeDelta),
+			valEnc: WithValueEncoding(format.TypeChimp),
+		},
+		{
+			name:   "DeltaPackedChimp",
+			tsEnc:  WithTimestampEncoding(format.TypeDeltaPacked),
+			valEnc: WithValueEncoding(format.TypeChimp),
+		},
 	}
 
 	for _, enc := range encodings {

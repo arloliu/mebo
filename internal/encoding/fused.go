@@ -714,3 +714,572 @@ func decodeNextTag(data []byte, offset int) (string, int, bool) {
 
 	return string(data[start:end]), end, true
 }
+
+// deltaPackedState holds mutable state for Group Varint delta-of-delta timestamp decoding.
+type deltaPackedState struct {
+	curTS     int64
+	prevDelta int64
+	offset    int
+	cb        byte // current control byte
+	groupIdx  int  // index within current group (0-3), 0 means need new control byte
+	groupLen  int  // total values in current group (groupSize or tail remainder)
+}
+
+// readGroupVarintValue reads a single zigzag-encoded value from Group Varint data
+// using the tag at the specified position within the control byte.
+// Returns the decoded zigzag value and true on success.
+func readGroupVarintValue(data []byte, dps *deltaPackedState, tag byte) bool {
+	byteLen := groupVarintLengths[tag]
+	if dps.offset+byteLen > len(data) {
+		return false
+	}
+
+	var zz uint64
+
+	switch tag {
+	case 0:
+		zz = uint64(data[dps.offset])
+	case 1:
+		zz = uint64(binary.LittleEndian.Uint16(data[dps.offset:]))
+	case 2:
+		zz = uint64(binary.LittleEndian.Uint32(data[dps.offset:]))
+	case 3:
+		zz = binary.LittleEndian.Uint64(data[dps.offset:])
+	default:
+		return false
+	}
+
+	dps.offset += byteLen
+
+	deltaOfDelta := decodeZigZag64(zz)
+	dps.prevDelta += deltaOfDelta
+	dps.curTS += dps.prevDelta
+
+	return true
+}
+
+// decodeDeltaPackedTimestamp decodes the next timestamp from Group Varint packed data.
+// Manages control byte reading and group boundaries internally.
+// Returns false if data is exhausted or corrupted.
+func decodeDeltaPackedTimestamp(dps *deltaPackedState, data []byte) bool {
+	// Start a new group if needed
+	if dps.groupIdx == 0 {
+		if dps.offset >= len(data) {
+			return false
+		}
+
+		dps.cb = data[dps.offset]
+		dps.offset++
+	}
+
+	tag := (dps.cb >> (uint(dps.groupIdx) * 2)) & 0x03 //nolint:gosec // groupIdx is bounded 0-3
+	if !readGroupVarintValue(data, dps, tag) {
+		return false
+	}
+
+	dps.groupIdx++
+	if dps.groupIdx >= dps.groupLen {
+		dps.groupIdx = 0
+	}
+
+	return true
+}
+
+// FusedDeltaPackedGorillaAll returns an iterator that decodes Group Varint packed
+// delta-of-delta timestamps and Gorilla-compressed values in a single fused loop,
+// avoiding iter.Pull overhead.
+//
+// Parameters:
+//   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
+//   - valData: Gorilla XOR compressed value bytes
+//   - count: Number of data points to decode
+//
+// Returns:
+//   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
+func FusedDeltaPackedGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
+	return func(yield func(int64, float64) bool) {
+		if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+			return
+		}
+
+		// Initialize Gorilla value state
+		br := newBitReader(valData)
+		firstBits, valOk := br.readBits(64)
+		if !valOk {
+			return
+		}
+
+		gs := gorillaState{
+			br:        br,
+			prevValue: firstBits,
+			prevFloat: math.Float64frombits(firstBits),
+		}
+
+		// First timestamp (full varint)
+		first, offset, tsOk := decodeVarint64(tsData, 0)
+		if !tsOk {
+			return
+		}
+
+		var dps deltaPackedState
+		dps.curTS = int64(first) //nolint:gosec
+		dps.offset = offset
+
+		if !yield(dps.curTS, gs.prevFloat) {
+			return
+		}
+
+		if count == 1 {
+			return
+		}
+
+		// Second timestamp
+		zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
+		if !tsOk {
+			return
+		}
+
+		delta := decodeZigZag64(zigzag)
+		dps.curTS += delta
+		dps.prevDelta = delta
+		dps.offset = offset
+
+		if !decodeGorillaValue(&gs) {
+			return
+		}
+
+		if !yield(dps.curTS, gs.prevFloat) {
+			return
+		}
+
+		// Remaining: Group Varint packed delta-of-deltas
+		remaining := count - 2
+		dps.groupLen = groupSize
+
+		for remaining > 0 {
+			if remaining < groupSize {
+				dps.groupLen = remaining
+			}
+
+			for range dps.groupLen {
+				if !decodeDeltaPackedTimestamp(&dps, tsData) {
+					return
+				}
+
+				if !decodeGorillaValue(&gs) {
+					return
+				}
+
+				if !yield(dps.curTS, gs.prevFloat) {
+					return
+				}
+			}
+
+			remaining -= dps.groupLen
+		}
+	}
+}
+
+// FusedDeltaPackedGorillaTagAll decodes Group Varint packed delta-of-delta timestamps,
+// Gorilla-compressed values, and varint-prefixed tags in a single fused loop.
+//
+// Parameters:
+//   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
+//   - valData: Gorilla XOR compressed value bytes
+//   - tagData: Varint length-prefixed tag bytes
+//   - count: Number of data points to decode
+//   - tagYield: Callback receiving (index, timestamp, value, tag); return false to stop
+func FusedDeltaPackedGorillaTagAll(tsData, valData, tagData []byte, count int, tagYield func(int, int64, float64, string) bool) {
+	if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+		return
+	}
+
+	// Initialize Gorilla value state
+	br := newBitReader(valData)
+	firstBits, valOk := br.readBits(64)
+	if !valOk {
+		return
+	}
+
+	gs := gorillaState{
+		br:        br,
+		prevValue: firstBits,
+		prevFloat: math.Float64frombits(firstBits),
+	}
+
+	// First timestamp (full varint)
+	first, offset, tsOk := decodeVarint64(tsData, 0)
+	if !tsOk {
+		return
+	}
+
+	var dps deltaPackedState
+	dps.curTS = int64(first) //nolint:gosec
+	dps.offset = offset
+
+	tagOffset := 0
+	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	if !tagYield(0, dps.curTS, gs.prevFloat, tag) {
+		return
+	}
+
+	if count == 1 {
+		return
+	}
+
+	// Second timestamp
+	zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
+	if !tsOk {
+		return
+	}
+
+	delta := decodeZigZag64(zigzag)
+	dps.curTS += delta
+	dps.prevDelta = delta
+	dps.offset = offset
+
+	if !decodeGorillaValue(&gs) {
+		return
+	}
+
+	tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	if !tagYield(1, dps.curTS, gs.prevFloat, tag) {
+		return
+	}
+
+	// Remaining: Group Varint packed delta-of-deltas
+	idx := 2
+	remaining := count - 2
+	dps.groupLen = groupSize
+
+	for remaining > 0 {
+		if remaining < groupSize {
+			dps.groupLen = remaining
+		}
+
+		for range dps.groupLen {
+			if !decodeDeltaPackedTimestamp(&dps, tsData) {
+				return
+			}
+
+			if !decodeGorillaValue(&gs) {
+				return
+			}
+
+			tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+			if !tagOk {
+				return
+			}
+
+			if !tagYield(idx, dps.curTS, gs.prevFloat, tag) {
+				return
+			}
+			idx++
+		}
+
+		remaining -= dps.groupLen
+	}
+}
+
+// FusedDeltaPackedChimpAll returns an iterator that decodes Group Varint packed
+// delta-of-delta timestamps and Chimp-compressed values in a single fused loop.
+//
+// Parameters:
+//   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
+//   - valData: Chimp XOR compressed value bytes
+//   - count: Number of data points to decode
+//
+// Returns:
+//   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
+func FusedDeltaPackedChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
+	return func(yield func(int64, float64) bool) {
+		if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+			return
+		}
+
+		// Initialize Chimp value state
+		var cbr bitReader
+		cbr.data = valData
+		firstBits, valOk := cbr.readBits(64)
+		if !valOk {
+			return
+		}
+
+		cs := chimpState{
+			br:            cbr,
+			prevValue:     firstBits,
+			prevFloat:     math.Float64frombits(firstBits),
+			storedLeading: 65,
+		}
+
+		// First timestamp (full varint)
+		first, offset, tsOk := decodeVarint64(tsData, 0)
+		if !tsOk {
+			return
+		}
+
+		var dps deltaPackedState
+		dps.curTS = int64(first) //nolint:gosec
+		dps.offset = offset
+
+		if !yield(dps.curTS, cs.prevFloat) {
+			return
+		}
+
+		if count == 1 {
+			return
+		}
+
+		// Second timestamp
+		zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
+		if !tsOk {
+			return
+		}
+
+		delta := decodeZigZag64(zigzag)
+		dps.curTS += delta
+		dps.prevDelta = delta
+		dps.offset = offset
+
+		if !decodeChimpValue(&cs) {
+			return
+		}
+
+		if !yield(dps.curTS, cs.prevFloat) {
+			return
+		}
+
+		// Remaining: Group Varint packed delta-of-deltas
+		remaining := count - 2
+		dps.groupLen = groupSize
+
+		for remaining > 0 {
+			if remaining < groupSize {
+				dps.groupLen = remaining
+			}
+
+			for range dps.groupLen {
+				if !decodeDeltaPackedTimestamp(&dps, tsData) {
+					return
+				}
+
+				if !decodeChimpValue(&cs) {
+					return
+				}
+
+				if !yield(dps.curTS, cs.prevFloat) {
+					return
+				}
+			}
+
+			remaining -= dps.groupLen
+		}
+	}
+}
+
+// FusedDeltaPackedChimpTagAll decodes Group Varint packed delta-of-delta timestamps,
+// Chimp-compressed values, and varint-prefixed tags in a single fused loop.
+//
+// Parameters:
+//   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
+//   - valData: Chimp XOR compressed value bytes
+//   - tagData: Varint length-prefixed tag bytes
+//   - count: Number of data points to decode
+//   - tagYield: Callback receiving (index, timestamp, value, tag); return false to stop
+func FusedDeltaPackedChimpTagAll(tsData, valData, tagData []byte, count int, tagYield func(int, int64, float64, string) bool) {
+	if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+		return
+	}
+
+	// Initialize Chimp value state
+	var cbr bitReader
+	cbr.data = valData
+	firstBits, valOk := cbr.readBits(64)
+	if !valOk {
+		return
+	}
+
+	cs := chimpState{
+		br:            cbr,
+		prevValue:     firstBits,
+		prevFloat:     math.Float64frombits(firstBits),
+		storedLeading: 65,
+	}
+
+	// First timestamp (full varint)
+	first, offset, tsOk := decodeVarint64(tsData, 0)
+	if !tsOk {
+		return
+	}
+
+	var dps deltaPackedState
+	dps.curTS = int64(first) //nolint:gosec
+	dps.offset = offset
+
+	tagOffset := 0
+	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	if !tagYield(0, dps.curTS, cs.prevFloat, tag) {
+		return
+	}
+
+	if count == 1 {
+		return
+	}
+
+	// Second timestamp
+	zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
+	if !tsOk {
+		return
+	}
+
+	delta := decodeZigZag64(zigzag)
+	dps.curTS += delta
+	dps.prevDelta = delta
+	dps.offset = offset
+
+	if !decodeChimpValue(&cs) {
+		return
+	}
+
+	tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	if !tagYield(1, dps.curTS, cs.prevFloat, tag) {
+		return
+	}
+
+	// Remaining: Group Varint packed delta-of-deltas
+	idx := 2
+	remaining := count - 2
+	dps.groupLen = groupSize
+
+	for remaining > 0 {
+		if remaining < groupSize {
+			dps.groupLen = remaining
+		}
+
+		for range dps.groupLen {
+			if !decodeDeltaPackedTimestamp(&dps, tsData) {
+				return
+			}
+
+			if !decodeChimpValue(&cs) {
+				return
+			}
+
+			tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+			if !tagOk {
+				return
+			}
+
+			if !tagYield(idx, dps.curTS, cs.prevFloat, tag) {
+				return
+			}
+			idx++
+		}
+
+		remaining -= dps.groupLen
+	}
+}
+
+// FusedDeltaPackedTagAll decodes Group Varint packed delta-of-delta timestamps
+// and varint-prefixed tags in a single fused loop. Values are not decoded here;
+// the caller uses At() for raw values.
+//
+// Parameters:
+//   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
+//   - tagData: Varint length-prefixed tag bytes
+//   - count: Number of data points to decode
+//   - yield: Callback receiving (index, timestamp, tag); return false to stop
+func FusedDeltaPackedTagAll(tsData, tagData []byte, count int, yield func(int, int64, string) bool) {
+	if count == 0 || len(tsData) == 0 {
+		return
+	}
+
+	// First timestamp (full varint)
+	first, offset, tsOk := decodeVarint64(tsData, 0)
+	if !tsOk {
+		return
+	}
+
+	var dps deltaPackedState
+	dps.curTS = int64(first) //nolint:gosec
+	dps.offset = offset
+
+	tagOffset := 0
+	tag, tagOffset, tagOk := decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	if !yield(0, dps.curTS, tag) {
+		return
+	}
+
+	if count == 1 {
+		return
+	}
+
+	// Second timestamp
+	zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
+	if !tsOk {
+		return
+	}
+
+	delta := decodeZigZag64(zigzag)
+	dps.curTS += delta
+	dps.prevDelta = delta
+	dps.offset = offset
+
+	tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+	if !tagOk {
+		return
+	}
+
+	if !yield(1, dps.curTS, tag) {
+		return
+	}
+
+	// Remaining: Group Varint packed delta-of-deltas
+	idx := 2
+	remaining := count - 2
+	dps.groupLen = groupSize
+
+	for remaining > 0 {
+		if remaining < groupSize {
+			dps.groupLen = remaining
+		}
+
+		for range dps.groupLen {
+			if !decodeDeltaPackedTimestamp(&dps, tsData) {
+				return
+			}
+
+			tag, tagOffset, tagOk = decodeNextTag(tagData, tagOffset)
+			if !tagOk {
+				return
+			}
+
+			if !yield(idx, dps.curTS, tag) {
+				return
+			}
+			idx++
+		}
+
+		remaining -= dps.groupLen
+	}
+}
