@@ -273,10 +273,7 @@ func (e *TimestampDeltaEncoder) reserveFor(count int) {
 	// - Second timestamp: ~3 bytes (delta)
 	// - Regular intervals: ~1.5 bytes average (delta-of-delta)
 	// - Conservative estimate: 3 bytes per timestamp
-	perEntry := 3
-	if perEntry < 1 {
-		perEntry = 1
-	}
+	perEntry := max(3, 1)
 
 	// Conservative upper bound for irregular data
 	const maxPerEntry = 5

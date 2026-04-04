@@ -146,7 +146,7 @@ func TestSlicePoolConcurrency(t *testing.T) {
 		const goroutines = 100
 		done := make(chan bool, goroutines)
 
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			go func() {
 				slice, cleanup := GetInt64Slice(50)
 				defer cleanup()
@@ -160,7 +160,7 @@ func TestSlicePoolConcurrency(t *testing.T) {
 			}()
 		}
 
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			<-done
 		}
 	})
@@ -169,7 +169,7 @@ func TestSlicePoolConcurrency(t *testing.T) {
 		const goroutines = 100
 		done := make(chan bool, goroutines)
 
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			go func() {
 				slice, cleanup := GetFloat64Slice(50)
 				defer cleanup()
@@ -183,7 +183,7 @@ func TestSlicePoolConcurrency(t *testing.T) {
 			}()
 		}
 
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			<-done
 		}
 	})
@@ -192,7 +192,7 @@ func TestSlicePoolConcurrency(t *testing.T) {
 		const goroutines = 100
 		done := make(chan bool, goroutines)
 
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			go func() {
 				slice, cleanup := GetStringSlice(50)
 				defer cleanup()
@@ -206,7 +206,7 @@ func TestSlicePoolConcurrency(t *testing.T) {
 			}()
 		}
 
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			<-done
 		}
 	})

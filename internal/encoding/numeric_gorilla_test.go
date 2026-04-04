@@ -588,7 +588,7 @@ func TestNumericGorillaDecoder_At_JitteredData(t *testing.T) {
 
 			// Test random indices (including out of bounds to simulate benchmark)
 			numTests := 100
-			for i := 0; i < numTests; i++ {
+			for range numTests {
 				// Random index from 0 to numValues+100 (to include out of bounds)
 				index := rng.Intn(tc.numValues + 100)
 
@@ -618,7 +618,7 @@ func TestNumericGorillaDecoder_At_JitteredData(t *testing.T) {
 
 			// Also test sequential access to all indices
 			t.Run("sequential_access", func(t *testing.T) {
-				for i := 0; i < len(values); i++ {
+				for i := range values {
 					val, ok := decoder.At(data, i, len(values))
 					if !ok {
 						t.Errorf("At(%d) failed for sequential access", i)
@@ -646,7 +646,7 @@ func TestNumericGorillaDecoder_At_NegativeTrailing(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
 
 	currentValue := baseValue
-	for i := 0; i < len(values); i++ {
+	for i := range values {
 		deltaRange := currentValue * 0.02
 		delta := (rng.Float64()*2 - 1) * deltaRange
 		currentValue += delta
@@ -660,7 +660,7 @@ func TestNumericGorillaDecoder_At_NegativeTrailing(t *testing.T) {
 	t.Logf("Testing %d values, encoded into %d bytes", len(values), len(data))
 
 	// Test every single index
-	for i := 0; i < len(values); i++ {
+	for i := range values {
 		val, ok := decoder.At(data, i, len(values))
 		if !ok {
 			t.Errorf("At(%d) failed - likely hit negative trailing bug", i)
@@ -693,7 +693,7 @@ func generateJitteredValues(count int, baseValue float64, deltaPercent float64, 
 	values := make([]float64, count)
 
 	currentValue := baseValue
-	for i := 0; i < count; i++ {
+	for i := range count {
 		// Add small random delta
 		deltaRange := currentValue * deltaPercent
 		delta := (rng.Float64()*2 - 1) * deltaRange // -delta% to +delta%

@@ -280,7 +280,7 @@ func TestTextDecoder_RoundTrip_MultipleMetrics(t *testing.T) {
 	require.NoError(t, err)
 
 	// Add 3 metrics
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		metricID := uint64(10000 + i)
 		err = encoder.StartMetricID(metricID, 2)
 		require.NoError(t, err)

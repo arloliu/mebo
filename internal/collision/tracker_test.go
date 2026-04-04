@@ -151,7 +151,7 @@ func TestTracker_Reset_PreservesCapacity(t *testing.T) {
 	tracker := NewTracker()
 
 	// Track many metrics to allocate capacity
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		_ = tracker.TrackMetric("metric", uint64(i))
 	}
 

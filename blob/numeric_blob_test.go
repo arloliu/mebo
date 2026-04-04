@@ -2600,7 +2600,7 @@ func TestNumericBlobOffsetWithBenchmarkData(t *testing.T) {
 				currentTime := startTime
 				currentValue := baseValue + float64(m)*10.0
 
-				for i := 0; i < numPoints; i++ {
+				for range numPoints {
 					jitterRange := float64(baseInterval) * jitterPercent
 					jitter := time.Duration((rng.Float64()*2 - 1) * jitterRange)
 					currentTime = currentTime.Add(baseInterval + jitter)
@@ -2712,7 +2712,7 @@ func TestNumericBlobOffsetDebug(t *testing.T) {
 
 		// Try different numbers of metrics to find the boundary
 		maxMetrics := 110
-		for m := 0; m < maxMetrics; m++ {
+		for m := range maxMetrics {
 			metricID := uint64(1000 + m)
 			err := encoder.StartMetricID(metricID, numPoints)
 			require.NoError(t, err)
@@ -2720,7 +2720,7 @@ func TestNumericBlobOffsetDebug(t *testing.T) {
 			currentTime := startTime
 			currentValue := baseValue + float64(m)*10.0
 
-			for i := 0; i < numPoints; i++ {
+			for range numPoints {
 				jitterRange := float64(baseInterval) * jitterPercent
 				jitter := time.Duration((rng.Float64()*2 - 1) * jitterRange)
 				currentTime = currentTime.Add(baseInterval + jitter)
@@ -2748,7 +2748,7 @@ func TestNumericBlobOffsetDebug(t *testing.T) {
 		// Find first failing metric
 		testIndex := 56
 		firstFail := -1
-		for m := 0; m < maxMetrics; m++ {
+		for m := range maxMetrics {
 			metricID := uint64(1000 + m)
 			_, ok := blob.ValueAt(metricID, testIndex)
 			if !ok {
@@ -2783,7 +2783,7 @@ func TestNumericBlobRawVsGorillaOffset(t *testing.T) {
 
 			rng := rand.New(rand.NewSource(42))
 
-			for m := 0; m < numMetrics; m++ {
+			for m := range numMetrics {
 				metricID := uint64(1000 + m)
 				err := encoder.StartMetricID(metricID, numPoints)
 				require.NoError(t, err)
@@ -2791,7 +2791,7 @@ func TestNumericBlobRawVsGorillaOffset(t *testing.T) {
 				currentTime := startTime
 				currentValue := 100.0 + float64(m)*10.0
 
-				for i := 0; i < numPoints; i++ {
+				for range numPoints {
 					jitterRange := float64(time.Second) * 0.05
 					jitter := time.Duration((rng.Float64()*2 - 1) * jitterRange)
 					currentTime = currentTime.Add(time.Second + jitter)
@@ -2819,7 +2819,7 @@ func TestNumericBlobRawVsGorillaOffset(t *testing.T) {
 			// Test random access
 			testIndex := 56
 			failures := 0
-			for m := 0; m < numMetrics; m++ {
+			for m := range numMetrics {
 				metricID := uint64(1000 + m)
 				_, ok := blob.ValueAt(metricID, testIndex)
 				if !ok {
@@ -3006,12 +3006,12 @@ func TestNumericBlobOffsetLimitDetailed(t *testing.T) {
 				const numPoints = 100
 				const maxMetrics = 120
 
-				for m := 0; m < maxMetrics; m++ {
+				for m := range maxMetrics {
 					metricID := uint64(1000 + m)
 					err := encoder.StartMetricID(metricID, numPoints)
 					require.NoError(t, err)
 
-					for i := 0; i < numPoints; i++ {
+					for i := range numPoints {
 						ts := startTime.Add(time.Duration(i) * time.Second).UnixMicro()
 						val := 100.0 + float64(m)*10.0 + float64(i)
 						err := encoder.AddDataPoint(ts, val, "")
@@ -3034,7 +3034,7 @@ func TestNumericBlobOffsetLimitDetailed(t *testing.T) {
 				// Find where random access starts failing
 				testIndex := 56
 				firstFailMetric := -1
-				for m := 0; m < maxMetrics; m++ {
+				for m := range maxMetrics {
 					metricID := uint64(1000 + m)
 					_, ok := blob.ValueAt(metricID, testIndex)
 					if !ok {
@@ -3105,12 +3105,12 @@ func testOffsetBoundary(t *testing.T, numMetrics, _ int, encoding format.Encodin
 	)
 	require.NoError(t, err)
 
-	for m := 0; m < numMetrics; m++ {
+	for m := range numMetrics {
 		metricID := uint64(1000 + m)
 		err := encoder.StartMetricID(metricID, numPoints)
 		require.NoError(t, err)
 
-		for i := 0; i < numPoints; i++ {
+		for i := range numPoints {
 			ts := startTime.Add(time.Duration(i) * time.Second).UnixMicro()
 			val := 100.0 + float64(m)*10.0 + float64(i)
 			err := encoder.AddDataPoint(ts, val, "")

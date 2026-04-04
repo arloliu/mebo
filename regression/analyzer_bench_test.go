@@ -158,7 +158,7 @@ func generateBenchmarkData(size int) (x, y []float64) {
 	x = make([]float64, size)
 	y = make([]float64, size)
 
-	for i := 0; i < size; i++ {
+	for i := range size {
 		// Generate polynomial-like data: y = 1 + 2x + 0.5x² + noise
 		xi := float64(i+1) * 0.1
 		x[i] = xi

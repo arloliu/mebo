@@ -282,7 +282,7 @@ func TestPool_MultipleGetsAndPuts(t *testing.T) {
 	}
 
 	// Get them again - they should all be reset
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		bb := GetBlobBuffer()
 		assert.Equal(t, 0, bb.Len(), "each buffer should be reset")
 		PutBlobBuffer(bb)
@@ -296,10 +296,10 @@ func TestPool_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numIterations; j++ {
+			for range numIterations {
 				bb := GetBlobBuffer()
 				bb.MustWrite([]byte("data"))
 				assert.Equal(t, 4, bb.Len())
@@ -748,7 +748,7 @@ func BenchmarkWrite_LargeData_WithPool(b *testing.B) {
 	b.Run("PooledBuffer", func(b *testing.B) {
 		for b.Loop() {
 			bb := GetBlobBuffer()
-			for i := 0; i < 1000; i++ {
+			for range 1000 {
 				bb.MustWrite(largeData)
 			}
 			PutBlobBuffer(bb)
@@ -762,7 +762,7 @@ func BenchmarkWrite_LargeData_NoPool(b *testing.B) {
 	b.Run("NonPooledBuffer", func(b *testing.B) {
 		for b.Loop() {
 			bb := NewByteBuffer(BlobBufferDefaultSize)
-			for i := 0; i < 1000; i++ {
+			for range 1000 {
 				bb.MustWrite(largeData)
 			}
 			_ = bb

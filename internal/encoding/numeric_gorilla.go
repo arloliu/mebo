@@ -158,10 +158,7 @@ func (e *NumericGorillaEncoder) WriteSlice(values []float64) {
 func (e *NumericGorillaEncoder) writeMultipleZeroBits(count int) {
 	// Write multiple 0 bits efficiently
 	for count > 0 {
-		bitsToWrite := count
-		if bitsToWrite > 64 {
-			bitsToWrite = 64
-		}
+		bitsToWrite := min(count, 64)
 		e.writeBits(0, bitsToWrite)
 		count -= bitsToWrite
 	}
@@ -702,7 +699,7 @@ func (NumericGorillaDecoder) decodeAllLarge(br *bitReader, prevValue uint64, pre
 				}
 
 				// Yield all batched unchanged values
-				for i := 0; i < unchangedCount; i++ {
+				for range unchangedCount {
 					if !yield(prevFloat) {
 						return
 					}
@@ -1251,10 +1248,7 @@ func (br *bitReader) readBits(numBits int) (uint64, bool) {
 		}
 
 		// Determine how many bits we can read from current buffer
-		bitsToRead := numBits
-		if bitsToRead > br.bitCount {
-			bitsToRead = br.bitCount
-		}
+		bitsToRead := min(numBits, br.bitCount)
 
 		// Extract bits from most significant position
 		shift := 64 - bitsToRead
@@ -1295,10 +1289,7 @@ func (br *bitReader) fillBuffer() bool {
 
 	// Read up to 8 bytes to fill the buffer
 	bytesAvailable := len(br.data) - br.bytePos
-	bytesToRead := 8
-	if bytesToRead > bytesAvailable {
-		bytesToRead = bytesAvailable
-	}
+	bytesToRead := min(8, bytesAvailable)
 
 	// Fast path: read full 8 bytes using binary.BigEndian
 	if bytesToRead == 8 {
@@ -1311,7 +1302,7 @@ func (br *bitReader) fillBuffer() bool {
 
 	// Slow path: read partial bytes
 	br.bitBuf = 0
-	for i := 0; i < bytesToRead; i++ {
+	for range bytesToRead {
 		br.bitBuf = (br.bitBuf << 8) | uint64(br.data[br.bytePos])
 		br.bytePos++
 	}

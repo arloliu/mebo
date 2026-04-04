@@ -1172,10 +1172,7 @@ func AddFromRows[T any](
 	// Maximum batch size is maxCachedSliceSize (512 by default)
 	for offset := 0; offset < len(rows); offset += maxCachedSliceSize {
 		// Calculate batch size (may be smaller for the last batch)
-		batchSize := len(rows) - offset
-		if batchSize > maxCachedSliceSize {
-			batchSize = maxCachedSliceSize
-		}
+		batchSize := min(len(rows)-offset, maxCachedSliceSize)
 
 		// Get cached slices (sized for this batch)
 		timestamps := encoder.getTimestamps(batchSize)
@@ -1251,10 +1248,7 @@ func AddFromRowsNoTag[T any](
 	// Maximum batch size is maxCachedSliceSize (512 by default)
 	for offset := 0; offset < len(rows); offset += maxCachedSliceSize {
 		// Calculate batch size (may be smaller for the last batch)
-		batchSize := len(rows) - offset
-		if batchSize > maxCachedSliceSize {
-			batchSize = maxCachedSliceSize
-		}
+		batchSize := min(len(rows)-offset, maxCachedSliceSize)
 
 		// Get cached slices (sized for this batch)
 		timestamps := encoder.getTimestamps(batchSize)

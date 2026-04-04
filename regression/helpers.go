@@ -225,10 +225,7 @@ func encodeAllChunksForPPM(materialized map[uint64]blob.MaterializedNumericMetri
 			if start >= len(m.Timestamps) {
 				continue
 			}
-			end := start + ppm
-			if end > len(m.Timestamps) {
-				end = len(m.Timestamps)
-			}
+			end := min(start+ppm, len(m.Timestamps))
 
 			count := end - start
 			if count <= 0 {

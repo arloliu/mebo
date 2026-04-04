@@ -296,7 +296,7 @@ func fitLogarithmic(x, y []float64) *Model {
 
 	// Calculate R² and RMSE
 	predicted := make([]float64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		predicted[i] = a + b*math.Log(x[i])
 	}
 	r2 := calculateRSquared(y, predicted)
@@ -358,7 +358,7 @@ func fitPower(x, y []float64) *Model {
 
 	// Calculate R² and RMSE
 	predicted := make([]float64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		predicted[i] = a * math.Pow(x[i], b)
 	}
 	r2 := calculateRSquared(y, predicted)
@@ -420,7 +420,7 @@ func fitExponential(x, y []float64) *Model {
 
 	// Calculate R² and RMSE
 	predicted := make([]float64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		predicted[i] = a * math.Exp(b*x[i])
 	}
 	r2 := calculateRSquared(y, predicted)
@@ -546,7 +546,7 @@ func fitLinear(x, y []float64) *Model {
 
 	// Simple linear regression: y = a + b*x
 	var sumX, sumY, sumXY, sumX2 float64
-	for i := 0; i < n; i++ {
+	for i := range n {
 		xi := x[i]
 		yi := y[i]
 		sumX += xi
@@ -562,7 +562,7 @@ func fitLinear(x, y []float64) *Model {
 
 	// Calculate R² and RMSE
 	predicted := make([]float64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		predicted[i] = a + b*x[i]
 	}
 	r2 := calculateRSquared(y, predicted)
@@ -699,7 +699,7 @@ func calculateStatsOptimized(x, y []float64, a, b, c float64) (r2, rmse float64)
 	ssRes := 0.0 // Residual sum of squares
 	sumSq := 0.0 // Sum of squared residuals for RMSE
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		xi := x[i]
 		yi := y[i]
 

@@ -284,7 +284,7 @@ func TestTagEncoder_BufferGrowth(t *testing.T) {
 	encoder := NewTagEncoder(engine)
 
 	// Write many tags to test buffer growth
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		encoder.Write("test_tag_value")
 	}
 
@@ -300,7 +300,7 @@ func TestTagEncoder_BufferGrowth(t *testing.T) {
 
 	// Navigate to last tag
 	offset := 0
-	for i := 0; i < 99; i++ {
+	for range 99 {
 		length, n := binary.Uvarint(data[offset:])
 		offset += n + int(length)
 	}

@@ -128,7 +128,7 @@ func TestNumericEncoder_StartMetricID(t *testing.T) {
 		// Instead, verify the error message format
 
 		// Simulate having MaxMetricCount metrics already added
-		for i := 0; i < MaxMetricCount; i++ {
+		for range MaxMetricCount {
 			encoder.indexEntries = append(encoder.indexEntries, section.NumericIndexEntry{})
 		}
 
@@ -594,7 +594,7 @@ func TestNumericEncoder_TimestampOffsetDelta(t *testing.T) {
 	require.NoError(t, encoder.StartMetricID(metric1ID, 5))
 
 	ts1 := startTime.UnixMicro()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		require.NoError(t, encoder.AddDataPoint(ts1+int64(i)*1000000, float64(i)*1.5, ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -605,7 +605,7 @@ func TestNumericEncoder_TimestampOffsetDelta(t *testing.T) {
 	require.NoError(t, encoder.StartMetricID(metric2ID, 3))
 
 	ts2 := ts1 + 10000000
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.NoError(t, encoder.AddDataPoint(ts2+int64(i)*1000000, float64(i)*2.0, ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -616,7 +616,7 @@ func TestNumericEncoder_TimestampOffsetDelta(t *testing.T) {
 	require.NoError(t, encoder.StartMetricID(metric3ID, 7))
 
 	ts3 := ts2 + 20000000
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		require.NoError(t, encoder.AddDataPoint(ts3+int64(i)*1000000, float64(i)*3.0, ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -712,7 +712,7 @@ func TestNumericEncoder_TimestampOffsetDelta_SingleMetric(t *testing.T) {
 	require.NoError(t, encoder.StartMetricID(metricID, 10))
 
 	ts := startTime.UnixMicro()
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		require.NoError(t, encoder.AddDataPoint(ts+int64(i)*1000000, float64(i), ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -771,7 +771,7 @@ func TestNumericEncoder_TimestampOffsetDelta_VaryingDataPoints(t *testing.T) {
 		require.NoError(t, encoder.StartMetricID(metricIDs[i], size))
 
 		ts := baseTS + int64(i)*10000000
-		for j := 0; j < size; j++ {
+		for j := range size {
 			require.NoError(t, encoder.AddDataPoint(ts+int64(j)*1000000, float64(j), ""))
 		}
 		require.NoError(t, encoder.EndMetric())
@@ -840,7 +840,7 @@ func TestNumericEncoder_TimestampOffsetDelta_WithDeltaEncoding(t *testing.T) {
 	// Metric 1: 5 sequential timestamps (highly compressible)
 	metricIDs[0] = hash.ID("metric1")
 	require.NoError(t, encoder.StartMetricID(metricIDs[0], 5))
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		require.NoError(t, encoder.AddDataPoint(baseTS+int64(i)*1000000, float64(i), ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -848,7 +848,7 @@ func TestNumericEncoder_TimestampOffsetDelta_WithDeltaEncoding(t *testing.T) {
 	// Metric 2: 3 timestamps
 	metricIDs[1] = hash.ID("metric2")
 	require.NoError(t, encoder.StartMetricID(metricIDs[1], 3))
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.NoError(t, encoder.AddDataPoint(baseTS+int64(i)*2000000, float64(i), ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -856,7 +856,7 @@ func TestNumericEncoder_TimestampOffsetDelta_WithDeltaEncoding(t *testing.T) {
 	// Metric 3: 4 timestamps
 	metricIDs[2] = hash.ID("metric3")
 	require.NoError(t, encoder.StartMetricID(metricIDs[2], 4))
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		require.NoError(t, encoder.AddDataPoint(baseTS+int64(i)*500000, float64(i), ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -1360,7 +1360,7 @@ func TestNumericEncoder_HeaderImmutability(t *testing.T) {
 		for i := uint64(100); i < 105; i++ {
 			err = encoder.StartMetricID(i, 3)
 			require.NoError(t, err)
-			for j := int64(0); j < 3; j++ {
+			for j := range int64(3) {
 				err = encoder.AddDataPoint(j*1000, float64(j), "")
 				require.NoError(t, err)
 			}
@@ -1550,7 +1550,7 @@ func TestNumericEncoder_IDModeOptimization(t *testing.T) {
 		encoder := createTestEncoder(t)
 
 		// Add multiple metrics
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			err := encoder.StartMetricID(uint64(100+i), 2)
 			require.NoError(t, err)
 			err = encoder.AddDataPoint(time.Now().UnixMicro(), float64(i), "")
@@ -1650,7 +1650,7 @@ func TestNumericEncoder_FinishWithDifferentModes(t *testing.T) {
 		encoder := createTestEncoder(t)
 
 		// ID mode - add some metrics
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			err := encoder.StartMetricID(uint64(100+i), 2)
 			require.NoError(t, err)
 			err = encoder.AddDataPoint(time.Now().UnixMicro(), float64(i), "")
@@ -1677,7 +1677,7 @@ func TestNumericEncoder_FinishWithDifferentModes(t *testing.T) {
 		encoder := createTestEncoder(t)
 
 		// Name mode - add some metrics (no collision)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			err := encoder.StartMetricName(string(rune('a'+i))+".metric", 2)
 			require.NoError(t, err)
 			err = encoder.AddDataPoint(time.Now().UnixMicro(), float64(i), "")
@@ -2187,7 +2187,7 @@ func TestNumericEncoder_EmptyTagsOptimization(t *testing.T) {
 		encoder, err := NewNumericEncoder(startTime, WithTagsEnabled(true))
 		require.NoError(t, err)
 
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			metricID := uint64(10000 + i)
 			err = encoder.StartMetricID(metricID, 2)
 			require.NoError(t, err)
@@ -2294,7 +2294,7 @@ func TestNumericEncoder_SliceCaching_MultipleMetrics(t *testing.T) {
 
 	for metricIdx, size := range metricSizes {
 		data := make([]DataPoint, size)
-		for i := 0; i < size; i++ {
+		for i := range size {
 			data[i] = DataPoint{
 				Timestamp: int64(i * 1000),
 				Value:     float64(metricIdx*1000 + i),
@@ -2347,7 +2347,7 @@ func TestNumericEncoder_SliceCaching_NoTag(t *testing.T) {
 	// Add multiple metrics using AddFromRowsNoTag
 	for metricID := 1; metricID <= 5; metricID++ {
 		data := make([]DataPoint, 10)
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			data[i] = DataPoint{
 				TS:  int64(i * 1000),
 				Val: float64(metricID*100 + i),
@@ -2396,7 +2396,7 @@ func TestNumericEncoder_SliceCaching_GrowthScenario(t *testing.T) {
 
 	for metricIdx, size := range sizes {
 		data := make([]DataPoint, size)
-		for i := 0; i < size; i++ {
+		for i := range size {
 			data[i] = DataPoint{
 				Timestamp: int64(i * 1000),
 				Value:     float64(metricIdx*1000 + i),
@@ -2459,7 +2459,7 @@ func TestNumericEncoder_SliceCaching_LargeBatching(t *testing.T) {
 
 	for idx, size := range testSizes {
 		data := make([]DataPoint, size)
-		for i := 0; i < size; i++ {
+		for i := range size {
 			data[i] = DataPoint{
 				Timestamp: int64(i * 1000),
 				Value:     float64(idx*10000 + i),
@@ -2521,7 +2521,7 @@ func TestNumericEncoder_SliceCaching_NoTag_LargeBatching(t *testing.T) {
 	// Test large metric (over batch threshold)
 	size := 1500
 	data := make([]DataPoint, size)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		data[i] = DataPoint{
 			TS:  int64(i * 1000),
 			Val: float64(i) + 0.5,

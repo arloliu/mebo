@@ -441,7 +441,7 @@ func TestTimestampDeltaDecoder_All_RandomizedSequences(t *testing.T) {
 	rng := rand.New(rand.NewSource(0xC0FFEE))
 	decoder := NewTimestampDeltaDecoder()
 
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		count := 2 + rng.Intn(63)
 		timestamps := make([]int64, count)
 
@@ -467,7 +467,7 @@ func TestTimestampDeltaDecoder_All_RandomizedSequences(t *testing.T) {
 
 		require.Equalf(t, timestamps, decoded, "sequence %d mismatch", i)
 
-		for checks := 0; checks < 5; checks++ {
+		for range 5 {
 			idx := rng.Intn(count)
 			ts, ok := decoder.At(encoded, idx, count)
 			require.Truef(t, ok, "sequence %d index %d", i, idx)

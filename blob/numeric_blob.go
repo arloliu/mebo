@@ -460,7 +460,7 @@ func (b NumericBlob) allTagsFromEntry(entry section.NumericIndexEntry) iter.Seq[
 	// If tags are disabled, return empty strings
 	if !b.HasTag() || len(b.tagPayload) == 0 {
 		return func(yield func(string) bool) {
-			for i := 0; i < count; i++ {
+			for range count {
 				if !yield("") {
 					break
 				}
@@ -656,7 +656,7 @@ func (b NumericBlob) allDataPointsRaw(tsBytes, valBytes, tagBytes []byte, count 
 	return func(yield func(int, NumericDataPoint) bool) {
 		// If tags are disabled, use simple iteration without tag decoder
 		if !b.HasTag() {
-			for i := 0; i < count; i++ {
+			for i := range count {
 				ts, _ := tsDecoder.At(tsBytes, i, count)
 				val, _ := valDecoder.At(valBytes, i, count)
 

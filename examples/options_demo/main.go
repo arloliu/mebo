@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"slices"
 
 	"github.com/arloliu/mebo/internal/options"
 )
@@ -119,11 +120,9 @@ func WithDebug(debug bool) ServerOption {
 func WithLogLevel(level string) ServerOption {
 	return options.New(func(config *ServerConfig) error {
 		validLevels := []string{"debug", "info", "warn", "error"}
-		for _, valid := range validLevels {
-			if level == valid {
-				config.LogLevel = level
-				return nil
-			}
+		if slices.Contains(validLevels, level) {
+			config.LogLevel = level
+			return nil
 		}
 
 		return fmt.Errorf("invalid log level: %s", level)

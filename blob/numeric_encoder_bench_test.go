@@ -464,9 +464,9 @@ func BenchmarkAddFromRows_vs_ManualLoop_MultipleMetrics(b *testing.B) {
 
 	// Create test data once
 	allMetrics := make([][]DataPoint, metricCount)
-	for m := 0; m < metricCount; m++ {
+	for m := range metricCount {
 		points := make([]DataPoint, pointsPerMetric)
-		for p := 0; p < pointsPerMetric; p++ {
+		for p := range pointsPerMetric {
 			points[p] = DataPoint{
 				Timestamp: int64(p * 1000),
 				Value:     float64(m*1000 + p),
@@ -482,7 +482,7 @@ func BenchmarkAddFromRows_vs_ManualLoop_MultipleMetrics(b *testing.B) {
 		for b.Loop() {
 			encoder, _ := NewNumericEncoder(time.Now(), WithTagsEnabled(true))
 
-			for m := 0; m < metricCount; m++ {
+			for m := range metricCount {
 				_ = encoder.StartMetricID(uint64(m+1), pointsPerMetric)
 				_ = AddFromRows(encoder, allMetrics[m], func(dp DataPoint) (int64, float64, string) {
 					return dp.Timestamp, dp.Value, dp.Tag
@@ -500,7 +500,7 @@ func BenchmarkAddFromRows_vs_ManualLoop_MultipleMetrics(b *testing.B) {
 		for b.Loop() {
 			encoder, _ := NewNumericEncoder(time.Now(), WithTagsEnabled(true))
 
-			for m := 0; m < metricCount; m++ {
+			for m := range metricCount {
 				_ = encoder.StartMetricID(uint64(m+1), pointsPerMetric)
 				for _, dp := range allMetrics[m] {
 					_ = encoder.AddDataPoint(dp.Timestamp, dp.Value, dp.Tag)
@@ -521,9 +521,9 @@ func BenchmarkNumericDecoder_TagsDisabled_vs_Enabled(b *testing.B) {
 
 	// Prepare data with tags disabled
 	encoderDisabled, _ := NewNumericEncoder(startTime)
-	for m := 0; m < metricCount; m++ {
+	for m := range metricCount {
 		_ = encoderDisabled.StartMetricID(uint64(m+1), pointsPerMetric)
-		for p := 0; p < pointsPerMetric; p++ {
+		for p := range pointsPerMetric {
 			_ = encoderDisabled.AddDataPoint(int64(p*1000), float64(p)+0.5, "")
 		}
 		_ = encoderDisabled.EndMetric()
@@ -532,9 +532,9 @@ func BenchmarkNumericDecoder_TagsDisabled_vs_Enabled(b *testing.B) {
 
 	// Prepare data with tags enabled
 	encoderEnabled, _ := NewNumericEncoder(startTime, WithTagsEnabled(true))
-	for m := 0; m < metricCount; m++ {
+	for m := range metricCount {
 		_ = encoderEnabled.StartMetricID(uint64(m+1), pointsPerMetric)
-		for p := 0; p < pointsPerMetric; p++ {
+		for p := range pointsPerMetric {
 			_ = encoderEnabled.AddDataPoint(int64(p*1000), float64(p)+0.5, "tag")
 		}
 		_ = encoderEnabled.EndMetric()
@@ -566,9 +566,9 @@ func BenchmarkNumericBlob_All_TagsDisabled_vs_Enabled(b *testing.B) {
 
 	// Prepare blob with tags disabled
 	encoderDisabled, _ := NewNumericEncoder(startTime)
-	for m := 0; m < metricCount; m++ {
+	for m := range metricCount {
 		_ = encoderDisabled.StartMetricID(uint64(m+1), pointsPerMetric)
-		for p := 0; p < pointsPerMetric; p++ {
+		for p := range pointsPerMetric {
 			_ = encoderDisabled.AddDataPoint(int64(p*1000), float64(p)+0.5, "")
 		}
 		_ = encoderDisabled.EndMetric()
@@ -579,9 +579,9 @@ func BenchmarkNumericBlob_All_TagsDisabled_vs_Enabled(b *testing.B) {
 
 	// Prepare blob with tags enabled
 	encoderEnabled, _ := NewNumericEncoder(startTime, WithTagsEnabled(true))
-	for m := 0; m < metricCount; m++ {
+	for m := range metricCount {
 		_ = encoderEnabled.StartMetricID(uint64(m+1), pointsPerMetric)
-		for p := 0; p < pointsPerMetric; p++ {
+		for p := range pointsPerMetric {
 			_ = encoderEnabled.AddDataPoint(int64(p*1000), float64(p)+0.5, "tag")
 		}
 		_ = encoderEnabled.EndMetric()
@@ -620,9 +620,9 @@ func BenchmarkNumericEncoder_DeltaEncoding_TagsDisabled_vs_Enabled(b *testing.B)
 		for b.Loop() {
 			encoder, _ := NewNumericEncoder(startTime, WithTimestampEncoding(format.TypeDelta))
 
-			for m := 0; m < metricCount; m++ {
+			for m := range metricCount {
 				_ = encoder.StartMetricID(uint64(m+1), pointsPerMetric)
-				for p := 0; p < pointsPerMetric; p++ {
+				for p := range pointsPerMetric {
 					_ = encoder.AddDataPoint(int64(p*1000), float64(p)+0.5, "")
 				}
 				_ = encoder.EndMetric()
@@ -637,9 +637,9 @@ func BenchmarkNumericEncoder_DeltaEncoding_TagsDisabled_vs_Enabled(b *testing.B)
 		for b.Loop() {
 			encoder, _ := NewNumericEncoder(startTime, WithTimestampEncoding(format.TypeDelta), WithTagsEnabled(true))
 
-			for m := 0; m < metricCount; m++ {
+			for m := range metricCount {
 				_ = encoder.StartMetricID(uint64(m+1), pointsPerMetric)
-				for p := 0; p < pointsPerMetric; p++ {
+				for p := range pointsPerMetric {
 					_ = encoder.AddDataPoint(int64(p*1000), float64(p)+0.5, "tag")
 				}
 				_ = encoder.EndMetric()
@@ -658,9 +658,9 @@ func BenchmarkBlobSize_TagsDisabled_vs_Enabled(b *testing.B) {
 
 	// Measure with tags disabled
 	encoderDisabled, _ := NewNumericEncoder(startTime)
-	for m := 0; m < metricCount; m++ {
+	for m := range metricCount {
 		_ = encoderDisabled.StartMetricID(uint64(m+1), pointsPerMetric)
-		for p := 0; p < pointsPerMetric; p++ {
+		for p := range pointsPerMetric {
 			_ = encoderDisabled.AddDataPoint(int64(p*1000), float64(p)+0.5, "")
 		}
 		_ = encoderDisabled.EndMetric()
@@ -669,9 +669,9 @@ func BenchmarkBlobSize_TagsDisabled_vs_Enabled(b *testing.B) {
 
 	// Measure with tags enabled (empty tags)
 	encoderEnabled, _ := NewNumericEncoder(startTime, WithTagsEnabled(true))
-	for m := 0; m < metricCount; m++ {
+	for m := range metricCount {
 		_ = encoderEnabled.StartMetricID(uint64(m+1), pointsPerMetric)
-		for p := 0; p < pointsPerMetric; p++ {
+		for p := range pointsPerMetric {
 			_ = encoderEnabled.AddDataPoint(int64(p*1000), float64(p)+0.5, "")
 		}
 		_ = encoderEnabled.EndMetric()

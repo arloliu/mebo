@@ -167,10 +167,7 @@ func makeAccessPattern(length int) []int {
 		return nil
 	}
 
-	maxProbe := length
-	if maxProbe > 32 {
-		maxProbe = 32
-	}
+	maxProbe := min(length, 32)
 
 	pattern := make([]int, 0, maxProbe)
 	pattern = append(pattern, 0)
@@ -201,13 +198,7 @@ func makeAccessPattern(length int) []int {
 }
 
 func containsIndex(values []int, target int) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(values, target)
 }
 
 func maxInt(a int, b int) int {

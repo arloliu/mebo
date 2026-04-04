@@ -394,7 +394,7 @@ func TestNumericChimpDecoder_At_JitteredData(t *testing.T) {
 			rng := rand.New(rand.NewSource(tc.randomSeed))
 
 			numTests := 100
-			for i := 0; i < numTests; i++ {
+			for range numTests {
 				index := rng.Intn(tc.numValues + 100)
 
 				val, ok := decoder.At(data, index, len(values))
@@ -409,7 +409,7 @@ func TestNumericChimpDecoder_At_JitteredData(t *testing.T) {
 			}
 
 			t.Run("sequential_access", func(t *testing.T) {
-				for i := 0; i < len(values); i++ {
+				for i := range values {
 					val, ok := decoder.At(data, i, len(values))
 					require.True(t, ok, "At(%d) failed", i)
 					require.Equal(t, values[i], val, "At(%d) returned wrong value", i)

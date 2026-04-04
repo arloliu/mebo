@@ -722,7 +722,7 @@ func TestBlobSet_EarlyTermination(t *testing.T) {
 	numEncoder, err := NewNumericEncoder(startTime)
 	require.NoError(t, err)
 	require.NoError(t, numEncoder.StartMetricID(metricID, 5))
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		require.NoError(t, numEncoder.AddDataPoint(
 			startTime.Add(time.Duration(i)*time.Second).UnixMicro(),
 			float64(i),

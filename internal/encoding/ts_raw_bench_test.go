@@ -138,7 +138,7 @@ func BenchmarkTimestampRawEncoder_Bytes(b *testing.B) {
 	defer encoder.Finish()
 
 	// Write some data
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		encoder.Write(int64(1609459200000 + i*1000))
 	}
 

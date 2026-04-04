@@ -20,7 +20,15 @@ GOLANGCI_LINT_VERSION := 2.5.0
 # Default target
 .DEFAULT_GOAL := help
 
-.PHONY: test test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
+.PHONY: fix test test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
+
+fix:
+	@echo "Running go fmt and goimports..."
+	@gofmt -s -w .
+	@goimports -w $(ALL_GO_FILES)
+	@echo "Code formatted."
+	@go fix ./...
+	@echo "go fix applied to all files."
 
 ## test: Run all tests with race detector and CGO disabled
 test: clean-test-results

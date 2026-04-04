@@ -729,7 +729,7 @@ func TestAllCodecs_ConcurrentUsage(t *testing.T) {
 				compressed, err := codec.Compress(testData)
 				require.NoError(t, err)
 
-				for i := 0; i < numGoroutines; i++ {
+				for range numGoroutines {
 					// Compress
 					go func() {
 						_, err := codec.Compress(testData)

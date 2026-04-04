@@ -113,14 +113,14 @@ func createBenchmarkBlob(metrics, pointsEach int, tsEnc, valEnc format.EncodingT
 		panic(err)
 	}
 
-	for m := 0; m < metrics; m++ {
+	for m := range metrics {
 		metricID := uint64(1000 + m)
 
 		if err := encoder.StartMetricID(metricID, pointsEach); err != nil {
 			panic(err)
 		}
 
-		for p := 0; p < pointsEach; p++ {
+		for p := range pointsEach {
 			ts := baseTime.Add(time.Duration(p) * time.Second).UnixMicro()
 			val := float64(100 + p)
 			tag := ""

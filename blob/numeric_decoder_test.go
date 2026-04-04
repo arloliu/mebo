@@ -342,21 +342,21 @@ func TestNumericDecoder_PayloadLengths(t *testing.T) {
 
 	// Metric 1: 5 points → 40 bytes timestamps, 40 bytes values
 	require.NoError(t, encoder.StartMetricID(1001, 5))
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro()+int64(i)*1000000, float64(i), ""))
 	}
 	require.NoError(t, encoder.EndMetric())
 
 	// Metric 2: 3 points → 24 bytes timestamps, 24 bytes values
 	require.NoError(t, encoder.StartMetricID(1002, 3))
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro()+int64(i)*1000000, float64(i+10), ""))
 	}
 	require.NoError(t, encoder.EndMetric())
 
 	// Metric 3: 7 points → 56 bytes timestamps, 56 bytes values
 	require.NoError(t, encoder.StartMetricID(1003, 7))
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro()+int64(i)*1000000, float64(i+20), ""))
 	}
 	require.NoError(t, encoder.EndMetric())
@@ -415,7 +415,7 @@ func TestNumericDecoder_PayloadLengths_Gorilla(t *testing.T) {
 	// Create 3 metrics with different patterns
 	for metricID := uint64(2001); metricID <= 2003; metricID++ {
 		require.NoError(t, encoder.StartMetricID(metricID, 10))
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			ts := startTime.UnixMicro() + int64(i)*1000000
 			val := float64(metricID)*100 + float64(i)*0.1 // Different patterns per metric
 			require.NoError(t, encoder.AddDataPoint(ts, val, ""))
