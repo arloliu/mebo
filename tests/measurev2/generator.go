@@ -73,6 +73,61 @@ func GenerateTestData(config DataConfig) *TestData {
 	return data
 }
 
+// GenerateSharedTimestampData creates test data where all metrics share identical timestamps.
+// This models the typical monitoring scenario: all sensors sampled at the same schedule.
+// Values still vary per metric (random walk with jitter).
+func GenerateSharedTimestampData(config DataConfig) *TestData {
+	totalPoints := config.NumMetrics * config.PointsPerMetric
+	rng := rand.New(rand.NewSource(config.Seed))
+
+	data := &TestData{
+		MetricIDs:  make([]uint64, config.NumMetrics),
+		Timestamps: make([]int64, totalPoints),
+		Values:     make([]float64, totalPoints),
+		StartTime:  time.Unix(1700000000, 0),
+		Config:     config,
+	}
+
+	// Generate metric IDs
+	for i := range config.NumMetrics {
+		name := fmt.Sprintf("metric.%d", i+1000)
+		data.MetricIDs[i] = hash.ID(name)
+	}
+
+	// Generate a single shared timestamp sequence with jitter
+	baseInterval := time.Second
+	jitterPct := config.TSJitterPct / 100.0
+	sharedTS := make([]int64, config.PointsPerMetric)
+	currentTime := data.StartTime
+
+	for j := range config.PointsPerMetric {
+		jitterFactor := (rng.Float64()*2.0 - 1.0) * jitterPct
+		jitter := time.Duration(float64(baseInterval) * jitterFactor)
+		currentTime = currentTime.Add(baseInterval + jitter)
+		sharedTS[j] = currentTime.UnixMicro()
+	}
+
+	// Assign same timestamps to all metrics, generate independent values
+	baseValue := 100.0
+	deltaPct := config.ValueJitterPct / 100.0
+
+	for i := range config.NumMetrics {
+		currentValue := baseValue + float64(i)*10.0
+
+		for j := range config.PointsPerMetric {
+			idx := i*config.PointsPerMetric + j
+			data.Timestamps[idx] = sharedTS[j]
+
+			deltaFactor := (rng.Float64()*2.0 - 1.0) * deltaPct
+			delta := currentValue * deltaFactor
+			currentValue += delta
+			data.Values[idx] = currentValue
+		}
+	}
+
+	return data
+}
+
 // SlicePoints creates a view of the test data with only the first numPoints per metric.
 func (td *TestData) SlicePoints(numPoints int) *TestData {
 	if numPoints >= td.Config.PointsPerMetric {

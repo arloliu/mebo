@@ -54,7 +54,8 @@ make bench-measure
 
 ## Encoding Comparison
 
-All 9 valid timestamp × value encoding combinations, benchmarked without additional compression codecs.
+All 18 valid encoding combinations (9 standard timestamp × value + 9 with shared timestamps), benchmarked without additional compression codecs.
+Shared-timestamp combos use `WithSharedTimestamps()` to deduplicate identical timestamp sequences across metrics.
 
 Sorted by encoded size (most efficient first):
 
@@ -89,7 +90,13 @@ Sequential iteration speed (iterating all data points via `blob.All(metricID)`):
 How bytes-per-point changes as points-per-metric increases, for each encoding combination.
 The fixed per-metric overhead amortizes differently depending on the encoding.
 
-{{SCALING_TABLE}}
+### Standard Encodings
+
+{{SCALING_TABLE_STANDARD}}
+
+### Shared-Timestamp Encodings
+
+{{SCALING_TABLE_SHARED}}
 
 ### Key Insights
 
@@ -99,41 +106,12 @@ The fixed per-metric overhead amortizes differently depending on the encoding.
 
 ### Decision Tree
 
-<!-- HINT: Generate a text-based decision tree from benchmark data.
-     Determine categories by comparing matrix results:
-     - "Best compression": combo with lowest bytes_per_point
-     - "Fastest encode": combo with lowest encode.ns_per_op
-     - "Fastest decode": combo with lowest decode.ns_per_op
-     - "Fastest iteration": combo with lowest iter_seq.ns_per_op
-     - "Random access": Raw timestamp combos support O(1) TimestampAt/ValueAt
-     - Note: DeltaPacked's advantage is decode/iteration speed (Group Varint batch decoding), not size
-     Use actual combo labels and numbers from the benchmark. -->
-
 {{DECISION_TREE}}
 
 ### Configuration Selection
 
-<!-- HINT: Generate a use-case → configuration mapping table from benchmark data.
-     Derive each row from actual rankings:
-     - "Best compression": lowest bytes_per_point combo, cite actual bpp and savings%
-     - "Fastest iteration": lowest iter_seq.ns_per_op combo, cite actual speed
-     - "Fastest encode": lowest encode.ns_per_op combo
-     - "Best balance": combo that ranks well in both size and speed (not worst in either)
-     - "Random access needed": best Raw-timestamp combo (O(1) access)
-     - "Maximum throughput": raw-raw baseline, cite actual encode speed
-     All rationale should reference specific benchmark numbers. -->
-
 {{CONFIGURATION_SELECTION}}
 
 ### Points-per-Metric Guidelines
-
-<!-- HINT: Generate a PPM zone table from scaling data.
-     Use the scaling results for the best-compression combo to determine zones:
-     - "Poor" zone: PPM range where bytes_per_point is >2× the converged value
-     - "Moderate" zone: PPM range where bytes_per_point is 1.3-2× converged
-     - "Good" zone: PPM range where bytes_per_point is 1.05-1.3× converged
-     - "Optimal" zone: PPM range where bytes_per_point is within 5% of converged
-     Cite actual bytes_per_point values at boundary points.
-     The "converged value" is the bytes_per_point at the highest tested PPM. -->
 
 {{PPM_GUIDELINES}}

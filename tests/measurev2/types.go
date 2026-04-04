@@ -11,6 +11,7 @@ type EncodingCombo struct {
 	TSEncoding  format.EncodingType
 	ValEncoding format.EncodingType
 	Label       string
+	SharedTS    bool // Enable shared timestamp deduplication
 }
 
 // AllCombos returns all valid timestamp×value encoding combinations.
@@ -47,6 +48,42 @@ func AllCombos() []EncodingCombo {
 	return combos
 }
 
+// SharedTSCombos returns encoding combinations with shared timestamps enabled.
+// These use the same ts×val grid but with WithSharedTimestamps() for timestamp deduplication.
+func SharedTSCombos() []EncodingCombo {
+	tsEncodings := []struct {
+		enc   format.EncodingType
+		label string
+	}{
+		{format.TypeRaw, "raw"},
+		{format.TypeDelta, "delta"},
+		{format.TypeDeltaPacked, "deltapacked"},
+	}
+
+	valEncodings := []struct {
+		enc   format.EncodingType
+		label string
+	}{
+		{format.TypeRaw, "raw"},
+		{format.TypeGorilla, "gorilla"},
+		{format.TypeChimp, "chimp"},
+	}
+
+	combos := make([]EncodingCombo, 0, len(tsEncodings)*len(valEncodings))
+	for _, ts := range tsEncodings {
+		for _, val := range valEncodings {
+			combos = append(combos, EncodingCombo{
+				TSEncoding:  ts.enc,
+				ValEncoding: val.enc,
+				Label:       "shared-" + ts.label + "-" + val.label,
+				SharedTS:    true,
+			})
+		}
+	}
+
+	return combos
+}
+
 // DataConfig holds data generation parameters.
 type DataConfig struct {
 	NumMetrics      int     `json:"num_metrics"`
@@ -68,9 +105,9 @@ type ReportMetadata struct {
 
 // BenchMetrics holds standard Go benchmark metrics.
 type BenchMetrics struct {
-	NsPerOp    float64 `json:"ns_per_op"`
-	BytesPerOp int64   `json:"bytes_per_op"`
-	AllocsPerOp int64  `json:"allocs_per_op"`
+	NsPerOp     float64 `json:"ns_per_op"`
+	BytesPerOp  int64   `json:"bytes_per_op"`
+	AllocsPerOp int64   `json:"allocs_per_op"`
 }
 
 // MatrixResult holds all benchmark results for one encoding combo at a fixed data size.
@@ -112,7 +149,7 @@ type ScalingResult struct {
 
 // FullReport is the top-level JSON output.
 type FullReport struct {
-	Metadata ReportMetadata `json:"metadata"`
-	Matrix   []MatrixResult `json:"matrix"`
+	Metadata ReportMetadata  `json:"metadata"`
+	Matrix   []MatrixResult  `json:"matrix"`
 	Scaling  []ScalingResult `json:"scaling"`
 }

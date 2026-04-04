@@ -46,7 +46,9 @@ func main() {
 	}
 
 	data := GenerateTestData(config)
+	sharedData := GenerateSharedTimestampData(config)
 	combos := AllCombos()
+	sharedCombos := SharedTSCombos()
 
 	// Build metadata
 	metadata := ReportMetadata{
@@ -60,7 +62,7 @@ func main() {
 
 	// Phase 1: Matrix benchmarks
 	if *verbose {
-		fmt.Fprintf(os.Stderr, "\n=== Matrix Benchmarks (%d combos) ===\n", len(combos))
+		fmt.Fprintf(os.Stderr, "\n=== Matrix Benchmarks (%d combos + %d shared-TS combos) ===\n", len(combos), len(sharedCombos))
 	}
 
 	// First, get the raw-raw baseline size for ratio calculations
@@ -145,9 +147,73 @@ func main() {
 		})
 	}
 
+	// Phase 1b: Shared-timestamp matrix benchmarks
+	for i, combo := range sharedCombos {
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "  [%d/%d] Benchmarking %s...\n", i+1, len(sharedCombos), combo.Label)
+		}
+
+		encodedSize, err := measureEncodedSize(combo, sharedData)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding %s: %v\n", combo.Label, err)
+			os.Exit(1)
+		}
+
+		totalPoints := config.NumMetrics * config.PointsPerMetric
+		bpp := float64(encodedSize) / float64(totalPoints)
+		vsRaw := float64(rawRawSize) / float64(encodedSize)
+		savings := (1.0 - float64(encodedSize)/float64(rawRawSize)) * 100.0
+
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "    encode...")
+		}
+
+		encMetrics := benchEncode(combo, sharedData)
+
+		if *verbose {
+			fmt.Fprintf(os.Stderr, " decode...")
+		}
+
+		decMetrics, err := benchDecode(combo, sharedData)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nError decoding %s: %v\n", combo.Label, err)
+			os.Exit(1)
+		}
+
+		if *verbose {
+			fmt.Fprintf(os.Stderr, " iterate...")
+		}
+
+		iterMetrics, err := benchIterSeq(combo, sharedData)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nError iterating %s: %v\n", combo.Label, err)
+			os.Exit(1)
+		}
+
+		if *verbose {
+			fmt.Fprintf(os.Stderr, " done (%.1f bytes/point)\n", bpp)
+		}
+
+		matrixResults = append(matrixResults, MatrixResult{
+			Label:           combo.Label,
+			TSEncoding:      combo.TSEncoding.String(),
+			ValEncoding:     combo.ValEncoding.String(),
+			NumMetrics:      config.NumMetrics,
+			PointsPerMetric: config.PointsPerMetric,
+			TotalPoints:     totalPoints,
+			EncodedBytes:    encodedSize,
+			BytesPerPoint:   bpp,
+			VsRawRatio:      vsRaw,
+			SpaceSavingsPct: savings,
+			Encode:          encMetrics,
+			Decode:          decMetrics,
+			IterSeq:         iterMetrics,
+		})
+	}
+
 	// Phase 2: Scaling analysis
 	if *verbose {
-		fmt.Fprintf(os.Stderr, "\n=== Scaling Analysis (%d combos) ===\n", len(combos))
+		fmt.Fprintf(os.Stderr, "\n=== Scaling Analysis (%d combos + %d shared-TS combos) ===\n", len(combos), len(sharedCombos))
 	}
 
 	scalingResults := make([]ScalingResult, 0, len(combos))
@@ -157,6 +223,21 @@ func main() {
 		}
 
 		scalingResult, err := runScaling(combo, data)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error in scaling %s: %v\n", combo.Label, err)
+			os.Exit(1)
+		}
+
+		scalingResults = append(scalingResults, scalingResult)
+	}
+
+	// Phase 2b: Shared-TS scaling analysis
+	for i, combo := range sharedCombos {
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "  [%d/%d] Scaling %s...\n", i+1, len(sharedCombos), combo.Label)
+		}
+
+		scalingResult, err := runScaling(combo, sharedData)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error in scaling %s: %v\n", combo.Label, err)
 			os.Exit(1)

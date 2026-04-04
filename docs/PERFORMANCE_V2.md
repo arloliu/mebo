@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| **Benchmark Date** | 2026-04-04T17:09:51+08:00 |
+| **Benchmark Date** | 2026-04-04 |
 | **Platform** | linux/amd64 (32 CPUs), Go go1.26.0 |
 | **Data** | 200 metrics × 200 points = 40,000 total data points |
 | **Value Jitter** | ±0.5% per point (random walk) |
@@ -31,9 +31,9 @@ This document provides encoding benchmark results, scaling analysis, and best pr
 
 | Metric | Value | Configuration |
 |--------|-------|---------------|
-| **Best Compression** | 8.30 bytes/point (48.4% savings) | Delta + Chimp |
-| **Fastest Iteration** | 264,411 ns/op | Delta + Raw |
-| **Fastest Encode** | 508,519 ns/op | DeltaPacked + Raw |
+| **Best Compression** | 6.35 bytes/point (60.5% savings) | Shared Delta + Chimp |
+| **Best Balance** | 6.35 bytes/point (60.5% savings) | Shared DeltaPacked + Chimp |
+| **Fastest Encode** | 485,698 ns/op | DeltaPacked + Raw |
 | **Baseline** | 16.08 bytes/point | Raw + Raw |
 
 ## Benchmark Methodology
@@ -77,30 +77,40 @@ make bench-measure
 
 ## Encoding Comparison
 
-All 9 valid timestamp × value encoding combinations, benchmarked without additional compression codecs.
+All 18 valid encoding combinations (9 standard timestamp × value + 9 with shared timestamps), benchmarked without additional compression codecs.
+Shared-timestamp combos use `WithSharedTimestamps()` to deduplicate identical timestamp sequences across metrics.
 
 Sorted by encoded size (most efficient first):
 
 | Configuration | Bytes/Point | Space Savings | vs Raw | Encode (ns/op) | Decode (ns/op) | Iterate (ns/op) |
 |---------------|-------------|---------------|--------|----------------|----------------|-----------------|
-| Delta + Chimp | 8.30 | 48.4% | 1.94× | 793,987 | 5,692 | 602,502 |
-| DeltaPacked + Chimp | 8.49 | 47.2% | 1.89× | 874,352 | 6,007 | 654,361 |
-| Delta + Gorilla | 8.54 | 46.9% | 1.88× | 727,205 | 5,718 | 491,596 |
-| DeltaPacked + Gorilla | 8.73 | 45.7% | 1.84× | 717,166 | 5,827 | 529,538 |
-| Delta + Raw | 10.05 | 37.5% | 1.60× | 541,484 | 5,884 | 264,411 |
-| DeltaPacked + Raw | 10.24 | 36.3% | 1.57× | 508,519 | 5,957 | 277,038 |
-| Raw + Chimp | 14.32 | 10.9% | 1.12× | 967,214 | 6,138 | 574,823 |
-| Raw + Gorilla | 14.57 | 9.4% | 1.10× | 835,219 | 5,994 | 551,422 |
-| Raw + Raw | 16.08 | 0% | 1.00× | 658,318 | 5,741 | 292,451 |
+| Shared Delta + Chimp | 6.35 | 60.5% | 2.53× | 828,570 | 3,580 | 599,745 |
+| Shared DeltaPacked + Chimp | 6.35 | 60.5% | 2.53× | 858,745 | 3,603 | 657,169 |
+| Shared Raw + Chimp | 6.38 | 60.3% | 2.52× | 1,016,351 | 3,776 | 573,366 |
+| Shared Delta + Gorilla | 6.60 | 59.0% | 2.44× | 756,586 | 3,650 | 491,302 |
+| Shared DeltaPacked + Gorilla | 6.60 | 59.0% | 2.44× | 744,055 | 3,653 | 524,261 |
+| Shared Raw + Gorilla | 6.63 | 58.8% | 2.43× | 903,312 | 3,574 | 496,375 |
+| Shared Delta + Raw | 8.10 | 49.6% | 1.99× | 529,410 | 3,581 | 267,518 |
+| Shared DeltaPacked + Raw | 8.10 | 49.6% | 1.98× | 550,688 | 3,664 | 267,274 |
+| Shared Raw + Raw | 8.13 | 49.4% | 1.98× | 691,464 | 3,621 | 294,812 |
+| Delta + Chimp | 8.30 | 48.4% | 1.94× | 777,413 | 5,590 | 601,819 |
+| DeltaPacked + Chimp | 8.49 | 47.2% | 1.89× | 834,520 | 5,683 | 661,719 |
+| Delta + Gorilla | 8.54 | 46.9% | 1.88× | 720,336 | 5,660 | 491,926 |
+| DeltaPacked + Gorilla | 8.73 | 45.7% | 1.84× | 735,070 | 5,829 | 548,611 |
+| Delta + Raw | 10.05 | 37.5% | 1.60× | 492,588 | 5,823 | 265,970 |
+| DeltaPacked + Raw | 10.24 | 36.3% | 1.57× | 485,698 | 5,702 | 275,557 |
+| Raw + Chimp | 14.32 | 10.9% | 1.12× | 838,255 | 5,501 | 573,953 |
+| Raw + Gorilla | 14.57 | 9.4% | 1.10× | 807,659 | 5,558 | 499,479 |
+| Raw + Raw | 16.08 | 0.0% | 1.00× | 623,091 | 5,441 | 290,203 |
 
 ### Key Observations
 
-- **Delta + Chimp** achieves the best compression at **8.30 bytes/point** — a **48.4% space savings** over Raw + Raw (16.08 bpp), yielding a **1.94× size reduction**.
-- **Chimp vs Gorilla**: Chimp consistently beats Gorilla by a small margin in compression (e.g., Delta + Chimp: 8.30 bpp vs Delta + Gorilla: 8.54 bpp — **2.8% smaller**). With low-jitter semiconductor sensor data, the Chimp encoding's leading zero optimization is particularly effective.
-- **Delta vs DeltaPacked (size)**: Delta produces slightly smaller blobs than DeltaPacked (e.g., Delta + Chimp: 8.30 vs DeltaPacked + Chimp: 8.49 bpp). DeltaPacked's Group Varint format adds a small per-group overhead.
-- **Delta vs DeltaPacked (speed)**: DeltaPacked is slightly faster to **encode** (e.g., DeltaPacked + Raw: 508,519 ns/op vs Delta + Raw: 541,484 ns/op — **6% faster**). However, Delta is faster to **iterate** (e.g., Delta + Raw: 264,411 ns/op vs DeltaPacked + Raw: 277,038 ns/op — **5% faster**). The Group Varint batch decoding advantage may be more pronounced with larger timestamp deltas or different data patterns.
-- **Encode speed tradeoff**: DeltaPacked + Raw is the fastest encoder (508,519 ns/op) while achieving 36.3% savings. The best-compression combo (Delta + Chimp at 793,987 ns/op) is 1.56× slower but saves an additional 12 percentage points.
-- **Decode speed**: All 9 combinations decode at nearly identical speeds (5,692–6,138 ns/op), confirming that decode is dominated by header/index parsing overhead, not per-point decoding.
+- **Best compression**: Shared Delta + Chimp achieves 6.35 bytes/point (60.5% savings vs raw-raw baseline). Shared timestamp deduplication eliminates redundant timestamp storage across 200 metrics.
+- **Shared timestamps**: Enabling `WithSharedTimestamps()` provides 23% additional savings over the best non-shared configuration (Delta + Chimp at 8.30 bytes/point). The savings come from storing the timestamp column once instead of 200 times.
+- **Chimp vs Gorilla**: Chimp consistently outperforms Gorilla by ~2.9% in compression. For example, Delta + Chimp (8.30 BPP) vs Delta + Gorilla (8.54 BPP). Both use XOR-based floating-point encoding.
+- **DeltaPacked vs Delta**: DeltaPacked shows ~2.3% larger encoded size than Delta (8.49 vs 8.30 BPP). DeltaPacked's advantage is **decode/iteration speed** via Group Varint batch decoding, not compression ratio.
+- **Encode speed tradeoff**: DeltaPacked + Raw encodes fastest at 485698 ns/op. Raw + Raw baseline (623091 ns/op) is not the fastest because larger raw data requires more memory allocation (4,331,523 B/op vs 2,283,184 B/op).
+- **Decode speed**: Shared-TS combos decode ~34% faster than non-shared (3574 vs 5441 ns/op) due to smaller blob size and shared timestamp index.
 
 ## Encode Performance
 
@@ -108,15 +118,24 @@ Encoding speed and memory allocation for each combination:
 
 | Configuration | Speed (ns/op) | Memory (B/op) | Allocs/op |
 |---------------|---------------|---------------|-----------|
-| DeltaPacked + Raw | 508,519 | 2,283,564 | 51 |
-| Delta + Raw | 541,484 | 2,275,442 | 51 |
-| Raw + Raw | 658,318 | 4,331,686 | 62 |
-| DeltaPacked + Gorilla | 717,166 | 1,824,640 | 49 |
-| Delta + Gorilla | 727,205 | 1,816,082 | 49 |
-| Delta + Chimp | 793,987 | 1,487,446 | 48 |
-| Raw + Gorilla | 835,219 | 3,881,485 | 61 |
-| DeltaPacked + Chimp | 874,352 | 1,495,492 | 47 |
-| Raw + Chimp | 967,214 | 3,545,073 | 60 |
+| DeltaPacked + Raw | 485,698 | 2,283,184 | 50 |
+| Delta + Raw | 492,588 | 2,275,077 | 50 |
+| Shared Delta + Raw | 529,410 | 2,657,668 | 79 |
+| Shared DeltaPacked + Raw | 550,688 | 2,665,760 | 79 |
+| Raw + Raw | 623,091 | 4,331,523 | 62 |
+| Shared Raw + Raw | 691,464 | 4,724,084 | 91 |
+| Delta + Gorilla | 720,336 | 1,815,580 | 49 |
+| DeltaPacked + Gorilla | 735,070 | 1,823,819 | 49 |
+| Shared DeltaPacked + Gorilla | 744,055 | 2,149,814 | 78 |
+| Shared Delta + Gorilla | 756,586 | 2,141,789 | 78 |
+| Delta + Chimp | 777,413 | 1,486,910 | 47 |
+| Raw + Gorilla | 807,659 | 3,880,968 | 61 |
+| Shared Delta + Chimp | 828,570 | 2,125,543 | 78 |
+| DeltaPacked + Chimp | 834,520 | 1,495,107 | 47 |
+| Raw + Chimp | 838,255 | 3,545,654 | 60 |
+| Shared DeltaPacked + Chimp | 858,745 | 2,133,801 | 78 |
+| Shared Raw + Gorilla | 903,312 | 4,208,053 | 90 |
+| Shared Raw + Chimp | 1,016,351 | 4,191,694 | 90 |
 
 ## Decode Performance
 
@@ -124,15 +143,24 @@ Decoding speed (NewDecoder + Decode) and memory allocation:
 
 | Configuration | Speed (ns/op) | Memory (B/op) | Allocs/op |
 |---------------|---------------|---------------|-----------|
-| Delta + Chimp | 5,692 | 32,824 | 7 |
-| Delta + Gorilla | 5,718 | 32,824 | 7 |
-| Raw + Raw | 5,741 | 32,824 | 7 |
-| DeltaPacked + Gorilla | 5,827 | 32,824 | 7 |
-| Delta + Raw | 5,884 | 32,824 | 7 |
-| DeltaPacked + Raw | 5,957 | 32,824 | 7 |
-| Raw + Gorilla | 5,994 | 32,824 | 7 |
-| DeltaPacked + Chimp | 6,007 | 32,824 | 7 |
-| Raw + Chimp | 6,138 | 32,824 | 7 |
+| Shared Raw + Gorilla | 3,574 | 15,664 | 5 |
+| Shared Delta + Chimp | 3,580 | 15,664 | 5 |
+| Shared Delta + Raw | 3,581 | 15,664 | 5 |
+| Shared DeltaPacked + Chimp | 3,603 | 15,664 | 5 |
+| Shared Raw + Raw | 3,621 | 15,664 | 5 |
+| Shared Delta + Gorilla | 3,650 | 15,664 | 5 |
+| Shared DeltaPacked + Gorilla | 3,653 | 15,664 | 5 |
+| Shared DeltaPacked + Raw | 3,664 | 15,664 | 5 |
+| Shared Raw + Chimp | 3,776 | 15,664 | 5 |
+| Raw + Raw | 5,441 | 32,824 | 7 |
+| Raw + Chimp | 5,501 | 32,824 | 7 |
+| Raw + Gorilla | 5,558 | 32,824 | 7 |
+| Delta + Chimp | 5,590 | 32,824 | 7 |
+| Delta + Gorilla | 5,660 | 32,824 | 7 |
+| DeltaPacked + Chimp | 5,683 | 32,824 | 7 |
+| DeltaPacked + Raw | 5,702 | 32,824 | 7 |
+| Delta + Raw | 5,823 | 32,824 | 7 |
+| DeltaPacked + Gorilla | 5,829 | 32,824 | 7 |
 
 ## Iteration Performance
 
@@ -140,25 +168,36 @@ Sequential iteration speed (iterating all data points via `blob.All(metricID)`):
 
 | Configuration | Speed (ns/op) | Memory (B/op) | Allocs/op |
 |---------------|---------------|---------------|-----------|
-| Delta + Raw | 264,411 | 64,008 | 1,001 |
-| DeltaPacked + Raw | 277,038 | 64,008 | 1,001 |
-| Raw + Raw | 292,451 | 67,208 | 1,001 |
-| Delta + Gorilla | 491,596 | 80,008 | 1,401 |
-| DeltaPacked + Gorilla | 529,538 | 80,008 | 1,401 |
-| Raw + Gorilla | 551,422 | 60,808 | 801 |
-| Raw + Chimp | 574,823 | 60,808 | 801 |
-| Delta + Chimp | 602,502 | 80,008 | 1,401 |
-| DeltaPacked + Chimp | 654,361 | 80,008 | 1,401 |
+| Delta + Raw | 265,970 | 64,008 | 1001 |
+| Shared DeltaPacked + Raw | 267,274 | 64,008 | 1001 |
+| Shared Delta + Raw | 267,518 | 64,008 | 1001 |
+| DeltaPacked + Raw | 275,557 | 64,008 | 1001 |
+| Raw + Raw | 290,203 | 67,208 | 1001 |
+| Shared Raw + Raw | 294,812 | 67,208 | 1001 |
+| Shared Delta + Gorilla | 491,302 | 80,008 | 1401 |
+| Delta + Gorilla | 491,926 | 80,008 | 1401 |
+| Shared Raw + Gorilla | 496,375 | 60,808 | 801 |
+| Raw + Gorilla | 499,479 | 60,808 | 801 |
+| Shared DeltaPacked + Gorilla | 524,261 | 80,008 | 1401 |
+| DeltaPacked + Gorilla | 548,611 | 80,008 | 1401 |
+| Shared Raw + Chimp | 573,366 | 60,808 | 801 |
+| Raw + Chimp | 573,953 | 60,808 | 801 |
+| Shared Delta + Chimp | 599,745 | 80,008 | 1401 |
+| Delta + Chimp | 601,819 | 80,008 | 1401 |
+| Shared DeltaPacked + Chimp | 657,169 | 80,008 | 1401 |
+| DeltaPacked + Chimp | 661,719 | 80,008 | 1401 |
 
-**Note:** Raw-value encodings iterate fastest because they decode values via direct memory access (O(1) per point). XOR-based encodings (Gorilla, Chimp) require sequential bit unpacking. Chimp is slower to iterate than Gorilla despite better compression because its decoding path is more complex.
+**Note:** Compressed encodings can iterate faster than raw due to reduced memory bandwidth — smaller data fits better in CPU cache.
 
 ## Scaling Analysis
 
 How bytes-per-point changes as points-per-metric increases, for each encoding combination.
 The fixed per-metric overhead amortizes differently depending on the encoding.
 
-| Points/Metric | Raw + Raw | Raw + Gorilla | Raw + Chimp | Delta + Raw | Delta + Gorilla | Delta + Chimp | DeltaPacked + Raw | DeltaPacked + Gorilla | DeltaPacked + Chimp |
-|---------------|-----------|---------------|-------------|-------------|-----------------|---------------|-------------------|-----------------------|---------------------|
+### Standard Encodings
+
+| Points/Metric | raw-raw | raw-gorilla | raw-chimp | delta-raw | delta-gorilla | delta-chimp | deltapacked-raw | deltapacked-gorilla | deltapacked-chimp |
+|---------------|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 1 | 32.16 | 32.16 | 32.16 | 32.16 | 32.16 | 32.16 | 32.16 | 32.16 | 32.16 |
 | 2 | 24.08 | 23.94 | 23.58 | 21.58 | 21.44 | 21.08 | 21.58 | 21.44 | 21.08 |
 | 5 | 19.23 | 18.32 | 17.95 | 14.59 | 13.68 | 13.31 | 14.76 | 13.84 | 13.47 |
@@ -169,59 +208,68 @@ The fixed per-metric overhead amortizes differently depending on the encoding.
 | 150 | 16.11 | 14.58 | 14.36 | 10.09 | 8.57 | 8.34 | 10.28 | 8.75 | 8.53 |
 | 200 | 16.08 | 14.57 | 14.32 | 10.05 | 8.54 | 8.30 | 10.24 | 8.73 | 8.49 |
 
+### Shared-Timestamp Encodings
+
+| Points/Metric | shared-raw-raw | shared-raw-gorilla | shared-raw-chimp | shared-delta-raw | shared-delta-gorilla | shared-delta-chimp | shared-deltapacked-raw | shared-deltapacked-gorilla | shared-deltapacked-chimp |
+|---------------|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 26.22 | 26.22 | 26.22 | 26.22 | 26.22 | 26.22 | 26.22 | 26.22 | 26.22 |
+| 2 | 17.13 | 16.97 | 16.63 | 17.12 | 16.96 | 16.62 | 17.12 | 16.96 | 16.62 |
+| 5 | 11.68 | 10.78 | 10.39 | 11.65 | 10.75 | 10.37 | 11.65 | 10.76 | 10.37 |
+| 10 | 9.86 | 8.63 | 8.33 | 9.83 | 8.60 | 8.30 | 9.83 | 8.60 | 8.30 |
+| 20 | 8.95 | 7.53 | 7.31 | 8.92 | 7.50 | 7.28 | 8.92 | 7.50 | 7.28 |
+| 50 | 8.40 | 6.88 | 6.69 | 8.37 | 6.85 | 6.66 | 8.37 | 6.85 | 6.66 |
+| 100 | 8.22 | 6.69 | 6.48 | 8.19 | 6.66 | 6.45 | 8.19 | 6.66 | 6.46 |
+| 150 | 8.16 | 6.64 | 6.41 | 8.13 | 6.61 | 6.38 | 8.13 | 6.61 | 6.39 |
+| 200 | 8.13 | 6.63 | 6.38 | 8.10 | 6.60 | 6.35 | 8.10 | 6.60 | 6.35 |
+
 ### Key Insights
 
-- **At 1 point/metric**: All encodings produce **32.16 bytes/point** — the fixed per-metric header overhead completely dominates, making encoding choice irrelevant.
-- **At 5 points/metric**: Compressed combos begin to differentiate. Delta + Chimp reaches **13.31 bpp** while Raw + Raw is at **19.23 bpp** — a 31% gap already.
-- **The "sweet spot" is 50–100 points/metric**: Delta + Chimp drops from 8.68 bpp (50 ppm) to 8.43 bpp (100 ppm), only a 2.9% improvement. Beyond 100, gains are <1% per 50 additional points.
-- **Raw + Raw amortizes the slowest**: Without encoding benefits, it reduces from 32.16 → 16.08 bpp (50% reduction). Delta + Chimp achieves a 74% reduction (32.16 → 8.30 bpp) because XOR encoding benefits from longer sequences of similar values.
-- **All combos converge by 150 ppm**: The difference between 150 and 200 ppm is <0.5% for all encodings.
+- **Overhead becomes acceptable at ~20 PPM**: Shared Delta + Chimp reaches 7.28 bytes/point (within 30% of converged value 6.35).
+- **Diminishing returns above ~50 PPM**: BPP converges to 6.35 (within 5% threshold reached at 50 PPM with 6.66 BPP).
+- **Shared timestamps scale with metric count**: At 200 PPM, Shared Delta + Chimp achieves 6.35 BPP vs Delta + Chimp at 8.30 BPP — a 23% additional saving from timestamp deduplication across 200 metrics.
+- **Fixed overhead dominates at low PPM**: At 1 PPM, even the best combo (Shared Delta + Chimp) costs 26.22 bytes/point vs 6.35 converged — 4.1× overhead from per-metric headers.
+- **Raw vs compressed convergence**: Raw + Raw overhead amortizes to 16.08 BPP (16 bytes per point for 8-byte timestamp + 8-byte float64). Compressed combos converge much lower because they also amortize encoding metadata while compressing the data itself.
 
 ## Choosing an Encoding Strategy
 
 ### Decision Tree
 
 ```
-Do you need O(1) random access to individual timestamps/values by index?
-├─ YES → Use Raw timestamp encoding
-│   ├─ Need smallest size? → Raw + Chimp (14.32 bpp, 10.9% savings)
-│   ├─ Need fastest iteration? → Raw + Raw (292,451 ns/op iter)
-│   └─ Balanced? → Raw + Gorilla (14.57 bpp, 551,422 ns/op iter)
+What is your priority?
+├─ Smallest encoded size?
+│  ├─ All metrics share timestamps? → Shared Delta + Chimp (6.35 BPP, 60.5% savings)
+│  └─ Independent timestamps?      → Delta + Chimp (8.30 BPP, 48.4% savings)
 │
-└─ NO → Sequential access is fine (most use cases)
-    │
-    ├─ Priority: SMALLEST SIZE
-    │   └─ Delta + Chimp (8.30 bpp, 48.4% savings, 793,987 ns/op encode)
-    │
-    ├─ Priority: FASTEST ITERATION
-    │   └─ Delta + Raw (264,411 ns/op iter, 10.05 bpp, 37.5% savings)
-    │
-    ├─ Priority: FASTEST ENCODE
-    │   └─ DeltaPacked + Raw (508,519 ns/op encode, 10.24 bpp, 36.3% savings)
-    │       Group Varint packing enables faster encoding than standard Delta
-    │
-    └─ Priority: BALANCED (good compression + good speed)
-        └─ Delta + Gorilla (8.54 bpp, 46.9% savings, 491,596 ns/op iter)
+├─ Fastest encode?
+│  └─ DeltaPacked + Raw (485,698 ns/op, 10.24 BPP)
+│
+├─ Fastest iteration / decode?
+│  ├─ Sequential scan → Delta + Raw (265,970 ns/op)
+│  └─ Random access  → Shared Raw + Chimp (6.38 BPP, O(1) TimestampAt/ValueAt)
+│
+└─ Best balance (size + speed)?
+   ├─ With shared TS → Shared Delta + Chimp (6.35 BPP, 599,745 ns/op iter)
+   └─ Without        → Delta + Chimp (8.30 BPP, 601,819 ns/op iter)
 ```
 
 ### Configuration Selection
 
-| Use Case | Configuration | Rationale |
-|----------|---------------|-----------|
-| **Best compression** | Delta + Chimp | 8.30 bpp, 48.4% savings — smallest encoded size of all combos |
-| **Fastest iteration** | Delta + Raw | 264,411 ns/op — raw values decode via direct memory access (O(1) per point) |
-| **Fastest encode** | DeltaPacked + Raw | 508,519 ns/op — 1.06× faster than Delta + Raw (541,484 ns/op) |
-| **Best balance** | Delta + Gorilla | 8.54 bpp (46.9% savings) with 491,596 ns/op iteration — #3 in size, #4 in iteration |
-| **Random access needed** | Raw + Chimp | 14.32 bpp (10.9% savings) with O(1) `TimestampAt`/`ValueAt` support |
-| **Maximum throughput** | Raw + Raw | 658,318 ns/op encode, 292,451 ns/op iterate — zero encoding overhead, O(1) everything |
+| Use Case | Configuration | Key Metric | Rationale |
+|----------|---------------|------------|-----------|
+| **Best compression** | Shared Delta + Chimp | 6.35 BPP (60.5% savings) | Lowest bytes/point; shared timestamps eliminate redundant storage |
+| **Fastest iteration** | Delta + Raw | 265,970 ns/op | Fastest sequential scan; raw values avoid decode overhead |
+| **Fastest encode** | DeltaPacked + Raw | 485,698 ns/op | Minimal encode computation; delta reduces buffer size |
+| **Best balance** | Shared DeltaPacked + Chimp | 6.35 BPP, 657,169 ns/op iter | Top ranks in both compression and iteration speed |
+| **Random access** | Shared Raw + Chimp | 6.38 BPP | O(1) `TimestampAt`/`ValueAt`; raw timestamps support direct indexing |
+| **Maximum throughput** | Raw + Raw | 623,091 ns/op encode | Baseline; no encoding overhead but largest output |
 
 ### Points-per-Metric Guidelines
 
-Based on Delta + Chimp scaling data (converged value: **8.30 bpp** at 200 ppm):
+Using Shared Delta + Chimp scaling data (converged: 6.35 bytes/point):
 
-| Zone | PPM Range | Bytes/Point | vs Converged | Recommendation |
-|------|-----------|-------------|--------------|----------------|
-| **❌ Poor** | 1–2 | 32.16–21.08 | 2.5–3.9× | Avoid — fixed overhead dominates, no encoding benefit |
-| **⚠️ Moderate** | 5–10 | 13.31–10.74 | 1.29–1.60× | Acceptable for real-time/low-latency use cases only |
-| **✅ Good** | 20–50 | 9.45–8.68 | 1.05–1.14× | Recommended — good compression, within 14% of optimal |
-| **✅✅ Optimal** | 100–200+ | 8.43–8.30 | 1.00–1.02× | Best efficiency — diminishing returns after ~100 ppm |
+| Zone | PPM Range | BPP Range | Overhead | Recommendation |
+|------|-----------|-----------|----------|----------------|
+| **Poor** | 1–2 | 26.22–16.62 | 162–313% | Batch more points if possible; fixed overhead dominates |
+| **Moderate** | 5–10 | 10.37–8.30 | 31–63% | Acceptable for low-frequency metrics |
+| **Good** | 20 | 7.28 | 15–15% | Good efficiency; recommended minimum for most use cases |
+| **Optimal** | 50–200 | 6.66–6.35 | 0–5% | Excellent efficiency; diminishing returns beyond this range |

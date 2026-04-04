@@ -10,12 +10,19 @@ import (
 // encodeBlob encodes test data with the given combo and returns raw blob bytes.
 // This is the shared encoding logic used by both benchmark and size measurement functions.
 func encodeBlob(combo EncodingCombo, data *TestData) ([]byte, error) {
-	encoder, err := blob.NewNumericEncoder(
-		data.StartTime,
+	opts := []blob.NumericEncoderOption{
 		blob.WithTimestampEncoding(combo.TSEncoding),
 		blob.WithTimestampCompression(format.CompressionNone),
 		blob.WithValueEncoding(combo.ValEncoding),
 		blob.WithValueCompression(format.CompressionNone),
+	}
+	if combo.SharedTS {
+		opts = append(opts, blob.WithSharedTimestamps())
+	}
+
+	encoder, err := blob.NewNumericEncoder(
+		data.StartTime,
+		opts...,
 	)
 	if err != nil {
 		return nil, err
