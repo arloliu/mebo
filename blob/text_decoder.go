@@ -83,6 +83,7 @@ func (d *TextDecoder) Decode() (TextBlob, error) {
 		blobBase: blobBase{
 			tsEncType:     d.header.Flag.GetTimestampEncoding(),
 			flags:         flags, // Packed flags (optimized)
+			formatVersion: blobFormatV1,
 			sameByteOrder: endian.CompareNativeEndian(d.engine),
 			endianType: func() uint8 {
 				if d.header.Flag.IsBigEndian() {

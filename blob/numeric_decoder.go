@@ -69,9 +69,6 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 	if d.header.Flag.TimestampEncoding() == format.TypeRaw {
 		flags |= section.FlagTsEncRaw
 	}
-	if d.header.Flag.ValueEncoding() == format.TypeRaw {
-		flags |= section.FlagValEncRaw
-	}
 	if d.header.Flag.HasTag() {
 		flags |= section.FlagTagEnabled
 	}
@@ -81,8 +78,16 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 
 	blob := NumericBlob{
 		blobBase: blobBase{
-			tsEncType:     d.header.Flag.TimestampEncoding(),
-			flags:         flags, // Packed flags (optimized)
+			tsEncType:  d.header.Flag.TimestampEncoding(),
+			valEncType: d.header.Flag.ValueEncoding(),
+			flags:      flags, // Packed flags (optimized)
+			formatVersion: func() uint8 {
+				if d.header.Flag.IsV2() {
+					return blobFormatV2
+				}
+
+				return blobFormatV1
+			}(),
 			sameByteOrder: endian.CompareNativeEndian(d.engine),
 			endianType: func() uint8 {
 				if d.header.Flag.IsBigEndian() {
@@ -128,18 +133,21 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 	blob.tagPayload = payloads.tagPayload
 
 	// Step 3: Parse index entries (now we know decompressed payload sizes)
-	indexEntries, metricIDs, err := d.parseIndexEntries(indexOffset, len(blob.tsPayload), len(blob.valPayload), len(blob.tagPayload))
+	// For V2 without metric names, skip metricIDs allocation (it would be unused).
+	// For V2 with metric names, metricIDs is reused directly as sortedIDs.
+	needMetricIDs := len(metricNames) > 0
+	indexEntries, metricIDs, err := d.parseIndexEntries(indexOffset, len(blob.tsPayload), len(blob.valPayload), len(blob.tagPayload), needMetricIDs)
 	if err != nil {
 		return blob, err
 	}
 
-	// Step 3.5: If V2 format, parse and apply shared timestamp table
-	if d.header.Flag.IsV2() {
+	// Step 3.5: If shared timestamps flag is set, parse and apply shared timestamp table
+	if d.header.Flag.HasSharedTimestamps() {
 		indexEnd := indexOffset + d.metricCount*section.NumericIndexEntrySize
 		sharedTableEnd := int(d.header.TimestampPayloadOffset)
 
 		if sharedTableEnd <= indexEnd {
-			return blob, fmt.Errorf("%w: V2 blob missing shared timestamp table", errs.ErrInvalidSharedTimestampTable)
+			return blob, fmt.Errorf("%w: shared timestamps flag set but table missing", errs.ErrInvalidSharedTimestampTable)
 		}
 
 		sharedTableData := d.data[indexEnd:sharedTableEnd]
@@ -148,11 +156,8 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		}
 	}
 
-	// Step 4: Build index entry map
-	blob.index.byID = make(map[uint64]section.NumericIndexEntry, d.metricCount)
-	for _, entry := range indexEntries {
-		blob.index.byID[entry.MetricID] = entry
-	}
+	// Step 4: Build index — V2 uses sorted slice, V1 uses map
+	d.buildIndex(&blob, indexEntries, metricIDs)
 
 	// Step 5: Verify and populate metric name map (if metric names present)
 	if len(metricNames) > 0 {
@@ -169,6 +174,35 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 	}
 
 	return blob, nil
+}
+
+// buildIndex populates the blob's index from parsed index entries.
+// V2 uses sorted slice with parallel sortedIDs; V1 uses map.
+func (d *NumericDecoder) buildIndex(blob *NumericBlob, indexEntries []section.NumericIndexEntry, metricIDs []uint64) {
+	if d.header.Flag.IsV2() {
+		// V2: entries are already sorted by MetricID from the encoder.
+		// Assign directly — no copy needed since parseIndexEntries returns a dedicated slice.
+		blob.index.sorted = indexEntries
+
+		if metricIDs != nil {
+			// Reuse metricIDs from parseIndexEntries as sortedIDs (same data, same order)
+			blob.index.sortedIDs = metricIDs
+		} else {
+			// Build sortedIDs when metricIDs wasn't allocated (V2 without metric names)
+			blob.index.sortedIDs = make([]uint64, len(indexEntries))
+			for i := range indexEntries {
+				blob.index.sortedIDs[i] = indexEntries[i].MetricID
+			}
+		}
+
+		return
+	}
+
+	// V1: map-based index for O(1) amortized lookups
+	blob.index.byID = make(map[uint64]section.NumericIndexEntry, d.metricCount)
+	for _, entry := range indexEntries {
+		blob.index.byID[entry.MetricID] = entry
+	}
 }
 
 // parseHeader parses the header section of the encoded data.
@@ -221,7 +255,8 @@ func (d *NumericDecoder) parseMetricNames() ([]string, int, error) {
 // parseIndexEntries parses the index section and populates the index entry map.
 // Returns the parsed index entries in order and the metric IDs for verification.
 // Uses the provided decompressed payload sizes to calculate entry lengths correctly.
-func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloadSize, tagPayloadSize int) ([]section.NumericIndexEntry, []uint64, error) {
+// When needMetricIDs is false, the metricIDs slice is not allocated (returns nil).
+func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloadSize, tagPayloadSize int, needMetricIDs bool) ([]section.NumericIndexEntry, []uint64, error) {
 	indexSize := section.NumericIndexEntrySize * d.metricCount
 	if len(d.data) < indexOffset+indexSize {
 		return nil, nil, errs.ErrInvalidIndexEntrySize
@@ -237,7 +272,10 @@ func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloa
 	// Pre-allocate slices with exact size for better performance
 	// Direct indexing eliminates bounds checking on each append operation
 	indexEntries := make([]section.NumericIndexEntry, d.metricCount)
-	metricIDs := make([]uint64, d.metricCount)
+	var metricIDs []uint64
+	if needMetricIDs {
+		metricIDs = make([]uint64, d.metricCount)
+	}
 
 	var err error
 	for i := 0; i < d.metricCount; i++ {
@@ -261,7 +299,9 @@ func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloa
 		curEntry.ValueOffset = lastValOffset
 		curEntry.TagOffset = lastTagOffset
 
-		metricIDs[i] = curEntry.MetricID
+		if needMetricIDs {
+			metricIDs[i] = curEntry.MetricID
+		}
 
 		// Calculate entry lengths for validation later
 		if i > 0 {

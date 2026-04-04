@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"cmp"
 	"errors"
 	"iter"
 	"slices"
@@ -56,9 +57,9 @@ func NewNumericBlobSet(blobs []NumericBlob) (NumericBlobSet, error) {
 	sortedBlobs := make([]NumericBlob, len(blobs))
 	copy(sortedBlobs, blobs)
 
-	// Sort blobs by start time in ascending order (optimized: compare microseconds directly)
+	// Sort blobs by start time in ascending order
 	slices.SortFunc(sortedBlobs, func(a, b NumericBlob) int {
-		return int(a.startTimeMicros - b.startTimeMicros)
+		return cmp.Compare(a.startTimeMicros, b.startTimeMicros)
 	})
 
 	return NumericBlobSet{
@@ -200,7 +201,7 @@ func (s NumericBlobSet) Blobs() []NumericBlob {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(log n) to find the blob + O(1) to access the value within the blob.
+// Performance: O(blobs) to find the blob + O(1) to access the value within the blob.
 func (s NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
@@ -240,7 +241,7 @@ func (s NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(log n) to find the blob + O(1) to access the timestamp within the blob.
+// Performance: O(blobs) to find the blob + O(1) to access the timestamp within the blob.
 func (s NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
@@ -280,7 +281,7 @@ func (s NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(log n) to find the blob + O(1) to access the tag within the blob.
+// Performance: O(blobs) to find the blob + O(1) to access the tag within the blob.
 func (s NumericBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return "", false

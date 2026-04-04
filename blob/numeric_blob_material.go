@@ -1,5 +1,7 @@
 package blob
 
+import "github.com/arloliu/mebo/section"
+
 // MaterializedNumericBlob provides O(1) random access to all data points.
 // Created by calling NumericBlob.Materialize().
 //
@@ -57,7 +59,8 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 	}
 
 	// Decode all metrics using optimized direct decoding
-	for metricID, entry := range b.index.byID {
+	b.index.ForEach(func(entry section.NumericIndexEntry) bool {
+		metricID := entry.MetricID
 		// Pre-allocate slices with exact size for direct indexing (no append overhead)
 		count := entry.Count
 		timestamps := make([]int64, count)
@@ -93,7 +96,9 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 			values:     values,
 			tags:       tags,
 		}
-	}
+
+		return true
+	})
 
 	// Copy metric name mappings (if available)
 	if b.index.byName != nil {

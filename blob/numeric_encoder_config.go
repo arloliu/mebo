@@ -1,7 +1,6 @@
 package blob
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -38,7 +37,10 @@ type NumericEncoderConfig struct {
 	valCodec         compress.Codec
 	tagCodec         compress.Codec
 	engine           endian.EndianEngine
-	sharedTimestamps bool // opt-in for V2 shared timestamp encoding
+	layoutVersion    uint8  // 0=default(v1), 2=v2
+	sharedTimestamps bool   // opt-in for shared timestamp detection (implies v2)
+	sortedByMetricID bool   // tracks whether metrics were inserted in ascending MetricID order
+	lastMetricID     uint64 // last MetricID added (for sorted tracking)
 }
 
 // NewNumericEncoderConfig creates a new NumericEncoderConfig with the given start time.
@@ -47,9 +49,10 @@ func NewNumericEncoderConfig(startTime time.Time) *NumericEncoderConfig {
 	header := section.NewNumericHeader(startTime)
 
 	config := &NumericEncoderConfig{
-		header:       header,
-		indexEntries: make([]section.NumericIndexEntry, 0, initialIndexCapacity),
-		engine:       header.Flag.GetEndianEngine(),
+		header:           header,
+		indexEntries:     make([]section.NumericIndexEntry, 0, initialIndexCapacity),
+		engine:           header.Flag.GetEndianEngine(),
+		sortedByMetricID: true, // optimistic: assume ascending insertion order
 	}
 
 	return config
@@ -63,8 +66,8 @@ func (c *NumericEncoderConfig) setTimestampEncoding(enc format.EncodingType) err
 	case format.TypeRaw, format.TypeDelta:
 		c.header.Flag.SetTimestampEncoding(enc)
 		return nil
-	case format.TypeGorilla:
-		return errors.New("gorilla encoding is not supported for timestamps")
+	case format.TypeGorilla, format.TypeChimp:
+		return fmt.Errorf("%v encoding is not supported for timestamps", enc)
 	default:
 		return fmt.Errorf("invalid timestamp encoding: %v", enc)
 	}
@@ -73,7 +76,7 @@ func (c *NumericEncoderConfig) setTimestampEncoding(enc format.EncodingType) err
 // setValueEncoding sets the value encoding type.
 func (c *NumericEncoderConfig) setValueEncoding(enc format.EncodingType) error {
 	switch enc { //nolint: exhaustive
-	case format.TypeRaw, format.TypeGorilla:
+	case format.TypeRaw, format.TypeGorilla, format.TypeChimp:
 		c.header.Flag.SetValueEncoding(enc)
 		return nil
 	default:
@@ -152,6 +155,12 @@ func (c *NumericEncoderConfig) ValueCodec() compress.Codec {
 // - 2x growth up to 256 entries (aggressive for small blobs)
 // - 1.25x growth beyond 256 (conservative for large blobs)
 func (c *NumericEncoderConfig) addEntryIndex(entry section.NumericIndexEntry) {
+	// Track whether entries remain in ascending MetricID order
+	if c.sortedByMetricID && entry.MetricID <= c.lastMetricID && len(c.indexEntries) > 0 {
+		c.sortedByMetricID = false
+	}
+	c.lastMetricID = entry.MetricID
+
 	// Check if we need to grow the slice capacity
 	if len(c.indexEntries) == cap(c.indexEntries) {
 		// Calculate new capacity using amortized growth
@@ -269,11 +278,29 @@ func WithTagsEnabled(enabled bool) NumericEncoderOption {
 	})
 }
 
-// WithSharedTimestamps enables V2 shared timestamp encoding.
+// WithBlobLayoutV2 sets the blob container format to V2.
+//
+// V2 layout uses a different magic number (MagicNumericV2Opt) and supports
+// optional features like shared timestamp tables. Using V2 layout alone does
+// not enable shared timestamps — use WithSharedTimestamps() for that.
+//
+// IMPORTANT: All consumers must be upgraded to a mebo version that supports V2
+// decoding before enabling this on producers. The decoder accepts both V1 and V2
+// formats, so upgrade consumers first, then enable this option on producers.
+func WithBlobLayoutV2() NumericEncoderOption {
+	return options.NoError(func(cfg *NumericEncoderConfig) {
+		cfg.layoutVersion = 2
+	})
+}
+
+// WithSharedTimestamps enables shared timestamp detection and encoding.
 //
 // When enabled, the encoder detects metrics with identical timestamp sequences
 // and stores the timestamps only once, reducing blob size significantly when
 // many metrics share the same collection timestamps.
+//
+// This option implies V2 layout (WithBlobLayoutV2). The shared timestamp table
+// flag bit is set in the header only when actual sharing is detected.
 //
 // IMPORTANT: All consumers must be upgraded to a mebo version that supports V2
 // decoding before enabling this on producers. The decoder accepts both V1 and V2
@@ -281,5 +308,6 @@ func WithTagsEnabled(enabled bool) NumericEncoderOption {
 func WithSharedTimestamps() NumericEncoderOption {
 	return options.NoError(func(cfg *NumericEncoderConfig) {
 		cfg.sharedTimestamps = true
+		cfg.layoutVersion = 2
 	})
 }

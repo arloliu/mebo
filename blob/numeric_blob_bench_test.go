@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -485,4 +486,515 @@ func BenchmarkNumericBlob_All_EncodingCombinations(b *testing.B) {
 			})
 		}
 	}
+}
+
+// ==============================================================================
+// V1 vs V2 vs V2+SharedTimestamps Layout Benchmarks
+// ==============================================================================
+
+// benchBlob holds a labeled decoded blob for config-driven benchmarks.
+type benchBlob struct {
+	label string
+	blob  NumericBlob
+}
+
+// benchBlobSet holds a labeled blob set for config-driven benchmarks.
+type benchBlobSet struct {
+	label string
+	set   NumericBlobSet
+}
+
+// benchRawBlobs holds labeled raw encoded blobs for config-driven benchmarks.
+type benchRawBlobs struct {
+	label string
+	raw   [][]byte
+}
+
+// layoutConfigs returns the three layout configurations to benchmark.
+func layoutConfigs() []struct {
+	label string
+	opts  []NumericEncoderOption
+} {
+	return []struct {
+		label string
+		opts  []NumericEncoderOption
+	}{
+		{"V1_Default", nil},
+		{"V2_Sorted", []NumericEncoderOption{WithBlobLayoutV2()}},
+		{"V2_SharedTS", []NumericEncoderOption{WithSharedTimestamps()}},
+	}
+}
+
+// createLayoutBenchBlobs creates V1, V2, and V2+SharedTimestamps decoded blobs.
+// MetricIDs are inserted in reverse order to stress the V2 sorting path
+// and create worst-case map iteration patterns for V1.
+func createLayoutBenchBlobs(tb testing.TB, metricCount, pointsPerMetric int) []benchBlob {
+	tb.Helper()
+
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	configs := layoutConfigs()
+	result := make([]benchBlob, len(configs))
+
+	for ci, cfg := range configs {
+		opts := append([]NumericEncoderOption{
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		}, cfg.opts...)
+
+		enc, err := NewNumericEncoder(startTime, opts...)
+		if err != nil {
+			tb.Fatalf("%s: failed to create encoder: %v", cfg.label, err)
+		}
+
+		// Insert metrics in reverse ID order to exercise sort path
+		for i := metricCount; i >= 1; i-- {
+			if err = enc.StartMetricID(uint64(i), pointsPerMetric); err != nil {
+				tb.Fatalf("%s: StartMetricID(%d): %v", cfg.label, i, err)
+			}
+			for j := range pointsPerMetric {
+				ts := startTime.Add(time.Duration(j) * time.Second).UnixMicro()
+				if err = enc.AddDataPoint(ts, float64(i*1000+j), ""); err != nil {
+					tb.Fatalf("%s: AddDataPoint: %v", cfg.label, err)
+				}
+			}
+			if err = enc.EndMetric(); err != nil {
+				tb.Fatalf("%s: EndMetric: %v", cfg.label, err)
+			}
+		}
+
+		data, err := enc.Finish()
+		if err != nil {
+			tb.Fatalf("%s: Finish: %v", cfg.label, err)
+		}
+
+		dec, err := NewNumericDecoder(data)
+		if err != nil {
+			tb.Fatalf("%s: NewNumericDecoder: %v", cfg.label, err)
+		}
+
+		blob, err := dec.Decode()
+		if err != nil {
+			tb.Fatalf("%s: Decode: %v", cfg.label, err)
+		}
+
+		result[ci] = benchBlob{label: cfg.label, blob: blob}
+	}
+
+	return result
+}
+
+// BenchmarkV2Layout_HasMetricID compares binary search (V2) vs map lookup (V1).
+func BenchmarkV2Layout_HasMetricID(b *testing.B) {
+	sizes := []struct {
+		name    string
+		metrics int
+		points  int
+	}{
+		{"10metrics_10points", 10, 10},
+		{"150metrics_10points", 150, 10},
+		{"500metrics_10points", 500, 10},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			blobs := createLayoutBenchBlobs(b, sz.metrics, sz.points)
+
+			// Build a shuffled lookup sequence to avoid branch predictor bias
+			rng := rand.New(rand.NewPCG(42, 0))
+			lookupIDs := make([]uint64, sz.metrics*2) // 50% hit, 50% miss
+			for i := range sz.metrics {
+				lookupIDs[i] = uint64(i + 1)                                        // hit
+				lookupIDs[sz.metrics+i] = hash.ID("nonexistent_" + string(rune(i))) // miss
+			}
+			rng.Shuffle(len(lookupIDs), func(i, j int) {
+				lookupIDs[i], lookupIDs[j] = lookupIDs[j], lookupIDs[i]
+			})
+
+			for _, nb := range blobs {
+				b.Run(nb.label, func(b *testing.B) {
+					blob := nb.blob
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						for _, id := range lookupIDs {
+							_ = blob.HasMetricID(id)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkV2Layout_GetByID compares V1 map vs V2 binary search for entry retrieval.
+// Uses Len() which delegates to indexMaps.GetByID internally.
+func BenchmarkV2Layout_GetByID(b *testing.B) {
+	const metricCount = 150
+	const pointsPerMetric = 10
+
+	blobs := createLayoutBenchBlobs(b, metricCount, pointsPerMetric)
+
+	// Build lookup sequence: known hits only
+	ids := make([]uint64, metricCount)
+	for i := range metricCount {
+		ids[i] = uint64(i + 1)
+	}
+	rng := rand.New(rand.NewPCG(99, 0))
+	rng.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+
+	for _, nb := range blobs {
+		b.Run(nb.label, func(b *testing.B) {
+			blob := nb.blob
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				for _, id := range ids {
+					_ = blob.Len(id)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkV2Layout_AllIteration compares sequential iteration of all data points.
+func BenchmarkV2Layout_AllIteration(b *testing.B) {
+	sizes := []struct {
+		name    string
+		metrics int
+		points  int
+	}{
+		{"150metrics_10points", 150, 10},
+		{"150metrics_100points", 150, 100},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			blobs := createLayoutBenchBlobs(b, sz.metrics, sz.points)
+			ids := blobs[0].blob.MetricIDs()
+
+			for _, nb := range blobs {
+				b.Run(nb.label, func(b *testing.B) {
+					blob := nb.blob
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						total := 0
+						for _, id := range ids {
+							for _, dp := range blob.All(id) {
+								_ = dp.Val
+								total++
+							}
+						}
+						if total != sz.metrics*sz.points {
+							b.Fatalf("got %d points, want %d", total, sz.metrics*sz.points)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkV2Layout_Materialize compares materialization on V1 vs V2 blobs.
+func BenchmarkV2Layout_Materialize(b *testing.B) {
+	sizes := []struct {
+		name    string
+		metrics int
+		points  int
+	}{
+		{"150metrics_10points", 150, 10},
+		{"150metrics_100points", 150, 100},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			blobs := createLayoutBenchBlobs(b, sz.metrics, sz.points)
+
+			for _, nb := range blobs {
+				b.Run(nb.label, func(b *testing.B) {
+					blob := nb.blob
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						_ = blob.Materialize()
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkV2Layout_NumericBlobSet_AllMetrics simulates the typical BlobSet workload:
+// M pre-decoded blobs, iterate N metrics across all blobs.
+// Total cost = N_metrics × M_blobs × (lookup + iterate_points).
+func BenchmarkV2Layout_NumericBlobSet_AllMetrics(b *testing.B) {
+	sizes := []struct {
+		name    string
+		blobs   int
+		metrics int
+		points  int
+	}{
+		{"5blobs_150metrics_10points", 5, 150, 10},
+		{"10blobs_150metrics_10points", 10, 150, 10},
+		{"5blobs_150metrics_100points", 5, 150, 100},
+		{"10blobs_500metrics_10points", 10, 500, 10},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			sets := createLayoutBlobSets(b, sz.blobs, sz.metrics, sz.points)
+			// Use sorted IDs so all configs iterate in the same order
+			ids := make([]uint64, sz.metrics)
+			for i := range sz.metrics {
+				ids[i] = uint64(i + 1)
+			}
+			expectedTotal := sz.blobs * sz.metrics * sz.points
+
+			for _, ns := range sets {
+				b.Run(ns.label, func(b *testing.B) {
+					set := ns.set
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						total := 0
+						for _, id := range ids {
+							for _, dp := range set.All(id) {
+								_ = dp.Val
+								total++
+							}
+						}
+						if total != expectedTotal {
+							b.Fatalf("got %d points, want %d", total, expectedTotal)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkV2Layout_NumericBlobSet_ValueAt tests random-access pattern across BlobSet.
+func BenchmarkV2Layout_NumericBlobSet_ValueAt(b *testing.B) {
+	const (
+		numBlobs   = 10
+		numMetrics = 150
+		numPoints  = 10
+	)
+
+	sets := createLayoutBlobSets(b, numBlobs, numMetrics, numPoints)
+
+	// Pre-build random access pattern: pick 50 random (metricID, globalIndex) pairs
+	rng := rand.New(rand.NewPCG(77, 0))
+	type query struct {
+		metricID uint64
+		index    int
+	}
+	queries := make([]query, 50)
+	totalPerMetric := numBlobs * numPoints
+	for i := range queries {
+		queries[i] = query{
+			metricID: uint64(rng.IntN(numMetrics) + 1),
+			index:    rng.IntN(totalPerMetric),
+		}
+	}
+
+	for _, ns := range sets {
+		b.Run(ns.label, func(b *testing.B) {
+			set := ns.set
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				for _, q := range queries {
+					_, _ = set.ValueAt(q.metricID, q.index)
+				}
+			}
+		})
+	}
+}
+
+// createLayoutBlobSets creates NumericBlobSets with V1, V2, and V2+SharedTS blobs.
+func createLayoutBlobSets(tb testing.TB, numBlobs, numMetrics, pointsPerMetric int) []benchBlobSet {
+	tb.Helper()
+
+	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	configs := layoutConfigs()
+	result := make([]benchBlobSet, len(configs))
+
+	for ci, cfg := range configs {
+		blobs := make([]NumericBlob, numBlobs)
+
+		for bi := range numBlobs {
+			startTime := baseTime.Add(time.Duration(bi) * time.Hour)
+			opts := append([]NumericEncoderOption{
+				WithTimestampEncoding(format.TypeDelta),
+				WithValueEncoding(format.TypeGorilla),
+			}, cfg.opts...)
+
+			enc, err := NewNumericEncoder(startTime, opts...)
+			if err != nil {
+				tb.Fatalf("%s: encoder: %v", cfg.label, err)
+			}
+
+			// Insert in reverse order to exercise V2 sorting
+			for m := numMetrics; m >= 1; m-- {
+				if err = enc.StartMetricID(uint64(m), pointsPerMetric); err != nil {
+					tb.Fatal(err)
+				}
+				for p := range pointsPerMetric {
+					ts := startTime.Add(time.Duration(p) * time.Second).UnixMicro()
+					if err = enc.AddDataPoint(ts, float64(m*1000+p), ""); err != nil {
+						tb.Fatal(err)
+					}
+				}
+				if err = enc.EndMetric(); err != nil {
+					tb.Fatal(err)
+				}
+			}
+
+			data, err := enc.Finish()
+			if err != nil {
+				tb.Fatal(err)
+			}
+
+			dec, err := NewNumericDecoder(data)
+			if err != nil {
+				tb.Fatal(err)
+			}
+
+			blobs[bi], err = dec.Decode()
+			if err != nil {
+				tb.Fatal(err)
+			}
+		}
+
+		set, err := NewNumericBlobSet(blobs)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		result[ci] = benchBlobSet{label: cfg.label, set: set}
+	}
+
+	return result
+}
+
+// BenchmarkV2Layout_EndToEnd simulates the typical production pipeline:
+// decode raw bytes from storage → create BlobSet → iterate 50% of metrics once.
+func BenchmarkV2Layout_EndToEnd(b *testing.B) {
+	sizes := []struct {
+		name    string
+		blobs   int
+		metrics int
+		points  int
+	}{
+		{"5blobs_150metrics_10points", 5, 150, 10},
+		{"10blobs_150metrics_10points", 10, 150, 10},
+		{"5blobs_150metrics_100points", 5, 150, 100},
+		{"10blobs_500metrics_10points", 10, 500, 10},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			// Pre-encode raw blob data (simulates what Cassandra returns)
+			allRaw := encodeLayoutRawBlobs(b, sz.blobs, sz.metrics, sz.points)
+
+			// Query 50% of metrics (every other ID)
+			queryIDs := make([]uint64, 0, sz.metrics/2)
+			for i := 1; i <= sz.metrics; i += 2 {
+				queryIDs = append(queryIDs, uint64(i))
+			}
+			expectedPerMetric := sz.blobs * sz.points
+
+			for _, nr := range allRaw {
+				b.Run(nr.label, func(b *testing.B) {
+					raw := nr.raw
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						// Step 1: Decode all blobs
+						blobs := make([]NumericBlob, len(raw))
+						for i, r := range raw {
+							dec, err := NewNumericDecoder(r)
+							if err != nil {
+								b.Fatal(err)
+							}
+							blobs[i], err = dec.Decode()
+							if err != nil {
+								b.Fatal(err)
+							}
+						}
+
+						// Step 2: Create BlobSet
+						set, err := NewNumericBlobSet(blobs)
+						if err != nil {
+							b.Fatal(err)
+						}
+
+						// Step 3: Iterate 50% of metrics
+						total := 0
+						for _, id := range queryIDs {
+							for _, dp := range set.All(id) {
+								_ = dp.Val
+								total++
+							}
+						}
+						if total != len(queryIDs)*expectedPerMetric {
+							b.Fatalf("got %d points, want %d", total, len(queryIDs)*expectedPerMetric)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// encodeLayoutRawBlobs creates pre-encoded blob bytes for V1, V2, and V2+SharedTS.
+// This simulates the raw data fetched from Cassandra.
+func encodeLayoutRawBlobs(tb testing.TB, numBlobs, numMetrics, pointsPerMetric int) []benchRawBlobs {
+	tb.Helper()
+
+	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	configs := layoutConfigs()
+	result := make([]benchRawBlobs, len(configs))
+
+	for ci, cfg := range configs {
+		raw := make([][]byte, numBlobs)
+
+		for bi := range numBlobs {
+			startTime := baseTime.Add(time.Duration(bi) * time.Hour)
+			opts := append([]NumericEncoderOption{
+				WithTimestampEncoding(format.TypeDelta),
+				WithValueEncoding(format.TypeGorilla),
+			}, cfg.opts...)
+
+			enc, err := NewNumericEncoder(startTime, opts...)
+			if err != nil {
+				tb.Fatal(err)
+			}
+
+			// Reverse insertion order to exercise V2 sort path
+			for m := numMetrics; m >= 1; m-- {
+				if err = enc.StartMetricID(uint64(m), pointsPerMetric); err != nil {
+					tb.Fatal(err)
+				}
+				for p := range pointsPerMetric {
+					ts := startTime.Add(time.Duration(p) * time.Second).UnixMicro()
+					if err = enc.AddDataPoint(ts, float64(m*1000+p), ""); err != nil {
+						tb.Fatal(err)
+					}
+				}
+				if err = enc.EndMetric(); err != nil {
+					tb.Fatal(err)
+				}
+			}
+
+			raw[bi], err = enc.Finish()
+			if err != nil {
+				tb.Fatal(err)
+			}
+		}
+
+		result[ci] = benchRawBlobs{label: cfg.label, raw: raw}
+	}
+
+	return result
 }

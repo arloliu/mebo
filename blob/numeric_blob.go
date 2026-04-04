@@ -54,7 +54,7 @@ func (b NumericBlob) AsText() (TextBlob, bool) {
 
 // StartTime returns the start time of the blob.
 func (b NumericBlob) StartTime() time.Time {
-	if b.startTimeMicros == 0 && len(b.index.byID) == 0 {
+	if b.startTimeMicros == 0 && b.index.IsEmpty() {
 		return time.Time{}
 	}
 
@@ -514,6 +514,13 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 		valBytes = b.valPayload[valStart:]
 
 		return decoder.At(valBytes, index, count)
+	case format.TypeChimp:
+		// Chimp encoding is also variable-length compressed like Gorilla.
+		decoder := ienc.NewNumericChimpDecoder()
+
+		valBytes = b.valPayload[valStart:]
+
+		return decoder.At(valBytes, index, count)
 	default:
 		// Other encodings don't support random access
 		return 0, false
@@ -558,10 +565,20 @@ func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int
 		return b.allDataPointsRawGorilla(tsBytes, valBytes, tagBytes, count)
 	}
 
+	// Fast path: optimize for raw timestamps + chimp values
+	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeChimp {
+		return b.allDataPointsRawChimp(tsBytes, valBytes, tagBytes, count)
+	}
+
 	// High-priority path: optimize for delta + gorilla (DEFAULT CONFIGURATION)
 	// This is the most commonly used encoding combination in production
 	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeGorilla {
 		return b.allDataPointsDeltaGorilla(tsBytes, valBytes, tagBytes, count)
+	}
+
+	// High-priority path: optimize for delta + chimp
+	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeChimp {
+		return b.allDataPointsDeltaChimp(tsBytes, valBytes, tagBytes, count)
 	}
 
 	// Faster path: optimize for delta timestamps + raw values (common for time-series)
@@ -741,6 +758,55 @@ func (b NumericBlob) allDataPointsDeltaGorilla(tsBytes, valBytes, tagBytes []byt
 	}
 }
 
+// allDataPointsDeltaChimp handles delta timestamps with Chimp values.
+//
+// Uses a fused decoder that inlines both delta-of-delta timestamp decoding and
+// Chimp XOR value decoding into a single loop, eliminating iter.Pull overhead.
+// This is the optimized path for the Delta + Chimp encoding configuration.
+//
+// Parameters:
+//   - tsBytes: Encoded timestamp data (delta-of-delta format)
+//   - valBytes: Encoded value data (Chimp XOR format)
+//   - tagBytes: Encoded tag data (varint strings)
+//   - count: Number of data points
+//
+// Returns:
+//   - iter.Seq2[int, NumericDataPoint]: Iterator yielding (index, data point) pairs
+func (b NumericBlob) allDataPointsDeltaChimp(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
+	return func(yield func(int, NumericDataPoint) bool) {
+		// If tags are disabled, use fused delta+chimp decoder without tag overhead
+		if !b.HasTag() {
+			fusedIter := ienc.FusedDeltaChimpAll(tsBytes, valBytes, count)
+			i := 0
+			for ts, val := range fusedIter {
+				dp := NumericDataPoint{
+					Ts:  ts,
+					Val: val,
+					Tag: "",
+				}
+
+				if !yield(i, dp) {
+					break
+				}
+				i++
+			}
+
+			return
+		}
+
+		// Tags enabled: Use fused delta+chimp+tag decoder
+		ienc.FusedDeltaChimpTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
+			dp := NumericDataPoint{
+				Ts:  ts,
+				Val: val,
+				Tag: tag,
+			}
+
+			return yield(i, dp)
+		})
+	}
+}
+
 // allDataPointsRawGorilla handles raw timestamps with Gorilla values.
 //
 // Uses At() for ts (O(1) direct memory access for raw encoding).
@@ -795,6 +861,71 @@ func (b NumericBlob) allDataPointsRawGorilla(tsBytes, valBytes, tagBytes []byte,
 
 		// Tags enabled: Use fused gorilla+tag decoder with At() for raw timestamps
 		ienc.FusedGorillaTagAll(valBytes, tagBytes, count, func(i int, val float64, tag string) bool {
+			ts, _ := tsDecoder.At(tsBytes, i, count)
+
+			dp := NumericDataPoint{
+				Ts:  ts,
+				Val: val,
+				Tag: tag,
+			}
+
+			return yield(i, dp)
+		})
+	}
+}
+
+// allDataPointsRawChimp handles raw timestamps with Chimp values.
+//
+// Uses At() for ts (O(1) direct memory access for raw encoding).
+// Uses All() for val (Chimp requires sequential).
+// Uses fused chimp+tag decoder when tags are enabled to eliminate iter.Pull.
+//
+// Parameters:
+//   - tsBytes: Encoded timestamp data (raw format)
+//   - valBytes: Encoded value data (Chimp XOR format)
+//   - tagBytes: Encoded tag data (varint strings)
+//   - count: Number of data points
+//
+// Returns:
+//   - iter.Seq2[int, NumericDataPoint]: Iterator yielding (index, data point) pairs
+func (b NumericBlob) allDataPointsRawChimp(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
+	var tsDecoder encoding.ColumnarDecoder[int64]
+	valDecoder := ienc.NewNumericChimpDecoder()
+
+	engine := b.Engine()
+	if b.sameByteOrder {
+		tsDecoder = ienc.NewTimestampRawUnsafeDecoder(engine)
+	} else {
+		tsDecoder = ienc.NewTimestampRawDecoder(engine)
+	}
+
+	return func(yield func(int, NumericDataPoint) bool) {
+		// If tags are disabled, use simple iteration without tag decoder
+		if !b.HasTag() {
+			valIter := valDecoder.All(valBytes, count)
+
+			i := 0
+			for val := range valIter {
+				// Use At() for timestamps - O(1) direct memory access
+				ts, _ := tsDecoder.At(tsBytes, i, count)
+
+				dp := NumericDataPoint{
+					Ts:  ts,
+					Val: val,
+					Tag: "",
+				}
+
+				if !yield(i, dp) {
+					break
+				}
+				i++
+			}
+
+			return
+		}
+
+		// Tags enabled: Use fused chimp+tag decoder with At() for raw timestamps
+		ienc.FusedChimpTagAll(valBytes, tagBytes, count, func(i int, val float64, tag string) bool {
 			ts, _ := tsDecoder.At(tsBytes, i, count)
 
 			dp := NumericDataPoint{
@@ -908,6 +1039,9 @@ func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] 
 		return decoder.All(valBytes, count)
 	case format.TypeGorilla:
 		var decoder ienc.NumericGorillaDecoder
+		return decoder.All(valBytes, count)
+	case format.TypeChimp:
+		decoder := ienc.NewNumericChimpDecoder()
 		return decoder.All(valBytes, count)
 	default:
 		return func(yield func(float64) bool) {}

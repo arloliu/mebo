@@ -285,8 +285,8 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 		// Track timestamp for next delta calculation
 		e.lastTimestamp = timestamp
 
-	case format.TypeGorilla:
-		return fmt.Errorf("timestamp encoding %v not supported yet", format.TypeGorilla)
+	case format.TypeGorilla, format.TypeChimp:
+		return fmt.Errorf("timestamp encoding %v not supported", tsEncoding)
 
 	default:
 		return fmt.Errorf("invalid timestamp encoding: %v", tsEncoding)

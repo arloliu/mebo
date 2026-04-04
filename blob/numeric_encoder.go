@@ -2,8 +2,10 @@ package blob
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -181,6 +183,8 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 		encoder.valEncoder = ienc.NewNumericRawEncoder(encoder.engine)
 	case format.TypeGorilla:
 		encoder.valEncoder = ienc.NewNumericGorillaEncoder()
+	case format.TypeChimp:
+		encoder.valEncoder = ienc.NewNumericChimpEncoder()
 	case format.TypeDelta:
 		return nil, fmt.Errorf("value encoding %s not supported yet", enc.String())
 	default:
@@ -357,10 +361,11 @@ func (e *NumericEncoder) EndMetric() error {
 		return errs.ErrNoMetricStarted
 	}
 
-	// For Gorilla encoding, we need to flush any pending bits BEFORE calculating lengths
-	// This ensures the length includes all flushed data
-	// For other encodings, this is a no-op as Bytes() just returns the buffer
-	if e.header.Flag.ValueEncoding() == format.TypeGorilla {
+	// For bit-packed encodings (Gorilla, Chimp), we need to flush any pending bits
+	// BEFORE calculating lengths. This ensures the length includes all flushed data.
+	// For other encodings, this is a no-op as Bytes() just returns the buffer.
+	valEnc := e.header.Flag.ValueEncoding()
+	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp {
 		_ = e.valEncoder.Bytes() // Flush pending bits
 	}
 
@@ -469,20 +474,7 @@ func (e *NumericEncoder) validateMetricData(curTsLen int, curValLen int, curTagL
 //     were added, or compression errors
 func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Return cached slices to pool before any returns (including error paths)
-	defer func() {
-		if e.cleanupTS != nil {
-			e.cleanupTS()
-			e.cleanupTS = nil
-		}
-		if e.cleanupVal != nil {
-			e.cleanupVal()
-			e.cleanupVal = nil
-		}
-		if e.cleanupTag != nil {
-			e.cleanupTag()
-			e.cleanupTag = nil
-		}
-	}()
+	defer e.releasePooledSlices()
 
 	// Finish encoders regardless of error to release resources
 	defer e.tsEncoder.Finish()
@@ -516,8 +508,27 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Set actual metric count in cloned header now that encoding is complete
 	finalHeader.MetricCount = uint32(len(e.indexEntries)) //nolint: gosec
 
-	// Detect shared timestamp groups and build V2 format if opt-in enabled
+	// Set V2 magic number if layout version is V2
+	if e.layoutVersion >= 2 {
+		finalHeader.Flag.Options = (finalHeader.Flag.Options &^ section.MagicNumberMask) | section.MagicNumericV2Opt
+	}
+
+	// Sort index entries by MetricID for V2 layout.
+	// This enables cache-friendly iteration and binary search lookups in the decoder.
+	// Index entries store delta offsets referencing payload data in insertion order,
+	// so we must also reorder all payload data to match sorted order.
 	rawTsBytes := e.tsEncoder.Bytes()
+	rawValBytes := e.valEncoder.Bytes()
+	var rawTagBytes []byte
+	if finalHeader.Flag.HasTag() {
+		rawTagBytes = e.tagEncoder.Bytes()
+	}
+
+	if e.layoutVersion >= 2 && !e.sortedByMetricID {
+		rawTsBytes, rawValBytes, rawTagBytes = e.sortEntriesByMetricID(rawTsBytes, rawValBytes, rawTagBytes)
+	}
+
+	// Detect shared timestamp groups and build dedup payload if opt-in enabled
 
 	var sharedTable section.SharedTimestampTable
 	var sharedTableSize int
@@ -531,8 +542,8 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 			rawTsBytes = dedupTsBytes
 			sharedTableSize = sharedTable.Size()
 
-			// Set V2 magic number
-			finalHeader.Flag.Options = (finalHeader.Flag.Options &^ section.MagicNumberMask) | section.MagicNumericV2Opt
+			// Set shared timestamps flag bit
+			finalHeader.Flag.SetHasSharedTimestamps(true)
 		}
 	}
 
@@ -541,7 +552,8 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to compress timestamp payload: %w", err)
 	}
-	valPayload, err := e.valCodec.Compress(e.valEncoder.Bytes())
+
+	valPayload, err := e.valCodec.Compress(rawValBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compress value payload: %w", err)
 	}
@@ -549,7 +561,7 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Only compress tag payload if tag support is enabled
 	var tagPayload []byte
 	if finalHeader.Flag.HasTag() {
-		tagPayload, err = e.tagCodec.Compress(e.tagEncoder.Bytes())
+		tagPayload, err = e.tagCodec.Compress(rawTagBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to compress tag payload: %w", err)
 		}
@@ -617,6 +629,130 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	copy(blob[offset:], tagPayload)
 
 	return blob, nil
+}
+
+// releasePooledSlices returns cached slices to their respective pools.
+func (e *NumericEncoder) releasePooledSlices() {
+	if e.cleanupTS != nil {
+		e.cleanupTS()
+		e.cleanupTS = nil
+	}
+
+	if e.cleanupVal != nil {
+		e.cleanupVal()
+		e.cleanupVal = nil
+	}
+
+	if e.cleanupTag != nil {
+		e.cleanupTag()
+		e.cleanupTag = nil
+	}
+}
+
+// sortEntriesByMetricID sorts index entries by MetricID for V2 layout and reorders
+// all payload data to match. Returns reordered ts, val, and tag byte slices.
+//
+// Since index entries store delta offsets based on insertion order, we must:
+//  1. Convert deltas to absolute offsets and compute segment lengths
+//  2. Sort entries by MetricID
+//  3. Reassemble payload bytes in sorted order
+//  4. Recompute sequential delta offsets
+func (e *NumericEncoder) sortEntriesByMetricID(rawTs, rawVal, rawTag []byte) (sortedTs, sortedVal, sortedTag []byte) {
+	n := len(e.indexEntries)
+	if n <= 1 {
+		return rawTs, rawVal, rawTag
+	}
+
+	// Step 1: Convert deltas to absolute offsets
+	type absEntry struct {
+		tsOff, valOff, tagOff int
+		tsLen, valLen, tagLen int
+	}
+
+	abs := make([]absEntry, n)
+	var tsAcc, valAcc, tagAcc int
+	for i := range n {
+		tsAcc += e.indexEntries[i].TimestampOffset
+		valAcc += e.indexEntries[i].ValueOffset
+		tagAcc += e.indexEntries[i].TagOffset
+		abs[i].tsOff = tsAcc
+		abs[i].valOff = valAcc
+		abs[i].tagOff = tagAcc
+	}
+
+	// Compute lengths from consecutive absolute offsets
+	for i := range n {
+		if i < n-1 {
+			abs[i].tsLen = abs[i+1].tsOff - abs[i].tsOff
+			abs[i].valLen = abs[i+1].valOff - abs[i].valOff
+			abs[i].tagLen = abs[i+1].tagOff - abs[i].tagOff
+		} else {
+			abs[i].tsLen = len(rawTs) - abs[i].tsOff
+			abs[i].valLen = len(rawVal) - abs[i].valOff
+			if len(rawTag) > 0 {
+				abs[i].tagLen = len(rawTag) - abs[i].tagOff
+			}
+		}
+	}
+
+	// Step 2: Sort entries (and abs offsets) together by MetricID
+	// Build a permutation index, sort it, then apply
+	perm := make([]int, n)
+	for i := range n {
+		perm[i] = i
+	}
+	slices.SortFunc(perm, func(a, b int) int {
+		return cmp.Compare(e.indexEntries[a].MetricID, e.indexEntries[b].MetricID)
+	})
+
+	// Apply permutation to entries and abs
+	sortedEntries := make([]section.NumericIndexEntry, n)
+	sortedAbs := make([]absEntry, n)
+	for i, orig := range perm {
+		sortedEntries[i] = e.indexEntries[orig]
+		sortedAbs[i] = abs[orig]
+	}
+
+	// Step 3: Reassemble payload bytes in sorted order
+	newTs := make([]byte, len(rawTs))
+	newVal := make([]byte, len(rawVal))
+	var newTag []byte
+	if len(rawTag) > 0 {
+		newTag = make([]byte, len(rawTag))
+	}
+
+	var tsPos, valPos, tagPos int
+	for i := range n {
+		copy(newTs[tsPos:], rawTs[sortedAbs[i].tsOff:sortedAbs[i].tsOff+sortedAbs[i].tsLen])
+		copy(newVal[valPos:], rawVal[sortedAbs[i].valOff:sortedAbs[i].valOff+sortedAbs[i].valLen])
+		if len(rawTag) > 0 {
+			copy(newTag[tagPos:], rawTag[sortedAbs[i].tagOff:sortedAbs[i].tagOff+sortedAbs[i].tagLen])
+		}
+
+		tsPos += sortedAbs[i].tsLen
+		valPos += sortedAbs[i].valLen
+		tagPos += sortedAbs[i].tagLen
+	}
+
+	// Step 4: Compute new sequential deltas.
+	// Data is now contiguous in sorted order, so:
+	//   entry[0].delta = 0 (start of payload)
+	//   entry[i].delta = entry[i-1].length (each segment follows the previous)
+	for i := range n {
+		if i == 0 {
+			sortedEntries[i].TimestampOffset = 0
+			sortedEntries[i].ValueOffset = 0
+			sortedEntries[i].TagOffset = 0
+		} else {
+			sortedEntries[i].TimestampOffset = sortedAbs[i-1].tsLen
+			sortedEntries[i].ValueOffset = sortedAbs[i-1].valLen
+			sortedEntries[i].TagOffset = sortedAbs[i-1].tagLen
+		}
+	}
+
+	copy(e.indexEntries, sortedEntries)
+
+	return newTs, newVal, newTag
 }
 
 // detectSharedTimestamps scans all metrics' encoded timestamp byte ranges and groups

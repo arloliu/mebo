@@ -874,3 +874,51 @@ func benchmarkManualLoopNoTag(b *testing.B, rows []benchDataPoint) {
 		_, _ = encoder.Finish()
 	}
 }
+
+// ==============================================================================
+// V1 vs V2 Layout Encode Benchmarks
+// ==============================================================================
+
+// BenchmarkV2Layout_Encode compares encoding performance between V1, V2, and V2+SharedTS.
+// V2 has extra sorting overhead at Finish() time.
+func BenchmarkV2Layout_Encode(b *testing.B) {
+	sizes := []struct {
+		name    string
+		metrics int
+		points  int
+	}{
+		{"10metrics_10points", 10, 10},
+		{"150metrics_10points", 150, 10},
+		{"500metrics_10points", 500, 10},
+		{"150metrics_100points", 150, 100},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+			for _, cfg := range layoutConfigs() {
+				b.Run(cfg.label, func(b *testing.B) {
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						opts := append([]NumericEncoderOption{
+							WithTimestampEncoding(format.TypeDelta),
+							WithValueEncoding(format.TypeGorilla),
+						}, cfg.opts...)
+						enc, _ := NewNumericEncoder(startTime, opts...)
+						for i := sz.metrics; i >= 1; i-- {
+							_ = enc.StartMetricID(uint64(i), sz.points)
+							for j := range sz.points {
+								ts := startTime.Add(time.Duration(j) * time.Second).UnixMicro()
+								_ = enc.AddDataPoint(ts, float64(i*1000+j), "")
+							}
+							_ = enc.EndMetric()
+						}
+						_, _ = enc.Finish()
+					}
+				})
+			}
+		})
+	}
+}

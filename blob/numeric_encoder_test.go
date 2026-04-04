@@ -479,7 +479,11 @@ func TestNumericEncoder_ConfigurationMethods(t *testing.T) {
 
 		err = encoder.setTimestampEncoding(format.TypeGorilla)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "gorilla encoding is not supported")
+		require.Contains(t, err.Error(), "encoding is not supported for timestamps")
+
+		err = encoder.setTimestampEncoding(format.TypeChimp)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "encoding is not supported for timestamps")
 
 		err = encoder.setTimestampEncoding(format.EncodingType(99))
 		require.Error(t, err)
