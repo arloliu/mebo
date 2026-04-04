@@ -481,6 +481,126 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 	}
 }
 
+// DecodeAll decodes all timestamps from Group Varint packed data directly into the destination slice.
+//
+// This method is optimized for bulk decoding when the caller needs all values in a slice,
+// avoiding the per-element yield overhead of the All() iterator.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampDeltaPackedEncoder.Bytes()
+//   - count: Total number of timestamps in the encoded data
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of values successfully decoded into dst
+func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int64) int { //nolint:cyclop // inherent complexity of Group Varint decoding
+	if len(data) == 0 || count <= 0 || len(dst) < count {
+		return 0
+	}
+
+	// Decode first timestamp (full varint)
+	first, offset, ok := decodeVarint64(data, 0)
+	if !ok {
+		return 0
+	}
+
+	curTS := int64(first) //nolint:gosec
+	dst[0] = curTS
+
+	if count == 1 {
+		return 1
+	}
+
+	// Decode second timestamp (zigzag + varint delta)
+	zigzag, offset, ok := decodeVarint64(data, offset)
+	if !ok {
+		return 1
+	}
+
+	delta := decodeZigZag64(zigzag)
+	curTS += delta
+	dst[1] = curTS
+
+	// Remaining timestamps: Group Varint packed delta-of-deltas
+	prevDelta := delta
+	produced := 2
+
+	// Fast path: full groups of 4
+	for produced+groupSize <= count && offset < len(data) {
+		cb := data[offset]
+		offset++
+
+		for i := range groupSize {
+			tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+			byteLen := groupVarintLengths[tag]
+
+			if offset+byteLen > len(data) {
+				return produced
+			}
+
+			var zz uint64
+			switch tag {
+			case 0:
+				zz = uint64(data[offset])
+			case 1:
+				zz = uint64(binary.LittleEndian.Uint16(data[offset:]))
+			case 2:
+				zz = uint64(binary.LittleEndian.Uint32(data[offset:]))
+			case 3:
+				zz = binary.LittleEndian.Uint64(data[offset:])
+			default:
+				return produced
+			}
+			offset += byteLen
+
+			deltaOfDelta := decodeZigZag64(zz)
+			prevDelta += deltaOfDelta
+			curTS += prevDelta
+			dst[produced] = curTS
+			produced++
+		}
+	}
+
+	// Tail: partial group (< 4 values)
+	if produced < count && offset < len(data) {
+		cb := data[offset]
+		offset++
+
+		remaining := count - produced
+		for i := range remaining {
+			tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+			byteLen := groupVarintLengths[tag]
+
+			if offset+byteLen > len(data) {
+				return produced
+			}
+
+			var zz uint64
+			switch tag {
+			case 0:
+				zz = uint64(data[offset])
+			case 1:
+				zz = uint64(binary.LittleEndian.Uint16(data[offset:]))
+			case 2:
+				zz = uint64(binary.LittleEndian.Uint32(data[offset:]))
+			case 3:
+				zz = binary.LittleEndian.Uint64(data[offset:])
+			default:
+				return produced
+			}
+			offset += byteLen
+
+			deltaOfDelta := decodeZigZag64(zz)
+			prevDelta += deltaOfDelta
+			curTS += prevDelta
+			dst[produced] = curTS
+			produced++
+		}
+	}
+
+	return produced
+}
+
 // At returns the timestamp at the specified index.
 //
 // Parameters:

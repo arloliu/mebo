@@ -197,6 +197,57 @@ func makeAccessPattern(length int) []int {
 	return pattern
 }
 
+func BenchmarkNumericGorillaDecoder_DecodeAll(b *testing.B) {
+	for _, dataset := range gorillaBenchDatasets {
+		b.Run(dataset.name, func(b *testing.B) {
+			decoder := NewNumericGorillaDecoder()
+			data := dataset.encoded
+			count := len(dataset.values)
+			dst := make([]float64, count)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for b.Loop() {
+				produced := decoder.DecodeAll(data, count, dst)
+				if produced != count {
+					b.Fatalf("expected %d values, got %d", count, produced)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkNumericGorillaDecoder_AllVsDecodeAll(b *testing.B) {
+	for _, dataset := range gorillaBenchDatasets {
+		b.Run(dataset.name, func(b *testing.B) {
+			decoder := NewNumericGorillaDecoder()
+			data := dataset.encoded
+			count := len(dataset.values)
+
+			b.Run("All_Iterator", func(b *testing.B) {
+				b.ReportAllocs()
+				var sum float64
+				for b.Loop() {
+					for value := range decoder.All(data, count) {
+						sum += value
+					}
+				}
+				benchmarkFloatSink = sum
+			})
+
+			b.Run("DecodeAll_Slice", func(b *testing.B) {
+				dst := make([]float64, count)
+				b.ReportAllocs()
+				for b.Loop() {
+					decoder.DecodeAll(data, count, dst)
+				}
+				benchmarkFloatSink = dst[count-1]
+			})
+		})
+	}
+}
+
 func containsIndex(values []int, target int) bool {
 	return slices.Contains(values, target)
 }

@@ -842,6 +842,121 @@ func (NumericGorillaDecoder) decodeAtSmall(br *bitReader, prevValue uint64, targ
 	return 0, false
 }
 
+// DecodeAll decodes all values from the encoded data directly into the destination slice.
+//
+// This method is optimized for bulk decoding when the caller needs all values in a slice,
+// avoiding the per-element yield overhead of the All() iterator.
+//
+// Parameters:
+//   - data: byte slice containing Gorilla-compressed float64 values
+//   - count: total number of values encoded in the data
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of values successfully decoded into dst
+func (d NumericGorillaDecoder) DecodeAll(data []byte, count int, dst []float64) int {
+	if len(data) == 0 || count == 0 || len(dst) < count {
+		return 0
+	}
+
+	if len(data) >= 64 {
+		_ = data[63]
+	}
+
+	br := newBitReader(data)
+
+	firstBits, ok := br.readBits(64)
+	if !ok {
+		return 0
+	}
+	prevValue := firstBits
+	dst[0] = math.Float64frombits(prevValue)
+
+	if count == 1 {
+		return 1
+	}
+
+	remaining := count - 1
+	produced := 0
+	state := gorillaBlockState{}
+
+	for produced < remaining {
+		controlBit, ok := br.readBit()
+		if !ok {
+			return produced + 1
+		}
+
+		if controlBit == 0 {
+			dst[produced+1] = math.Float64frombits(prevValue)
+			produced++
+
+			// Batch counting for large runs of unchanged values
+			if remaining-produced >= 8 {
+				unchangedCount, ok := br.countLeadingZeroBits(remaining - produced)
+				if !ok {
+					return produced + 1
+				}
+
+				prevFloat := math.Float64frombits(prevValue)
+				for i := range unchangedCount {
+					dst[produced+1+i] = prevFloat
+				}
+				produced += unchangedCount
+
+				if produced >= remaining {
+					return count
+				}
+
+				controlBit, ok = br.readBit()
+				if !ok {
+					return produced + 1
+				}
+
+				if controlBit == 0 {
+					dst[produced+1] = math.Float64frombits(prevValue)
+					produced++
+
+					continue
+				}
+			} else {
+				for produced < remaining {
+					controlBit, ok = br.readBit()
+					if !ok {
+						return produced + 1
+					}
+					if controlBit != 0 {
+						break
+					}
+
+					dst[produced+1] = math.Float64frombits(prevValue)
+					produced++
+				}
+
+				if produced >= remaining {
+					return count
+				}
+			}
+		}
+
+		trailing, blockSize, ok := state.next(br)
+		if !ok {
+			return produced + 1
+		}
+
+		meaningfulBits, ok := br.readBits(blockSize)
+		if !ok {
+			return produced + 1
+		}
+
+		shift := uint64(trailing) // #nosec G115 -- trailing validated by gorillaBlockState
+		prevValue ^= meaningfulBits << shift
+		dst[produced+1] = math.Float64frombits(prevValue)
+		produced++
+	}
+
+	return count
+}
+
 // At retrieves the float64 value at the specified index from the Gorilla-compressed data.
 //
 // This method decodes values sequentially up to the requested index.

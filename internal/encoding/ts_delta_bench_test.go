@@ -223,7 +223,10 @@ type decoderBenchmarkCase struct {
 	count   int
 }
 
-var decoderBenchmarkCases = initDecoderBenchmarkCases()
+var (
+	decoderBenchmarkCases = initDecoderBenchmarkCases()
+	benchmarkInt64Sink    int64
+)
 
 func initDecoderBenchmarkCases() []decoderBenchmarkCase {
 	type datasetSpec struct {
@@ -313,6 +316,57 @@ func BenchmarkTimestampDeltaDecoder_All_Suite(b *testing.B) {
 					b.Fatalf("expected %d timestamps, got %d", caseData.count, produced)
 				}
 			}
+		})
+	}
+}
+
+func BenchmarkTimestampDeltaDecoder_DecodeAll_Suite(b *testing.B) {
+	decoder := NewTimestampDeltaDecoder()
+
+	for _, cs := range decoderBenchmarkCases {
+		caseData := cs
+		b.Run(caseData.name, func(b *testing.B) {
+			dst := make([]int64, caseData.count)
+			b.ReportAllocs()
+			if caseData.count > 0 {
+				b.SetBytes(int64(caseData.count * 8))
+			}
+
+			for b.Loop() {
+				produced := decoder.DecodeAll(caseData.encoded, caseData.count, dst)
+				if produced != caseData.count {
+					b.Fatalf("expected %d timestamps, got %d", caseData.count, produced)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkTimestampDeltaDecoder_AllVsDecodeAll(b *testing.B) {
+	decoder := NewTimestampDeltaDecoder()
+
+	for _, cs := range decoderBenchmarkCases {
+		caseData := cs
+		b.Run(caseData.name, func(b *testing.B) {
+			b.Run("All_Iterator", func(b *testing.B) {
+				b.ReportAllocs()
+				var sum int64
+				for b.Loop() {
+					for ts := range decoder.All(caseData.encoded, caseData.count) {
+						sum += ts
+					}
+				}
+				benchmarkInt64Sink = sum
+			})
+
+			b.Run("DecodeAll_Slice", func(b *testing.B) {
+				dst := make([]int64, caseData.count)
+				b.ReportAllocs()
+				for b.Loop() {
+					decoder.DecodeAll(caseData.encoded, caseData.count, dst)
+				}
+				benchmarkInt64Sink = dst[caseData.count-1]
+			})
 		})
 	}
 }

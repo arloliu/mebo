@@ -70,25 +70,27 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 			tags = make([]string, count)
 		}
 
-		// Decode using optimized decoders with direct slice indexing
-		idx := 0
-		for ts := range b.allTimestampsFromEntry(entry) {
-			timestamps[idx] = ts
-			idx++
+		// Fast path: use cached shared timestamps if available
+		if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
+			copy(timestamps, cached)
+		} else {
+			tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+			tsProduced := b.decodeTimestampsSlice(tsBytes, count, timestamps)
+			timestamps = timestamps[:tsProduced]
 		}
 
-		idx = 0
-		for val := range b.allValuesFromEntry(entry) {
-			values[idx] = val
-			idx++
-		}
+		valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+		valProduced := b.decodeValuesSlice(valBytes, count, values)
+		values = values[:valProduced]
 
 		if b.HasTag() {
-			idx = 0
+			idx := 0
 			for tag := range b.allTagsFromEntry(entry) {
 				tags[idx] = tag
 				idx++
 			}
+
+			tags = tags[:idx]
 		}
 
 		material.data[metricID] = materializedNumericMetric{
@@ -329,25 +331,27 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetr
 		tags = make([]string, count)
 	}
 
-	// Decode using optimized decoders with direct slice indexing
-	idx := 0
-	for ts := range b.allTimestampsFromEntry(entry) {
-		timestamps[idx] = ts
-		idx++
+	// Fast path: use cached shared timestamps if available
+	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
+		copy(timestamps, cached)
+	} else {
+		tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+		tsProduced := b.decodeTimestampsSlice(tsBytes, count, timestamps)
+		timestamps = timestamps[:tsProduced]
 	}
 
-	idx = 0
-	for val := range b.allValuesFromEntry(entry) {
-		values[idx] = val
-		idx++
-	}
+	valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+	valProduced := b.decodeValuesSlice(valBytes, count, values)
+	values = values[:valProduced]
 
 	if b.HasTag() {
-		idx = 0
+		idx := 0
 		for tag := range b.allTagsFromEntry(entry) {
 			tags[idx] = tag
 			idx++
 		}
+
+		tags = tags[:idx]
 	}
 
 	return MaterializedNumericMetric{

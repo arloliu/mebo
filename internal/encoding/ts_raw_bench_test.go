@@ -443,3 +443,45 @@ func BenchmarkTimestampRawEncoder_RealWorldPattern(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkTimestampRawDecoder_AllVsDecodeAll(b *testing.B) {
+	sizes := []int{10, 100, 1000}
+
+	for _, size := range sizes {
+		timestamps := make([]int64, size)
+		base := int64(1609459200000000)
+		for i := range timestamps {
+			timestamps[i] = base + int64(i)*1000000
+		}
+
+		encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
+		encoder.WriteSlice(timestamps)
+		data := make([]byte, len(encoder.Bytes()))
+		copy(data, encoder.Bytes())
+		encoder.Finish()
+
+		b.Run(fmt.Sprintf("Size%d", size), func(b *testing.B) {
+			b.Run("All_Iterator", func(b *testing.B) {
+				decoder := NewTimestampRawDecoder(endian.GetLittleEndianEngine())
+				b.ReportAllocs()
+				var sum int64
+				for b.Loop() {
+					for ts := range decoder.All(data, size) {
+						sum += ts
+					}
+				}
+				benchmarkInt64Sink = sum
+			})
+
+			b.Run("DecodeAll_Slice", func(b *testing.B) {
+				decoder := NewTimestampRawDecoder(endian.GetLittleEndianEngine())
+				dst := make([]int64, size)
+				b.ReportAllocs()
+				for b.Loop() {
+					decoder.DecodeAll(data, size, dst)
+				}
+				benchmarkInt64Sink = dst[size-1]
+			})
+		})
+	}
+}

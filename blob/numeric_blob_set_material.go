@@ -112,15 +112,25 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 
 			metricSet := material.data[metricID]
 
-			// Decode and append timestamps
-			for ts := range blob.allTimestampsFromEntry(entry) {
-				metricSet.timestamps = append(metricSet.timestamps, ts)
+			count := entry.Count
+
+			// Decode timestamps: extend slice and decode directly into tail
+			if cached, ok := blob.sharedTsCache[entry.TimestampOffset]; ok {
+				metricSet.timestamps = append(metricSet.timestamps, cached...)
+			} else {
+				tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+				off := len(metricSet.timestamps)
+				metricSet.timestamps = metricSet.timestamps[:off+count]
+				tsProduced := blob.decodeTimestampsSlice(tsBytes, count, metricSet.timestamps[off:])
+				metricSet.timestamps = metricSet.timestamps[:off+tsProduced]
 			}
 
-			// Decode and append values
-			for val := range blob.allValuesFromEntry(entry) {
-				metricSet.values = append(metricSet.values, val)
-			}
+			// Decode values: extend slice and decode directly into tail
+			valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+			off := len(metricSet.values)
+			metricSet.values = metricSet.values[:off+count]
+			valProduced := blob.decodeValuesSlice(valBytes, count, metricSet.values[off:])
+			metricSet.values = metricSet.values[:off+valProduced]
 
 			// Decode and append tags (if enabled)
 			if hasTags && blob.HasTag() {
@@ -214,15 +224,25 @@ func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumeric
 			continue // This metric doesn't exist in this blob
 		}
 
-		// Decode and append timestamps
-		for ts := range blob.allTimestampsFromEntry(entry) {
-			timestamps = append(timestamps, ts)
+		count := entry.Count
+
+		// Decode timestamps: extend slice and decode directly into tail
+		if cached, ok := blob.sharedTsCache[entry.TimestampOffset]; ok {
+			timestamps = append(timestamps, cached...)
+		} else {
+			tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+			off := len(timestamps)
+			timestamps = timestamps[:off+count]
+			tsProduced := blob.decodeTimestampsSlice(tsBytes, count, timestamps[off:])
+			timestamps = timestamps[:off+tsProduced]
 		}
 
-		// Decode and append values
-		for val := range blob.allValuesFromEntry(entry) {
-			values = append(values, val)
-		}
+		// Decode values: extend slice and decode directly into tail
+		valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+		off := len(values)
+		values = values[:off+count]
+		valProduced := blob.decodeValuesSlice(valBytes, count, values[off:])
+		values = values[:off+valProduced]
 
 		// Decode and append tags (if enabled)
 		if hasTags && blob.HasTag() {

@@ -1215,6 +1215,68 @@ func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] 
 	}
 }
 
+// decodeTimestampsSlice decodes all timestamps directly into the destination slice.
+// dst must have len >= count.
+//
+// Returns:
+//   - int: The number of timestamps actually decoded. May be less than count if data is truncated.
+func (b NumericBlob) decodeTimestampsSlice(tsBytes []byte, count int, dst []int64) int {
+	switch b.tsEncType { //nolint: exhaustive
+	case format.TypeRaw:
+		engine := b.Engine()
+		if b.sameByteOrder {
+			decoder := ienc.NewTimestampRawUnsafeDecoder(engine)
+
+			return decoder.DecodeAll(tsBytes, count, dst)
+		}
+
+		decoder := ienc.NewTimestampRawDecoder(engine)
+
+		return decoder.DecodeAll(tsBytes, count, dst)
+	case format.TypeDelta:
+		var decoder ienc.TimestampDeltaDecoder
+
+		return decoder.DecodeAll(tsBytes, count, dst)
+	case format.TypeDeltaPacked:
+		var decoder ienc.TimestampDeltaPackedDecoder
+
+		return decoder.DecodeAll(tsBytes, count, dst)
+	default:
+		return 0
+	}
+}
+
+// decodeValuesSlice decodes all values directly into the destination slice.
+// dst must have len >= count.
+//
+// Returns:
+//   - int: The number of values actually decoded. May be less than count if data is truncated.
+func (b NumericBlob) decodeValuesSlice(valBytes []byte, count int, dst []float64) int {
+	switch b.ValueEncoding() { //nolint: exhaustive
+	case format.TypeRaw:
+		engine := b.Engine()
+		if b.sameByteOrder {
+			decoder := ienc.NewNumericRawUnsafeDecoder(engine)
+
+			return decoder.DecodeAll(valBytes, count, dst)
+		}
+
+		decoder := ienc.NewNumericRawDecoder(engine)
+
+		return decoder.DecodeAll(valBytes, count, dst)
+	case format.TypeGorilla:
+		var decoder ienc.NumericGorillaDecoder
+
+		return decoder.DecodeAll(valBytes, count, dst)
+	case format.TypeChimp:
+		decoder := ienc.NewNumericChimpDecoder()
+
+		return decoder.DecodeAll(valBytes, count, dst)
+	default:
+		return 0
+	}
+}
+
 // decodeTags returns an iterator for tag strings.
 // Tags are always encoded the same way regardless of timestamp/value encoding.
 func (b NumericBlob) decodeTags(tagBytes []byte, count int) iter.Seq[string] {

@@ -401,6 +401,46 @@ func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] {
 	}
 }
 
+// DecodeAll decodes all values from the encoded data directly into the destination slice.
+//
+// This method is optimized for bulk decoding when the caller needs all values in a slice,
+// avoiding the per-element yield overhead of the All() iterator.
+//
+// Parameters:
+//   - data: byte slice containing Chimp-compressed float64 values
+//   - count: total number of values encoded in the data
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of values successfully decoded into dst
+func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) int {
+	if len(data) == 0 || count == 0 || len(dst) < count {
+		return 0
+	}
+
+	br := bitReader{data: data}
+
+	firstBits, ok := br.readBits(64)
+	if !ok {
+		return 0
+	}
+
+	prevValue := firstBits
+	dst[0] = math.Float64frombits(prevValue)
+
+	storedLeading := 65
+
+	for i := 1; i < count; i++ {
+		if !chimpDecodeNext(&br, &prevValue, &storedLeading) {
+			return i
+		}
+
+		dst[i] = math.Float64frombits(prevValue)
+	}
+
+	return count
+}
+
 // At retrieves the float64 value at the specified index from the Chimp-compressed data.
 //
 // Parameters:

@@ -310,6 +310,40 @@ func (d TimestampRawDecoder) All(data []byte, count int) iter.Seq[int64] {
 	}
 }
 
+// DecodeAll decodes all timestamps from the encoded data directly into the destination slice.
+//
+// This method is optimized for bulk decoding when the caller needs all values in a slice,
+// avoiding the per-element yield overhead of the All() iterator.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampRawEncoder.Bytes()
+//   - count: Total number of timestamps in the encoded data
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of values successfully decoded into dst
+func (d TimestampRawDecoder) DecodeAll(data []byte, count int, dst []int64) int {
+	if len(data) == 0 || count == 0 || len(dst) < count {
+		return 0
+	}
+
+	dataLen := len(data)
+	if dataLen%8 != 0 {
+		return 0
+	}
+
+	for i := range count {
+		start := i * 8
+		if start+8 > dataLen {
+			return i
+		}
+
+		dst[i] = int64(d.engine.Uint64(data[start : start+8])) //nolint: gosec
+	}
+
+	return count
+}
+
 // At retrieves the timestamp at the specified index from the encoded data.
 //
 // The data should be the byte slice payload produced by a corresponding TimestampEncoder.
@@ -400,6 +434,32 @@ func (d TimestampRawUnsafeDecoder) All(data []byte, count int) iter.Seq[int64] {
 			}
 		}
 	}
+}
+
+// DecodeAll decodes all timestamps from the encoded data directly into the destination slice
+// using unsafe memory operations.
+//
+// Parameters:
+//   - data: Encoded byte slice from TimestampRawEncoder.Bytes() (must be multiple of 8 bytes)
+//   - count: Total number of timestamps in the encoded data
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of values successfully decoded into dst
+func (d TimestampRawUnsafeDecoder) DecodeAll(data []byte, count int, dst []int64) int {
+	if len(data) < count*8 || count == 0 || len(dst) < count {
+		return 0
+	}
+
+	timestamps, err := unsafeDecodeInt64Slice(data)
+	if err != nil {
+		return 0
+	}
+
+	n := min(count, len(timestamps))
+	copy(dst[:n], timestamps[:n])
+
+	return n
 }
 
 // At retrieves the timestamp at the specified index from the encoded data.

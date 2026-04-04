@@ -498,6 +498,62 @@ func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 	}
 }
 
+// DecodeAll decodes all timestamps from the encoded data directly into the destination slice.
+//
+// This method is optimized for bulk decoding when the caller needs all values in a slice,
+// avoiding the per-element yield overhead of the All() iterator.
+//
+// Parameters:
+//   - data: Delta-of-delta encoded byte slice from TimestampDeltaEncoder.Bytes()
+//   - count: Expected number of timestamps to decode
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of timestamps successfully decoded into dst
+func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) int {
+	if len(data) == 0 || count <= 0 || len(dst) < count {
+		return 0
+	}
+
+	first, offset, ok := decodeVarint64(data, 0)
+	if !ok {
+		return 0
+	}
+
+	curTS := int64(first) //nolint:gosec
+	dst[0] = curTS
+
+	if count == 1 {
+		return 1
+	}
+
+	zigzag, offset, ok := decodeVarint64(data, offset)
+	if !ok {
+		return 1
+	}
+
+	delta := decodeZigZag64(zigzag)
+	curTS += delta
+	dst[1] = curTS
+
+	prevDelta := delta
+	for produced := 2; produced < count; produced++ {
+		deltaZigzag, nextOffset, ok := decodeVarint64(data, offset)
+		if !ok {
+			return produced
+		}
+		offset = nextOffset
+
+		deltaOfDelta := decodeZigZag64(deltaZigzag)
+		prevDelta += deltaOfDelta
+		curTS += prevDelta
+
+		dst[produced] = curTS
+	}
+
+	return count
+}
+
 // At returns the timestamp(as int64) at the specified index in the delta-of-delta encoded data.
 //
 // This method provides efficient random access to timestamps by decoding only

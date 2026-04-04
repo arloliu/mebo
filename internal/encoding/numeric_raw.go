@@ -286,6 +286,32 @@ func (d NumericRawDecoder) All(data []byte, count int) iter.Seq[float64] {
 	}
 }
 
+// DecodeAll decodes all float64 values from the encoded data directly into the destination slice.
+//
+// This method is optimized for bulk decoding when the caller needs all values in a slice,
+// avoiding the per-element yield overhead of the All() iterator.
+//
+// Parameters:
+//   - data: Encoded byte slice from NumericRawEncoder.Bytes()
+//   - count: Total number of float64 values in the encoded data
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of values successfully decoded into dst
+func (d NumericRawDecoder) DecodeAll(data []byte, count int, dst []float64) int {
+	if len(data) < count*8 || count == 0 || len(dst) < count {
+		return 0
+	}
+
+	for i := range count {
+		start := i * 8
+		bits := d.engine.Uint64(data[start : start+8])
+		dst[i] = math.Float64frombits(bits)
+	}
+
+	return count
+}
+
 // At retrieves the float64 value at the specified index from the encoded data.
 //
 // The data should be the byte slice payload produced by a NumericRawEncoder.
@@ -394,6 +420,31 @@ func (d NumericRawUnsafeDecoder) All(data []byte, count int) iter.Seq[float64] {
 			}
 		}
 	}
+}
+
+// DecodeAll decodes all float64 values from the encoded data directly into the destination slice
+// using unsafe memory operations.
+//
+// Parameters:
+//   - data: Encoded byte slice from NumericRawEncoder.Bytes() (must be multiple of 8 bytes)
+//   - count: Total number of float64 values in the encoded data
+//   - dst: Pre-allocated destination slice (must have len >= count)
+//
+// Returns:
+//   - int: Number of values successfully decoded into dst
+func (d NumericRawUnsafeDecoder) DecodeAll(data []byte, count int, dst []float64) int {
+	if len(data) < count*8 || count == 0 || len(dst) < count {
+		return 0
+	}
+
+	floatSlice, err := unsafeDecodeFloat64Slice(data[:count*8])
+	if floatSlice == nil || err != nil {
+		return 0
+	}
+
+	copy(dst[:count], floatSlice[:count])
+
+	return count
 }
 
 // At retrieves the float64 value at the specified index from the encoded data using unsafe memory operations.
