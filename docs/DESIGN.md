@@ -6,26 +6,43 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 
 ## Core Principles
 
-- **Hash-Based Identification:** Metrics are identified by 64-bit xxHash64 hashes for fast O(1) lookups
+- **Hash-Based Identification:** Metrics are identified by 64-bit xxHash64 hashes for fast lookups
 - **Collision Detection:** Optional metric names payload for collision detection and verification (enabled when collisions occur)
 - **Columnar Storage:** Timestamps and values are stored separately for optimal compression and access patterns
-- **Flexible Encoding:** Per-blob configurable encoding strategies for both timestamps and values
-- **Memory Efficiency:** Fixed-size structures enable single-pass encoding and O(1) hash map lookups
+- **Flexible Encoding:** Per-blob configurable encoding strategies for both timestamps and values (Raw, Delta, Gorilla, Chimp)
+- **Memory Efficiency:** Fixed-size structures enable single-pass encoding and efficient lookups
+- **Versioned Layout:** V1 (map-based index) and V2 (sorted-slice index with binary search) layouts are wire-compatible; codecs are orthogonal to layout version
 
 ## Physical Layout
 
-The blob is structured as a single contiguous memory block with 8-byte aligned payloads:
+The blob is structured as a single contiguous memory block with 8-byte aligned payloads.
 
-| Section                    | Size              | Description                                                              |
-|----------------------------|-------------------|--------------------------------------------------------------------------|
-| **Blob Header**            | 32 bytes (fixed)  | Metadata including flags, metric count, start time, and section offsets |
-| **Metric Names Payload**   | Variable (optional)| Length-prefixed metric name strings (only when bit 2 = 1)               |
-| **Metric Index**           | N × 16 bytes      | Array of IndexEntry structs with [Hash, Offsets, Count] in insertion order |
-| **Shared Timestamp Table** | Variable (V2 only) | Deduplication table mapping metrics to canonical timestamp sequences       |
-| *(Padding)*                | 0-7 bytes          | Padding to 8-byte boundary alignment                                    |
-| **Timestamps Payload**     | Variable size     | All timestamps from all metrics, encoded + compressed                   |
-| *(Padding)*                | 0-7 bytes         | Padding to 8-byte boundary alignment                                    |
-| **Values Payload**         | Variable size     | All values from all metrics, encoded + compressed                       |
+### V1 Layout (Default)
+
+| Section                  | Size                | Description                                                             |
+|--------------------------|---------------------|-------------------------------------------------------------------------|
+| **Blob Header**          | 32 bytes (fixed)    | Metadata including flags, metric count, start time, and section offsets |
+| **Metric Names Payload** | Variable (optional) | Length-prefixed metric name strings (only when bit 2 = 1)               |
+| **Metric Index**         | N × 16 bytes        | Array of IndexEntry structs in insertion order                          |
+| *(Padding)*              | 0-7 bytes           | Padding to 8-byte boundary alignment                                    |
+| **Timestamps Payload**   | Variable size       | All timestamps from all metrics, encoded + compressed                   |
+| *(Padding)*              | 0-7 bytes           | Padding to 8-byte boundary alignment                                    |
+| **Values Payload**       | Variable size       | All values from all metrics, encoded + compressed                       |
+
+### V2 Layout (`WithBlobLayoutV2()`)
+
+| Section                    | Size                | Description                                                                  |
+|----------------------------|---------------------|------------------------------------------------------------------------------|
+| **Blob Header**            | 32 bytes (fixed)    | Magic = `0xEA20`, same structure as V1                                       |
+| **Metric Names Payload**   | Variable (optional) | Same as V1                                                                   |
+| **Metric Index**           | N × 16 bytes        | Array of IndexEntry structs **sorted by MetricID**                           |
+| **Shared Timestamp Table** | Variable (optional) | Deduplication table (only when bit 3 = 1, requires `WithSharedTimestamps()`) |
+| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
+| **Timestamps Payload**     | Variable size       | All timestamps, with dedup'd sequences if shared timestamps enabled          |
+| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
+| **Values Payload**         | Variable size       | All values from all metrics, encoded + compressed                            |
+
+V2 layout controls **container structure** (sorted index, optional shared timestamps). Encoding algorithms (Raw, Delta, Gorilla, Chimp) are **orthogonal** to the layout version and can be freely combined with either V1 or V2.
 
 **Memory Layout Characteristics:**
 -   **Byte Order (Endianness):** All multi-byte numeric values (integers and floating-point) use little-endian byte order by default, which is native to x86/x64 and ARM architectures. The header's `Flag.Options` field (bit 1) allows optional big-endian encoding: when bit 1 = 0 (default), little-endian is used; when bit 1 = 1, big-endian is used. This endianness applies consistently across all blob components: header fields, index entries, timestamps, and values. **Important:** For optimal performance, producers and consumers should use the same endianness to avoid conversion overhead. Mixed-endian environments should standardize on little-endian unless network byte order (big-endian) is specifically required.
@@ -54,6 +71,7 @@ const (
 	// Value encodings (bits 4-7)
 	ValueEncodingNone    = TimestampEncodingNone << 4
 	ValueTypeGorilla = TimestampTypeDelta << 4
+	ValueTypeChimp   = 0x3 << 4
 
 	// Compression types (bits 0-3 for timestamp, 4-7 for value)
 	CompressionNone   = 0x1
@@ -76,9 +94,9 @@ type FlagHeader struct {
 	// Options is a packed field for various options.
 	// Bit 0 is tag support flag, 0 means no tag, 1 means tag enabled.
 	// Bit 1 is endianness flag, 0 means little-endian, 1 means big-endian.
-	// Bit 2 is metric names payload flag, 0 means no payload, 1 means metric names included (collision detection).
-	// Bit 3 is reserved for future use, must be set to 0.
-	// Bit 4-15 are magic number: 0xEA10 for V1, 0xEA20 for V2 (shared timestamps).
+	// Bit 2 is metric names payload flag, 0 means no payload, 1 means metric names included.
+	// Bit 3 is shared timestamps flag (numeric only), 0 means no shared table, 1 means present.
+	// Bit 4-15 are magic number: 0xEA10 for V1, 0xEA20 for V2.
 	Options uint16
 
 	// EncodingType is an enum indicating the encoding used for this metric blob.
@@ -129,15 +147,15 @@ Length-prefixed string list positioned immediately after header (32 bytes):
 
 **Example (3 metrics):**
 ```
-Offset | Field       | Value (hex)     | Value (decoded)
--------|-------------|-----------------|------------------
-0      | Count       | 0x03 0x00       | 3 (little-endian)
-2      | Len1        | 0x09 0x00       | 9
-4      | Name1       | 'c','p','u'...  | "cpu.usage"
-13     | Len2        | 0x0C 0x00       | 12
-15     | Name2       | 'm','e','m'...  | "memory.total"
-27     | Len3        | 0x0B 0x00       | 11
-29     | Name3       | 'd','i','s'...  | "disk.io.read"
+Offset | Field | Value (hex)    | Value (decoded)
+-------|-------|----------------|------------------
+0      | Count | 0x03 0x00      | 3 (little-endian)
+2      | Len1  | 0x09 0x00      | 9
+4      | Name1 | 'c','p','u'... | "cpu.usage"
+13     | Len2  | 0x0C 0x00      | 12
+15     | Name2 | 'm','e','m'... | "memory.total"
+27     | Len3  | 0x0B 0x00      | 11
+29     | Name3 | 'd','i','s'... | "disk.io.read"
 ```
 
 **Ordering Requirement:**
@@ -188,25 +206,55 @@ Size = 0 bytes (zero overhead)
 
 ### Metric Index
 
-This is the core of the fast lookup system. The index is stored as a contiguous array of `IndexEntry` structs in insertion order in the blob, and during decoding it is loaded into a hash map for O(1) lookup performance.
+This is the core of the fast lookup system. The index is stored as a contiguous array of `IndexEntry` structs. The **layout version** determines the ordering and in-memory representation used after decoding.
 
-#### Storage & Encoding:
-1. Metrics are stored in **insertion order** (order they were added during encoding)
-2. Index entries are written sequentially to the blob
-3. **Cannot be reordered:** Delta offset encoding creates dependencies between consecutive entries
-4. Each entry's offsets are deltas from the previous entry, requiring sequential decode
+#### V1 Index (Map-Based)
 
-#### Lookup Process:
-1. **At decode time:** Build hash map `map[uint64]IndexEntry` from index section (O(N) one-time cost)
-   - Must process entries in order to accumulate offset deltas
-2. **At query time:** Calculate xxHash64 64-bit hash of the target metric name
-3. **Lookup:** Direct hash map access for O(1) retrieval of entry with data offsets
+1. Entries are stored in **insertion order** (order they were added during encoding)
+2. At decode time, entries are loaded into a hash map `map[uint64]IndexEntry` for O(1) lookup
+3. Delta offset encoding creates dependencies between consecutive entries, so entry order cannot be changed after encoding
+
+**Lookup Process:**
+1. **At decode time:** Build hash map from index section (O(N) one-time cost)
+2. **At query time:** Calculate xxHash64 hash of the target metric name
+3. **Lookup:** Direct hash map access for O(1) retrieval
 
 **Performance Characteristics:**
 - **Decode time:** O(N) to build hash map and reconstruct absolute offsets from deltas
-- **Lookup time:** O(1) hash map access
+- **Lookup time:** O(1) amortized hash map access
 - **Memory overhead:** ~24 bytes per entry for map (8 bytes key + 16 bytes value)
-- **Note:** Binary search is NOT possible due to delta offset encoding (cannot reorder entries)
+- **Iteration order:** Non-deterministic (Go map iteration)
+
+#### V2 Index (Sorted-Slice with Binary Search)
+
+1. Entries are **sorted by MetricID** at encoding time
+2. The encoder tracks insertion order and only sorts when metrics were not already inserted in ascending MetricID order
+3. At decode time, entries are stored in a sorted slice with a parallel `sortedIDs []uint64` slice for binary search
+4. Payload data is reordered to match sorted index order during encoding
+
+**Lookup Process:**
+1. **At decode time:** Assign entries directly to sorted slice (O(N), no map allocation)
+2. **At query time:** Binary search on the parallel `sortedIDs` slice
+3. **Lookup:** `slices.BinarySearch` returns the index into the sorted entry slice
+
+**Performance Characteristics:**
+- **Decode time:** O(N) to reconstruct absolute offsets (no map allocation needed)
+- **Lookup time:** O(log N) binary search — faster than map for cold lookups due to cache locality
+- **Memory overhead:** ~24 bytes per entry (16-byte entry + 8-byte uint64 in parallel slice)
+- **Iteration order:** Deterministic (ascending MetricID)
+- **Cache behavior:** Contiguous memory access patterns for sequential iteration via `ForEach()`
+
+**Why a Parallel sortedIDs Slice:**
+
+The sorted slice stores full `IndexEntry` structs (16 bytes each). Binary search needs only the 8-byte `MetricID` field, but scanning 16-byte structs wastes half the cache line on unused fields (Count, offsets). The parallel `sortedIDs []uint64` slice holds only MetricIDs in contiguous 8-byte elements, doubling the number of keys examined per cache line during binary search. Once the position is found, the corresponding entry is accessed by index in the `sorted []IndexEntry` slice.
+
+**Encoder Sort Behavior:**
+
+The encoder tracks whether metrics were inserted in ascending MetricID order via a `sortedByMetricID` flag. If already sorted (common when metrics are added deterministically), the sort is skipped entirely — zero overhead. When sorting is needed:
+1. Convert delta offsets → absolute offsets and compute segment lengths
+2. Build a permutation index sorted by MetricID
+3. Reassemble all payload bytes (timestamps, values, tags) in sorted order
+4. Recompute sequential delta offsets for the sorted entry slice
 
 #### Index Entry Structure (16 bytes):
 
@@ -309,14 +357,17 @@ For typical workloads (150 metrics per blob):
 -   Built into Go standard library (no dependencies)
 -   Simple algorithm ensures cross-language compatibility
 
-### Shared Timestamp Table (V2 Only)
+### Shared Timestamp Table (Optional, V2 Only)
 
 **Purpose:** Deduplicate identical timestamp sequences across metrics to reduce blob size.
 
-**When Enabled:**
-- `Flag.Options` bits 4-15 contain magic `0xEA20` (V2 format) instead of `0xEA10` (V1)
-- Encoder must be created with `WithSharedTimestamps()` option
-- Only present when the encoder detects two or more metrics sharing identical encoded timestamp bytes
+**When Present:**
+- `Flag.Options` bit 3 = 1 (SharedTimestampsMask = 0x0008) — this is a dedicated flag bit, independent of the magic number
+- Encoder must be created with `WithSharedTimestamps()` option (which implies V2 layout)
+- Only written when the encoder detects two or more metrics sharing identical encoded timestamp bytes
+- The flag bit is set only when actual sharing is detected; `WithSharedTimestamps()` alone does not guarantee the table exists
+
+**Design Note:** The V2 layout (`WithBlobLayoutV2()`) and shared timestamps (`WithSharedTimestamps()`) are **orthogonal features**. V2 layout controls sorted index and container structure. Shared timestamps controls timestamp deduplication. Using `WithSharedTimestamps()` implies V2 layout, but using `WithBlobLayoutV2()` alone does not enable shared timestamps.
 
 **Motivation:**
 In typical monitoring workloads, many metrics are collected at the same intervals (e.g., all CPU/memory/disk metrics sampled every 10 seconds). Without deduplication, each metric stores its own copy of the timestamp sequence. With shared timestamps, identical sequences are stored once and referenced by all metrics that share them, achieving 24-73% blob size savings.
@@ -366,11 +417,12 @@ Net savings = 11,200 - 288 = ~10,912 bytes
 ```
 
 **Decoder Behavior:**
-1. Check magic number in `Flag.Options`: `0xEA20` indicates V2 with possible shared timestamp table
-2. Read `GroupCount` from the table section
-3. For each group, read canonical index and shared member indices
-4. Apply: copy the canonical metric's timestamp offset and byte length to all shared members
-5. All metrics can then be decoded using normal V1 timestamp decoding logic
+1. Check `Flag.Options` bit 3: if set, shared timestamp table is present
+2. The table occupies the bytes between the end of the Metric Index and `TimestampPayloadOffset`
+3. Read `GroupCount` from the table section
+4. For each group, read canonical index and shared member indices
+5. Apply: copy the canonical metric's timestamp offset and byte length to all shared members
+6. All metrics can then be decoded using normal timestamp decoding logic
 
 **Validation Rules:**
 - No empty groups (MemberCount must be ≥1)
@@ -392,8 +444,8 @@ Net savings = 11,200 - 288 = ~10,912 bytes
 
 **Backward Compatibility:**
 - V1 decoders safely reject V2 blobs (different magic number `0xEA20` vs `0xEA10`)
-- V2 decoders accept both V1 and V2 formats
-- **Upgrade strategy:** Deploy V2-capable consumers first, then enable `WithSharedTimestamps()` on producers
+- V2 decoders accept both V1 and V2 formats transparently
+- **Upgrade strategy:** Deploy V2-capable consumers first, then enable `WithBlobLayoutV2()` or `WithSharedTimestamps()` on producers
 
 **See Also:**
 - Implementation: `section/numeric_shared_ts.go`
@@ -445,7 +497,7 @@ The time-series data is organized into two separate, columnar payloads to maximi
 
 **Layout Process:**
 1. Concatenate all values from all metrics sequentially
-2. Apply encoding transformation (Raw or Gorilla-based)
+2. Apply encoding transformation (Raw, Gorilla, or Chimp)
 3. Optionally compress the entire payload as a single block
 4. Track individual metric positions via `ValueOffset` in index
 
@@ -455,10 +507,27 @@ The time-series data is organized into two separate, columnar payloads to maximi
   - **Cons:** No space savings, 8 bytes per value
   - **Use Case:** Frequently accessed data, random patterns, maximum performance
 
-- **Gorilla (0x20):** XOR-based compression
+- **Gorilla (0x20):** XOR-based compression (Facebook, 2015)
+  - **Algorithm:** First value stored as raw 64-bit; subsequent values XOR'd with previous. If XOR is zero, emit a single `0` bit. Otherwise, encode the leading/trailing zero counts and significant bits.
+  - **Leading zeros:** 5-bit raw count (0-31)
   - **Pros:** Excellent compression for stable/predictable values, ~70% size reduction
   - **Cons:** Sequential-only access, decode overhead
   - **Use Case:** Slowly changing metrics (temperature, voltage, system stats)
+
+- **Chimp (0x30):** Improved XOR-based compression (PVLDB, 2022)
+  - **Algorithm:** Same XOR-based approach as Gorilla but with two key improvements:
+    1. **3-bit leading-zero bucketing:** Instead of storing raw 5-bit leading zero counts, Chimp maps 64 possible values into 8 buckets via a lookup table. This reduces the leading-zero field from 5 bits to 3 bits.
+    2. **Trailing-zero optimization:** When trailing zeros exceed 6, Chimp stores a 6-bit significant-bits count and emits only the non-zero middle bits, saving space for values with many trailing zeros.
+  - **2-bit flag scheme:**
+    | Flag | Meaning                      | Payload                                                 |
+    |------|------------------------------|---------------------------------------------------------|
+    | `00` | Value unchanged (XOR == 0)   | None                                                    |
+    | `01` | Trailing zeros > 6           | 3-bit leading bucket + 6-bit sigBits + significant bits |
+    | `10` | Reuse previous leading zeros | (64 − leading) bits of full XOR                         |
+    | `11` | New leading zeros            | 3-bit leading bucket + (64 − leading) bits of full XOR  |
+  - **Pros:** Better compression than Gorilla for metrics with many trailing zeros; 3-bit bucketed leading zeros are more space-efficient than Gorilla's 5-bit raw encoding
+  - **Cons:** Sequential-only access, slightly higher decode complexity than Gorilla
+  - **Use Case:** Metrics with stable fractional parts, scientific/sensor data, many repeated or near-equal values
 
 **Compression:** Optional second-stage compression (typically None for performance, or Zstd for cold storage).
 
@@ -466,10 +535,11 @@ The time-series data is organized into two separate, columnar payloads to maximi
 
 | Payload Type | Encoding | Random Access | Sequential Access | Decode Overhead |
 |--------------|----------|---------------|-------------------|-----------------|
-| Timestamps | Raw | O(1) | O(N) | None |
-| Timestamps | Delta | O(N) | O(N) | Low |
-| Values | Raw | O(1) | O(N) | None |
-| Values | Gorilla | O(N) | O(N) | Medium |
+| Timestamps   | Raw      | O(1)          | O(N)              | None            |
+| Timestamps   | Delta    | O(N)          | O(N)              | Low             |
+| Values       | Raw      | O(1)          | O(N)              | None            |
+| Values       | Gorilla  | O(N)          | O(N)              | Medium          |
+| Values       | Chimp    | O(N)          | O(N)              | Medium          |
 
 #### Implementation Notes
 
@@ -512,12 +582,12 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 ```
 
 **Index Size by Metric Count:**
-| Metrics | Index Size | Max Blob Size | Notes |
-|---------|-----------|---------------|-------|
-| 100 | 1,600 B | ~129 KB | Optimal range |
-| 500 | 8,000 B | ~136 KB | Good performance |
-| 1,000 | 16,000 B | ~144 KB | Near practical limit |
-| 4,000 | 64,000 B | ~191 KB | Maximum recommended |
+| Metrics | Index Size | Max Blob Size | Notes                |
+|---------|------------|---------------|----------------------|
+| 100     | 1,600 B    | ~129 KB       | Optimal range        |
+| 500     | 8,000 B    | ~136 KB       | Good performance     |
+| 1,000   | 16,000 B   | ~144 KB       | Near practical limit |
+| 4,000   | 64,000 B   | ~191 KB       | Maximum recommended  |
 
 **Practical Blob Size:** 129KB - 191KB (depending on metric count)
 
@@ -538,20 +608,20 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 -   **Payload Alignment:** All major payloads are aligned to an 8-byte memory boundary by adding padding where necessary. This prevents potential unaligned memory access penalties on certain CPU architectures.
 -   **Random Access Trade-offs:**
     -   **Values (`Raw`):** True **O(1)** random access.
-    -   **Values (`Gorilla`) / Timestamps:** Require an O(N) scan from the start of the metric's data. For fast random access with these encodings, the data would need to be further broken into smaller, indexed sub-chunks.
+    -   **Values (`Gorilla` / `Chimp`) / Timestamps (`Delta`):** Require an O(N) scan from the start of the metric's data. For fast random access with these encodings, the data would need to be further broken into smaller, indexed sub-chunks.
 
 ## Example: 150 Metrics × 10 Points
 
 **Note:** This example benefits from delta encoding for both TimestampOffset and ValueOffset. Each metric requires only ~80 bytes for timestamps and ~80 bytes for values, so deltas easily fit within uint16 range.
 
 ### Size Breakdown
-| Component | Size | Details |
-|-----------|------|---------|
-| Header | 32 B | Fixed |
-| Index | 2,400 B | 150 × 16 bytes |
-| Timestamps | ~300 B | Delta + Zstd compressed |
-| Values | 12,000 B | Raw float64 |
-| **Total** | **14,732 B** | ~14.4 KB |
+| Component  | Size         | Details                 |
+|------------|--------------|-------------------------|
+| Header     | 32 B         | Fixed                   |
+| Index      | 2,400 B      | 150 × 16 bytes          |
+| Timestamps | ~300 B       | Delta + Zstd compressed |
+| Values     | 12,000 B     | Raw float64             |
+| **Total**  | **14,732 B** | ~14.4 KB                |
 
 ## Encoding Selection Guide
 
@@ -559,6 +629,17 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 - **Delta + S2**: Best for regular intervals (99% use cases)
 - **Delta + Zstd**: Best for maximum compression rate
 - **Raw + None**: Only for random access requirements
+
+### Values
+- **Raw + None:** Maximum performance, O(1) random access, no compression
+- **Gorilla + None:** Good compression for slowly-changing metrics (~70% reduction)
+- **Chimp + None:** Better compression than Gorilla for metrics with many trailing zeros or stable fractional parts
+- **Raw + Zstd:** Cold storage with infrequent access
+
+### Layout Version
+- **V1 (default):** Map-based index, insertion-order storage. Simple. No upgrade coordination needed.
+- **V2 (`WithBlobLayoutV2()`):** Sorted index with binary search. Better cache locality for iteration. Deterministic metric ordering. Requires consumer upgrade before producer.
+- **V2 + Shared Timestamps (`WithSharedTimestamps()`):** V2 with timestamp deduplication. 24-73% blob size savings when many metrics share collection intervals. Requires consumer upgrade before producer.
 
 ## Usage Guidelines
 
@@ -572,7 +653,25 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 **Values:**
 - **Raw + None:** Frequently accessed data, random patterns, maximum performance
 - **Gorilla + None:** Slowly changing metrics (temperature, voltage, etc.)
+- **Chimp + None:** Metrics with stable fractional parts or many trailing zeros (sensor data, counters)
 - **Raw + Zstd:** Cold storage with infrequent access
+
+### When to Use V2 Layout
+
+**Use V1 (default) when:**
+- All consumers are on older mebo versions
+- Insertion-order determinism is acceptable
+- Simple deployment with no upgrade coordination
+
+**Use V2 (`WithBlobLayoutV2()`) when:**
+- Deterministic MetricID ordering is needed (e.g., reproducible blob comparisons)
+- Iteration performance matters (contiguous memory access vs map iteration)
+- All consumers have been upgraded to V2-compatible mebo versions
+
+**Use V2 + Shared Timestamps (`WithSharedTimestamps()`) when:**
+- Many metrics share the same collection intervals (common in monitoring)
+- Blob size reduction is a priority (24-73% savings on timestamps)
+- All consumers have been upgraded first
 
 ### Blob Size Recommendations
 
@@ -701,30 +800,32 @@ func (r *MetricRegistry) GetName(hash uint64) (string, bool) {
 ## Trade-offs and Limitations
 
 ### Advantages
-- **Excellent compression:** 40-60% size reduction typical
-- **Fast lookups:** O(1) hash map lookup for metric access (insertion-order storage required by delta encoding)
-- **Flexible encoding:** Choose optimal strategy per use case
+- **Excellent compression:** 40-60% size reduction typical with Gorilla; potentially better with Chimp for trailing-zero-heavy data
+- **Fast lookups:** O(1) hash map lookup (V1) or O(log N) binary search with cache-friendly memory access (V2)
+- **Flexible encoding:** Choose optimal strategy per use case (Raw, Delta, Gorilla, Chimp)
 - **Memory efficient:** Minimal overhead, cache-friendly structures
+- **Deterministic ordering:** V2 sorted index provides reproducible metric iteration order
 - **Extended addressing:** Delta encoding allows uint16 offsets to address much larger payloads effectively
 - **Platform independent:** Well-defined binary format
+- **Orthogonal design:** Layout version (V1/V2) and encoding algorithms (Raw, Delta, Gorilla, Chimp) are independent choices
 
 ### Limitations
 - **External names:** Requires application-level hash→name mapping
-- **Sequential access:** Compressed/encoded data requires sequential decoding
+- **Sequential access:** Compressed/encoded data (Gorilla, Chimp, Delta) requires sequential decoding
 - **Per-metric size constraint:** Each metric's data delta must fit in uint16 (≤65,535 bytes for both timestamps and values)
-- **Sequential metric ordering:** Delta encoding requires metrics to be processed in index order during decoding
+- **V2 upgrade coordination:** V2 layout requires all consumers to be upgraded before producers
 - **No schema evolution:** Format changes require version bumps
 
 ## Conclusion
 
 The Mebo format provides an optimal balance of space efficiency, lookup performance, and encoding flexibility for time-series metric data. The design is particularly well-suited for scenarios with many metrics and relatively few points per metric, achieving significant compression while maintaining fast access patterns.
 
-Key innovations include:
-- **Hash-based identification:** Eliminates metric name storage overhead with collision-free 64-bit xxHash64 hashes
+Key design elements:
+- **Hash-based identification:** Eliminates metric name storage overhead with collision-safe 64-bit xxHash64 hashes
 - **Dual delta offset encoding:** Both TimestampOffset AND ValueOffset use delta encoding, extending the effective addressing range of uint16 offsets for both payloads
 - **Columnar storage:** Separates timestamps and values for optimal compression and access patterns
-- **Flexible encoding:** Per-blob configurable strategies (Raw, Delta, Gorilla) with optional compression
+- **Flexible encoding:** Per-blob configurable strategies (Raw, Delta, Gorilla, Chimp) with optional compression
+- **Versioned layout:** V1 map-based index for simplicity; V2 sorted-slice index for cache locality, deterministic ordering, and binary search
+- **Orthogonal features:** Layout version, encoding algorithms, shared timestamps, and compression are independent choices that can be freely combined
 
 This makes Mebo suitable for both small, focused datasets and large-scale monitoring scenarios with thousands of metrics and millions of data points.
-
-Combined with O(1) hash map lookups and memory-efficient fixed-size structures, Mebo delivers both high performance and compact representation for time-series workloads.
