@@ -1,10 +1,12 @@
 package blob
 
 import (
-	"errors"
+	"cmp"
 	"iter"
 	"slices"
 	"time"
+
+	"github.com/arloliu/mebo/errs"
 )
 
 // TextBlobSet represents an immutable collection of TextBlob instances that
@@ -49,7 +51,7 @@ type TextBlobSet struct {
 //	// blobSet is immutable and safe for concurrent reads
 func NewTextBlobSet(blobs []TextBlob) (TextBlobSet, error) {
 	if len(blobs) == 0 {
-		return TextBlobSet{}, errors.New("cannot create TextBlobSet with empty blobs")
+		return TextBlobSet{}, errs.ErrEmptyBlobSet
 	}
 
 	// Create a copy to avoid modifying the caller's slice
@@ -58,7 +60,7 @@ func NewTextBlobSet(blobs []TextBlob) (TextBlobSet, error) {
 
 	// Sort blobs by start time in ascending order (optimized: compare microseconds directly)
 	slices.SortFunc(sortedBlobs, func(a, b TextBlob) int {
-		return int(a.startTimeMicros - b.startTimeMicros)
+		return cmp.Compare(a.startTimeMicros, b.startTimeMicros)
 	})
 
 	return TextBlobSet{

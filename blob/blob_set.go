@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"cmp"
 	"iter"
 	"slices"
 
@@ -146,14 +147,14 @@ func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
 	sortedNumeric := make([]NumericBlob, len(numericBlobs))
 	copy(sortedNumeric, numericBlobs)
 	slices.SortFunc(sortedNumeric, func(a, b NumericBlob) int {
-		return int(a.startTimeMicros - b.startTimeMicros)
+		return cmp.Compare(a.startTimeMicros, b.startTimeMicros)
 	})
 
 	// Sort text blobs by start time (optimized: compare microseconds directly)
 	sortedText := make([]TextBlob, len(textBlobs))
 	copy(sortedText, textBlobs)
 	slices.SortFunc(sortedText, func(a, b TextBlob) int {
-		return int(a.startTimeMicros - b.startTimeMicros)
+		return cmp.Compare(a.startTimeMicros, b.startTimeMicros)
 	})
 
 	return BlobSet{
