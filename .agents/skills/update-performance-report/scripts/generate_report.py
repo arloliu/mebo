@@ -73,10 +73,10 @@ def gen_quick_reference(matrix):
 
     return f"""| Metric | Value | Configuration |
 |--------|-------|---------------|
-| **Best Compression** | {best['bytes_per_point']:.2f} bytes/point ({best['space_savings_pct']:.1f}% savings) | {fmt_label(best['label'])} |
-| **Best Balance** | {second['bytes_per_point']:.2f} bytes/point ({second['space_savings_pct']:.1f}% savings) | {fmt_label(second['label'])} |
+| **Best Compression** | {best['bytes_per_point']:.3f} bytes/point ({best['space_savings_pct']:.1f}% savings) | {fmt_label(best['label'])} |
+| **Best Balance** | {second['bytes_per_point']:.3f} bytes/point ({second['space_savings_pct']:.1f}% savings) | {fmt_label(second['label'])} |
 | **Fastest Encode** | {fastest['encode']['ns_per_op']:,.0f} ns/op | {fmt_label(fastest['label'])} |
-| **Baseline** | {raw_raw['bytes_per_point']:.2f} bytes/point | Raw + Raw |"""
+| **Baseline** | {raw_raw['bytes_per_point']:.3f} bytes/point | Raw + Raw |"""
 
 
 def gen_encoding_matrix(matrix):
@@ -87,8 +87,8 @@ def gen_encoding_matrix(matrix):
     ]
     for r in by_bpp:
         lines.append(
-            f"| {fmt_label(r['label'])} | {r['bytes_per_point']:.2f} "
-            f"| {r['space_savings_pct']:.1f}% | {r['vs_raw_ratio']:.2f}× "
+            f"| {fmt_label(r['label'])} | {r['bytes_per_point']:.3f} "
+            f"| {r['space_savings_pct']:.1f}% | {r['vs_raw_ratio']:.3f}× "
             f"| {r['encode']['ns_per_op']:,.0f} | {r['decode']['ns_per_op']:,.0f} "
             f"| {r['iter_seq']['ns_per_op']:,.0f} |"
         )
@@ -126,27 +126,27 @@ def gen_encoding_observations(matrix):
     lines = []
     lines.append(
         f"- **Best compression**: {fmt_label(best['label'])} achieves "
-        f"{best['bytes_per_point']:.2f} bytes/point ({best['space_savings_pct']:.1f}% savings "
+        f"{best['bytes_per_point']:.3f} bytes/point ({best['space_savings_pct']:.1f}% savings "
         f"vs raw-raw baseline). Shared timestamp deduplication eliminates redundant timestamp "
         f"storage across 200 metrics."
     )
     lines.append(
         f"- **Shared timestamps**: Enabling `WithSharedTimestamps()` provides "
         f"{abs(shared_savings_over_ns):.0f}% additional savings over the best non-shared "
-        f"configuration ({fmt_label(best_ns['label'])} at {best_ns['bytes_per_point']:.2f} "
+        f"configuration ({fmt_label(best_ns['label'])} at {best_ns['bytes_per_point']:.3f} "
         f"bytes/point). The savings come from storing the timestamp column once instead of "
         f"200 times."
     )
     lines.append(
         f"- **Chimp vs Gorilla**: Chimp consistently outperforms Gorilla by "
         f"~{chimp_vs_gorilla:.1f}% in compression. For example, Delta + Chimp "
-        f"({d_chimp['bytes_per_point']:.2f} BPP) vs Delta + Gorilla "
-        f"({d_gorilla['bytes_per_point']:.2f} BPP). Both use XOR-based floating-point encoding."
+        f"({d_chimp['bytes_per_point']:.3f} BPP) vs Delta + Gorilla "
+        f"({d_gorilla['bytes_per_point']:.3f} BPP). Both use XOR-based floating-point encoding."
     )
     lines.append(
         f"- **DeltaPacked vs Delta**: DeltaPacked shows ~{abs(dp_vs_d):.1f}% "
         f"{'larger' if dp_vs_d > 0 else 'smaller'} encoded size than Delta "
-        f"({dp_chimp['bytes_per_point']:.2f} vs {d_chimp['bytes_per_point']:.2f} BPP). "
+        f"({dp_chimp['bytes_per_point']:.3f} vs {d_chimp['bytes_per_point']:.3f} BPP). "
         f"DeltaPacked's advantage is **decode/iteration speed** via Group Varint batch "
         f"decoding, not compression ratio."
     )
@@ -221,7 +221,7 @@ def gen_scaling_table(scaling, prefix_filter=None):
                  if p['points_per_metric'] == ppm),
                 None,
             )
-            row += f" {bpp:.2f} |" if bpp else " — |"
+            row += f" {bpp:.3f} |" if bpp else " — |"
         lines.append(row)
 
     return '\n'.join(lines)
@@ -258,8 +258,8 @@ def gen_scaling_insights(scaling, matrix):
         if best_series[ppm] <= converged * 1.3:
             lines.append(
                 f"- **Overhead becomes acceptable at ~{ppm} PPM**: "
-                f"{fmt_label(best_label)} reaches {best_series[ppm]:.2f} bytes/point "
-                f"(within 30% of converged value {converged:.2f})."
+                f"{fmt_label(best_label)} reaches {best_series[ppm]:.3f} bytes/point "
+                f"(within 30% of converged value {converged:.3f})."
             )
             break
 
@@ -268,16 +268,16 @@ def gen_scaling_insights(scaling, matrix):
         if best_series[ppm] <= converged * 1.05:
             lines.append(
                 f"- **Diminishing returns above ~{ppm} PPM**: BPP converges to "
-                f"{converged:.2f} (within 5% threshold reached at {ppm} PPM with "
-                f"{best_series[ppm]:.2f} BPP)."
+                f"{converged:.3f} (within 5% threshold reached at {ppm} PPM with "
+                f"{best_series[ppm]:.3f} BPP)."
             )
             break
 
     # Shared TS savings scale with metrics
     lines.append(
         f"- **Shared timestamps scale with metric count**: At {max_ppm} PPM, "
-        f"{fmt_label(best_label)} achieves {converged:.2f} BPP vs "
-        f"{fmt_label(best_ns_label)} at {best_ns_series[max_ppm]:.2f} BPP — a "
+        f"{fmt_label(best_label)} achieves {converged:.3f} BPP vs "
+        f"{fmt_label(best_ns_label)} at {best_ns_series[max_ppm]:.3f} BPP — a "
         f"{(1 - converged/best_ns_series[max_ppm])*100:.0f}% additional saving from "
         f"timestamp deduplication across 200 metrics."
     )
@@ -286,15 +286,15 @@ def gen_scaling_insights(scaling, matrix):
     min_ppm = min(best_series.keys())
     lines.append(
         f"- **Fixed overhead dominates at low PPM**: At {min_ppm} PPM, even the best "
-        f"combo ({fmt_label(best_label)}) costs {best_series[min_ppm]:.2f} bytes/point "
-        f"vs {converged:.2f} converged — {best_series[min_ppm]/converged:.1f}× overhead "
+        f"combo ({fmt_label(best_label)}) costs {best_series[min_ppm]:.3f} bytes/point "
+        f"vs {converged:.3f} converged — {best_series[min_ppm]/converged:.1f}× overhead "
         f"from per-metric headers."
     )
 
     # Raw-raw vs compressed convergence
     lines.append(
         f"- **Raw vs compressed convergence**: Raw + Raw overhead amortizes to "
-        f"{rr_converged:.2f} BPP (16 bytes per point for 8-byte timestamp + 8-byte "
+        f"{rr_converged:.3f} BPP (16 bytes per point for 8-byte timestamp + 8-byte "
         f"float64). Compressed combos converge much lower because they also amortize "
         f"encoding metadata while compressing the data itself."
     )
@@ -329,19 +329,19 @@ def gen_decision_tree(matrix):
     return f"""```
 What is your priority?
 ├─ Smallest encoded size?
-│  ├─ All metrics share timestamps? → {fmt_label(best_comp['label'])} ({best_comp['bytes_per_point']:.2f} BPP, {best_comp['space_savings_pct']:.1f}% savings)
-│  └─ Independent timestamps?      → {fmt_label(best_ns['label'])} ({best_ns['bytes_per_point']:.2f} BPP, {best_ns['space_savings_pct']:.1f}% savings)
+│  ├─ All metrics share timestamps? → {fmt_label(best_comp['label'])} ({best_comp['bytes_per_point']:.3f} BPP, {best_comp['space_savings_pct']:.1f}% savings)
+│  └─ Independent timestamps?      → {fmt_label(best_ns['label'])} ({best_ns['bytes_per_point']:.3f} BPP, {best_ns['space_savings_pct']:.1f}% savings)
 │
 ├─ Fastest encode?
-│  └─ {fmt_label(fastest_enc['label'])} ({fastest_enc['encode']['ns_per_op']:,.0f} ns/op, {fastest_enc['bytes_per_point']:.2f} BPP)
+│  └─ {fmt_label(fastest_enc['label'])} ({fastest_enc['encode']['ns_per_op']:,.0f} ns/op, {fastest_enc['bytes_per_point']:.3f} BPP)
 │
 ├─ Fastest iteration / decode?
 │  ├─ Sequential scan → {fmt_label(fastest_iter['label'])} ({fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op)
-│  └─ Random access  → {fmt_label(best_raw['label'])} ({best_raw['bytes_per_point']:.2f} BPP, O(1) TimestampAt/ValueAt)
+│  └─ Random access  → {fmt_label(best_raw['label'])} ({best_raw['bytes_per_point']:.3f} BPP, O(1) TimestampAt/ValueAt)
 │
 └─ Best balance (size + speed)?
-   ├─ With shared TS → {fmt_label(by_bpp[0]['label'])} ({by_bpp[0]['bytes_per_point']:.2f} BPP, {by_bpp[0]['iter_seq']['ns_per_op']:,.0f} ns/op iter)
-   └─ Without        → {fmt_label(best_ns['label'])} ({best_ns['bytes_per_point']:.2f} BPP, {best_ns['iter_seq']['ns_per_op']:,.0f} ns/op iter)
+   ├─ With shared TS → {fmt_label(by_bpp[0]['label'])} ({by_bpp[0]['bytes_per_point']:.3f} BPP, {by_bpp[0]['iter_seq']['ns_per_op']:,.0f} ns/op iter)
+   └─ Without        → {fmt_label(best_ns['label'])} ({best_ns['bytes_per_point']:.3f} BPP, {best_ns['iter_seq']['ns_per_op']:,.0f} ns/op iter)
 ```"""
 
 
@@ -373,11 +373,11 @@ def gen_config_selection(matrix):
 
     return f"""| Use Case | Configuration | Key Metric | Rationale |
 |----------|---------------|------------|-----------|
-| **Best compression** | {fmt_label(best['label'])} | {best['bytes_per_point']:.2f} BPP ({best['space_savings_pct']:.1f}% savings) | Lowest bytes/point; shared timestamps eliminate redundant storage |
+| **Best compression** | {fmt_label(best['label'])} | {best['bytes_per_point']:.3f} BPP ({best['space_savings_pct']:.1f}% savings) | Lowest bytes/point; shared timestamps eliminate redundant storage |
 | **Fastest iteration** | {fmt_label(fastest_iter['label'])} | {fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op | Fastest sequential scan; raw values avoid decode overhead |
 | **Fastest encode** | {fmt_label(fastest_enc['label'])} | {fastest_enc['encode']['ns_per_op']:,.0f} ns/op | Minimal encode computation; delta reduces buffer size |
-| **Best balance** | {fmt_label(balance['label'])} | {balance['bytes_per_point']:.2f} BPP, {balance['iter_seq']['ns_per_op']:,.0f} ns/op iter | Top ranks in both compression and iteration speed |
-| **Random access** | {fmt_label(best_raw['label'])} | {best_raw['bytes_per_point']:.2f} BPP | O(1) `TimestampAt`/`ValueAt`; raw timestamps support direct indexing |
+| **Best balance** | {fmt_label(balance['label'])} | {balance['bytes_per_point']:.3f} BPP, {balance['iter_seq']['ns_per_op']:,.0f} ns/op iter | Top ranks in both compression and iteration speed |
+| **Random access** | {fmt_label(best_raw['label'])} | {best_raw['bytes_per_point']:.3f} BPP | O(1) `TimestampAt`/`ValueAt`; raw timestamps support direct indexing |
 | **Maximum throughput** | Raw + Raw | {raw_raw['encode']['ns_per_op']:,.0f} ns/op encode | Baseline; no encoding overhead but largest output |"""
 
 
@@ -420,7 +420,7 @@ def gen_ppm_guidelines(scaling, matrix):
             zone_ranges[-1]['end_bpp'] = bpp
 
     lines = [
-        f"Using {fmt_label(best_label)} scaling data (converged: {converged:.2f} bytes/point):",
+        f"Using {fmt_label(best_label)} scaling data (converged: {converged:.3f} bytes/point):",
         "",
         "| Zone | PPM Range | BPP Range | Overhead | Recommendation |",
         "|------|-----------|-----------|----------|----------------|",
@@ -442,9 +442,9 @@ def gen_ppm_guidelines(scaling, matrix):
             ppm_str = f"{zr['start_ppm']}–{zr['end_ppm']}"
 
         if zr['start_bpp'] == zr['end_bpp']:
-            bpp_str = f"{zr['start_bpp']:.2f}"
+            bpp_str = f"{zr['start_bpp']:.3f}"
         else:
-            bpp_str = f"{zr['start_bpp']:.2f}–{zr['end_bpp']:.2f}"
+            bpp_str = f"{zr['start_bpp']:.3f}–{zr['end_bpp']:.3f}"
 
         lines.append(
             f"| **{zr['zone']}** | {ppm_str} | {bpp_str} "
@@ -511,8 +511,8 @@ def main():
 
     # Quick sanity checks
     by_bpp = sorted(matrix, key=lambda x: x['bytes_per_point'])
-    print(f"Best BPP: {by_bpp[0]['label']} = {by_bpp[0]['bytes_per_point']:.2f}")
-    print(f"Worst BPP: {by_bpp[-1]['label']} = {by_bpp[-1]['bytes_per_point']:.2f}")
+    print(f"Best BPP: {by_bpp[0]['label']} = {by_bpp[0]['bytes_per_point']:.3f}")
+    print(f"Worst BPP: {by_bpp[-1]['label']} = {by_bpp[-1]['bytes_per_point']:.3f}")
 
 
 if __name__ == '__main__':

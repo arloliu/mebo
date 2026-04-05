@@ -8,47 +8,36 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/arloliu/mebo)](https://goreportcard.com/report/github.com/arloliu/mebo)
 [![License: Apache](https://img.shields.io/badge/License-Apache-blue.svg)](LICENSE)
 
-A high-performance, space-efficient binary format for storing time-series metric data in Go.
-
-Mebo is optimized for multiple scenarios, providing excellent compression ratios and fast lookup performance through hash-based identification and columnar storage.
+A high-performance, space-efficient binary format for storing time-series metric data in Go, achieving up to 60.5% space savings through columnar encoding without codec compression.
 
 ## Design Philosophy
 
-**Mebo is designed for batch processing of already-collected metrics**, not for streaming ingestion. The typical workflow is:
+Mebo is designed for **batch processing of already-collected metrics**, not streaming ingestion. The workflow is collect → encode → persist → query.
 
-1. **Collect metrics** in memory (from monitoring agents, APIs, or other sources)
-2. **Pack metrics** into one or more blobs using Mebo encoders
-3. **Persist blobs** to storage (databases, object stores, file systems)
-4. **Query blobs** later by decoding them on-demand
-
-This design makes Mebo ideal for:
-- 📦 **Batch metric ingestion**: Collect 10 seconds/1 minute/5 minutes of metrics, then encode into single or multiple blobs
-- 🗄️ **Time-series databases**: Store compressed metric data with minimal space overhead
-- ☁️ **Object storage**: Save blobs to S3/GCS/Azure Blob with excellent compression
-- 📊 **Metrics aggregation**: Combine metrics from multiple sources before storage
-- 🔄 **ETL pipelines**: Transform and compress metrics between systems
-
-**Important**: Because Mebo works with pre-collected data, you must **declare the number of data points** for each metric upfront using `StartMetricID(metricID, count)` or `StartMetricName(name, count)`, and complete the metric with `EndMetric()`. This allows Mebo to:
-- Pre-allocate buffers efficiently
-- Validate data completeness
-- Optimize compression strategies
-- Ensure data integrity
+- **Batch-first model**: Declare the number of data points for each metric upfront via `StartMetricID(id, count)`, add exactly that many points, then call `EndMetric()`. This allows Mebo to pre-allocate buffers, validate completeness, and compress the full sequence.
+- **Columnar storage**: Timestamps and values are encoded separately, enabling independent compression strategies and better cache utilization during iteration.
+- **Zero-allocation iteration**: Compressed data is decoded on-the-fly directly from the blob without per-point memory allocations.
 
 ## Features
 
-- 🚀 **High Performance**: 25-50M ops/sec encoding, 40-100M ops/sec decoding
-- ⚡ **Zero-Allocation Iteration**: Decode and iterate in-memory without allocating per data point—just read compressed bytes directly
-- 💾 **Space Efficient**: 42% smaller than raw storage with Gorilla+Delta encoding
-- 🔍 **Fast Lookups**: O(1) metric lookup via 64-bit xxHash64
-- 📊 **Columnar Storage**: Separate timestamp and value encoding for optimal compression
-- 🎯 **Flexible Encoding**: Choose between Raw, Delta, and Gorilla encodings per blob
-- 🗜️ **Optional Compression**: Zstd, S2, LZ4, or no compression
-- 🏷️ **Tag Support**: Optional metadata per data point
-- 🔋 **Low Memory Footprint**: Minimal allocations with internal buffer pooling
-- 🧵 **Thread-Safe**: Immutable blobs, safe concurrent reads
-- 🎨 **Type Support**: Numeric (float64) and text (string) metrics
-- 🗂️ **BlobSet Support**: Unified access across multiple blobs with global indexing
-- 🔗 **Shared Timestamps**: V2 encoding deduplicates identical timestamp sequences across metrics (24-73% size savings)
+**Storage format**
+- Binary blob format with compact index (16 bytes per metric entry)
+- O(1) metric lookup via 64-bit xxHash64 identifiers
+- Separate numeric (float64) and text (string) blob types
+- BlobSet: unified multi-blob access with global indexing across time windows
+
+**Encoding**
+- Timestamp encodings: Raw, Delta, DeltaPacked (Group Varint)
+- Value encodings: Raw, Gorilla (XOR), Chimp (improved XOR, VLDB 2022)
+- Optional codec compression: Zstd, S2, LZ4
+- Shared timestamps: deduplicates identical timestamp columns across metrics
+- Optional per-point tag support
+
+**Access patterns**
+- Sequential iteration: O(n), zero allocations
+- Random access by index: O(1) for Raw timestamps, O(n) for Delta/Gorilla
+- Materialized random access: O(1) ~5 ns after one-time decode cost
+- Safe concurrent reads from all decoded blob types
 
 ## Installation
 
@@ -58,29 +47,15 @@ go get github.com/arloliu/mebo
 
 **Requirements:** Go 1.24.0 or higher
 
-### Performance Tip
-
-**Enable CGO for optimized Zstd compression:**
-
-If you're using Zstd compression, enable CGO to use the high-performance C implementation:
+For Zstd compression, enable CGO for the high-performance C implementation (2-3x faster compression/decompression):
 
 ```bash
 CGO_ENABLED=1 go build
 ```
 
-This provides significant performance improvements (2-3× faster compression/decompression) compared to the pure Go implementation. The pure Go fallback is used when `CGO_ENABLED=0`.
-
 ## Quick Start
 
-**Important Note**: Mebo requires you to declare the number of data points for each metric when starting. This is because Mebo is designed for encoding **already-collected metrics** (batch processing), not for streaming/real-time ingestion. Always follow the pattern:
-
-```go
-encoder.StartMetricID(metricID, count)  // Declare: "This metric will have 'count' points"
-// ... add exactly 'count' data points ...
-encoder.EndMetric()                      // Complete: "This metric is done"
-```
-
-### Encoding Numeric Metrics
+### Encoding
 
 ```go
 package main
@@ -92,387 +67,146 @@ import (
 )
 
 func main() {
-    // Create encoder with default settings (Delta timestamps, Gorilla values)
     startTime := time.Now()
-    encoder, _ := mebo.NewDefaultNumericEncoder(startTime)
 
-    // Add "cpu.usage" metric by ID with 10 data points
-    metricID := mebo.MetricID("cpu.usage")
-    encoder.StartMetricID(metricID, 10)
+    // Create encoder with default settings (Delta timestamps, Gorilla values, no codec)
+    encoder, err := mebo.NewDefaultNumericEncoder(startTime)
+    if err != nil {
+        panic(err)
+    }
+
+    // Add "cpu.usage" metric — declare count upfront, then add exactly that many points
+    cpuID := mebo.MetricID("cpu.usage")
+    encoder.StartMetricID(cpuID, 10)
     for i := 0; i < 10; i++ {
         ts := startTime.Add(time.Duration(i) * time.Second)
         encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
     }
     encoder.EndMetric()
 
-    // Add another "process.latency" metric by name with 20 data points
-    encoder.StartMetricName(("process.latency", 20)
+    // Add "process.latency" metric by name
+    encoder.StartMetricName("process.latency", 20)
     for i := 0; i < 20; i++ {
         ts := startTime.Add(time.Duration(i) * time.Second)
-        encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), "")
+        encoder.AddDataPoint(ts.UnixMicro(), float64(i)*0.5, "")
     }
     encoder.EndMetric()
 
-    // Finish and get blob
-    blob, _ := encoder.Finish()
-    fmt.Printf("Encoded blob: %d bytes\n", len(blob.Bytes()))
+    blob, err := encoder.Finish()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Encoded: %d bytes\n", len(blob.Bytes()))
 }
 ```
 
-### Decoding Numeric Metrics
+### Decoding
 
 ```go
-// Create decoder from blob
-decoder, _ := mebo.NewNumericDecoder(blob.Bytes())
-
-// Sequential iteration (most efficient)
-metricID := mebo.MetricID("cpu.usage")
-for dp := range decoder.All(metricID) {
-    fmt.Printf("timestamp=%d, value=%f\n", dp.Ts, dp.Val)
+decoder, err := mebo.NewNumericDecoder(blob.Bytes())
+if err != nil {
+    panic(err)
+}
+decoded, err := decoder.Decode()
+if err != nil {
+    panic(err)
 }
 
-// Random access (when supported by encoding)
-value, ok := decoder.ValueAt(metricID, 5)  // Get 6th value
-timestamp, ok := decoder.TimestampAt(metricID, 5)
-```
-
-### Working with Multiple Blobs
-
-```go
-// Create blob set from time-ordered blobs
-blobSet, _ := blob.NewNumericBlobSet([]blob.NumericBlob{blob1, blob2, blob3})
-
-// Query across all blobs chronologically
-for dp := range blobSet.All(metricID) {
-    // Automatically iterates through blob1, blob2, blob3 in order
-    fmt.Printf("timestamp=%d, value=%f\n", dp.Ts, dp.Val)
+// Sequential iteration — most efficient, zero allocations
+cpuID := mebo.MetricID("cpu.usage")
+for dp := range decoded.All(cpuID) {
+    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 }
 
-// Get time range
-start, end := blobSet.TimeRange()
-fmt.Printf("Data from %s to %s\n", start, end)
+// Random access (O(1) for Raw timestamp encoding; O(n) for Delta)
+value, ok := decoded.ValueAt(cpuID, 5)
 ```
 
-### Fast Random Access with Materialization
-
-```go
-// One-time materialization cost: ~100μs per metric per blob
-materialized := blobSet.Materialize()
-
-// O(1) random access after materialization (~5ns per access)
-value, ok := materialized.ValueAt(metricID, 500)     // Very fast!
-timestamp, ok := materialized.TimestampAt(metricID, 500)
-```
-
-### Bulk Operations for Better Performance
-
-**Metric Lifecycle**: Every metric must follow the `Start → Add → End` pattern:
-
-```go
-startTime := time.Now()
-encoder, _ := mebo.NewDefaultNumericEncoder(startTime)
-metricID := mebo.MetricID("cpu.usage")
-
-// Step 1: Start metric and declare data point count
-encoder.StartMetricID(metricID, 1000)  // "I will add 1000 points"
-
-// Step 2: Add data points (single or bulk)
-// Single data point insertion (use for streaming data)
-for i := 0; i < 1000; i++ {
-    ts := startTime.Add(time.Duration(i) * time.Second)
-    value := float64(i * 10)
-    encoder.AddDataPoint(ts.UnixMicro(), value, "")  // Empty string for no tag
-}
-
-// Step 3: Complete the metric
-encoder.EndMetric()  // "I'm done with this metric"
-```
-
-**Bulk Insertion (2-3× faster)**:
-
-```go
-// Bulk insertion with AddDataPoints (more efficient for batch data)
-encoder.StartMetricID(metricID, 1000)
-timestamps := make([]int64, 1000)
-values := make([]float64, 1000)
-for i := 0; i < 1000; i++ {
-    ts := startTime.Add(time.Duration(i) * time.Second)
-    timestamps[i] = ts.UnixMicro()
-    values[i] = float64(i * 10)
-}
-encoder.AddDataPoints(timestamps, values, nil)  // nil for no tags
-encoder.EndMetric()
-
-// Bulk insertion with tags
-encoder.StartMetricID(metricID, 1000)
-// ... prepare timestamps and values same as above ...
-tags := make([]string, 1000)
-for i := 0; i < 1000; i++ {
-    tags[i] = fmt.Sprintf("host=server%d", i%10)
-}
-encoder.AddDataPoints(timestamps, values, tags)
-encoder.EndMetric()
-```
-
-**Performance Tip**: Use `AddDataPoints` for bulk operations when you have all data ready. It's 2-3× faster than individual `AddDataPoint` calls due to reduced function call overhead and better memory locality.
+For bulk insertion, multi-blob queries, materialization, tags, and custom IDs, see [Advanced Usage](docs/ADVANCED_USAGE.md).
 
 ## Performance
 
-**Benchmark Conditions:**
-- **CPU:** Intel Core i7-9700K @ 3.60GHz
-- **Go Version:** 1.24+
-- **Timestamps:** Microseconds with 1-second intervals ± 5% jitter
-- **Values:** Base 100.0, ±2% delta between consecutive points (simulates real monitoring metrics)
-- **Dataset:** 200 metrics × 250 points = 50,000 data points
-- **📊 Detailed Analysis:** See [docs/METRICS_TO_POINTS_ANALYSIS.md](docs/METRICS_TO_POINTS_ANALYSIS.md) for comprehensive ratio impact analysis
+Benchmark: 200 metrics x 200 points (40,000 total data points), AMD Ryzen 9 9950X3D, Go go1.26.0.
 
-### Compression Ratios
+| Configuration | Bytes/Point | Space Savings | Notes |
+|---------------|------------:|:-------------:|-------|
+| Shared Delta + Chimp | 6.349 | 60.5% | Best compression; requires shared timestamps |
+| Delta + Chimp | 8.302 | 48.4% | Best without shared timestamps |
+| Delta + Gorilla | 8.540 | 46.9% | Default; well-tested XOR encoding |
+| DeltaPacked + Raw | 10.244 | 36.3% | Fastest encode (476,939 ns/op) |
+| Raw + Raw | 16.081 | 0% | Baseline |
 
-| Configuration | Bytes/Point | Space Savings | Use Case |
-|--------------|-------------|---------------|----------|
-| **Delta + Gorilla + Zstd** | **9.32** | **42.0%** | 🏆 **Best overall** |
-| Delta + Gorilla | 9.65 | 39.9% | CPU-efficient |
-| Delta + Raw + Zstd | 10.04 | 37.5% | Fast random access |
-| Delta + Raw | 10.93 | 32.0% | Baseline compression |
-| Raw + Raw | 16.06 | 0% (baseline) | No compression |
-
-**Text metrics** with Zstd achieve up to **85% space savings**.
-
-### Impact of Metrics-to-Points Ratio
-
-**The ratio of metrics to points per metric is the single most important factor for compression efficiency.** Target: **<1:1 ratio** (more points than metrics).
-
-#### Compression Efficiency by Configuration
-
-Benchmark results using **Delta+Gorilla** (production default, no additional compression):
-
-**Quick Reference (200 metrics):**
-
-| Points/Metric | Total Points | Bytes/Point | Space Savings | Efficiency |
-|---------------|--------------|-------------|---------------|------------|
-| **10** | 2,000 | **12.48** | **22.0%** | ❌ Poor |
-| **100** | 20,000 | **9.81** | **38.7%** | ✅ Good |
-| **250** | 50,000 | **9.69** | **39.4%** | ✅ Optimal |
-
-**Comprehensive Results (all combinations tested):**
-
-| Configuration | Bytes/Point | Space Savings | Grade |
-|---------------|-------------|---------------|-------|
-| ❌ **Terrible**: Any × 1 point | **32-35** | Negative (worse than raw!) | ❌❌ |
-| ⚠️ **Poor**: Any × 5 points | **15.4-15.8** | Only 1-4% | ⚠️ |
-| ⚠️ **Acceptable**: Any × 10 points | **12.5-12.7** | 20-22% | ⚠️ |
-| ✅ **Good**: Any × 100 points | **9.8-9.9** | 38-39% | ✅ |
-| ✅ **Optimal**: Any × 100-250 points | **9.68-9.81** | 38-39% | ✅✅ |
-
-#### Key Insights
-
-**1. Points per metric matters 30× more than metric count**
-
-Whether you have 10 or 400 metrics, if each has 100+ points, you'll get ~9.8 bytes/point. The number of points per metric dominates compression efficiency:
-
-- **1 → 5 points**: 52% improvement
-- **5 → 10 points**: 19% improvement
-- **10 → 100 points**: 21% improvement
-- **100 → 250 points**: Only 1% improvement (diminishing returns)
-
-**2. Sweet spot: 100-250 points per metric**
-
-After 100 points, compression efficiency plateaus. Further increases provide minimal benefit.
-
-**3. Minimum threshold: 10 points per metric**
-
-Below 10 points, fixed overhead dominates and compression becomes inefficient.
-
-#### Why More Points = Better Compression
-
-1. **Fixed overhead amortization**: Each metric has fixed costs (metric ID, index entry, flags, metadata) totaling ~34-44 bytes. With more points, this overhead is spread across more data.
-2. **Better pattern detection**: Delta and Gorilla encoding work better with larger datasets to identify and exploit patterns.
-3. **Reduced metadata ratio**: Index size grows linearly with metric count, but compression benefits scale with total data points.
-
-#### Practical Recommendations
-
-**✅ DO: Optimal Configurations**
-
-| Scenario | Configuration | Result |
-|----------|--------------|---------|
-| **Best Practice** | 100-250 points/metric | 9.68-9.81 bytes/point (38-39% savings) |
-| **Minimum Acceptable** | 10+ points/metric | 12.46-12.74 bytes/point (20-22% savings) |
-| **Target Ratio** | <1:1 (metrics:points) | Ensures good compression |
-
-**Example**: 100 metrics × 100 points (1:1) = 9.81 bytes/point ✅
-
-**❌ DON'T: Anti-Patterns**
-
-| Scenario | Configuration | Result | Why It Fails |
-|----------|--------------|---------|-------------|
-| **Never use** | Any × 1 point | 32+ bytes/point | All overhead, no compression |
-| **Avoid** | Any × 5 points | 15.4-15.8 bytes/point | Only 1-4% savings |
-| **Avoid high ratios** | 500 metrics × 5 points | ~15.5 bytes/point | Poor compression |
-
-#### Real-World Use Cases
-
-**Scenario 1: Real-time Dashboard (1-minute windows)**
-- ❌ Bad: 500 metrics × 6 points (10-second intervals) = ~15.5 bytes/point
-- ✅ Good: 500 metrics × 60 points (1-second intervals) = ~9.7 bytes/point
-- **Recommendation**: Collect at higher frequency (1Hz) for better compression
-
-**Scenario 2: Long-term Storage (1-hour windows)**
-- ❌ Bad: 1000 metrics × 12 points (5-minute intervals) = ~12.5 bytes/point
-- ✅ Good: 1000 metrics × 60 points (1-minute intervals) = ~9.8 bytes/point
-- ✅ Better: 1000 metrics × 360 points (10-second intervals) = ~9.7 bytes/point
-- **Recommendation**: Store higher resolution data, compression makes it cheaper
-
-**Scenario 3: Sparse Metrics**
-- ❌ Bad: 1000 metrics × 2 points (only start/end) = ~20+ bytes/point
-- ✅ Workaround: Batch multiple time windows together
-  - Instead of: 10 blobs × (1000 metrics × 2 points)
-  - Do: 1 blob × (1000 metrics × 20 points)
-- **Recommendation**: Accumulate before encoding
-
-> 📊 **Comprehensive Analysis:** For detailed benchmarks covering 20 different combinations of metric counts (10/100/200/400) and point sizes (1/5/10/100/250), including ratio analysis and practical recommendations, see [docs/METRICS_TO_POINTS_ANALYSIS.md](docs/METRICS_TO_POINTS_ANALYSIS.md).
-
-### Encoding Performance
-
-| Operation | Speed | Latency | Notes |
-|-----------|-------|---------|-------|
-| Timestamp (Delta) | ~25M ops/sec | ~40 ns/op | 60-87% compression |
-| Numeric (Gorilla) | ~25M ops/sec | ~40 ns/op | 70-85% compression |
-| Text (Zstd) | ~20M ops/sec | ~50 ns/op | High compression |
-| Tag encoding | ~20M ops/sec | ~50 ns/op | Optional metadata |
-
-### Decoding Performance
-
-**🔥 Hot Feature: Zero-Allocation In-Memory Iteration** — Mebo decodes compressed data on-the-fly without allocating memory per data point. Just read bytes directly from the blob!
-
-| Operation | Speed | Latency | Notes |
-|-----------|-------|---------|-------|
-| Sequential (Delta) | ~40M ops/sec | ~25 ns/op | Zero allocation, in-memory decode |
-| Sequential (Gorilla) | ~50M ops/sec | ~20 ns/op | Zero allocation, less memory bandwidth |
-| Random access (Raw) | ~100M ops/sec | ~10 ns/op | O(1) access |
-| Random access (Delta) | Varies | O(n) | Must scan from start |
-| Materialized access | ~200M ops/sec | ~5 ns/op | Direct array indexing (allocates once) |
-
-### Materialization
-
-- **Cost**: ~100 μs per metric per blob (one-time)
-- **Memory**: ~16 bytes/point (numeric), ~24 bytes/point (text)
-- **Access**: O(1), ~5 ns per access
-- **Speedup**: 820× faster than decoding for random access patterns
-
-### Mebo vs FlatBuffers
-
-Comprehensive benchmarks with 200 metrics × 250 points (50,000 data points):
-
-**Benchmark Conditions:**
-- **CPU:** Intel Core i7-9700K @ 3.60GHz
-- **Timestamps:** Microseconds with 1-second intervals ± 5% jitter
-- **Values:** Base 100.0, ±2% delta between consecutive points (simulates real monitoring metrics)
-
-#### Space Efficiency
-
-| Format | Bytes/Point | Space Savings | Winner |
-|--------|-------------|---------------|--------|
-| **Mebo (Delta + Gorilla + Zstd)** | **9.32** | **42.0%** | 🏆 |
-| Mebo (Delta + Gorilla) | 9.65 | 39.9% | ✓ |
-| FlatBuffers + Zstd | ~11-12 | ~30% (est.) | |
-| Mebo (Raw) | 16.06 | 0% (baseline) | |
-
-**Result**: Mebo achieves **10-15% better compression** than FlatBuffers with comparable settings.
-
-#### Read Performance (Decode + Iterate All Data)
-
-| Format | Total Time | Winner |
-|--------|------------|--------|
-| **Mebo (Delta + Gorilla)** | **523 μs** | 🏆 **2.6× faster** |
-| Mebo (Raw + Gorilla) | 374 μs | 🏆 **3.6× faster** |
-| Mebo (Delta + Gorilla + Zstd) | 999 μs | ✓ **2.4× faster** |
-| FlatBuffers + Zstd | 2,377 μs | |
-| FlatBuffers (no compression) | 1,337 μs | |
-
-**Result**: Mebo is **2.4-3.6× faster** for reading and iterating data, even with compression enabled.
-
-#### Why Mebo Outperforms FlatBuffers
-
-1. **Zero-Allocation In-Memory Iteration**: Decode compressed data on-the-fly without allocating memory per data point. Just read bytes directly from the blob—no deserialization overhead!
-
-2. **Highly Optimized Gorilla Encoding**: Compressed values iterate faster than uncompressed due to:
-   - Less memory bandwidth (smaller data transfers)
-   - Better CPU cache utilization (more values per cache line)
-   - Fast XOR-based decompression (~20ns per value)
-
-3. **Columnar Storage**: Separate timestamp/value encoding enables:
-   - Independent compression strategies
-   - Better compression ratios per data type
-   - More efficient iteration patterns
-
-3. **Optimized for Time-Series**: Purpose-built for metric data with:
-   - Delta-of-delta timestamp compression
-   - Value redundancy elimination (Gorilla)
-   - Specialized for monitoring use cases
-
-**Key Insight**: Mebo's counter-intuitive result - Gorilla-compressed data (358 μs) iterates **2.3× faster** than raw uncompressed data (816 μs) due to reduced memory bandwidth requirements.
-
-**See detailed benchmarks**: [Full Benchmark Report](tests/fbs_compare/BENCHMARK_REPORT.md)
+- Full benchmark tables, scaling analysis, and decision tree: [Performance Guide](docs/PERFORMANCE_V2.md)
+- Mebo vs FlatBuffers head-to-head: [Comparison](docs/COMPARISON_FLATBUFFERS.md)
 
 ## Encoding Strategies
 
 ### Timestamp Encodings
 
-**Raw Encoding** - No compression (8 bytes/timestamp)
-- Use when: Random access required, irregular timestamps
-- Performance: O(1) access, ~10 ns decoding
+| Encoding | Size | Access | Best for |
+|----------|------|--------|----------|
+| Raw | 8 bytes fixed | O(1) | Irregular timestamps, random access needed |
+| Delta | 1–5 bytes | O(n) | Regular intervals (monitoring, 1-second cadence) |
+| DeltaPacked | 1–5 bytes | O(n) | Regular intervals; faster bulk decode via Group Varint |
 
-**Delta Encoding** - Delta-of-delta compression (1-5 bytes/timestamp)
-- Use when: Regular intervals (monitoring, metrics)
-- Compression: 60-87% space savings
-- Performance: O(n) access, ~25 ns decoding
+Delta and DeltaPacked produce similar compression ratios (~2% difference). Use DeltaPacked when iteration throughput matters more than encoding speed.
 
 ### Value Encodings
 
-**Raw Encoding** - No compression (8 bytes/value)
-- Use when: Rapidly changing values, random access required
-- Performance: O(1) access, ~10 ns decoding
-
-**Gorilla Encoding** - Facebook's XOR compression (1-8 bytes/value)
-- Use when: Slowly changing values (CPU, memory, temperature)
-- Compression: 70-85% typical, up to 99.98% for unchanged values
-- Performance: O(n) access, ~20 ns decoding
-- Best for: Typical monitoring metrics
+| Encoding | Size | Best for |
+|----------|------|----------|
+| Raw | 8 bytes fixed | Rapidly changing values, random access |
+| Gorilla | 1–8 bytes | Slowly changing values (CPU, memory); XOR-based, VLDB 2015 |
+| Chimp | 1–8 bytes | Same as Gorilla; ~2.9% better compression; VLDB 2022 |
 
 ### Compression Algorithms
 
-| Algorithm | Ratio | Speed | Latency | Best For |
-|-----------|-------|-------|---------|----------|
-| **None** | 1.0× | Fastest | 0 μs | CPU-constrained, pre-compressed data |
-| **LZ4** | 1.3-2.0× | Very Fast | 0.1-0.3 ms | Query-heavy, low-latency |
-| **S2** | 1.5-2.5× | Fast | 0.2-0.5 ms | Balanced, real-time ingestion |
-| **Zstd** | 2.0-4.0× | Moderate | 0.5-2 ms | Storage-constrained, cold storage |
+Mebo's encoding algorithms achieve 46–60% savings without any codec. Codec compression adds CPU overhead on both encode and decode for minimal additional benefit on already-compressed numeric data.
+
+| Algorithm | Additional ratio | Best for |
+|-----------|-----------------|----------|
+| None | — | Default; numeric data already well-compressed |
+| Zstd | ~5% on top | Cold storage where decode latency is acceptable |
+| S2 | ~2% on top | Balanced; faster than Zstd |
+| LZ4 | ~1% on top | Fast decompression priority |
 
 ## Configuration Examples
 
-### High Compression (Storage-Optimized)
+### Best Compression (Shared Timestamps + Delta + Chimp)
 
 ```go
 encoder, _ := mebo.NewNumericEncoder(time.Now(),
     blob.WithTimestampEncoding(format.TypeDelta),
-    blob.WithTimestampCompression(format.CompressionZstd),
-    blob.WithValueEncoding(format.TypeGorilla),
-    blob.WithValueCompression(format.CompressionZstd),
+    blob.WithValueEncoding(format.TypeChimp),
+    blob.WithSharedTimestamps(),
 )
 ```
 
-**Result**: 9.32 bytes/point (42% savings), best compression ratio, but the decode+iteration slower than no compression.
+**Result**: 6.349 bytes/point (60.5% savings) when metrics share the same sampling schedule.
 
-### Balanced (Production Default)
+All consumers must be upgraded to a Mebo version that supports V2 decoding **before** enabling this on producers. See [Best Practices](docs/BEST_PRACTICES.md#shared-timestamps-upgrade-consumers-before-producers).
+
+### Balanced Default (Delta + Gorilla)
 
 ```go
 encoder, _ := mebo.NewDefaultNumericEncoder(time.Now())
 ```
 
-**Configuration**: Delta timestamps (no compression), Gorilla values (no compression)
-**Result**: 9.65 bytes/point (40% savings), minimal CPU overhead, compression ratio very close to zstd.
+**Configuration**: Delta timestamps, Gorilla values, no codec compression.
+**Result**: 8.540 bytes/point (46.9% savings). Recommended for most workloads.
 
-### Fast Access (Query-Optimized)
+### Best Encode Speed (DeltaPacked + Raw)
+
+```go
+encoder, _ := mebo.NewNumericEncoder(time.Now(),
+    blob.WithTimestampEncoding(format.TypeDeltaPacked),
+    blob.WithValueEncoding(format.TypeRaw),
+)
+```
+
+**Result**: 10.244 bytes/point (36.3% savings), fastest encoding throughput (476,939 ns/op for 200×200 dataset).
+
+### Query-Optimized (Raw + Raw)
 
 ```go
 encoder, _ := mebo.NewNumericEncoder(time.Now(),
@@ -481,7 +215,7 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 16.06 bytes/point (no compression), O(1) random access
+**Result**: 16.081 bytes/point, O(1) random access to both timestamps and values.
 
 ### Text Metrics
 
@@ -489,148 +223,8 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 encoder, _ := mebo.NewDefaultTextEncoder(time.Now())
 ```
 
-**Configuration**: Delta timestamps, Zstd compression
-**Result**: 8.71 bytes/point (85% savings for typical text)
-
-### Shared Timestamps (Space-Optimized)
-
-```go
-encoder, _ := mebo.NewNumericEncoder(time.Now(),
-    blob.WithTimestampEncoding(format.TypeDelta),
-    blob.WithValueEncoding(format.TypeGorilla),
-    blob.WithSharedTimestamps(),
-)
-```
-
-**Configuration**: V2 format with shared timestamp deduplication
-**Result**: 24-73% smaller blobs when many metrics share the same collection timestamps
-
-When enabled, the encoder detects metrics with identical timestamp sequences and stores the timestamps only once. This is ideal for monitoring workloads where all metrics are collected at the same intervals.
-
-**Important**: All consumers must be upgraded to a mebo version that supports V2 decoding **before** enabling this on producers. The decoder accepts both V1 and V2 formats, so upgrade consumers first, then enable this option on producers.
-
-> 📖 See [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md) for detection algorithm, binary format, decode cache, and performance analysis.
-
-## Advanced Usage
-
-### BlobSet: Unified Multi-Blob Access
-
-**BlobSet** represents a collection of blobs (both numeric and text) sorted by start time. It provides unified access to data points across multiple blobs with **global indexing**, making it easy to query metrics that span multiple time windows.
-
-**Key Features:**
-- 🔄 **Automatic sorting** by start time for chronological iteration
-- 🌍 **Global indexing** across all blobs (index 0-N spans all blobs)
-- 🎯 **Type-safe access** with separate numeric and text blob storage
-- ⚡ **Zero-allocation iteration** across blob boundaries
-- 🔍 **Random access** using global indices
-
-**Performance optimization:**
-- Numeric and text blobs stored separately for better CPU cache locality
-- Type-specific queries skip irrelevant blobs (no type assertions)
-- Generic queries check numeric first (95% of typical workloads)
-
-#### Basic Multi-Blob Queries
-
-```go
-// Create blobs for different time windows
-blob1, _ := createBlobForHour(startTime, 0, "cpu.usage", "memory.used")
-blob2, _ := createBlobForHour(startTime, 1, "cpu.usage", "memory.used")
-blob3, _ := createBlobForHour(startTime, 2, "cpu.usage", "memory.used")
-
-// Create blob set (automatically sorted by start time)
-blobSet, _ := blob.NewNumericBlobSet([]blob.NumericBlob{blob3, blob1, blob2})
-
-// Query seamlessly across all time windows
-cpuID := hash.ID("cpu.usage")
-for dp := range blobSet.All(cpuID) {
-    fmt.Printf("CPU at %s: %.2f%%\n", time.Unix(0, dp.Ts*1000), dp.Val)
-}
-```
-
-#### Mixed Numeric and Text Blobs
-
-```go
-// Create BlobSet with both numeric and text blobs
-blobSet := blob.NewBlobSet(
-    []blob.NumericBlob{numericBlob1, numericBlob2},
-    []blob.TextBlob{textBlob1, textBlob2},
-)
-
-// Iterate numeric metrics with global indices
-for index, dp := range blobSet.AllNumerics(metricID) {
-    fmt.Printf("Global index %d: ts=%d, val=%f\n", index, dp.Ts, dp.Val)
-}
-
-// Iterate text metrics with global indices
-for index, dp := range blobSet.AllTexts(metricID) {
-    fmt.Printf("Global index %d: ts=%d, val=%s\n", index, dp.Ts, dp.Val)
-}
-```
-
-#### Global Index Random Access
-
-```go
-// Global index spans all blobs in the set
-// If blob1 has 100 points and blob2 has 150 points:
-// - Index 0-99 accesses blob1
-// - Index 100-249 accesses blob2
-
-value, ok := blobSet.NumericValueAt(metricID, 150)  // Accesses blob2 at local index 50
-timestamp, ok := blobSet.TimestampAt(metricID, 50)   // Accesses blob1 at local index 50
-
-// Complete data point access
-dp, ok := blobSet.NumericAt(metricID, 125)  // Returns NumericDataPoint with ts, val, tag
-```
-
-#### Materialization for Fast Random Access
-
-```go
-// Materialize numeric metrics for O(1) random access
-matNumeric := blobSet.MaterializeNumeric()
-val, ok := matNumeric.ValueAt(metricID, 150)  // ~5ns (O(1), direct array indexing)
-
-// Materialize text metrics separately
-matText := blobSet.MaterializeText()
-textVal, ok := matText.ValueAt(metricID, 75)  // ~5ns (O(1), direct array indexing)
-```
-
-#### Tags Support
-
-```go
-startTime := time.Now()
-metricID := mebo.MetricID("cpu.usage")
-
-// Enable tags in encoder
-encoder, _ := mebo.NewNumericEncoder(startTime,
-    blob.WithTagsEnabled(true),
-)
-// Or use factory function
-// encoder, _ := mebo.NewTaggedNumericEncoder(startTime)
-
-// Add tagged values
-encoder.StartMetricID(metricID, 10)
-for i := 0; i < 10; i++ {
-    ts := startTime.Add(time.Duration(i) * time.Second)
-    encoder.AddDataPoint(ts.UnixMicro(), float64(i*10), fmt.Sprintf("host=server%d", i%3))
-}
-encoder.EndMetric()
-
-// Read tags during decoding
-for dp := range decoder.AllWithTags(metricID) {
-    fmt.Printf("value=%f, tag=%s\n", dp.Val, dp.Tag)
-}
-```
-
-### Custom Hash IDs
-
-```go
-// Use numeric IDs directly (if you have your own hash scheme)
-var metricID uint64 = 12345678
-encoder.StartMetricID(metricID, 100)
-
-// Or use string names (automatically hashed with xxHash64)
-metricID = mebo.MetricID("cpu.usage")  // Returns uint64
-```
+**Configuration**: Delta timestamps, Zstd compression on text data (string values compress far more than floats).
+**Result**: Up to 85% savings for typical log-level or status text.
 
 ## Architecture
 
@@ -651,7 +245,7 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 │ encoding package   │    │ compress package   │
 │  (Columnar algos)  │    │  (Zstd, S2, LZ4)   │
 │ Delta, Gorilla,    │    │                    │
-│ Raw, VarString     │    │                    │
+│ Chimp, DeltaPacked │    │                    │
 └────────────────────┘    └────────────────────┘
          │                          │
          └───────────┬──────────────┘
@@ -663,160 +257,90 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
          └───────────────────────┘
 ```
 
-### Package Overview
-
-- **mebo**: Top-level convenience API
-- **blob**: High-level encoders/decoders, blob management
-- **encoding**: Low-level columnar encoding algorithms
-- **compress**: Compression layer (Zstd, S2, LZ4)
-- **section**: Binary format structures and constants
-- **format**: Type definitions and constants
+| Package | Responsibility |
+|---------|---------------|
+| `mebo` | Top-level convenience API and `MetricID` helper |
+| `blob` | High-level encoders, decoders, and BlobSet management |
+| `encoding` | Columnar encoding algorithms (Delta, DeltaPacked, Gorilla, Chimp, Raw) |
+| `compress` | Codec compression layer (Zstd, S2, LZ4) |
+| `section` | Binary format structures, headers, index |
+| `format` | Encoding and compression type constants |
 
 ## Best Practices
 
-1. **Always declare data point count**: Call `StartMetricID(id, count)` or `StartMetricName(name, count)` with accurate count, then call `EndMetric()` after adding exactly that many points. This is required for Mebo's batch processing design.
-2. **Collect before encoding**: Gather all metric data in memory first, then encode in batches. Mebo is designed for batch processing, not streaming ingestion.
-3. **Choose appropriate encoding**: Delta for regular intervals, Gorilla for slowly-changing values, Raw for random access needs.
-4. **Batch metrics**: Group related metrics in the same blob for better compression (e.g., all metrics from one time window).
-5. **Use bulk operations**: Call `AddDataPoints` instead of multiple `AddDataPoint` calls when you have all data ready (2-3× faster).
-6. **Pre-allocate accurately**: Accurate count in `StartMetricID` enables buffer pre-allocation and better performance.
-7. **Optimize metrics-to-points ratio**: Each metric should contain at least **10 data points**, with **100-250 points** being optimal. Target **<1:1 ratio** (more points than metrics) for best compression. See [Impact of Metrics-to-Points Ratio](#impact-of-metrics-to-points-ratio) section for detailed analysis.
-8. **Use blob sets**: For multi-blob queries, blob sets are more efficient than manual iteration.
-9. **Materialize wisely**: Only materialize when random access pattern justifies the cost (>100 accesses).
-10. **Monitor memory**: Materialization can use significant memory for large datasets (~16 bytes/point).
-11. **Use tags judiciously**: Tags add 8-16 bytes overhead per point; only enable when needed.
-12. **Enable shared timestamps**: When most metrics share the same collection schedule, use `WithSharedTimestamps()` for 24-73% size savings with minimal decode overhead (~5-11%). Upgrade all consumers to V2-capable versions before enabling on producers. See [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md).
-13. **Profile your workload**: Test different configurations with your actual data to find optimal settings.
+The four most important rules:
+
+1. **Declare the point count upfront** — `StartMetricID(id, count)` must be called before adding any points. This is required, not optional.
+2. **Batch before encoding** — collect all metric data in memory first; Mebo compresses complete sequences, not streams.
+3. **Target 50–200 points per metric** — below 10 points, fixed per-metric overhead dominates and compression degrades sharply.
+4. **Upgrade consumers before enabling shared timestamps** — the V2 decoder reads both V1 and V2 blobs; the V1 decoder cannot read V2 blobs.
+
+For full guidance on encoding selection, materialization thresholds, tags overhead, and operational deployment, see [Best Practices](docs/BEST_PRACTICES.md).
 
 ## Thread Safety
 
-- ✅ **Encoders**: Not thread-safe. Use one encoder per goroutine.
-- ✅ **Decoders**: Safe for concurrent reads from different goroutines.
-- ✅ **Blobs**: Immutable and thread-safe once created.
-- ✅ **BlobSets**: Safe for concurrent reads.
-- ✅ **MaterializedBlobSets**: Safe for concurrent reads.
+| Object | Thread safety |
+|--------|--------------|
+| Encoders | Not thread-safe. Use one encoder per goroutine. |
+| Blobs | Immutable and safe for concurrent reads. |
+| Decoders | Safe for concurrent reads from multiple goroutines. |
+| BlobSets | Safe for concurrent reads. |
+| MaterializedBlobSets | Safe for concurrent reads. |
 
 ## Stability & Versioning
 
-Mebo follows [Semantic Versioning 2.0.0](https://semver.org/):
+Mebo follows [Semantic Versioning 2.0.0](https://semver.org/).
 
-- **v1.x.x**: Current stable release with API stability guarantees
-- **MAJOR** (v2.0.0): Breaking changes (incompatible API changes)
-- **MINOR** (v1.x.0): New features (backward compatible)
-- **PATCH** (v1.0.x): Bug fixes (backward compatible)
+**Stable packages** (backward compatible within major version):
+- `github.com/arloliu/mebo`
+- `github.com/arloliu/mebo/blob`
+- `github.com/arloliu/mebo/compress`
+- `github.com/arloliu/mebo/encoding`
+- `github.com/arloliu/mebo/endian`
+- `github.com/arloliu/mebo/section`
+- `github.com/arloliu/mebo/errs`
 
-### API Stability Guarantee
+**Internal packages** (`internal/*`): no stability guarantee.
 
-All public APIs in stable packages are **guaranteed backward compatible** within the same major version:
-
-**Stable Packages** (v1.x+):
-- ✅ `github.com/arloliu/mebo` (root package)
-- ✅ `github.com/arloliu/mebo/blob`
-- ✅ `github.com/arloliu/mebo/compress`
-- ✅ `github.com/arloliu/mebo/encoding`
-- ✅ `github.com/arloliu/mebo/endian`
-- ✅ `github.com/arloliu/mebo/section`
-- ✅ `github.com/arloliu/mebo/errs`
-
-**Internal Packages** (No Stability Guarantee):
-- ⚠️ `github.com/arloliu/mebo/internal/*` - Implementation details, may change
-
-### Deprecation Policy
-
-- Deprecated features are maintained for **at least 2 minor versions**
-- All deprecations are documented with alternatives in godoc
-- Breaking removals only occur in major version bumps
-
-For full details, see [API_STABILITY.md](API_STABILITY.md).
-
-### Contributing
-
-We welcome contributions! Before starting:
-
-1. Read [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines
-2. Check [API_STABILITY.md](API_STABILITY.md) for API compatibility rules
-3. Review [SECURITY.md](SECURITY.md) for security considerations
-
-**Quick Contribution Checklist:**
-- ✅ Run `make lint` (uses golangci-lint v2.5.0)
-- ✅ Run `make test` (all tests must pass)
-- ✅ Run `make coverage` (aim for >80% coverage)
-- ✅ Update documentation and examples
-- ✅ Follow Go style guidelines and conventions
+Deprecated features are maintained for at least 2 minor versions before removal. For full details, see [API_STABILITY.md](API_STABILITY.md).
 
 ## Documentation
 
-- 📚 [API Documentation](https://pkg.go.dev/github.com/arloliu/mebo)
-- 📖 [Design Document](docs/DESIGN.md)
-- 🔗 [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md)
-- 🧪 [Benchmark Report](docs/PERFORMANCE_V2.md)
-- 💡 [Examples](examples/)
-  - [Blob Set Demo](examples/blob_set_demo/) - Multi-blob queries and materialization
+- [API Reference](https://pkg.go.dev/github.com/arloliu/mebo)
+- [Performance Guide](docs/PERFORMANCE_V2.md) — full benchmark tables and scaling analysis
+- [Advanced Usage](docs/ADVANCED_USAGE.md) — BlobSet, materialization, tags, bulk insertion
+- [Best Practices](docs/BEST_PRACTICES.md) — encoding selection, operational guidance
+- [FlatBuffers Comparison](docs/COMPARISON_FLATBUFFERS.md) — head-to-head benchmark
+- [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md) — V2 format and deployment
+- [Design Document](docs/DESIGN.md)
+- [Examples](examples/)
 
 ## Contributing
 
-We welcome contributions of all kinds! See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
-**Quick Start for Contributors:**
-
-1. **Fork and clone** the repository
-2. **Install tools**: Go 1.23+, golangci-lint v2.5.0
-3. **Make changes** following our coding standards
-4. **Run checks**:
-   ```bash
-   make lint    # Check code quality
-   make test    # Run all tests
-   make coverage # Check test coverage (>80%)
-   ```
-5. **Submit PR** with clear description
-
-**Development Resources:**
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Full contribution guide
-- [API_STABILITY.md](API_STABILITY.md) - API compatibility rules
-- [SECURITY.md](SECURITY.md) - Security policy and reporting
-
-## Testing
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting. The short checklist:
 
 ```bash
-# Run all tests
-make test
-
-# Run linters
-make lint
+make lint     # golangci-lint
+make test     # all tests must pass
+make coverage # target >80%
 ```
 
-### Numeric Gorilla Decoder Benchmarks
-
-Automate baseline-versus-current comparisons for the Numeric Gorilla decoder:
-
-```bash
-make bench-gorilla-decoder BASELINE=HEAD~1
-```
-
-Optional variables:
-
-- `COUNT` – number of benchmark iterations (default: 10)
-- `OUTPUT` – directory to store results (default: `.benchmarks/<timestamp>`)
-- `EXTRA_FLAGS` – additional script flags (e.g., `--cpuprofile --memprofile`)
-
-The command wraps `scripts/bench_numeric_gorilla_decoder.sh` and now emits text (`comparison.txt`), CSV (`comparison.csv`), and markdown (`comparison.md`) summaries alongside the raw runs. Add `--cpuprofile` / `--memprofile` through `EXTRA_FLAGS` when deeper analysis is needed.
+See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 
 ## Dependencies
 
-Mebo uses minimal, well-maintained dependencies:
-
-- [cespare/xxhash](https://github.com/cespare/xxhash) - Fast hash function
-- [klauspost/compress](https://github.com/klauspost/compress) - S2 and Zstd compression
-- [pierrec/lz4](https://github.com/pierrec/lz4) - LZ4 compression
-- [valyala/gozstd](https://github.com/valyala/gozstd) - Fast CGO-based Zstd
+- [cespare/xxhash](https://github.com/cespare/xxhash) — fast non-cryptographic hash
+- [klauspost/compress](https://github.com/klauspost/compress) — S2 and Zstd
+- [pierrec/lz4](https://github.com/pierrec/lz4) — LZ4
+- [valyala/gozstd](https://github.com/valyala/gozstd) — CGO-based Zstd
 
 ## License
 
-This project is licensed under the Apache License - see the [LICENSE](LICENSE) file for details.
+Apache License — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
-- **Gorilla compression** algorithm from Facebook's [Gorilla paper](http://www.vldb.org/pvldb/vol8/p1816-teller.pdf) (VLDB 2015)
-- **Chimp compression** algorithm from the [CHIMP paper](https://www.vldb.org/pvldb/vol15/p3058-liakos.pdf) (VLDB 2022)
-- **Delta-of-delta encoding** inspiration from time-series databases
-- **xxHash64** from [Yann Collet](https://github.com/Cyan4973/xxHash)
+- Gorilla compression algorithm — [Facebook/Gorilla paper](http://www.vldb.org/pvldb/vol8/p1816-teller.pdf), VLDB 2015
+- Chimp compression algorithm — [CHIMP paper](https://www.vldb.org/pvldb/vol15/p3058-liakos.pdf), VLDB 2022
+- Delta-of-delta encoding — inspiration from InfluxDB and Prometheus storage engines
+- xxHash64 — [Yann Collet](https://github.com/Cyan4973/xxHash)

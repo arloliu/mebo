@@ -378,6 +378,22 @@ func BenchmarkEncoder(b *testing.B) {
 - Report allocations: `b.ReportAllocs()`
 - Run with: `make bench`
 
+### Numeric Gorilla Decoder Benchmarks
+
+To compare baseline versus current performance for the Numeric Gorilla decoder:
+
+```bash
+make bench-gorilla-decoder BASELINE=HEAD~1
+```
+
+Optional variables:
+
+- `COUNT` — number of benchmark iterations (default: 10)
+- `OUTPUT` — directory to store results (default: `.benchmarks/<timestamp>`)
+- `EXTRA_FLAGS` — additional flags (e.g. `--cpuprofile --memprofile`)
+
+The command wraps `scripts/bench_numeric_gorilla_decoder.sh` and emits text (`comparison.txt`), CSV (`comparison.csv`), and markdown (`comparison.md`) summaries alongside the raw runs.
+
 ## Pull Request Process
 
 ### Before Submitting

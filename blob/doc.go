@@ -51,7 +51,7 @@
 //
 //	// 5. (Optional) Start another metric
 //	// Add another "process.latency" metric by name with 20 data points
-//	encoder.StartMetricName(("process.latency", 20)
+//	encoder.StartMetricName("process.latency", 20)
 //
 //	// 6. Write data points for the new metric
 //	for i := 0; i < 20; i++ {
