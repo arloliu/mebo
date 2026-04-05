@@ -184,7 +184,7 @@ func NewDefaultNumericEncoder(startTime time.Time) (*blob.NumericEncoder, error)
 //	    encoder.AddDataPoint(ts.UnixMicro(), 42.0+float64(i), "host=server1")
 //	}
 func NewTaggedNumericEncoder(startTime time.Time, opts ...blob.NumericEncoderOption) (*blob.NumericEncoder, error) {
-	allOpts := append(append(opts, defaultNumericOptions...), blob.WithTagsEnabled(true))
+	allOpts := append(append(defaultNumericOptions, blob.WithTagsEnabled(true)), opts...)
 	return blob.NewNumericEncoder(startTime, allOpts...)
 }
 
@@ -316,7 +316,7 @@ func NewDefaultTextEncoder(startTime time.Time) (*blob.TextEncoder, error) {
 //	    encoder.AddDataPoint(ts.UnixMicro(), "ERROR", "service=api")
 //	}
 func NewTaggedTextEncoder(startTime time.Time, opts ...blob.TextEncoderOption) (*blob.TextEncoder, error) {
-	allOpts := append(append(opts, defaultTextOptions...), blob.WithTextTagsEnabled(true))
+	allOpts := append(append(defaultTextOptions, blob.WithTextTagsEnabled(true)), opts...)
 	return blob.NewTextEncoder(startTime, allOpts...)
 }
 
