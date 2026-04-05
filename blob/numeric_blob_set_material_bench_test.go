@@ -273,3 +273,116 @@ func createEncodedBlobs(
 
 	return blobs, nil
 }
+
+// createSparseEncodedBlobs creates blobs where each blob covers only a subset of the total
+// metrics (metricsPerBlob out of totalMetrics), cycling through the full set across blobs.
+// This simulates the common scenario where metrics are not uniformly present in every blob.
+func createSparseEncodedBlobs(
+	numBlobs int,
+	totalMetrics int,
+	metricsPerBlob int,
+	pointsPerMetric int,
+	tsEncoding format.EncodingType,
+	valEncoding format.EncodingType,
+) ([]NumericBlob, error) {
+	blobs := make([]NumericBlob, numBlobs)
+	baseTime := time.Now()
+
+	for blobIdx := range numBlobs {
+		startTime := baseTime.Add(time.Duration(blobIdx) * time.Hour)
+		encoder, err := NewNumericEncoder(
+			startTime,
+			WithTimestampEncoding(tsEncoding),
+			WithValueEncoding(valEncoding),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		startMetric := (blobIdx * metricsPerBlob) % totalMetrics
+		for j := range metricsPerBlob {
+			m := (startMetric + j) % totalMetrics
+			metricName := "metric_" + string(rune('A'+m%26)) + "_" + string(rune('0'+m/26))
+
+			if err := encoder.StartMetricName(metricName, pointsPerMetric); err != nil {
+				return nil, err
+			}
+
+			for i := range pointsPerMetric {
+				ts := int64(blobIdx*1000000 + i*1000)
+				val := float64(i) + float64(m)*100 + float64(blobIdx)*10000
+				if err := encoder.AddDataPoint(ts, val, ""); err != nil {
+					return nil, err
+				}
+			}
+
+			if err := encoder.EndMetric(); err != nil {
+				return nil, err
+			}
+		}
+
+		blobBytes, err := encoder.Finish()
+		if err != nil {
+			return nil, err
+		}
+
+		decoder, err := NewNumericDecoder(blobBytes)
+		if err != nil {
+			return nil, err
+		}
+
+		blob, err := decoder.Decode()
+		if err != nil {
+			return nil, err
+		}
+
+		blobs[blobIdx] = blob
+	}
+
+	return blobs, nil
+}
+
+// BenchmarkNumericBlobSetMaterialize_Sparse measures materialization performance when
+// different blobs cover different metric subsets (sparse coverage scenario).
+func BenchmarkNumericBlobSetMaterialize_Sparse(b *testing.B) {
+	benchmarks := []struct {
+		name            string
+		numBlobs        int
+		totalMetrics    int
+		metricsPerBlob  int
+		pointsPerMetric int
+		tsEncoding      format.EncodingType
+		valEncoding     format.EncodingType
+	}{
+		{"20Blobs_150Total_10PerBlob_Delta", 20, 150, 10, 100, format.TypeDelta, format.TypeGorilla},
+		{"20Blobs_150Total_30PerBlob_Delta", 20, 150, 30, 100, format.TypeDelta, format.TypeGorilla},
+		{"10Blobs_50Total_10PerBlob_Delta", 10, 50, 10, 100, format.TypeDelta, format.TypeGorilla},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			blobs, err := createSparseEncodedBlobs(
+				bm.numBlobs,
+				bm.totalMetrics,
+				bm.metricsPerBlob,
+				bm.pointsPerMetric,
+				bm.tsEncoding,
+				bm.valEncoding,
+			)
+			if err != nil {
+				b.Fatalf("Failed to create blobs: %v", err)
+			}
+
+			set, err := NewNumericBlobSet(blobs)
+			if err != nil {
+				b.Fatalf("Failed to create BlobSet: %v", err)
+			}
+
+			b.ResetTimer()
+			for b.Loop() {
+				mat := set.Materialize()
+				_ = mat
+			}
+		})
+	}
+}

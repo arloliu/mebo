@@ -1,5 +1,7 @@
 package blob
 
+import "github.com/arloliu/mebo/section"
+
 // materializedTextMetricSet holds the materialized data for a single metric across all blobs.
 type materializedTextMetricSet struct {
 	timestamps []int64  // Flattened timestamps across all blobs
@@ -51,45 +53,34 @@ type materializedTextMetricSet struct {
 //   - Memory is constrained
 //   - You're only accessing a few data points
 func (s *TextBlobSet) Materialize() MaterializedTextBlobSet {
+	if len(s.blobs) == 0 {
+		return MaterializedTextBlobSet{
+			data:  make(map[uint64]materializedTextMetricSet),
+			names: make(map[string]uint64),
+		}
+	}
+
 	material := MaterializedTextBlobSet{
 		data:  make(map[uint64]materializedTextMetricSet),
 		names: make(map[string]uint64),
 	}
 
-	if len(s.blobs) == 0 {
-		return material
-	}
-
-	// Step 1: Identify all unique metric IDs across all blobs
-	metricIDs := make(map[uint64]bool)
-	for i := range s.blobs {
-		for metricID := range s.blobs[i].index.byID {
-			metricIDs[metricID] = true
-		}
-	}
-
-	// Step 2: Calculate total capacity needed for each metric
+	// Step 1+2: Identify all unique metric IDs and calculate total capacity in a single pass.
+	// Walk each blob's own index (ForEach visits only metrics present in that blob),
+	// eliminating O(metrics × blobs) cross-product lookups.
 	capacities := make(map[uint64]int)
-	for metricID := range metricIDs {
-		totalCount := 0
-		for i := range s.blobs {
-			if entry, ok := s.blobs[i].index.GetByID(metricID); ok {
-				totalCount += int(entry.Count)
-			}
-		}
-		capacities[metricID] = totalCount
-	}
-
-	// Step 3: Check if any blob has tags enabled
 	hasTags := false
 	for i := range s.blobs {
-		if s.blobs[i].HasTag() {
+		if !hasTags && s.blobs[i].HasTag() {
 			hasTags = true
-			break
 		}
+		s.blobs[i].index.ForEach(func(entry section.TextIndexEntry) bool {
+			capacities[entry.MetricID] += int(entry.Count)
+			return true
+		})
 	}
 
-	// Step 4: Pre-allocate slices for each metric
+	// Step 3: Pre-allocate slices for each metric
 	for metricID, capacity := range capacities {
 		metricSet := materializedTextMetricSet{
 			timestamps: make([]int64, 0, capacity),
@@ -101,15 +92,14 @@ func (s *TextBlobSet) Materialize() MaterializedTextBlobSet {
 		material.data[metricID] = metricSet
 	}
 
-	// Step 5: Iterate through blobs in chronological order, appending data
-	s.materializeBlobData(&material, metricIDs, hasTags)
+	// Step 4: Iterate through blobs in chronological order, appending data.
+	// ForEach walks only metrics present in each blob — no wasted lookups.
+	s.materializeBlobData(&material, hasTags)
 
-	// Step 6: Build metric name mapping if available
+	// Step 5: Build metric name mapping if available
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		// Check if blob has metric names (byName map is populated)
 		if blob.index.byName != nil {
-			// Iterate through the byName map to build the name→ID mapping
 			for name, entry := range blob.index.byName {
 				material.names[name] = entry.MetricID
 			}
@@ -191,9 +181,11 @@ func (s *TextBlobSet) MaterializeMetric(metricID uint64) (MaterializedTextMetric
 		}
 
 		// Decode and append values
+		valsBefore := len(values)
 		for val := range blob.allValuesFromEntry(entry) {
 			values = append(values, val)
 		}
+		valsProduced := len(values) - valsBefore
 
 		// Decode and append tags if present
 		if hasTags && blob.HasTag() {
@@ -203,7 +195,7 @@ func (s *TextBlobSet) MaterializeMetric(metricID uint64) (MaterializedTextMetric
 		} else if hasTags {
 			// This blob doesn't have tags, but other blobs do
 			// Fill with empty strings to maintain index alignment
-			for range int(entry.Count) {
+			for range valsProduced {
 				tags = append(tags, "")
 			}
 		}
@@ -266,18 +258,12 @@ func (s *TextBlobSet) MaterializeMetricByName(metricName string) (MaterializedTe
 
 // materializeBlobData appends data from all blobs to the materialized metric sets.
 // This helper method is extracted to reduce cyclomatic complexity of Materialize.
-func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, metricIDs map[uint64]bool, hasTags bool) {
+func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, hasTags bool) {
 	for i := range s.blobs {
 		blob := &s.blobs[i]
 
-		// For each metric in this blob
-		for metricID := range metricIDs {
-			entry, ok := blob.index.GetByID(metricID)
-			if !ok {
-				continue // This metric doesn't exist in this blob
-			}
-
-			metricSet := material.data[metricID]
+		blob.index.ForEach(func(entry section.TextIndexEntry) bool {
+			metricSet := material.data[entry.MetricID]
 
 			// Decode and append timestamps
 			for ts := range blob.allTimestampsFromEntry(entry) {
@@ -285,9 +271,11 @@ func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, met
 			}
 
 			// Decode and append values
+			valsBefore := len(metricSet.values)
 			for val := range blob.allValuesFromEntry(entry) {
 				metricSet.values = append(metricSet.values, val)
 			}
+			valsProduced := len(metricSet.values) - valsBefore
 
 			// Decode and append tags if present
 			if hasTags && blob.HasTag() {
@@ -297,13 +285,15 @@ func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, met
 			} else if hasTags {
 				// This blob doesn't have tags, but other blobs do
 				// Fill with empty strings to maintain index alignment
-				for range int(entry.Count) {
+				for range valsProduced {
 					metricSet.tags = append(metricSet.tags, "")
 				}
 			}
 
-			material.data[metricID] = metricSet
-		}
+			material.data[entry.MetricID] = metricSet
+
+			return true
+		})
 	}
 }
 

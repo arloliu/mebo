@@ -1,5 +1,7 @@
 package blob
 
+import "github.com/arloliu/mebo/section"
+
 // MaterializedNumericBlobSet provides O(1) random access to all data points across all blobs.
 // Created by calling NumericBlobSet.Materialize().
 //
@@ -51,40 +53,32 @@ type materializedNumericMetricSet struct {
 //	val, ok := material.ValueAt(metricID, 1500)  // Could be in blob 2
 //	ts, ok := material.TimestampAt(metricID, 2500) // Could be in blob 3
 func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
-	// Step 1: Identify all unique metric IDs across all blobs
-	metricIDs := make(map[uint64]bool)
-	for i := range s.blobs {
-		blob := &s.blobs[i]
-		for metricID := range blob.index.byID {
-			metricIDs[metricID] = true
+	if len(s.blobs) == 0 {
+		return MaterializedNumericBlobSet{
+			data:  make(map[uint64]materializedNumericMetricSet),
+			names: make(map[string]uint64),
 		}
 	}
 
-	// Step 2: Calculate total capacity for each metric
+	// Step 1+2: Identify all unique metric IDs and calculate total capacity in a single pass.
+	// Walk each blob's own index (ForEach visits only metrics present in that blob),
+	// eliminating O(metrics × blobs) cross-product lookups.
 	capacities := make(map[uint64]int)
-	for metricID := range metricIDs {
-		total := 0
-		for i := range s.blobs {
-			blob := &s.blobs[i]
-			if entry, ok := blob.index.GetByID(metricID); ok {
-				total += entry.Count
-			}
-		}
-		capacities[metricID] = total
-	}
-
-	// Step 3: Check if any blob has tags enabled
 	hasTags := false
 	for i := range s.blobs {
-		if s.blobs[i].HasTag() {
+		blob := &s.blobs[i]
+		if !hasTags && blob.HasTag() {
 			hasTags = true
-			break
 		}
+		blob.index.ForEach(func(entry section.NumericIndexEntry) bool {
+			capacities[entry.MetricID] += entry.Count
+			return true
+		})
 	}
 
-	// Step 4: Pre-allocate slices for each metric with exact capacity
+	// Step 3: Pre-allocate slices for each metric with exact capacity
 	material := MaterializedNumericBlobSet{
-		data:  make(map[uint64]materializedNumericMetricSet, len(metricIDs)),
+		data:  make(map[uint64]materializedNumericMetricSet, len(capacities)),
 		names: make(map[string]uint64),
 	}
 
@@ -99,56 +93,61 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 		material.data[metricID] = metricSet
 	}
 
-	// Step 5: Iterate through blobs in chronological order, appending data
+	// Step 4: Iterate through blobs in chronological order, appending data.
+	// ForEach walks only metrics present in each blob — no wasted lookups.
 	for i := range s.blobs {
 		blob := &s.blobs[i]
 
-		// For each metric in this blob
-		for metricID := range metricIDs {
-			entry, ok := blob.index.GetByID(metricID)
-			if !ok {
-				continue // This metric doesn't exist in this blob
-			}
-
-			metricSet := material.data[metricID]
-
+		blob.index.ForEach(func(entry section.NumericIndexEntry) bool {
+			metricSet := material.data[entry.MetricID]
 			count := entry.Count
 
 			// Decode timestamps: extend slice and decode directly into tail
+			tsOff := len(metricSet.timestamps)
 			if cached, ok := blob.sharedTsCache[entry.TimestampOffset]; ok {
 				metricSet.timestamps = append(metricSet.timestamps, cached...)
 			} else {
 				tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
-				off := len(metricSet.timestamps)
-				metricSet.timestamps = metricSet.timestamps[:off+count]
-				tsProduced := blob.decodeTimestampsSlice(tsBytes, count, metricSet.timestamps[off:])
-				metricSet.timestamps = metricSet.timestamps[:off+tsProduced]
+				metricSet.timestamps = metricSet.timestamps[:tsOff+count]
+				tsProduced := blob.decodeTimestampsSlice(tsBytes, count, metricSet.timestamps[tsOff:])
+				metricSet.timestamps = metricSet.timestamps[:tsOff+tsProduced]
 			}
 
 			// Decode values: extend slice and decode directly into tail
 			valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-			off := len(metricSet.values)
-			metricSet.values = metricSet.values[:off+count]
-			valProduced := blob.decodeValuesSlice(valBytes, count, metricSet.values[off:])
-			metricSet.values = metricSet.values[:off+valProduced]
+			valOff := len(metricSet.values)
+			metricSet.values = metricSet.values[:valOff+count]
+			valProduced := blob.decodeValuesSlice(valBytes, count, metricSet.values[valOff:])
+			metricSet.values = metricSet.values[:valOff+valProduced]
+
+			// Align timestamps to actual values produced (defensive against short-decode)
+			if len(metricSet.timestamps) > valOff+valProduced {
+				metricSet.timestamps = metricSet.timestamps[:valOff+valProduced]
+			}
 
 			// Decode and append tags (if enabled)
 			if hasTags && blob.HasTag() {
 				for tag := range blob.allTagsFromEntry(entry) {
 					metricSet.tags = append(metricSet.tags, tag)
 				}
+			} else if hasTags {
+				// This blob doesn't have tags, but other blobs do
+				// Fill with empty strings to maintain index alignment
+				for range valProduced {
+					metricSet.tags = append(metricSet.tags, "")
+				}
 			}
 
-			material.data[metricID] = metricSet
-		}
+			material.data[entry.MetricID] = metricSet
+
+			return true
+		})
 	}
 
-	// Step 6: Build metric name mapping if available
+	// Step 5: Build metric name mapping if available
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		// Check if blob has metric names (byName map is populated)
 		if blob.index.byName != nil {
-			// Iterate through the byName map to build the name→ID mapping
 			for name, entry := range blob.index.byName {
 				material.names[name] = entry.MetricID
 			}
@@ -227,27 +226,38 @@ func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumeric
 		count := entry.Count
 
 		// Decode timestamps: extend slice and decode directly into tail
+		tsOff := len(timestamps)
 		if cached, ok := blob.sharedTsCache[entry.TimestampOffset]; ok {
 			timestamps = append(timestamps, cached...)
 		} else {
 			tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
-			off := len(timestamps)
-			timestamps = timestamps[:off+count]
-			tsProduced := blob.decodeTimestampsSlice(tsBytes, count, timestamps[off:])
-			timestamps = timestamps[:off+tsProduced]
+			timestamps = timestamps[:tsOff+count]
+			tsProduced := blob.decodeTimestampsSlice(tsBytes, count, timestamps[tsOff:])
+			timestamps = timestamps[:tsOff+tsProduced]
 		}
 
 		// Decode values: extend slice and decode directly into tail
 		valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-		off := len(values)
-		values = values[:off+count]
-		valProduced := blob.decodeValuesSlice(valBytes, count, values[off:])
-		values = values[:off+valProduced]
+		valOff := len(values)
+		values = values[:valOff+count]
+		valProduced := blob.decodeValuesSlice(valBytes, count, values[valOff:])
+		values = values[:valOff+valProduced]
+
+		// Align timestamps to actual values produced (defensive against short-decode)
+		if len(timestamps) > valOff+valProduced {
+			timestamps = timestamps[:valOff+valProduced]
+		}
 
 		// Decode and append tags (if enabled)
 		if hasTags && blob.HasTag() {
 			for tag := range blob.allTagsFromEntry(entry) {
 				tags = append(tags, tag)
+			}
+		} else if hasTags {
+			// This blob doesn't have tags, but other blobs do
+			// Fill with empty strings to maintain index alignment
+			for range valProduced {
+				tags = append(tags, "")
 			}
 		}
 	}

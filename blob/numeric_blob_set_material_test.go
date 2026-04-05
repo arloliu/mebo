@@ -10,7 +10,7 @@ import (
 )
 
 // Helper function to create a test NumericBlobSet with specified number of blobs
-func createTestBlobSetForMaterialization(t *testing.T, numBlobs int, tsEnc, valEnc format.EncodingType, withTags bool, metricsPerBlob map[uint64]int) NumericBlobSet {
+func createTestBlobSetForMaterialization(t *testing.T, numBlobs int, tsEnc, valEnc format.EncodingType, withTags bool, metricsPerBlob map[uint64]int, extraOpts ...NumericEncoderOption) NumericBlobSet {
 	t.Helper()
 
 	blobs := make([]NumericBlob, numBlobs)
@@ -25,6 +25,7 @@ func createTestBlobSetForMaterialization(t *testing.T, numBlobs int, tsEnc, valE
 		if withTags {
 			opts = append(opts, WithTagsEnabled(true))
 		}
+		opts = append(opts, extraOpts...)
 
 		encoder, err := NewNumericEncoder(startTime, opts...)
 		require.NoError(t, err)
@@ -780,5 +781,320 @@ func TestNumericBlobSet_MaterializeMetric_SingleBlob(t *testing.T) {
 		val, ok := metric.ValueAt(i)
 		require.True(t, ok)
 		require.Equal(t, metric.Values[i], val)
+	}
+}
+
+// ==============================================================================
+// V2 Layout Materialization Tests
+// ==============================================================================
+
+func TestMaterializedNumericBlobSet_V2Layout(t *testing.T) {
+	metricA := uint64(1000)
+	metricB := uint64(2000)
+	metricC := uint64(3000)
+
+	metricsPerBlob := map[uint64]int{
+		metricA: 10,
+		metricB: 10,
+		metricC: 10,
+	}
+
+	blobSet := createTestBlobSetForMaterialization(t, 3, format.TypeDelta, format.TypeGorilla, false, metricsPerBlob, WithBlobLayoutV2())
+
+	material := blobSet.Materialize()
+
+	// Verify all 3 metrics present
+	require.Equal(t, 3, material.MetricCount())
+
+	// Each metric: 3 blobs × 10 points = 30
+	for _, id := range []uint64{metricA, metricB, metricC} {
+		require.Equal(t, 30, material.DataPointCount(id), "metric %d", id)
+	}
+
+	// Spot-check values from each blob
+	// Blob 0: val = metricID + 0*1000 + i
+	val, ok := material.ValueAt(metricA, 5)
+	require.True(t, ok)
+	require.Equal(t, float64(metricA)+5, val)
+
+	// Blob 1: val = metricID + 1*1000 + i, index offset = 10
+	val, ok = material.ValueAt(metricA, 15)
+	require.True(t, ok)
+	require.Equal(t, float64(metricA)+1000+5, val)
+
+	// Blob 2: val = metricID + 2*1000 + i, index offset = 20
+	val, ok = material.ValueAt(metricB, 25)
+	require.True(t, ok)
+	require.Equal(t, float64(metricB)+2000+5, val)
+
+	// Verify timestamps
+	ts, ok := material.TimestampAt(metricC, 10)
+	require.True(t, ok)
+	require.Equal(t, int64(1000000), ts) // blob 1, first point
+}
+
+func TestMaterializedNumericBlobSet_V2Layout_WithTags(t *testing.T) {
+	metricID := uint64(1234)
+
+	blobSet := createTestBlobSetForMaterialization(t, 2, format.TypeDelta, format.TypeGorilla, true, map[uint64]int{
+		metricID: 10,
+	}, WithBlobLayoutV2())
+
+	material := blobSet.Materialize()
+
+	require.Equal(t, 20, material.DataPointCount(metricID))
+
+	// Verify tags are aligned with timestamps and values
+	for i := range 20 {
+		tag, ok := material.TagAt(metricID, i)
+		require.True(t, ok, "tag at index %d should exist", i)
+
+		localIdx := i % 10
+		expectedTag := "tag" + string(rune('A'+localIdx%3))
+		require.Equal(t, expectedTag, tag, "tag mismatch at index %d", i)
+
+		// Verify value also exists at same index
+		_, ok = material.ValueAt(metricID, i)
+		require.True(t, ok, "value at index %d should exist", i)
+	}
+}
+
+func TestMaterializedNumericBlobSet_V2Layout_SparseMetrics(t *testing.T) {
+	metricA := uint64(1111)
+	metricB := uint64(2222)
+
+	// Blob 0: both metrics, Blob 1: only metricA — V2 sorted index must handle this
+	blobs := make([]NumericBlob, 2)
+	baseTime := time.Now()
+
+	{
+		encoder, err := NewNumericEncoder(baseTime, WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithBlobLayoutV2())
+		require.NoError(t, err)
+		err = encoder.StartMetricID(metricA, 5)
+		require.NoError(t, err)
+		for i := range 5 {
+			err = encoder.AddDataPoint(int64(i*1000), float64(metricA)+float64(i), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		err = encoder.StartMetricID(metricB, 5)
+		require.NoError(t, err)
+		for i := range 5 {
+			err = encoder.AddDataPoint(int64(i*1000), float64(metricB)+float64(i), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		blobBytes, err := encoder.Finish()
+		require.NoError(t, err)
+		decoder, err := NewNumericDecoder(blobBytes)
+		require.NoError(t, err)
+		blobs[0], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	{
+		encoder, err := NewNumericEncoder(baseTime.Add(time.Hour), WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithBlobLayoutV2())
+		require.NoError(t, err)
+		err = encoder.StartMetricID(metricA, 5)
+		require.NoError(t, err)
+		for i := range 5 {
+			err = encoder.AddDataPoint(int64(1000000+i*1000), float64(metricA)+1000+float64(i), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+
+		blobBytes, err := encoder.Finish()
+		require.NoError(t, err)
+		decoder, err := NewNumericDecoder(blobBytes)
+		require.NoError(t, err)
+		blobs[1], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := NewNumericBlobSet(blobs)
+	require.NoError(t, err)
+
+	material := blobSet.Materialize()
+
+	// metricA: 5+5=10 points, metricB: 5 points (only in blob 0)
+	require.Equal(t, 10, material.DataPointCount(metricA))
+	require.Equal(t, 5, material.DataPointCount(metricB))
+
+	// Verify metricB data comes only from blob 0
+	val, ok := material.ValueAt(metricB, 3)
+	require.True(t, ok)
+	require.Equal(t, float64(metricB)+3, val)
+
+	_, ok = material.ValueAt(metricB, 5)
+	require.False(t, ok, "metricB should have only 5 points")
+}
+
+func TestNumericBlobSet_MaterializeMetric_V2Layout(t *testing.T) {
+	metricA := uint64(1000)
+	metricB := uint64(2000)
+
+	blobSet := createTestBlobSetForMaterialization(t, 3, format.TypeDelta, format.TypeGorilla, true, map[uint64]int{
+		metricA: 10,
+		metricB: 10,
+	}, WithBlobLayoutV2())
+
+	metric, ok := blobSet.MaterializeMetric(metricA)
+	require.True(t, ok)
+	require.Len(t, metric.Timestamps, 30)
+	require.Len(t, metric.Values, 30)
+	require.Len(t, metric.Tags, 30)
+
+	// Verify value from each blob
+	val, ok := metric.ValueAt(5)
+	require.True(t, ok)
+	require.Equal(t, float64(metricA)+5, val)
+
+	val, ok = metric.ValueAt(15)
+	require.True(t, ok)
+	require.Equal(t, float64(metricA)+1000+5, val)
+
+	// Non-existent metric
+	_, ok = blobSet.MaterializeMetric(9999)
+	require.False(t, ok)
+}
+
+// ==============================================================================
+// Mixed Tag Alignment Tests
+// ==============================================================================
+
+func TestMaterializedNumericBlobSet_MixedTagBlobs(t *testing.T) {
+	metricID := uint64(1234)
+	baseTime := time.Now()
+	blobs := make([]NumericBlob, 2)
+
+	// Blob 0: tags enabled
+	{
+		encoder, err := NewNumericEncoder(baseTime, WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw), WithTagsEnabled(true))
+		require.NoError(t, err)
+		err = encoder.StartMetricID(metricID, 5)
+		require.NoError(t, err)
+		for i := range 5 {
+			err = encoder.AddDataPoint(int64(i*1000), float64(i), "tagX")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+		blobBytes, err := encoder.Finish()
+		require.NoError(t, err)
+		decoder, err := NewNumericDecoder(blobBytes)
+		require.NoError(t, err)
+		blobs[0], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	// Blob 1: tags disabled
+	{
+		encoder, err := NewNumericEncoder(baseTime.Add(time.Hour), WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw))
+		require.NoError(t, err)
+		err = encoder.StartMetricID(metricID, 5)
+		require.NoError(t, err)
+		for i := range 5 {
+			err = encoder.AddDataPoint(int64(1000000+i*1000), float64(100+i), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+		blobBytes, err := encoder.Finish()
+		require.NoError(t, err)
+		decoder, err := NewNumericDecoder(blobBytes)
+		require.NoError(t, err)
+		blobs[1], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := NewNumericBlobSet(blobs)
+	require.NoError(t, err)
+
+	material := blobSet.Materialize()
+
+	require.Equal(t, 10, material.DataPointCount(metricID))
+
+	// First 5: tag-enabled blob → "tagX"
+	for i := range 5 {
+		tag, ok := material.TagAt(metricID, i)
+		require.True(t, ok)
+		require.Equal(t, "tagX", tag, "index %d should have tag from blob 0", i)
+	}
+
+	// Next 5: tag-disabled blob → empty strings for alignment
+	for i := 5; i < 10; i++ {
+		tag, ok := material.TagAt(metricID, i)
+		require.True(t, ok)
+		require.Empty(t, tag, "index %d should have empty tag from blob 1", i)
+	}
+}
+
+func TestNumericBlobSet_MaterializeMetric_MixedTagBlobs(t *testing.T) {
+	metricID := uint64(1234)
+	baseTime := time.Now()
+	blobs := make([]NumericBlob, 2)
+
+	// Blob 0: tags disabled
+	{
+		encoder, err := NewNumericEncoder(baseTime, WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw))
+		require.NoError(t, err)
+		err = encoder.StartMetricID(metricID, 3)
+		require.NoError(t, err)
+		for i := range 3 {
+			err = encoder.AddDataPoint(int64(i*1000), float64(i), "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+		blobBytes, err := encoder.Finish()
+		require.NoError(t, err)
+		decoder, err := NewNumericDecoder(blobBytes)
+		require.NoError(t, err)
+		blobs[0], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	// Blob 1: tags enabled
+	{
+		encoder, err := NewNumericEncoder(baseTime.Add(time.Hour), WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw), WithTagsEnabled(true))
+		require.NoError(t, err)
+		err = encoder.StartMetricID(metricID, 3)
+		require.NoError(t, err)
+		for i := range 3 {
+			err = encoder.AddDataPoint(int64(1000000+i*1000), float64(100+i), "tagY")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+		blobBytes, err := encoder.Finish()
+		require.NoError(t, err)
+		decoder, err := NewNumericDecoder(blobBytes)
+		require.NoError(t, err)
+		blobs[1], err = decoder.Decode()
+		require.NoError(t, err)
+	}
+
+	blobSet, err := NewNumericBlobSet(blobs)
+	require.NoError(t, err)
+
+	metric, ok := blobSet.MaterializeMetric(metricID)
+	require.True(t, ok)
+	require.Len(t, metric.Timestamps, 6)
+	require.Len(t, metric.Values, 6)
+	require.Len(t, metric.Tags, 6)
+
+	// First 3: no-tag blob → empty strings
+	for i := range 3 {
+		require.Empty(t, metric.Tags[i], "index %d should be empty", i)
+	}
+
+	// Next 3: tag blob → "tagY"
+	for i := 3; i < 6; i++ {
+		require.Equal(t, "tagY", metric.Tags[i], "index %d should have tagY", i)
 	}
 }

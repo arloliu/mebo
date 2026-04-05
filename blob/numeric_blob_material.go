@@ -65,10 +65,6 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 		count := entry.Count
 		timestamps := make([]int64, count)
 		values := make([]float64, count)
-		var tags []string
-		if b.HasTag() {
-			tags = make([]string, count)
-		}
 
 		// Fast path: use cached shared timestamps if available
 		if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
@@ -83,7 +79,9 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 		valProduced := b.decodeValuesSlice(valBytes, count, values)
 		values = values[:valProduced]
 
+		var tags []string
 		if b.HasTag() {
+			tags = make([]string, count)
 			idx := 0
 			for tag := range b.allTagsFromEntry(entry) {
 				tags[idx] = tag
@@ -326,10 +324,6 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetr
 	count := entry.Count
 	timestamps := make([]int64, count)
 	values := make([]float64, count)
-	var tags []string
-	if b.HasTag() {
-		tags = make([]string, count)
-	}
 
 	// Fast path: use cached shared timestamps if available
 	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
@@ -344,7 +338,9 @@ func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetr
 	valProduced := b.decodeValuesSlice(valBytes, count, values)
 	values = values[:valProduced]
 
+	var tags []string
 	if b.HasTag() {
+		tags = make([]string, count)
 		idx := 0
 		for tag := range b.allTagsFromEntry(entry) {
 			tags[idx] = tag
