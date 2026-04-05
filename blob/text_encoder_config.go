@@ -154,8 +154,8 @@ type TextEncoderOption = options.Option[*TextEncoderConfig]
 // Valid values are format.TypeRaw and format.TypeDelta.
 // Default is format.TypeDelta for better compression.
 func WithTextTimestampEncoding(enc format.EncodingType) TextEncoderOption {
-	return options.NoError(func(cfg *TextEncoderConfig) {
-		_ = cfg.setTimestampEncoding(enc)
+	return options.New(func(cfg *TextEncoderConfig) error {
+		return cfg.setTimestampEncoding(enc)
 	})
 }
 
@@ -164,8 +164,8 @@ func WithTextTimestampEncoding(enc format.EncodingType) TextEncoderOption {
 // format.CompressionLZ4, format.CompressionNone.
 // Default is format.CompressionZstd.
 func WithTextDataCompression(codec format.CompressionType) TextEncoderOption {
-	return options.NoError(func(cfg *TextEncoderConfig) {
-		_ = cfg.setDataCompression(codec)
+	return options.New(func(cfg *TextEncoderConfig) error {
+		return cfg.setDataCompression(codec)
 	})
 }
 
