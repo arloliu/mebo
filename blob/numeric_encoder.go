@@ -513,6 +513,12 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// This optimization saves space and decoding time when all tags are empty
 	if finalHeader.Flag.HasTag() && !e.hasNonEmptyTags {
 		finalHeader.Flag.WithoutTag()
+		// Zero out stale TagOffset deltas stored in index entries so that the decoder's
+		// non-decreasing offset validation does not reject the blob. These deltas were
+		// accumulated during EndMetric() but now reference a tag payload that won't exist.
+		for i := range e.indexEntries {
+			e.indexEntries[i].TagOffset = 0
+		}
 	}
 
 	// Set actual metric count in cloned header now that encoding is complete
