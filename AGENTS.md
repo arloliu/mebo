@@ -2,6 +2,12 @@
 
 This project uses structured rule files to guide AI agent behavior. All rules live in `.agents/rules/` and are organized by concern.
 
+## Agent Skills
+
+In addition to rules, this project defines specialized agent skills in the `.agents/skills/` directory. These skills encapsulate complex workflows, code review checklists (like QA reviews), and automated maintenance scripts.
+- **Location**: `.agents/skills/`
+- Agents or AI coding assistants that do not natively discover the skills folder (like GitHub Copilot) should proactively read these files when executing specialized tasks.
+
 ## Rules
 
 | Rule | Applies To | Description |
