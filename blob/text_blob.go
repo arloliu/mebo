@@ -1,10 +1,10 @@
 package blob
 
 import (
-	"errors"
 	"fmt"
 	"iter"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/section"
 )
@@ -757,14 +757,14 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 		// Raw encoding: timestamps are written as length-prefixed strings containing 8 bytes
 		// First read the length prefix
 		if len(data[offset:]) < 1 {
-			return 0, 0, errors.New("insufficient data for timestamp length prefix")
+			return 0, 0, fmt.Errorf("%w: insufficient data for timestamp length prefix", errs.ErrInvalidTimestampData)
 		}
 		length := int(data[offset])
 		offset++
 
 		// Read the timestamp bytes
 		if len(data[offset:]) < length {
-			return 0, 0, errors.New("insufficient data for raw timestamp")
+			return 0, 0, fmt.Errorf("%w: insufficient data for raw timestamp", errs.ErrInvalidTimestampData)
 		}
 		if length != 8 {
 			return 0, 0, fmt.Errorf("invalid timestamp length: expected 8, got %d", length)

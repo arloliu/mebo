@@ -99,7 +99,7 @@ func (d *TextDecoder) Decode() (TextBlob, error) {
 	// Validate payload offsets
 	dataOffset := int(d.header.DataOffset)
 	if len(d.data) < dataOffset {
-		return blob, fmt.Errorf("data offset %d exceeds data length %d", dataOffset, len(d.data))
+		return blob, fmt.Errorf("%w: data offset %d exceeds data length %d", errs.ErrInvalidTimestampPayloadOffset, dataOffset, len(d.data))
 	}
 
 	// Step 1: Parse metric names (if present)
@@ -192,8 +192,8 @@ func (d *TextDecoder) parseIndexEntries(startOffset int) ([]section.TextIndexEnt
 	endOffset := startOffset + expectedIndexSize
 
 	if len(d.data) < endOffset {
-		return nil, nil, fmt.Errorf("insufficient data for index entries: need %d bytes, have %d",
-			expectedIndexSize, len(d.data)-startOffset)
+		return nil, nil, fmt.Errorf("%w: need %d bytes, have %d",
+			errs.ErrInvalidIndexEntrySize, expectedIndexSize, len(d.data)-startOffset)
 	}
 
 	indexEntries := make([]section.TextIndexEntry, d.metricCount)
@@ -209,11 +209,14 @@ func (d *TextDecoder) parseIndexEntries(startOffset int) ([]section.TextIndexEnt
 		// Calculate size from offset differences
 		// For last entry, use total data size from header
 		if i == d.metricCount-1 {
-			// Last metric: size = total decompressed size - offset
+			// Validate last entry offset doesn't exceed data size (prevents uint32 underflow)
+			if entry.Offset > d.header.DataSize {
+				return nil, nil, fmt.Errorf("%w: last entry offset %d exceeds data size %d",
+					errs.ErrInvalidIndexOffsets, entry.Offset, d.header.DataSize)
+			}
+
 			entry.Size = d.header.DataSize - entry.Offset
 		}
-		// Not implemented yet - need to read next entry's offset first
-		// Will be calculated after all entries are parsed
 
 		indexEntries[i] = entry
 		metricIDs[i] = entry.MetricID
@@ -221,6 +224,12 @@ func (d *TextDecoder) parseIndexEntries(startOffset int) ([]section.TextIndexEnt
 
 	// Calculate sizes for all entries except the last one
 	for i := 0; i < d.metricCount-1; i++ {
+		// Validate monotonic offsets (prevents uint32 underflow in size calculation)
+		if indexEntries[i+1].Offset < indexEntries[i].Offset {
+			return nil, nil, fmt.Errorf("%w: entry %d offset %d > entry %d offset %d",
+				errs.ErrInvalidIndexOffsets, i, indexEntries[i].Offset, i+1, indexEntries[i+1].Offset)
+		}
+
 		indexEntries[i].Size = indexEntries[i+1].Offset - indexEntries[i].Offset
 	}
 
@@ -253,8 +262,8 @@ func (d *TextDecoder) decompressData(dataOffset int) ([]byte, error) {
 	// Verify decompressed size matches header
 	// DataSize stores the uncompressed (decompressed) size
 	if uint32(len(decompressedData)) != d.header.DataSize { //nolint:gosec
-		return nil, fmt.Errorf("decompressed data size mismatch: expected %d, got %d",
-			d.header.DataSize, len(decompressedData))
+		return nil, fmt.Errorf("%w: expected %d, got %d",
+			errs.ErrDataSizeMismatch, d.header.DataSize, len(decompressedData))
 	}
 
 	return decompressedData, nil
