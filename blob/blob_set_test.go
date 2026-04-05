@@ -1569,19 +1569,31 @@ func TestBlobSet_TagSupport_Comprehensive(t *testing.T) {
 		blobSet, err := DecodeBlobSet(numericData, textData)
 		require.NoError(t, err)
 
-		// Test NumericAt - should return false when tags are disabled
-		_, ok := blobSet.NumericAt(12345, 0)
-		require.False(t, ok, "NumericAt should return false when tags are disabled")
+		// Test NumericAt - should return true with empty tag when tags are disabled
+		dp, ok := blobSet.NumericAt(12345, 0)
+		require.True(t, ok, "NumericAt should return true when tags are disabled")
+		require.Equal(t, int64(1000), dp.Ts)
+		require.Equal(t, 1.1, dp.Val)
+		require.Empty(t, dp.Tag, "Tag should be empty when tags are disabled")
 
-		_, ok = blobSet.NumericAt(12345, 1)
-		require.False(t, ok, "NumericAt should return false when tags are disabled")
+		dp, ok = blobSet.NumericAt(12345, 1)
+		require.True(t, ok, "NumericAt should return true when tags are disabled")
+		require.Equal(t, int64(2000), dp.Ts)
+		require.Equal(t, 2.2, dp.Val)
+		require.Empty(t, dp.Tag, "Tag should be empty when tags are disabled")
 
-		// Test TextAt - should return false when tags are disabled
-		_, ok = blobSet.TextAt(67890, 0)
-		require.False(t, ok, "TextAt should return false when tags are disabled")
+		// Test TextAt - should return true with empty tag when tags are disabled
+		dp2, ok := blobSet.TextAt(67890, 0)
+		require.True(t, ok, "TextAt should return true when tags are disabled")
+		require.Equal(t, int64(3000), dp2.Ts)
+		require.Equal(t, "value1", dp2.Val)
+		require.Empty(t, dp2.Tag, "Tag should be empty when tags are disabled")
 
-		_, ok = blobSet.TextAt(67890, 1)
-		require.False(t, ok, "TextAt should return false when tags are disabled")
+		dp2, ok = blobSet.TextAt(67890, 1)
+		require.True(t, ok, "TextAt should return true when tags are disabled")
+		require.Equal(t, int64(4000), dp2.Ts)
+		require.Equal(t, "value2", dp2.Val)
+		require.Empty(t, dp2.Tag, "Tag should be empty when tags are disabled")
 
 		// Test out of bounds
 		_, ok = blobSet.NumericAt(12345, 2)
@@ -1702,12 +1714,15 @@ func TestBlobSet_TagSupport_Comprehensive(t *testing.T) {
 		blobSet, err := DecodeBlobSet(numericDataDisabled, numericDataEnabled)
 		require.NoError(t, err)
 
-		// Test metric with tags disabled - should return false
-		_, ok := blobSet.NumericAt(11111, 0)
-		require.False(t, ok, "NumericAt should return false when tags are disabled")
+		// Test metric with tags disabled - should return true with empty tag
+		dp, ok := blobSet.NumericAt(11111, 0)
+		require.True(t, ok, "NumericAt should return true when tags are disabled")
+		require.Equal(t, int64(1000), dp.Ts)
+		require.Equal(t, 1.1, dp.Val)
+		require.Empty(t, dp.Tag, "Tag should be empty when tags are disabled")
 
 		// Test metric with tags enabled - should return true with preserved tag
-		dp, ok := blobSet.NumericAt(22222, 0)
+		dp, ok = blobSet.NumericAt(22222, 0)
 		require.True(t, ok, "NumericAt should return true when tags are enabled")
 		require.Equal(t, int64(2000), dp.Ts)
 		require.Equal(t, 2.2, dp.Val)
@@ -1737,12 +1752,18 @@ func TestBlobSet_TagSupport_Comprehensive(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test that the optimization automatically disabled tags
-		// So the methods should return false even though we initially enabled tags
-		_, ok := blobSet.NumericAt(12345, 0)
-		require.False(t, ok, "NumericAt should return false when tags are automatically disabled due to empty tags")
+		// The methods should still return true with empty tag even when tags are auto-disabled
+		dp, ok := blobSet.NumericAt(12345, 0)
+		require.True(t, ok, "NumericAt should return true even when tags are automatically disabled due to empty tags")
+		require.Equal(t, int64(1000), dp.Ts)
+		require.Equal(t, 1.1, dp.Val)
+		require.Empty(t, dp.Tag, "Tag should be empty")
 
-		_, ok = blobSet.NumericAt(12345, 1)
-		require.False(t, ok, "NumericAt should return false when tags are automatically disabled due to empty tags")
+		dp, ok = blobSet.NumericAt(12345, 1)
+		require.True(t, ok, "NumericAt should return true even when tags are automatically disabled due to empty tags")
+		require.Equal(t, int64(2000), dp.Ts)
+		require.Equal(t, 2.2, dp.Val)
+		require.Empty(t, dp.Tag, "Tag should be empty")
 	})
 
 	t.Run("DeltaEncoding_WithTagsDisabled", func(t *testing.T) {
@@ -1766,12 +1787,18 @@ func TestBlobSet_TagSupport_Comprehensive(t *testing.T) {
 		blobSet, err := DecodeBlobSet(numericData)
 		require.NoError(t, err)
 
-		// Test NumericAt with delta encoding and tags disabled
-		_, ok := blobSet.NumericAt(12345, 0)
-		require.False(t, ok, "NumericAt should return false when tags are disabled")
+		// Test NumericAt with delta encoding and tags disabled - should return true with empty tag
+		dp, ok := blobSet.NumericAt(12345, 0)
+		require.True(t, ok, "NumericAt should return true when tags are disabled")
+		require.Equal(t, int64(1000), dp.Ts)
+		require.Equal(t, 1.1, dp.Val)
+		require.Empty(t, dp.Tag, "Tag should be empty when tags are disabled")
 
-		_, ok = blobSet.NumericAt(12345, 1)
-		require.False(t, ok, "NumericAt should return false when tags are disabled")
+		dp, ok = blobSet.NumericAt(12345, 1)
+		require.True(t, ok, "NumericAt should return true when tags are disabled")
+		require.Equal(t, int64(2000), dp.Ts)
+		require.Equal(t, 2.2, dp.Val)
+		require.Empty(t, dp.Tag, "Tag should be empty when tags are disabled")
 	})
 
 	t.Run("EdgeCases", func(t *testing.T) {

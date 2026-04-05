@@ -276,18 +276,19 @@ func (b TextBlob) TimestampAtByName(metricName string, index int) (int64, bool) 
 // Returns (tag, true) if successful, or ("", false) if:
 //   - The metric doesn't exist in this blob
 //   - The index is out of bounds
-//   - Tags are not enabled for this blob
+//
+// Returns ("", true) if tags are not enabled but the metric and index are valid.
 //
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TagAt(metricID uint64, index int) (string, bool) {
-	if !b.HasTag() {
-		return "", false
-	}
-
 	entry, ok := b.index.byID[metricID]
 	if !ok {
 		return "", false
+	}
+
+	if !b.HasTag() {
+		return "", index >= 0 && index < int(entry.Count)
 	}
 
 	return b.tagAtFromEntry(entry, index)
@@ -299,18 +300,19 @@ func (b TextBlob) TagAt(metricID uint64, index int) (string, bool) {
 // Returns (tag, true) if successful, or ("", false) if:
 //   - The metric name doesn't exist in this blob
 //   - The index is out of bounds
-//   - Tags are not enabled for this blob
+//
+// Returns ("", true) if tags are not enabled but the metric and index are valid.
 //
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TagAtByName(metricName string, index int) (string, bool) {
-	if !b.HasTag() {
-		return "", false
-	}
-
 	entry, ok := b.lookupMetricEntry(metricName)
 	if !ok {
 		return "", false
+	}
+
+	if !b.HasTag() {
+		return "", index >= 0 && index < int(entry.Count)
 	}
 
 	return b.tagAtFromEntry(entry, index)

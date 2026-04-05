@@ -1789,10 +1789,10 @@ func TestNumericEncoder_TagsDisabled(t *testing.T) {
 	}
 	require.Equal(t, 0, tagCount)
 
-	// Verify TagAt returns false
+	// Verify TagAt returns empty string with ok=true when tags are disabled
 	tag, ok := blob.TagAt(12345, 0)
-	require.False(t, ok)
-	require.Equal(t, "", tag)
+	require.True(t, ok, "TagAt should return true for valid index when tags are disabled")
+	require.Empty(t, tag, "Tag should be empty when tags are disabled")
 }
 
 // TestNumericEncoder_TagsEnabled tests encoding/decoding with tags enabled.

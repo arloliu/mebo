@@ -146,7 +146,7 @@ func (m MaterializedNumericBlob) TimestampAt(metricID uint64, index int) (int64,
 
 // TagAt returns the tag at the specified index for the given metric ID.
 // Returns ("", false) if the metric ID is not found or index is out of bounds.
-// Returns empty string if tags are not enabled for this blob.
+// Returns ("", true) if tags are not enabled but the metric and index are valid.
 //
 // This is an O(1) operation (~5ns).
 func (m MaterializedNumericBlob) TagAt(metricID uint64, index int) (string, bool) {
@@ -402,7 +402,7 @@ func (m MaterializedNumericMetric) TimestampAt(index int) (int64, bool) {
 
 // TagAt returns the tag at the specified index.
 // Returns ("", false) if index is out of bounds.
-// Returns empty string if tags are not enabled.
+// Returns ("", true) if tags are not enabled but the index is valid.
 //
 // This is an O(1) operation (~5ns).
 func (m MaterializedNumericMetric) TagAt(index int) (string, bool) {

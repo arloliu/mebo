@@ -340,7 +340,7 @@ func (m MaterializedTextBlobSet) TimestampAt(metricID uint64, index int) (int64,
 // TagAt returns the tag at the specified index for the given metric ID.
 // Index is 0-based and spans all blobs chronologically.
 //
-// Returns ("", false) if tags are not enabled for this metric.
+// Returns ("", true) if tags are not enabled but the metric and index are valid.
 // Returns ("", false) if the metric ID doesn't exist or index is out of bounds.
 func (m MaterializedTextBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	metricSet, ok := m.data[metricID]
@@ -349,7 +349,7 @@ func (m MaterializedTextBlobSet) TagAt(metricID uint64, index int) (string, bool
 	}
 
 	if len(metricSet.tags) == 0 {
-		return "", false // Tags not enabled
+		return "", index >= 0 && index < len(metricSet.timestamps)
 	}
 
 	if index < 0 || index >= len(metricSet.tags) {

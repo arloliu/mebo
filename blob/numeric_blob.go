@@ -345,9 +345,10 @@ func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool)
 // The index is 0-based within this blob.
 //
 // Returns (tag, true) if successful, or ("", false) if:
-//   - Tags are not enabled (HasTag() == false)
 //   - The metric doesn't exist in this blob
 //   - The index is out of bounds
+//
+// Returns ("", true) if tags are not enabled but the metric and index are valid.
 //
 // Performance: O(1) - tags always support random access.
 //
@@ -367,9 +368,9 @@ func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 		return "", false
 	}
 
-	// Return empty string if tags are not enabled
+	// If tags weren't enabled, return empty string
 	if !b.HasTag() {
-		return "", false
+		return "", true
 	}
 
 	return b.tagAtFromEntry(entry, index)
@@ -379,9 +380,10 @@ func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 // The index is 0-based within this blob.
 //
 // Returns (tag, true) if successful, or ("", false) if:
-//   - Tags are not enabled in this blob
 //   - The metric name doesn't exist in this blob
 //   - The index is out of bounds
+//
+// Returns ("", true) if tags are not enabled but the metric and index are valid.
 func (b NumericBlob) TagAtByName(metricName string, index int) (string, bool) {
 	entry, ok := b.lookupMetricEntry(metricName)
 	if !ok {
@@ -393,9 +395,9 @@ func (b NumericBlob) TagAtByName(metricName string, index int) (string, bool) {
 		return "", false
 	}
 
-	// Return empty string if tags are not enabled
+	// If tags weren't enabled, return empty string
 	if !b.HasTag() {
-		return "", false
+		return "", true
 	}
 
 	return b.tagAtFromEntry(entry, index)

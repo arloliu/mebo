@@ -730,9 +730,10 @@ func TestTextBlob_TagAt_Disabled(t *testing.T) {
 	blob, err := decoder.Decode()
 	require.NoError(t, err)
 
-	// Should return false when tags are disabled
-	_, ok := blob.TagAt(400, 0)
-	require.False(t, ok)
+	// Should return empty string with ok=true when tags are disabled
+	tag, ok := blob.TagAt(400, 0)
+	require.True(t, ok, "TagAt should return true for valid index when tags are disabled")
+	require.Empty(t, tag, "Tag should be empty when tags are disabled")
 }
 
 // TestTextBlob_RandomAccess_RawTimestamps tests random access with raw timestamp encoding
@@ -965,9 +966,10 @@ func TestTextBlob_TagAtByName_Disabled(t *testing.T) {
 	blob, err := decoder.Decode()
 	require.NoError(t, err)
 
-	// Should return false when tags are disabled
-	_, ok := blob.TagAtByName("test.metric", 0)
-	require.False(t, ok)
+	// Should return empty string with ok=true when tags are disabled
+	tag, ok := blob.TagAtByName("test.metric", 0)
+	require.True(t, ok, "TagAtByName should return true for valid index when tags are disabled")
+	require.Empty(t, tag, "Tag should be empty when tags are disabled")
 }
 
 // TestTextBlob_AtByName_WithoutMetricNameMap tests ByName methods when metricNameMap is nil
