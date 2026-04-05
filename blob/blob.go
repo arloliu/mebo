@@ -223,18 +223,21 @@ func (m indexMaps[T]) HasMetricID(metricID uint64) bool {
 }
 
 // HasMetricName checks if the given metric name exists in the blob.
-// This method looks up by hashed ID if byName is nil(no collisions occurred),
-// then looks up by name if byName exists(collision case).
 //
-// Returns false if the blob doesn't have metric names (byName is nil).
+// Behavior:
+//   - If byName map exists (hash collision detected): performs direct name lookup.
+//   - If byName is nil (normal case): hashes the name to a metric ID and checks
+//     if that ID exists. This works because metric IDs are deterministic xxHash64
+//     hashes of metric names.
+//
+// Returns false if the metric is not found by either lookup path.
 func (m indexMaps[T]) HasMetricName(metricName string) bool {
-	// If byName map exists, use it (collision case)
 	if m.byName != nil {
 		_, ok := m.byName[metricName]
+
 		return ok
 	}
 
-	// Hash fallback: safe when byName is nil (no collisions)
 	return m.HasMetricID(hash.ID(metricName))
 }
 
@@ -292,22 +295,19 @@ func (m indexMaps[T]) GetByID(metricID uint64) (T, bool) {
 // GetByName returns the index entry for the given metric name.
 //
 // Behavior:
-//   - If byName map exists: performs direct lookup (handles collisions correctly)
-//   - If byName is nil: hashes the name and looks up by ID (works when no collisions)
-//
-// This design leverages the collision detection mechanism:
-//   - When collision occurs → byName is populated → direct lookup is used
-//   - When no collision → byName is nil → hash fallback is safe
+//   - If byName map exists (hash collision detected): performs direct name lookup.
+//   - If byName is nil (normal case): hashes the name to a metric ID and looks up
+//     by ID. This works because metric IDs are deterministic xxHash64 hashes of
+//     metric names.
 //
 // Returns (entry, true) if found, or (zero-value, false) if not found.
 func (m indexMaps[T]) GetByName(metricName string) (T, bool) {
-	// If metric name map exists, use it (collision case or StartMetricName used)
 	if m.byName != nil {
 		entry, ok := m.byName[metricName]
+
 		return entry, ok
 	}
 
-	// Hash fallback: safe when byName is nil (no collisions)
 	return m.GetByID(hash.ID(metricName))
 }
 

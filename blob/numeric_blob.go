@@ -103,9 +103,9 @@ func (b NumericBlob) Len(metricID uint64) int {
 // LenByName returns the number of data points for the given metric name.
 //
 // Behavior:
-//   - If no hash collisions occurred (HasMetricNames() == false): automatically hashes the metric name
-//     and falls back to Len(metricID).
-//   - If hash collisions occurred (HasMetricNames() == true): uses the metric name map for reliable lookup.
+//   - If byName map exists (hash collision detected): performs direct name lookup.
+//   - If byName is nil (normal case): hashes the name and falls back to Len(metricID).
+//     This works because metric IDs are deterministic xxHash64 hashes of metric names.
 //
 // Returns 0 if the metric name is not found.
 func (b NumericBlob) LenByName(metricName string) int {
