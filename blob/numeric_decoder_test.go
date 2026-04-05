@@ -2082,3 +2082,201 @@ func TestV2SortedIndex_EmptyBlobStartTime(t *testing.T) {
 	blob := NumericBlob{}
 	require.True(t, blob.StartTime().IsZero())
 }
+
+// ==============================================================================
+// Malformed Index Tests
+// ==============================================================================
+
+// TestNumericDecoder_MalformedIndex_CorruptedMetricCount tests that a blob with an
+// inflated metric count is rejected at decode time due to insufficient index data.
+func TestNumericDecoder_MalformedIndex_CorruptedMetricCount(t *testing.T) {
+	startTime := time.Now()
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, encoder.StartMetricID(1001, 2))
+	require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro(), 1.0, ""))
+	require.NoError(t, encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 2.0, ""))
+	require.NoError(t, encoder.EndMetric())
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Corrupt metric count to a very large value (bytes 12-15)
+	engine := endian.GetLittleEndianEngine()
+	engine.PutUint32(data[12:16], 5000)
+
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err)
+	require.ErrorIs(t, err, errs.ErrInvalidIndexEntrySize)
+}
+
+// TestNumericDecoder_MalformedIndex_PayloadOffsetBeyondData tests that corrupted
+// payload offset values in the header are detected during decode.
+func TestNumericDecoder_MalformedIndex_PayloadOffsetBeyondData(t *testing.T) {
+	startTime := time.Now()
+	createBlob := func() []byte {
+		encoder, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeRaw),
+			WithValueEncoding(format.TypeRaw),
+		)
+		require.NoError(t, err)
+
+		require.NoError(t, encoder.StartMetricID(1001, 1))
+		require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro(), 1.0, ""))
+		require.NoError(t, encoder.EndMetric())
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		return data
+	}
+
+	engine := endian.GetLittleEndianEngine()
+
+	t.Run("CorruptedTimestampOffset", func(t *testing.T) {
+		data := createBlob()
+		engine.PutUint32(data[20:24], uint32(len(data)+100))
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidTimestampPayloadOffset)
+	})
+
+	t.Run("CorruptedValueOffset", func(t *testing.T) {
+		data := createBlob()
+		engine.PutUint32(data[24:28], uint32(len(data)+100))
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidValuePayloadOffset)
+	})
+
+	t.Run("CorruptedTagOffset", func(t *testing.T) {
+		data := createBlob()
+		engine.PutUint32(data[28:32], uint32(len(data)+100))
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidTagPayloadOffset)
+	})
+}
+
+// TestNumericDecoder_MalformedIndex_TruncatedBlob tests decoding a blob that has
+// been truncated after the header (missing payloads).
+func TestNumericDecoder_MalformedIndex_TruncatedBlob(t *testing.T) {
+	startTime := time.Now()
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, encoder.StartMetricID(1001, 3))
+	for i := range 3 {
+		require.NoError(t, encoder.AddDataPoint(startTime.Add(time.Duration(i)*time.Second).UnixMicro(), float64(i), ""))
+	}
+	require.NoError(t, encoder.EndMetric())
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Truncate the blob to just past the header + partial index
+	truncated := data[:section.HeaderSize+4]
+
+	decoder, err := NewNumericDecoder(truncated)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err)
+}
+
+// TestNumericDecoder_MalformedIndex_IndexOffsetExceedsPayload tests that corrupted
+// delta offsets in index entries (producing absolute offsets that exceed decompressed
+// payload sizes) are caught at Decode time rather than causing runtime panics.
+func TestNumericDecoder_MalformedIndex_IndexOffsetExceedsPayload(t *testing.T) {
+	startTime := time.Now()
+	engine := endian.GetLittleEndianEngine()
+
+	createBlob := func() []byte {
+		encoder, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeRaw),
+			WithValueEncoding(format.TypeRaw),
+		)
+		require.NoError(t, err)
+
+		require.NoError(t, encoder.StartMetricID(1001, 2))
+		require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro(), 1.0, ""))
+		require.NoError(t, encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 2.0, ""))
+		require.NoError(t, encoder.EndMetric())
+
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		return data
+	}
+
+	// Index entry starts at HeaderSize (32). Layout per entry (16 bytes):
+	//   [0:8]   MetricID  (uint64)
+	//   [8:10]  Count     (uint16)
+	//   [10:12] TsOffset  (uint16 delta)
+	//   [12:14] ValOffset (uint16 delta)
+	//   [14:16] TagOffset (uint16 delta)
+
+	t.Run("CorruptedTimestampDeltaOffset", func(t *testing.T) {
+		data := createBlob()
+		entryStart := section.HeaderSize
+		// Corrupt the timestamp delta offset to a huge value
+		engine.PutUint16(data[entryStart+10:entryStart+12], 0xFFFF)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidIndexOffsets)
+	})
+
+	t.Run("CorruptedValueDeltaOffset", func(t *testing.T) {
+		data := createBlob()
+		entryStart := section.HeaderSize
+		// Corrupt the value delta offset to a huge value
+		engine.PutUint16(data[entryStart+12:entryStart+14], 0xFFFF)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidIndexOffsets)
+	})
+
+	t.Run("CorruptedTagDeltaOffset", func(t *testing.T) {
+		data := createBlob()
+		entryStart := section.HeaderSize
+		// Corrupt the tag delta offset to a huge value
+		engine.PutUint16(data[entryStart+14:entryStart+16], 0xFFFF)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidIndexOffsets)
+	})
+}

@@ -6,7 +6,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/arloliu/mebo/endian"
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
+	"github.com/arloliu/mebo/section"
 )
 
 // ==============================================================================
@@ -382,4 +385,122 @@ func TestTextDecoder_RoundTrip_AllCompressionTypes(t *testing.T) {
 			require.Equal(t, 1, blob.MetricCount())
 		})
 	}
+}
+
+// ==============================================================================
+// Malformed Index Tests
+// ==============================================================================
+
+// TestTextDecoder_MalformedIndex_CorruptedMetricCount tests that a text blob with an
+// inflated metric count is rejected at decode time due to insufficient index data.
+func TestTextDecoder_MalformedIndex_CorruptedMetricCount(t *testing.T) {
+	data := encodeTestTextBlob(t, WithTextDataCompression(format.CompressionNone))
+
+	// Corrupt metric count to a very large value (bytes 12-15)
+	engine := endian.GetLittleEndianEngine()
+	engine.PutUint32(data[12:16], 5000)
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err)
+	require.ErrorIs(t, err, errs.ErrInvalidIndexEntrySize)
+}
+
+// TestTextDecoder_MalformedIndex_DataOffsetBeyondData tests that a corrupted
+// data offset in the header is detected during decode.
+func TestTextDecoder_MalformedIndex_DataOffsetBeyondData(t *testing.T) {
+	data := encodeTestTextBlob(t, WithTextDataCompression(format.CompressionNone))
+
+	// Corrupt data offset (bytes 20-23) to beyond data length
+	engine := endian.GetLittleEndianEngine()
+	engine.PutUint32(data[20:24], uint32(len(data)+100))
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err)
+	require.ErrorIs(t, err, errs.ErrInvalidTimestampPayloadOffset)
+}
+
+// TestTextDecoder_MalformedIndex_TruncatedBlob tests decoding a text blob that has
+// been truncated after the header (missing data section).
+func TestTextDecoder_MalformedIndex_TruncatedBlob(t *testing.T) {
+	data := encodeTestTextBlob(t, WithTextDataCompression(format.CompressionNone))
+
+	// Truncate to just past the header + partial index
+	truncated := data[:section.HeaderSize+4]
+
+	decoder, err := NewTextDecoder(truncated)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err)
+}
+
+// TestTextDecoder_MalformedIndex_DataSizeMismatch tests that a blob with corrupted
+// DataSize field in the header is detected when decompressing.
+func TestTextDecoder_MalformedIndex_DataSizeMismatch(t *testing.T) {
+	// Use compression so the DataSize check fires during decompression
+	data := encodeTestTextBlob(t, WithTextDataCompression(format.CompressionZstd))
+
+	// Corrupt DataSize (bytes 24-27) to a wrong value
+	engine := endian.GetLittleEndianEngine()
+	engine.PutUint32(data[24:28], 99999)
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err)
+	require.ErrorIs(t, err, errs.ErrDataSizeMismatch)
+}
+
+// TestTextDecoder_MalformedIndex_IndexOffsetExceedsDataSize tests that corrupted
+// index entry offsets that exceed the data section size are caught at Decode time
+// rather than causing uint32 underflow panics.
+func TestTextDecoder_MalformedIndex_IndexOffsetExceedsDataSize(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+
+	// Text index entries start at HeaderSize (32). Layout per entry (16 bytes):
+	//   [0:8]   MetricID  (uint64)
+	//   [8:10]  Count     (uint16)
+	//   [10:12] Reserved  (uint16)
+	//   [12:16] Offset    (uint32)
+
+	t.Run("LastEntryOffsetExceedsDataSize", func(t *testing.T) {
+		data := encodeTestTextBlob(t, WithTextDataCompression(format.CompressionNone))
+
+		// The blob has 2 metrics. Corrupt the last metric's Offset to exceed DataSize.
+		// Second index entry starts at HeaderSize + TextIndexEntrySize = 32 + 16 = 48
+		secondEntryStart := section.HeaderSize + section.TextIndexEntrySize
+		engine.PutUint32(data[secondEntryStart+12:secondEntryStart+16], 0xFFFFFFFF)
+
+		decoder, err := NewTextDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidIndexOffsets)
+	})
+
+	t.Run("NonMonotonicOffsets", func(t *testing.T) {
+		data := encodeTestTextBlob(t, WithTextDataCompression(format.CompressionNone))
+
+		// Corrupt the first metric's Offset to be LARGER than the second metric's Offset.
+		// This creates a non-monotonic sequence which would cause uint32 underflow in
+		// size calculation: entry[1].Offset - entry[0].Offset.
+		// First entry's Offset field is at HeaderSize+12 = 44.
+		firstEntryStart := section.HeaderSize
+		engine.PutUint32(data[firstEntryStart+12:firstEntryStart+16], 0xFFFF)
+
+		decoder, err := NewTextDecoder(data)
+		require.NoError(t, err)
+
+		_, err = decoder.Decode()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrInvalidIndexOffsets)
+	})
 }
