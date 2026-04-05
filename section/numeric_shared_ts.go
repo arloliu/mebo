@@ -82,7 +82,7 @@ func (t *SharedTimestampTable) WriteToSlice(data []byte, offset int, engine endi
 //   - error: Parse or validation errors
 func ParseSharedTimestampTable(data []byte, engine endian.EndianEngine, metricCount int) (SharedTimestampTable, error) {
 	if len(data) < 2 {
-		return SharedTimestampTable{}, fmt.Errorf("%w: shared timestamp table too short", errs.ErrInvalidHeaderFlags)
+		return SharedTimestampTable{}, fmt.Errorf("%w: shared timestamp table too short", errs.ErrInvalidSharedTimestampTable)
 	}
 
 	groupCount := int(engine.Uint16(data[0:2]))
@@ -114,7 +114,7 @@ func ParseSharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 		offset += 2
 
 		if canonicalIdx >= metricCount {
-			return SharedTimestampTable{}, fmt.Errorf("%w: canonical index %d exceeds metric count %d", errs.ErrInvalidHeaderFlags, canonicalIdx, metricCount)
+			return SharedTimestampTable{}, fmt.Errorf("%w: canonical index %d exceeds metric count %d", errs.ErrInvalidSharedTimestampTable, canonicalIdx, metricCount)
 		}
 		if status[canonicalIdx] == 1 {
 			return SharedTimestampTable{}, fmt.Errorf("%w: canonical index %d appears in multiple groups", errs.ErrInvalidSharedTimestampTable, canonicalIdx)
@@ -129,7 +129,7 @@ func ParseSharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 		for j := range memberCount {
 			idx := int(engine.Uint16(data[offset : offset+2]))
 			if idx >= metricCount {
-				return SharedTimestampTable{}, fmt.Errorf("%w: shared index %d exceeds metric count %d", errs.ErrInvalidHeaderFlags, idx, metricCount)
+				return SharedTimestampTable{}, fmt.Errorf("%w: shared index %d exceeds metric count %d", errs.ErrInvalidSharedTimestampTable, idx, metricCount)
 			}
 			if idx == canonicalIdx {
 				return SharedTimestampTable{}, fmt.Errorf("%w: canonical index %d cannot share with itself", errs.ErrInvalidSharedTimestampTable, canonicalIdx)
@@ -174,7 +174,7 @@ func ApplySharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 		return fmt.Errorf("%w: index entries shorter than metric count", errs.ErrInvalidIndexEntrySize)
 	}
 	if len(data) < 2 {
-		return fmt.Errorf("%w: shared timestamp table too short", errs.ErrInvalidHeaderFlags)
+		return fmt.Errorf("%w: shared timestamp table too short", errs.ErrInvalidSharedTimestampTable)
 	}
 
 	groupCount := int(engine.Uint16(data[0:2]))
@@ -187,7 +187,7 @@ func ApplySharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 
 	for i := range groupCount {
 		if offset+4 > len(data) {
-			return fmt.Errorf("%w: shared timestamp table truncated at group %d", errs.ErrInvalidHeaderFlags, i)
+			return fmt.Errorf("%w: shared timestamp table truncated at group %d", errs.ErrInvalidSharedTimestampTable, i)
 		}
 
 		canonicalIdx := int(engine.Uint16(data[offset : offset+2]))
@@ -197,10 +197,10 @@ func ApplySharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 		offset += 2
 
 		if offset+2*memberCount > len(data) {
-			return fmt.Errorf("%w: shared timestamp table truncated at group %d members", errs.ErrInvalidHeaderFlags, i)
+			return fmt.Errorf("%w: shared timestamp table truncated at group %d members", errs.ErrInvalidSharedTimestampTable, i)
 		}
 		if canonicalIdx >= metricCount {
-			return fmt.Errorf("%w: canonical index %d exceeds metric count %d", errs.ErrInvalidHeaderFlags, canonicalIdx, metricCount)
+			return fmt.Errorf("%w: canonical index %d exceeds metric count %d", errs.ErrInvalidSharedTimestampTable, canonicalIdx, metricCount)
 		}
 		if status[canonicalIdx] == 1 {
 			return fmt.Errorf("%w: canonical index %d appears in multiple groups", errs.ErrInvalidSharedTimestampTable, canonicalIdx)
@@ -215,7 +215,7 @@ func ApplySharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 		for range memberCount {
 			idx := int(engine.Uint16(data[offset : offset+2]))
 			if idx >= metricCount {
-				return fmt.Errorf("%w: shared index %d exceeds metric count %d", errs.ErrInvalidHeaderFlags, idx, metricCount)
+				return fmt.Errorf("%w: shared index %d exceeds metric count %d", errs.ErrInvalidSharedTimestampTable, idx, metricCount)
 			}
 			if idx == canonicalIdx {
 				return fmt.Errorf("%w: canonical index %d cannot share with itself", errs.ErrInvalidSharedTimestampTable, canonicalIdx)
@@ -247,7 +247,7 @@ func prescanSharedTimestampTable(data []byte, groupCount int, engine endian.Endi
 
 	for i := range groupCount {
 		if offset+4 > len(data) {
-			return 0, fmt.Errorf("%w: shared timestamp table truncated at group %d", errs.ErrInvalidHeaderFlags, i)
+			return 0, fmt.Errorf("%w: shared timestamp table truncated at group %d", errs.ErrInvalidSharedTimestampTable, i)
 		}
 
 		offset += 2 // skip canonical index
@@ -256,7 +256,7 @@ func prescanSharedTimestampTable(data []byte, groupCount int, engine endian.Endi
 		totalMembers += memberCount
 
 		if offset+2*memberCount > len(data) {
-			return 0, fmt.Errorf("%w: shared timestamp table truncated at group %d members", errs.ErrInvalidHeaderFlags, i)
+			return 0, fmt.Errorf("%w: shared timestamp table truncated at group %d members", errs.ErrInvalidSharedTimestampTable, i)
 		}
 
 		offset += 2 * memberCount

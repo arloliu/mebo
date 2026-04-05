@@ -101,6 +101,69 @@ func TestParseSharedTimestampTableRejectsCanonicalUsedAsShared(t *testing.T) {
 	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
 }
 
+func TestParseSharedTimestampTableRejectsTooShortTable(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+
+	_, err := ParseSharedTimestampTable([]byte{0x01}, engine, 2)
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
+func TestParseSharedTimestampTableRejectsTruncatedGroupHeader(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	data := []byte{0x01, 0x00, 0x00}
+
+	_, err := ParseSharedTimestampTable(data, engine, 2)
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
+func TestParseSharedTimestampTableRejectsCanonicalOutOfRange(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	data := []byte{
+		0x01, 0x00, // group count
+		0x02, 0x00, // canonical index = 2
+		0x00, 0x00, // member count = 0
+	}
+
+	_, err := ParseSharedTimestampTable(data, engine, 2)
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
+func TestApplySharedTimestampTableRejectsTooShortTable(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	entries := makeSharedTimestampBenchmarkEntries(2)
+
+	err := ApplySharedTimestampTable([]byte{0x01}, engine, 2, entries)
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
+func TestApplySharedTimestampTableRejectsTruncatedMembers(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	entries := makeSharedTimestampBenchmarkEntries(3)
+	data := []byte{
+		0x01, 0x00, // group count
+		0x00, 0x00, // canonical index = 0
+		0x02, 0x00, // member count = 2 (but only one member follows)
+		0x01, 0x00, // shared index 1
+	}
+
+	err := ApplySharedTimestampTable(data, engine, 3, entries)
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
+func TestApplySharedTimestampTableRejectsSharedIndexOutOfRange(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	entries := makeSharedTimestampBenchmarkEntries(2)
+	data := []byte{
+		0x01, 0x00, // group count
+		0x00, 0x00, // canonical index = 0
+		0x01, 0x00, // member count = 1
+		0x02, 0x00, // shared index = 2 (out of range)
+	}
+
+	err := ApplySharedTimestampTable(data, engine, 2, entries)
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
 func BenchmarkParseSharedTimestampTable(b *testing.B) {
 	scenarios := []struct {
 		name        string

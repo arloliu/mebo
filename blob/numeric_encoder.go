@@ -544,23 +544,14 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 		rawTsBytes, rawValBytes, rawTagBytes = e.sortEntriesByMetricID(rawTsBytes, rawValBytes, rawTagBytes)
 	}
 
-	// Detect shared timestamp groups and build dedup payload if opt-in enabled
-
+	// Detect shared timestamp groups and build dedup payload if opt-in enabled.
 	var sharedTable section.SharedTimestampTable
 	var sharedTableSize int
 
-	if e.sharedTimestamps {
-		sharedGroups := e.detectSharedTimestamps(rawTsBytes)
-
-		if len(sharedGroups) > 0 {
-			var dedupTsBytes []byte
-			dedupTsBytes, sharedTable = e.buildDedupTsPayload(rawTsBytes, sharedGroups)
-			rawTsBytes = dedupTsBytes
-			sharedTableSize = sharedTable.Size()
-
-			// Set shared timestamps flag bit
-			finalHeader.Flag.SetHasSharedTimestamps(true)
-		}
+	rawTsBytes, sharedTable, sharedTableSize = e.maybeBuildSharedTimestampPayload(rawTsBytes)
+	if sharedTableSize > 0 {
+		// Set shared timestamps flag bit
+		finalHeader.Flag.SetHasSharedTimestamps(true)
 	}
 
 	// Compress timestamp and value payloads
@@ -663,6 +654,23 @@ func (e *NumericEncoder) releasePooledSlices() {
 		e.cleanupTag()
 		e.cleanupTag = nil
 	}
+}
+
+// maybeBuildSharedTimestampPayload deduplicates shared timestamp sequences when enabled.
+// It returns original bytes unchanged when no sharing is detected.
+func (e *NumericEncoder) maybeBuildSharedTimestampPayload(rawTsBytes []byte) ([]byte, section.SharedTimestampTable, int) {
+	if !e.sharedTimestamps {
+		return rawTsBytes, section.SharedTimestampTable{}, 0
+	}
+
+	sharedGroups := e.detectSharedTimestamps(rawTsBytes)
+	if len(sharedGroups) == 0 {
+		return rawTsBytes, section.SharedTimestampTable{}, 0
+	}
+
+	dedupTsBytes, sharedTable := e.buildDedupTsPayload(rawTsBytes, sharedGroups)
+
+	return dedupTsBytes, sharedTable, sharedTable.Size()
 }
 
 // sortEntriesByMetricID sorts index entries by MetricID for V2 layout and reorders

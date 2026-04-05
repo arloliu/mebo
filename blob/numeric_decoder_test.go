@@ -1730,6 +1730,139 @@ func TestNumericDecoder_V2MissingSharedTimestampTable(t *testing.T) {
 	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
 }
 
+func TestNumericDecoder_V2MalformedSharedTimestampTable_CanonicalOutOfRange(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	for metricIdx := range 2 {
+		require.NoError(t, encoder.StartMetricID(uint64(12001+metricIdx), 3))
+		for pointIdx := range 3 {
+			ts := startTime.Add(time.Duration(pointIdx) * time.Second).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, float64(metricIdx*10+pointIdx), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	corrupted := make([]byte, len(data))
+	copy(corrupted, data)
+
+	header, err := section.ParseNumericHeader(corrupted)
+	require.NoError(t, err)
+
+	indexEnd := int(header.IndexOffset) + int(header.MetricCount)*section.NumericIndexEntrySize
+	engine := header.Flag.GetEndianEngine()
+
+	// Malformed table: groupCount=1, canonicalIdx=metricCount(out of range), memberCount=0.
+	engine.PutUint16(corrupted[indexEnd:indexEnd+2], 1)
+	engine.PutUint16(corrupted[indexEnd+2:indexEnd+4], uint16(header.MetricCount))
+	engine.PutUint16(corrupted[indexEnd+4:indexEnd+6], 0)
+	engine.PutUint32(corrupted[20:24], uint32(indexEnd+6))
+
+	decoder, err := NewNumericDecoder(corrupted)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
+func TestNumericDecoder_V2MalformedSharedTimestampTable_TruncatedMembers(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	for metricIdx := range 2 {
+		require.NoError(t, encoder.StartMetricID(uint64(13001+metricIdx), 3))
+		for pointIdx := range 3 {
+			ts := startTime.Add(time.Duration(pointIdx) * time.Second).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, float64(metricIdx*10+pointIdx), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	corrupted := make([]byte, len(data))
+	copy(corrupted, data)
+
+	header, err := section.ParseNumericHeader(corrupted)
+	require.NoError(t, err)
+
+	indexEnd := int(header.IndexOffset) + int(header.MetricCount)*section.NumericIndexEntrySize
+	engine := header.Flag.GetEndianEngine()
+
+	// Malformed table: groupCount=1, canonicalIdx=0, memberCount=1 but no member bytes.
+	engine.PutUint16(corrupted[indexEnd:indexEnd+2], 1)
+	engine.PutUint16(corrupted[indexEnd+2:indexEnd+4], 0)
+	engine.PutUint16(corrupted[indexEnd+4:indexEnd+6], 1)
+	engine.PutUint32(corrupted[20:24], uint32(indexEnd+6))
+
+	decoder, err := NewNumericDecoder(corrupted)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
+func TestNumericDecoder_V2MalformedSharedTimestampTable_SharedIndexOutOfRange(t *testing.T) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	for metricIdx := range 2 {
+		require.NoError(t, encoder.StartMetricID(uint64(14001+metricIdx), 3))
+		for pointIdx := range 3 {
+			ts := startTime.Add(time.Duration(pointIdx) * time.Second).UnixMicro()
+			require.NoError(t, encoder.AddDataPoint(ts, float64(metricIdx*10+pointIdx), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	corrupted := make([]byte, len(data))
+	copy(corrupted, data)
+
+	header, err := section.ParseNumericHeader(corrupted)
+	require.NoError(t, err)
+
+	indexEnd := int(header.IndexOffset) + int(header.MetricCount)*section.NumericIndexEntrySize
+	engine := header.Flag.GetEndianEngine()
+
+	// Malformed table: groupCount=1, canonicalIdx=0, memberCount=1, member=metricCount(out of range).
+	engine.PutUint16(corrupted[indexEnd:indexEnd+2], 1)
+	engine.PutUint16(corrupted[indexEnd+2:indexEnd+4], 0)
+	engine.PutUint16(corrupted[indexEnd+4:indexEnd+6], 1)
+	engine.PutUint16(corrupted[indexEnd+6:indexEnd+8], uint16(header.MetricCount))
+	engine.PutUint32(corrupted[20:24], uint32(indexEnd+8))
+
+	decoder, err := NewNumericDecoder(corrupted)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.ErrorIs(t, err, errs.ErrInvalidSharedTimestampTable)
+}
+
 // ==============================================================================
 // V2 Sorted Index Tests
 // ==============================================================================
