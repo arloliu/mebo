@@ -327,6 +327,14 @@ func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloa
 	// Calculate the last entry's lengths using decompressed payload sizes
 	if d.metricCount > 0 {
 		lastEntry := &indexEntries[d.metricCount-1]
+
+		// Validate last entry offsets don't exceed payload sizes
+		if lastEntry.TimestampOffset > tsPayloadSize ||
+			lastEntry.ValueOffset > valPayloadSize ||
+			lastEntry.TagOffset > tagPayloadSize {
+			return nil, nil, errs.ErrInvalidIndexOffsets
+		}
+
 		lastEntry.TimestampLength = tsPayloadSize - lastEntry.TimestampOffset
 		lastEntry.ValueLength = valPayloadSize - lastEntry.ValueOffset
 		lastEntry.TagLength = tagPayloadSize - lastEntry.TagOffset
