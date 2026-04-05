@@ -154,6 +154,10 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		if err := section.ApplySharedTimestampTable(sharedTableData, d.engine, d.metricCount, indexEntries); err != nil {
 			return blob, fmt.Errorf("failed to parse shared timestamp table: %w", err)
 		}
+
+		// Build sharedTsCache: pre-decode timestamps for offsets used by multiple metrics.
+		// After ApplySharedTimestampTable, shared metrics have identical TimestampOffset values.
+		d.buildSharedTsCache(&blob, indexEntries)
 	}
 
 	// Step 4: Build index — V2 uses sorted slice, V1 uses map
@@ -386,4 +390,36 @@ func (d *NumericDecoder) decompressPayloads(tsOffset, valOffset, tagOffset int) 
 		valPayload: valPayload,
 		tagPayload: tagPayload,
 	}, nil
+}
+
+// buildSharedTsCache pre-decodes timestamps for offsets shared by multiple metrics.
+// This avoids redundant decoding when iterating timestamps across many metrics
+// that share the same underlying timestamp data.
+func (d *NumericDecoder) buildSharedTsCache(blob *NumericBlob, indexEntries []section.NumericIndexEntry) {
+	// Count how many metrics reference each TimestampOffset
+	refCount := make(map[int]int, d.metricCount)
+	for i := range indexEntries[:d.metricCount] {
+		refCount[indexEntries[i].TimestampOffset]++
+	}
+
+	// Pre-decode only offsets used by more than one metric
+	cache := make(map[int][]int64)
+	for i := range indexEntries[:d.metricCount] {
+		entry := &indexEntries[i]
+		if refCount[entry.TimestampOffset] <= 1 {
+			continue
+		}
+		if _, exists := cache[entry.TimestampOffset]; exists {
+			continue
+		}
+
+		tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+		decoded := make([]int64, entry.Count)
+		produced := blob.decodeTimestampsSlice(tsBytes, entry.Count, decoded)
+		cache[entry.TimestampOffset] = decoded[:produced]
+	}
+
+	if len(cache) > 0 {
+		blob.sharedTsCache = cache
+	}
 }
