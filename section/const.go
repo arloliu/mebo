@@ -16,9 +16,10 @@ const (
 	MagicNumberMask      = 0xFFF0 // Mask for magic number (bits 4-15)
 
 	// Magic numbers (bits 4-15)
-	MagicNumericV1Opt = 0xEA10 // MagicNumericV1Opt is a version 1 magic number for float blob format.
-	MagicNumericV2Opt = 0xEA20 // MagicNumericV2Opt is a version 2 magic number for float blob format with shared timestamps.
-	MagicTextV1Opt    = 0xEB10 // MagicTextV1 is a version 1 magic number for text blob format.
+	MagicNumericV1Opt    = 0xEA10 // MagicNumericV1Opt is a version 1 magic number for float blob format.
+	MagicNumericV2Opt    = 0xEA20 // MagicNumericV2Opt is a version 2 magic number for float blob format with shared timestamps.
+	MagicNumericV2ExtOpt = 0xEA30 // MagicNumericV2ExtOpt is a version 2 magic number with extended (32-byte) index entries.
+	MagicTextV1Opt       = 0xEB10 // MagicTextV1 is a version 1 magic number for text blob format.
 
 	// Timestamp encodings (bits 0-3) - using types package constants
 	TimestampEncodingNRaw = uint8(format.TypeRaw)   // TimestampTypeRaw represents raw timestamps with no format.
@@ -52,10 +53,17 @@ const (
 
 // offset and section sizes in the blob file
 const (
-	HeaderSize            = 32             // fixed header size in bytes (shared by all blob types)
-	NumericIndexEntrySize = 16             // fixed index entry size for numeric value blob in bytes
-	TextIndexEntrySize    = 16             // fixed index entry size for text value blob in bytes
-	IndexOffsetOffset     = HeaderSize     // byte offset where index section starts
-	NumericMaxOffset      = math.MaxUint16 // maximum offset value of float value blob index
-	TextMaxOffset         = math.MaxUint32 // maximum offset value of text value blob index
+	HeaderSize               = 32                           // fixed header size in bytes (shared by all blob types)
+	NumericIndexEntrySize    = 16                           // fixed index entry size for numeric value blob in bytes (compact, 0xEA20)
+	NumericExtIndexEntrySize = 32                           // fixed index entry size for numeric value blob in bytes (extended, 0xEA30)
+	TextIndexEntrySize       = 16                           // fixed index entry size for text value blob in bytes
+	IndexOffsetOffset        = HeaderSize                   // byte offset where index section starts
+	NumericMaxOffset         = math.MaxUint16               // maximum offset delta of compact (uint16) numeric index entries
+	NumericExtMaxOffset      = math.MaxUint32 & math.MaxInt // maximum offset delta of extended (uint32) numeric index entries, capped for 32-bit safety
+	NumericMaxCount          = math.MaxUint32 & math.MaxInt // maximum data point count per metric (uint32 Count field), capped for 32-bit safety
+	TextMaxOffset            = math.MaxUint32               // maximum offset value of text value blob index
+
+	// maxSafeUint32 is the largest uint32 value safely convertible to int on the current platform.
+	// On 64-bit: math.MaxUint32 (0xFFFFFFFF); on 32-bit: math.MaxInt32 (0x7FFFFFFF).
+	maxSafeUint32 = uint32(math.MaxUint32 & math.MaxInt)
 )

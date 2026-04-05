@@ -2838,3 +2838,558 @@ func TestAddFromRows_DataIntegrity(t *testing.T) {
 		require.Equal(t, row.Tag, tag)
 	}
 }
+
+// ==============================================================================
+// Adaptive Index Entry (V2 Format Selection) Tests
+// ==============================================================================
+
+// TestNumericEncoder_V1_DeltaGuardPreserved verifies that V1 rejects data point counts
+// that would overflow uint16 offset deltas at StartMetricID time (fail-fast).
+func TestNumericEncoder_V1_DeltaGuardPreserved(t *testing.T) {
+	startTime := time.Now()
+	// Raw encoding: MaxDataPoints() = 65535 / 8 = 8191
+	numPoints := 8192
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, section.NumericMaxOffset/8, encoder.MaxDataPoints())
+
+	err = encoder.StartMetricID(1001, numPoints)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errs.ErrInvalidNumOfDataPoints)
+}
+
+func TestValidateBlobSize(t *testing.T) {
+	tests := []struct {
+		name     string
+		blobSize int
+		wantErr  bool
+	}{
+		{name: "below limit", blobSize: maxBlobBytes - 1, wantErr: false},
+		{name: "at limit", blobSize: maxBlobBytes, wantErr: false},
+		{name: "above limit", blobSize: maxBlobBytes + 1, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBlobSize(tt.blobSize)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.ErrorIs(t, err, errs.ErrBlobSizeExceedsLimit)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestNumericEncoder_V2AdaptiveIndexFormat verifies that the V2 encoder automatically
+// selects compact (0xEA20, 16B entries) or extended (0xEA30, 32B entries) based on
+// per-metric offset deltas and data point counts, and that all formats decode correctly.
+//
+// Test matrix:
+//
+//	| Encoding       | Metrics              | Trigger     | Expected |
+//	|----------------|----------------------|-------------|----------|
+//	| raw            | 1×8191               | none        | compact  |
+//	| raw            | 5 varied (10–1000)   | none        | compact  |
+//	| delta+gorilla  | 4 varied (5–200)     | none        | compact  |
+//	| raw            | 2×8192               | offset      | extended |
+//	| raw            | [5, 9000, 3]         | offset (1)  | extended |
+//	| delta+gorilla  | 1×70000              | count       | extended |
+//	| delta+gorilla  | [100, 70000, 50, 500]| count (1)   | extended |
+func TestNumericEncoder_V2AdaptiveIndexFormat(t *testing.T) {
+	type metricSpec struct {
+		id     uint64
+		points int
+		value  float64
+	}
+
+	tests := []struct {
+		name      string
+		tsEnc     format.EncodingType
+		valEnc    format.EncodingType
+		metrics   []metricSpec
+		wantMagic uint16
+	}{
+		// --- Compact mode (0xEA20): all deltas and counts fit in uint16 ---
+		{
+			name:  "compact/raw/single metric at offset boundary",
+			tsEnc: format.TypeRaw, valEnc: format.TypeRaw,
+			// 8191 × 8 bytes = 65528 ≤ 65535 (NumericMaxOffset)
+			metrics:   []metricSpec{{id: 1001, points: 8191, value: 1.0}},
+			wantMagic: section.MagicNumericV2Opt,
+		},
+		{
+			name:  "compact/raw/multiple metrics varying sizes",
+			tsEnc: format.TypeRaw, valEnc: format.TypeRaw,
+			metrics: []metricSpec{
+				{id: 1001, points: 10, value: 1.0},
+				{id: 1002, points: 500, value: 2.0},
+				{id: 1003, points: 1, value: 3.0},
+				{id: 1004, points: 1000, value: 4.0},
+				{id: 1005, points: 50, value: 5.0},
+			},
+			wantMagic: section.MagicNumericV2Opt,
+		},
+		{
+			name:  "compact/delta+gorilla/multiple metrics varying sizes",
+			tsEnc: format.TypeDelta, valEnc: format.TypeGorilla,
+			metrics: []metricSpec{
+				{id: 1001, points: 5, value: 10.0},
+				{id: 1002, points: 200, value: 20.0},
+				{id: 1003, points: 50, value: 30.0},
+				{id: 1004, points: 100, value: 40.0},
+			},
+			wantMagic: section.MagicNumericV2Opt,
+		},
+		// --- Extended mode (0xEA30): offset delta exceeds uint16 ---
+		{
+			name:  "extended/raw/offset trigger/uniform large metrics",
+			tsEnc: format.TypeRaw, valEnc: format.TypeRaw,
+			// 8192 × 8 bytes = 65536 > 65535
+			metrics: []metricSpec{
+				{id: 1001, points: 8192, value: 1.5},
+				{id: 1002, points: 8192, value: 2.5},
+			},
+			wantMagic: section.MagicNumericV2ExtOpt,
+		},
+		{
+			name:  "extended/raw/offset trigger/one large among small",
+			tsEnc: format.TypeRaw, valEnc: format.TypeRaw,
+			// Metric 1002: 9000 × 8 = 72000 > 65535
+			metrics: []metricSpec{
+				{id: 1001, points: 5, value: 1.0},
+				{id: 1002, points: 9000, value: 3.14},
+				{id: 1003, points: 3, value: 0.5},
+			},
+			wantMagic: section.MagicNumericV2ExtOpt,
+		},
+		// --- Extended mode (0xEA30): count exceeds uint16 ---
+		{
+			name:  "extended/delta+gorilla/count trigger/single metric",
+			tsEnc: format.TypeDelta, valEnc: format.TypeGorilla,
+			// 70000 > 65535; delta+gorilla keeps offset deltas small (constant values)
+			metrics:   []metricSpec{{id: 1001, points: 70_000, value: 42.0}},
+			wantMagic: section.MagicNumericV2ExtOpt,
+		},
+		{
+			name:  "extended/delta+gorilla/count trigger/one large among small",
+			tsEnc: format.TypeDelta, valEnc: format.TypeGorilla,
+			// Metric 3002: 70000 > 65535; others well within uint16
+			metrics: []metricSpec{
+				{id: 3001, points: 100, value: 1.1},
+				{id: 3002, points: 70_000, value: 2.2},
+				{id: 3003, points: 50, value: 3.3},
+				{id: 3004, points: 500, value: 4.4},
+			},
+			wantMagic: section.MagicNumericV2ExtOpt,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			startTime := time.Now()
+			encoder, err := NewNumericEncoder(startTime,
+				WithTimestampEncoding(tt.tsEnc),
+				WithValueEncoding(tt.valEnc),
+				WithTimestampCompression(format.CompressionNone),
+				WithValueCompression(format.CompressionNone),
+				WithBlobLayoutV2(),
+			)
+			require.NoError(t, err)
+
+			// Encode all metrics
+			baseTS := startTime.UnixMicro()
+			for _, m := range tt.metrics {
+				err = encoder.StartMetricID(m.id, m.points)
+				require.NoError(t, err)
+
+				for i := range m.points {
+					err = encoder.AddDataPoint(baseTS+int64(i)*1_000_000, m.value, "")
+					require.NoError(t, err)
+				}
+				err = encoder.EndMetric()
+				require.NoError(t, err)
+			}
+
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+
+			// Verify format selection
+			options := uint16(data[0]) | (uint16(data[1]) << 8)
+			magic := options & section.MagicNumberMask
+			require.Equal(t, tt.wantMagic, magic)
+
+			// Decode and verify round-trip
+			decoder, err := NewNumericDecoder(data)
+			require.NoError(t, err)
+
+			blob, err := decoder.Decode()
+			require.NoError(t, err)
+			require.Equal(t, len(tt.metrics), blob.MetricCount())
+
+			// Verify data: full check for ≤10k points, spot-check for larger
+			for _, m := range tt.metrics {
+				if m.points <= 10_000 {
+					for i := range m.points {
+						ts, ok := blob.TimestampAt(m.id, i)
+						require.True(t, ok, "metric %d, point %d", m.id, i)
+						require.Equal(t, baseTS+int64(i)*1_000_000, ts)
+
+						val, ok := blob.ValueAt(m.id, i)
+						require.True(t, ok, "metric %d, point %d", m.id, i)
+						require.InDelta(t, m.value, val, 1e-10)
+					}
+				} else {
+					checkIdxs := []int{0, m.points / 4, m.points / 2, 3 * m.points / 4, m.points - 1}
+					for _, idx := range checkIdxs {
+						ts, ok := blob.TimestampAt(m.id, idx)
+						require.True(t, ok, "metric %d, point %d", m.id, idx)
+						require.Equal(t, baseTS+int64(idx)*1_000_000, ts)
+
+						val, ok := blob.ValueAt(m.id, idx)
+						require.True(t, ok, "metric %d, point %d", m.id, idx)
+						require.InDelta(t, m.value, val, 1e-10)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestNumericEncoder_V2_LastMetricLargePayloadSortPromotesExtended verifies that when the
+// last metric (in insertion order) has a payload exceeding uint16 range, sorting by MetricID
+// correctly promotes to extended format. Before sorting, the last metric's payload size is
+// implicit (not stored in any entry's delta). After sorting, it can move to a non-last
+// position, making its large payload appear as an explicit delta that would overflow uint16
+// in compact format.
+func TestNumericEncoder_V2_LastMetricLargePayloadSortPromotesExtended(t *testing.T) {
+	startTime := time.Now()
+	baseTS := startTime.UnixMicro()
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+		WithBlobLayoutV2(),
+	)
+	require.NoError(t, err)
+
+	// Insert metrics so the large one is LAST in insertion order but has the LOWEST MetricID.
+	// After sorting by MetricID, it moves from last (implicit delta) to first position,
+	// making its 72000-byte payload appear as entry[1]'s explicit delta.
+	//
+	// Insertion order: {5000: 5pts}, {3000: 3pts}, {1000: 9000pts}
+	// Sorted order:    {1000: 9000pts}, {3000: 3pts}, {5000: 5pts}
+	// Post-sort deltas: entry[0]=0, entry[1]=9000×8=72000 (>65535!), entry[2]=3×8=24
+	type metricSpec struct {
+		id     uint64
+		points int
+		value  float64
+	}
+	metrics := []metricSpec{
+		{id: 5000, points: 5, value: 1.0},    // 5 × 8 = 40 bytes per stream
+		{id: 3000, points: 3, value: 2.0},    // 3 × 8 = 24 bytes per stream
+		{id: 1000, points: 9000, value: 3.0}, // 9000 × 8 = 72000 bytes > 65535
+	}
+
+	for _, m := range metrics {
+		err = encoder.StartMetricID(m.id, m.points)
+		require.NoError(t, err)
+
+		for i := range m.points {
+			err = encoder.AddDataPoint(baseTS+int64(i)*1_000_000, m.value, "")
+			require.NoError(t, err)
+		}
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Must select extended (0xEA30) because after sorting, metric 1000's 72000-byte
+	// payload becomes an explicit delta exceeding uint16.
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2ExtOpt), magic,
+		"expected extended format 0xEA30: last-inserted large metric must trigger upgrade after sort")
+
+	// Verify round-trip decode
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, len(metrics), blob.MetricCount())
+
+	// Verify all metrics decode correctly (sorted order: 1000, 3000, 5000)
+	for _, m := range metrics {
+		for i := range m.points {
+			ts, ok := blob.TimestampAt(m.id, i)
+			require.True(t, ok, "metric %d, point %d", m.id, i)
+			require.Equal(t, baseTS+int64(i)*1_000_000, ts)
+
+			val, ok := blob.ValueAt(m.id, i)
+			require.True(t, ok, "metric %d, point %d", m.id, i)
+			require.InDelta(t, m.value, val, 1e-10)
+		}
+	}
+}
+
+func TestNumericEncoder_V2ExtendedWithSharedTimestamps(t *testing.T) {
+	startTime := time.Now()
+	baseTS := startTime.UnixMicro()
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithTimestampCompression(format.CompressionNone),
+		WithValueCompression(format.CompressionNone),
+		WithBlobLayoutV2(),
+		WithSharedTimestamps(),
+	)
+	require.NoError(t, err)
+
+	numPoints := 70_000 // exceeds uint16, triggers extended mode via count
+	interval := int64(1_000_000)
+	metricIDs := []uint64{1001, 1002, 1003}
+
+	// All metrics share identical timestamps — triggers shared timestamp deduplication.
+	// Count > 65535 triggers extended index entry selection (0xEA30, 32B entries).
+	for _, metricID := range metricIDs {
+		err = encoder.StartMetricID(metricID, numPoints)
+		require.NoError(t, err)
+
+		for i := range numPoints {
+			err = encoder.AddDataPoint(baseTS+int64(i)*interval, float64(metricID), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify magic is extended (0xEA30)
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2ExtOpt), magic, "expected extended format 0xEA30")
+
+	// Verify shared timestamps flag is set
+	require.NotZero(t, options&section.SharedTimestampsMask, "expected shared timestamps flag")
+
+	// Decode and verify round-trip
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, len(metricIDs), blob.MetricCount())
+
+	// Spot-check data points for each metric
+	for _, metricID := range metricIDs {
+		checkIdxs := []int{0, numPoints / 4, numPoints / 2, 3 * numPoints / 4, numPoints - 1}
+		for _, idx := range checkIdxs {
+			ts, ok := blob.TimestampAt(metricID, idx)
+			require.True(t, ok, "metric %d, point %d", metricID, idx)
+			require.Equal(t, baseTS+int64(idx)*interval, ts)
+
+			val, ok := blob.ValueAt(metricID, idx)
+			require.True(t, ok, "metric %d, point %d", metricID, idx)
+			require.InDelta(t, float64(metricID), val, 1e-10)
+		}
+	}
+}
+
+// TestNumericEncoder_V2MaxDeltaChainStaysCompact verifies that many metrics whose
+// individual offset deltas are each below math.MaxUint16, but whose cumulative sum
+// far exceeds math.MaxUint16, stay in Compact mode (since delta encoding means each
+// individual delta must fit, not the sum).
+func TestNumericEncoder_V2MaxDeltaChainStaysCompact(t *testing.T) {
+	startTime := time.Now()
+	baseTS := startTime.UnixMicro()
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+		WithBlobLayoutV2(),
+	)
+	require.NoError(t, err)
+
+	// 8191 points × 8 bytes/point = 65528 bytes per metric, just below uint16 max (65535).
+	// 10 such metrics → cumulative offset = 655,280, far exceeding uint16.
+	// Each delta is 65528, which fits in uint16, so compact mode should be selected.
+	numMetrics := 10
+	pointsPerMetric := 8191
+
+	for i := range numMetrics {
+		metricID := uint64(2001 + i)
+		err = encoder.StartMetricID(metricID, pointsPerMetric)
+		require.NoError(t, err)
+
+		for j := range pointsPerMetric {
+			err = encoder.AddDataPoint(baseTS+int64(j)*1_000_000, float64(i)+0.5, "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify magic is compact (0xEA20), not extended
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2Opt), magic, "expected compact format 0xEA20")
+
+	// Verify round-trip decode
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, numMetrics, blob.MetricCount())
+
+	// Spot-check first and last metric
+	for _, idx := range []int{0, numMetrics - 1} {
+		metricID := uint64(2001 + idx)
+		ts, ok := blob.TimestampAt(metricID, 0)
+		require.True(t, ok)
+		require.Equal(t, baseTS, ts)
+
+		val, ok := blob.ValueAt(metricID, pointsPerMetric-1)
+		require.True(t, ok)
+		require.InDelta(t, float64(idx)+0.5, val, 1e-10)
+	}
+}
+
+// TestNumericEncoder_V2SingleTriggerExtended verifies that when 100 metrics are encoded
+// and only the 50th has a delta exceeding uint16, the entire blob switches to Extended mode.
+func TestNumericEncoder_V2SingleTriggerExtended(t *testing.T) {
+	startTime := time.Now()
+	baseTS := startTime.UnixMicro()
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+		WithBlobLayoutV2(),
+	)
+	require.NoError(t, err)
+
+	numMetrics := 100
+	for i := range numMetrics {
+		metricID := uint64(4001 + i)
+		var points int
+		if i == 49 { // 50th metric (0-indexed)
+			// 8192 × 8 = 65536, exceeds uint16 max by 1
+			points = 8192
+		} else {
+			points = 10
+		}
+
+		err = encoder.StartMetricID(metricID, points)
+		require.NoError(t, err)
+
+		for j := range points {
+			err = encoder.AddDataPoint(baseTS+int64(j)*1_000_000, float64(metricID), "")
+			require.NoError(t, err)
+		}
+
+		err = encoder.EndMetric()
+		require.NoError(t, err)
+	}
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify magic is extended (0xEA30) because the 50th metric triggers it
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2ExtOpt), magic, "expected extended format 0xEA30")
+
+	// Verify round-trip decode
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, numMetrics, blob.MetricCount())
+
+	// Verify the trigger metric (50th)
+	triggerID := uint64(4050)
+	ts, ok := blob.TimestampAt(triggerID, 8191)
+	require.True(t, ok)
+	require.Equal(t, baseTS+int64(8191)*1_000_000, ts)
+}
+
+// TestNumericEncoder_V2CountTriggerExtended verifies that a single metric with
+// Count = 65536 (exceeding uint16 max) triggers Extended mode.
+func TestNumericEncoder_V2CountTriggerExtended(t *testing.T) {
+	startTime := time.Now()
+	baseTS := startTime.UnixMicro()
+
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithBlobLayoutV2(),
+	)
+	require.NoError(t, err)
+
+	numPoints := 65536 // exactly one over uint16 max (65535)
+	metricID := uint64(5001)
+
+	err = encoder.StartMetricID(metricID, numPoints)
+	require.NoError(t, err)
+
+	for i := range numPoints {
+		err = encoder.AddDataPoint(baseTS+int64(i)*1_000_000, 99.9, "")
+		require.NoError(t, err)
+	}
+
+	err = encoder.EndMetric()
+	require.NoError(t, err)
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify magic is extended (0xEA30) because count exceeds uint16
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	magic := options & section.MagicNumberMask
+	require.Equal(t, uint16(section.MagicNumericV2ExtOpt), magic, "expected extended format 0xEA30")
+
+	// Verify round-trip decode
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 1, blob.MetricCount())
+
+	// Spot-check first and last points
+	ts, ok := blob.TimestampAt(metricID, 0)
+	require.True(t, ok)
+	require.Equal(t, baseTS, ts)
+
+	ts, ok = blob.TimestampAt(metricID, numPoints-1)
+	require.True(t, ok)
+	require.Equal(t, baseTS+int64(numPoints-1)*1_000_000, ts)
+
+	val, ok := blob.ValueAt(metricID, numPoints/2)
+	require.True(t, ok)
+	require.InDelta(t, 99.9, val, 1e-10)
+}

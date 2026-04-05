@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -43,6 +44,11 @@ const (
 	// - Metric names payload included if collision detected
 	// - Full collision tracker allocated
 	modeNameManaged
+
+	// maxBlobBytes is the largest blob size that can be represented by uint32 header offsets.
+	// On 64-bit: math.MaxUint32 (~4 GB); on 32-bit: math.MaxInt32 (~2 GB).
+	// This mirrors section.maxSafeUint32 and is optimized away by the compiler on 64-bit.
+	maxBlobBytes = math.MaxUint32 & math.MaxInt
 
 	// maxCachedSliceSize is the maximum size of cached slices for AddFromRows operations.
 	// This prevents excessive memory usage when processing very large metrics by batching
@@ -150,9 +156,23 @@ func (e *NumericEncoder) cloneHeader() *section.NumericHeader {
 }
 
 // MaxDataPoints returns the maximum number of data points a single metric can hold
-// safely without overflowing the 16-bit offset index. This limit depends on the
+// safely without overflowing the offset index. This limit depends on the
 // uncompressed byte size of the chosen encoding combinations.
+//
+// For V1 layout, offset deltas are validated in EndMetric() against uint16 range.
+// This method allows callers to fail fast before encoding data that would be rejected.
+// For V2 layout, the encoder auto-upgrades to uint32 offsets, so the count limit is
+// widened to uint32. The final blob is still capped by uint32 header offsets, so this
+// method returns a theoretical per-metric count ceiling rather than a guarantee that
+// every payload shape will fit in a finished blob.
+//
+// Returns:
+//   - int: Maximum data points per metric for the current encoding configuration
 func (e *NumericEncoder) MaxDataPoints() int {
+	if e.layoutVersion >= 2 {
+		return section.NumericMaxCount
+	}
+
 	tsEnc := e.header.Flag.TimestampEncoding()
 	tsBytes := 9   // Default safe worst-case for delta varints
 	switch tsEnc { //nolint:exhaustive // other enum values use the default fallback
@@ -250,7 +270,7 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 //
 // Parameters:
 //   - metricID: Unique 64-bit metric identifier (must be non-zero)
-//   - numOfDataPoints: Expected number of data points (1-65535)
+//   - numOfDataPoints: Expected number of data points (1 to MaxDataPoints())
 //
 // Returns:
 //   - error: ErrMetricAlreadyStarted, ErrMixedIdentifierMode, ErrInvalidMetricID,
@@ -274,9 +294,8 @@ func (e *NumericEncoder) StartMetricID(metricID uint64, numOfDataPoints int) err
 		return errs.ErrInvalidMetricID
 	}
 
-	maxPoints := e.MaxDataPoints()
-	if numOfDataPoints <= 0 || numOfDataPoints > maxPoints {
-		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, maxPoints)
+	if numOfDataPoints <= 0 || numOfDataPoints > e.MaxDataPoints() {
+		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, e.MaxDataPoints())
 	}
 
 	if len(e.indexEntries) >= MaxMetricCount {
@@ -328,7 +347,7 @@ func (e *NumericEncoder) startMetric(metricID uint64, numOfDataPoints int) error
 //
 // Parameters:
 //   - metricName: Metric name string (must be non-empty)
-//   - numOfDataPoints: Expected number of data points (1-65535)
+//   - numOfDataPoints: Expected number of data points (1 to MaxDataPoints())
 //
 // Returns:
 //   - error: ErrMetricAlreadyStarted, ErrMixedIdentifierMode, ErrInvalidMetricName,
@@ -349,9 +368,8 @@ func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int)
 		e.collisionTracker = collision.NewTracker()
 	}
 
-	maxPoints := e.MaxDataPoints()
-	if numOfDataPoints <= 0 || numOfDataPoints > maxPoints {
-		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, maxPoints)
+	if numOfDataPoints <= 0 || numOfDataPoints > e.MaxDataPoints() {
+		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, e.MaxDataPoints())
 	}
 
 	if len(e.indexEntries) >= MaxMetricCount {
@@ -434,17 +452,14 @@ func (e *NumericEncoder) EndMetric() error {
 	valOffsetDelta := e.val.delta()
 	tagOffsetDelta := e.tag.delta()
 
-	// Validate offset deltas are within uint16 range BEFORE creating index entry
-	if tsOffsetDelta > section.NumericMaxOffset ||
-		valOffsetDelta > section.NumericMaxOffset ||
-		tagOffsetDelta > section.NumericMaxOffset {
-		return fmt.Errorf("%w: timestamp_delta=%d, value_delta=%d, tag_delta=%d (max=%d)",
-			errs.ErrOffsetOutOfRange, tsOffsetDelta, valOffsetDelta, tagOffsetDelta, section.NumericMaxOffset)
+	// V1 only: validate offset deltas within uint16 range.
+	// V2 defers validation to Finish() where mode is auto-selected.
+	if err := e.validateV1OffsetDeltas(tsOffsetDelta, valOffsetDelta, tagOffsetDelta); err != nil {
+		return err
 	}
 
-	// Create index entry and store validated offset deltas
-	// The deltas are guaranteed to be <= NumericMaxOffset (65535) by validation above
-	entry := section.NewNumericIndexEntry(e.curMetricID, uint16(curTsLen)) //nolint: gosec
+	// Create index entry and store offset deltas
+	entry := section.NewNumericIndexEntry(e.curMetricID, curTsLen)
 	entry.TimestampOffset = tsOffsetDelta
 	entry.ValueOffset = valOffsetDelta
 	// Only set tag offset if tag support is enabled
@@ -494,6 +509,71 @@ func (e *NumericEncoder) validateMetricData(curTsLen int, curValLen int, curTagL
 	// Tag count must match data point count (tags can be empty strings) - only check if tags are enabled
 	if e.header.Flag.HasTag() && curTagLen != e.claimed {
 		return fmt.Errorf("%w: claimed %d, got %d tags", errs.ErrDataPointCountMismatch, e.claimed, curTagLen)
+	}
+
+	return nil
+}
+
+// validateV1OffsetDeltas checks that offset deltas fit in uint16 range for V1 layout.
+// For V2+, this is a no-op since the encoder auto-upgrades to extended format in Finish().
+func (e *NumericEncoder) validateV1OffsetDeltas(tsDelta, valDelta, tagDelta int) error {
+	if e.layoutVersion >= 2 {
+		return nil
+	}
+
+	if tsDelta > section.NumericMaxOffset ||
+		valDelta > section.NumericMaxOffset ||
+		tagDelta > section.NumericMaxOffset {
+		return fmt.Errorf("%w: timestamp_delta=%d, value_delta=%d, tag_delta=%d (max=%d)",
+			errs.ErrOffsetOutOfRange, tsDelta, valDelta, tagDelta, section.NumericMaxOffset)
+	}
+
+	return nil
+}
+
+// selectIndexFormat determines the index entry format based on layout version and data ranges.
+//
+// Returns:
+//   - magic: Magic number for the header (0xEA10 for V1, 0xEA20/0xEA30 for V2)
+//   - entrySize: Byte size of each index entry (16 or 32)
+func (e *NumericEncoder) selectIndexFormat() (magic uint16, entrySize int) {
+	if e.layoutVersion < 2 {
+		return section.MagicNumericV1Opt, section.NumericIndexEntrySize
+	}
+
+	// V2: scan entries to decide compact (16B) vs extended (32B).
+	// Extended is needed when any offset delta exceeds uint16 or any count exceeds uint16.
+	for i := range e.indexEntries {
+		entry := &e.indexEntries[i]
+		if entry.TimestampOffset > section.NumericMaxOffset ||
+			entry.ValueOffset > section.NumericMaxOffset ||
+			entry.TagOffset > section.NumericMaxOffset ||
+			entry.Count > math.MaxUint16 {
+			return section.MagicNumericV2ExtOpt, section.NumericExtIndexEntrySize
+		}
+	}
+
+	return section.MagicNumericV2Opt, section.NumericIndexEntrySize
+}
+
+// writeIndexEntries writes all index entries to the blob buffer using the appropriate
+// serialization method for the selected entry size (16B compact or 32B extended).
+func (e *NumericEncoder) writeIndexEntries(blob []byte, offset, entrySize int) {
+	if entrySize == section.NumericExtIndexEntrySize {
+		for i, entry := range e.indexEntries {
+			entry.WriteToSlice32(blob, offset+i*entrySize, e.engine)
+		}
+	} else {
+		for i, entry := range e.indexEntries {
+			entry.WriteToSlice(blob, offset+i*entrySize, e.engine)
+		}
+	}
+}
+
+// validateBlobSize ensures the assembled blob fits in uint32 header offsets.
+func validateBlobSize(blobSize int) error {
+	if blobSize > maxBlobBytes {
+		return fmt.Errorf("%w: computed %d bytes", errs.ErrBlobSizeExceedsLimit, blobSize)
 	}
 
 	return nil
@@ -551,11 +631,6 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Set actual metric count in cloned header now that encoding is complete
 	finalHeader.MetricCount = uint32(len(e.indexEntries)) //nolint: gosec
 
-	// Set V2 magic number if layout version is V2
-	if e.layoutVersion >= 2 {
-		finalHeader.Flag.Options = (finalHeader.Flag.Options &^ section.MagicNumberMask) | section.MagicNumericV2Opt
-	}
-
 	// Sort index entries by MetricID for V2 layout.
 	// This enables cache-friendly iteration and binary search lookups in the decoder.
 	// Index entries store delta offsets referencing payload data in insertion order,
@@ -579,6 +654,17 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	if sharedTableSize > 0 {
 		// Set shared timestamps flag bit
 		finalHeader.Flag.SetHasSharedTimestamps(true)
+	}
+
+	// Select index entry format AFTER sort and dedup have finalized all deltas.
+	// Before sorting, the last metric's payload size is not stored in any entry's delta
+	// (it's implicit from total payload length). Sorting can move that metric to a
+	// non-last position, making its payload size appear as an explicit delta that
+	// could overflow uint16 in compact format. Dedup further rewrites timestamp deltas.
+	// Selecting format here ensures we see the final delta values.
+	magic, entrySize := e.selectIndexFormat()
+	if e.layoutVersion >= 2 {
+		finalHeader.Flag.Options = (finalHeader.Flag.Options &^ section.MagicNumberMask) | magic
 	}
 
 	// Compress timestamp and value payloads
@@ -613,20 +699,18 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 		finalHeader.IndexOffset = uint32(section.HeaderSize + len(metricNamesPayload)) //nolint: gosec
 	}
 
-	// Calculate TimestampPayloadOffset based on actual index entries count and shared table
-	indexEntriesSize := section.NumericIndexEntrySize * len(e.indexEntries)
-	finalHeader.TimestampPayloadOffset = finalHeader.IndexOffset + uint32(indexEntriesSize) + uint32(sharedTableSize) //nolint: gosec
-
-	// Set value payload offset in header, it records the value payload offset after the timestamp payload.
-	// The size of timestamp payload is the compressed size.
-	finalHeader.ValuePayloadOffset = finalHeader.TimestampPayloadOffset + uint32(len(tsPayload)) //nolint: gosec
-
-	// Set tag payload offset in header, it records the tag payload offset after the value payload.
-	// The size of value payload is the compressed size.
-	finalHeader.TagPayloadOffset = finalHeader.ValuePayloadOffset + uint32(len(valPayload)) //nolint: gosec
-
-	// Pre-calculate exact size (reuse indexEntriesSize from above)
+	// Calculate exact blob size and validate it fits in uint32 header offsets.
+	// If blobSize <= MaxUint32, all sub-offsets (which are portions of blobSize) also fit in uint32.
+	indexEntriesSize := entrySize * len(e.indexEntries)
 	blobSize := section.HeaderSize + len(metricNamesPayload) + indexEntriesSize + sharedTableSize + len(tsPayload) + len(valPayload) + len(tagPayload)
+	if err := validateBlobSize(blobSize); err != nil {
+		return nil, err
+	}
+
+	// Set header payload offsets — safe because blobSize fits in uint32.
+	finalHeader.TimestampPayloadOffset = finalHeader.IndexOffset + uint32(indexEntriesSize) + uint32(sharedTableSize) //nolint: gosec
+	finalHeader.ValuePayloadOffset = finalHeader.TimestampPayloadOffset + uint32(len(tsPayload))                      //nolint: gosec
+	finalHeader.TagPayloadOffset = finalHeader.ValuePayloadOffset + uint32(len(valPayload))                           //nolint: gosec
 
 	// Allocate exact-size buffer for the final blob
 	// No need for pooled buffer since we return this directly to caller
@@ -641,11 +725,8 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 		offset += copy(blob[offset:], metricNamesPayload)
 	}
 
-	// Write index entries
-	for i, entry := range e.indexEntries {
-		entryOffset := offset + i*section.NumericIndexEntrySize
-		entry.WriteToSlice(blob, entryOffset, e.engine)
-	}
+	// Write index entries using entry size determined by format selection
+	e.writeIndexEntries(blob, offset, entrySize)
 	offset += indexEntriesSize
 
 	// Write shared timestamp table (if V2 with sharing)

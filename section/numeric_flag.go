@@ -206,16 +206,33 @@ func (f *NumericFlag) SetValueCompression(compression format.CompressionType) {
 }
 
 // IsValidMagicNumber checks if the magic number is valid.
-// Accepts both V1 and V2 numeric magic numbers.
+// Accepts V1, V2 compact, and V2 extended numeric magic numbers.
 func (f NumericFlag) IsValidMagicNumber() bool {
 	magic := f.GetMagicNumber()
 
-	return magic == MagicNumericV1Opt || magic == MagicNumericV2Opt
+	return magic == MagicNumericV1Opt || magic == MagicNumericV2Opt || magic == MagicNumericV2ExtOpt
 }
 
-// IsV2 returns whether this flag indicates a V2 format blob.
+// IsV2 returns whether this flag indicates a V2 format blob (compact or extended).
 func (f NumericFlag) IsV2() bool {
-	return f.GetMagicNumber() == MagicNumericV2Opt
+	magic := f.GetMagicNumber()
+
+	return magic == MagicNumericV2Opt || magic == MagicNumericV2ExtOpt
+}
+
+// IsV2Ext returns whether this flag indicates a V2 extended format blob with 32-byte index entries.
+func (f NumericFlag) IsV2Ext() bool {
+	return f.GetMagicNumber() == MagicNumericV2ExtOpt
+}
+
+// IndexEntrySize returns the index entry size in bytes based on the magic number.
+// Returns NumericExtIndexEntrySize (32) for extended V2, NumericIndexEntrySize (16) otherwise.
+func (f NumericFlag) IndexEntrySize() int {
+	if f.IsV2Ext() {
+		return NumericExtIndexEntrySize
+	}
+
+	return NumericIndexEntrySize
 }
 
 // IsValidEncoding checks if the encoding types are valid.

@@ -31,11 +31,31 @@ The blob is structured as a single contiguous memory block with 8-byte aligned p
 
 ### V2 Layout (`WithBlobLayoutV2()`)
 
+V2 uses an **adaptive index entry** format. The encoder automatically selects compact (16B) or extended (32B) entries based on per-metric data sizes:
+
+- **Compact mode** (`0xEA20`): 16-byte entries with uint16 delta offsets — used when all per-metric deltas and counts fit in uint16.
+- **Extended mode** (`0xEA30`): 32-byte entries with uint32 delta offsets — triggered when any metric's offset delta exceeds uint16 range or count exceeds 65,535.
+
+#### V2 Compact (`0xEA20`)
+
 | Section                    | Size                | Description                                                                  |
 |----------------------------|---------------------|------------------------------------------------------------------------------|
 | **Blob Header**            | 32 bytes (fixed)    | Magic = `0xEA20`, same structure as V1                                       |
 | **Metric Names Payload**   | Variable (optional) | Same as V1                                                                   |
-| **Metric Index**           | N × 16 bytes        | Array of IndexEntry structs **sorted by MetricID**                           |
+| **Metric Index**           | N × 16 bytes        | Array of compact IndexEntry structs **sorted by MetricID**                   |
+| **Shared Timestamp Table** | Variable (optional) | Deduplication table (only when bit 3 = 1, requires `WithSharedTimestamps()`) |
+| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
+| **Timestamps Payload**     | Variable size       | All timestamps, with dedup'd sequences if shared timestamps enabled          |
+| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
+| **Values Payload**         | Variable size       | All values from all metrics, encoded + compressed                            |
+
+#### V2 Extended (`0xEA30`)
+
+| Section                    | Size                | Description                                                                  |
+|----------------------------|---------------------|------------------------------------------------------------------------------|
+| **Blob Header**            | 32 bytes (fixed)    | Magic = `0xEA30`, same structure as V1                                       |
+| **Metric Names Payload**   | Variable (optional) | Same as V1                                                                   |
+| **Metric Index**           | N × 32 bytes        | Array of extended IndexEntry structs **sorted by MetricID**                  |
 | **Shared Timestamp Table** | Variable (optional) | Deduplication table (only when bit 3 = 1, requires `WithSharedTimestamps()`) |
 | *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
 | **Timestamps Payload**     | Variable size       | All timestamps, with dedup'd sequences if shared timestamps enabled          |
@@ -96,7 +116,7 @@ type FlagHeader struct {
 	// Bit 1 is endianness flag, 0 means little-endian, 1 means big-endian.
 	// Bit 2 is metric names payload flag, 0 means no payload, 1 means metric names included.
 	// Bit 3 is shared timestamps flag (numeric only), 0 means no shared table, 1 means present.
-	// Bit 4-15 are magic number: 0xEA10 for V1, 0xEA20 for V2.
+	// Bit 4-15 are magic number: 0xEA10 for V1, 0xEA20 for V2 compact, 0xEA30 for V2 extended.
 	Options uint16
 
 	// EncodingType is an enum indicating the encoding used for this metric blob.
@@ -240,13 +260,18 @@ This is the core of the fast lookup system. The index is stored as a contiguous 
 **Performance Characteristics:**
 - **Decode time:** O(N) to reconstruct absolute offsets (no map allocation needed)
 - **Lookup time:** O(log N) binary search — faster than map for cold lookups due to cache locality
-- **Memory overhead:** ~24 bytes per entry (16-byte entry + 8-byte uint64 in parallel slice)
+- **Memory overhead:** ~24 bytes per entry in compact mode (16-byte entry + 8-byte uint64 in parallel slice), ~40 bytes in extended mode (32-byte entry + 8-byte uint64)
 - **Iteration order:** Deterministic (ascending MetricID)
 - **Cache behavior:** Contiguous memory access patterns for sequential iteration via `ForEach()`
 
 **Why a Parallel sortedIDs Slice:**
 
-The sorted slice stores full `IndexEntry` structs (16 bytes each). Binary search needs only the 8-byte `MetricID` field, but scanning 16-byte structs wastes half the cache line on unused fields (Count, offsets). The parallel `sortedIDs []uint64` slice holds only MetricIDs in contiguous 8-byte elements, doubling the number of keys examined per cache line during binary search. Once the position is found, the corresponding entry is accessed by index in the `sorted []IndexEntry` slice.
+The sorted slice stores full `IndexEntry` structs (16 or 32 bytes depending on mode). Binary search needs only the 8-byte `MetricID` field, but scanning entry structs wastes cache space on unused fields (Count, offsets). The parallel `sortedIDs []uint64` slice holds only MetricIDs in contiguous 8-byte elements, maximizing the number of keys examined per cache line during binary search. Once the position is found, the corresponding entry is accessed by index in the `sorted []IndexEntry` slice.
+
+**Cache Line Utilization:**
+- **Compact entries (16B):** 4 entries per 64-byte L1 cache line
+- **Extended entries (32B):** 2 entries per 64-byte L1 cache line (power-of-2 size enables shift-based indexing: `offset = index << 5`)
+- **sortedIDs slice:** 8 MetricIDs per cache line (8 bytes each)
 
 **Encoder Sort Behavior:**
 
@@ -256,10 +281,10 @@ The encoder tracks whether metrics were inserted in ascending MetricID order via
 3. Reassemble all payload bytes (timestamps, values, tags) in sorted order
 4. Recompute sequential delta offsets for the sorted entry slice
 
-#### Index Entry Structure (16 bytes):
+#### Compact Index Entry Structure (16 bytes, V1 and V2 compact):
 
 -   `MetricID` (uint64): The unsigned 64-bit metricID or the xxHash64 64-bit hash of metric name string.
--   `Count` (uint16): The number of data points for this metric.
+-   `Count` (uint16): The number of data points for this metric (max 65,535).
 -   `TimestampOffset` (uint16): **Delta offset encoding** - Stores the offset delta from the previous metric's timestamp offset.
     -   **First metric**: Stores absolute offset from timestamp payload start (typically 0)
     -   **Subsequent metrics**: Stores delta = (current_offset - previous_offset)
@@ -270,9 +295,20 @@ The encoder tracks whether metrics were inserted in ascending MetricID order via
     -   **Subsequent metrics**: Stores delta = (current_offset - previous_offset)
     -   **Benefits**: Smaller delta values allow more efficient use of the uint16 range
     -   **Decoding**: Absolute offsets are reconstructed by accumulating deltas: `absolute_offset[i] = absolute_offset[i-1] + delta[i]`
--   Reserved 2 byte that padding to 16 bytes.
+-   Reserved 2 bytes padding to 16 bytes.
 
-**Offset Delta Encoding Example:**
+#### Extended Index Entry Structure (32 bytes, V2 extended):
+
+The extended format is used when any metric's offset delta exceeds uint16 range or count exceeds 65,535. It uses **delta-encoded offsets** (same as compact) and widens all fields to uint32.
+
+-   `MetricID` (uint64): The unsigned 64-bit metricID or the xxHash64 64-bit hash of metric name string.
+-   `Count` (uint32): The number of data points for this metric (max 4,294,967,295).
+-   `TimestampOffset` (uint32): **Delta offset** from the previous metric's timestamp offset (same encoding as compact, wider field).
+-   `ValueOffset` (uint32): **Delta offset** from the previous metric's value offset.
+-   `TagOffset` (uint32): **Delta offset** from the previous metric's tag offset.
+-   Reserved 8 bytes padding to 32 bytes (must be zero).
+
+**Offset Delta Encoding Example (compact mode):**
 ```
 3 Metrics with raw encoding (8 bytes per timestamp, 8 bytes per value):
   Metric 1: 5 data points
@@ -306,6 +342,23 @@ type IndexEntry struct {
 	ValueOffset uint16
 
 	Reserved uint16 // 2 bytes (padding to 16 bytes)
+}
+
+// Extended index entry for V2 extended mode (32 bytes)
+type IndexEntryExt struct {
+	// MetricID is the unsigned 64-bit metric id or the hash of the metric name string.
+	MetricID uint64
+	// Count is the number of values for this metric (uint32, max 4,294,967,295).
+	Count uint32
+	// TimestampOffset stores the delta offset from the previous metric's timestamp offset.
+	// Same encoding as compact mode, but widened to uint32.
+	TimestampOffset uint32
+	// ValueOffset stores the delta offset from the previous metric's value offset.
+	ValueOffset uint32
+	// TagOffset stores the delta offset from the previous metric's tag offset.
+	TagOffset uint32
+
+	Reserved [8]byte // 8 bytes (padding to 32 bytes, must be zero)
 }
 
 ```
@@ -443,8 +496,8 @@ Net savings = 11,200 - 288 = ~10,912 bytes
 - The decoder uses `ApplySharedTimestampTable()` which parses and applies the table in a single pass without materializing an intermediate data structure
 
 **Backward Compatibility:**
-- V1 decoders safely reject V2 blobs (different magic number `0xEA20` vs `0xEA10`)
-- V2 decoders accept both V1 and V2 formats transparently
+- V1 decoders safely reject V2 blobs (different magic number `0xEA20`/`0xEA30` vs `0xEA10`)
+- V2 decoders accept V1, V2 compact (`0xEA20`), and V2 extended (`0xEA30`) formats transparently
 - **Upgrade strategy:** Deploy V2-capable consumers first, then enable `WithBlobLayoutV2()` or `WithSharedTimestamps()` on producers
 
 **See Also:**
@@ -544,7 +597,8 @@ The time-series data is organized into two separate, columnar payloads to maximi
 #### Implementation Notes
 
 - **Offset Calculation:** Each metric's data position is calculated as `PayloadStart + IndexEntry.Offset`
-- **Payload Limits:** uint16 offsets limit each payload to 64KB maximum
+- **Payload Limits (V1/V2 compact):** uint16 delta offsets limit each per-metric delta to 64KB
+- **Payload Limits (V2 extended):** uint32 delta offsets allow per-metric deltas up to ~4GB
 - **Memory Alignment:** Payloads are padded to 8-byte boundaries for optimal CPU access
 - **Compression Boundary:** Compression is applied to the complete payload, not per-metric
 
@@ -552,7 +606,7 @@ The time-series data is organized into two separate, columnar payloads to maximi
 
 ### Blob Size Analysis
 
-**Offset Delta Encoding Impact:**
+**Offset Delta Encoding Impact (V1 / V2 Compact):**
 
 With delta encoding for BOTH offsets, the effective addressable space is significantly larger than the naive uint16 limit:
 
@@ -562,18 +616,33 @@ With delta encoding for BOTH offsets, the effective addressable space is signifi
   - If each metric delta ≤ 65,535 bytes, you can have unlimited metrics
   - Practical limit: Total payload size constrained by memory and compression/decompression buffer sizes
 
-**Practical Limits:**
+**V2 Extended Mode Limits:**
+
+With 32-byte extended entries using uint32 delta offsets:
+- **Total payload:** Up to 4GB per payload type (uint32 max = 4,294,967,295)
+- **Per-metric count:** Up to 4,294,967,295 data points (uint32 max)
+- **Per-metric delta:** Up to ~4GB per metric (uint32 max)
+- **Automatic selection:** The encoder triggers extended mode when any metric exceeds compact limits
+
+**Practical Limits (V1 / V2 Compact):**
 - **Per-metric delta:** Must fit in uint16 (≤65,535 bytes per metric for both timestamps and values)
 - **Total payload:** Constrained by available memory, not by uint16 offset range
 - **Example:** 10,000 metrics × 100 bytes each = 1MB per payload ✅ (each delta = 100 bytes)
 
+**Practical Limits (V2 Extended):**
+- **Per-metric size:** Limited only by uint32 offset range (~4GB)
+- **Total payload:** Constrained by available memory
+- **Example:** 1,000 metrics × 100,000 data points each with raw encoding ✅
+
 **Component Size Limits:**
 - **Header:** 32 bytes (fixed)
-- **Index:** Unlimited by design (uint32 MetricCount supports 4.2B metrics, but practical limit ~10K metrics)
-- **Timestamps Payload:** Effectively unlimited with delta encoding (each metric delta must fit in uint16)
-- **Values Payload:** Effectively unlimited with delta encoding (each metric delta must fit in uint16)
+- **Index (compact):** N × 16 bytes (uint32 MetricCount supports 4.2B metrics, practical limit ~10K)
+- **Index (extended):** N × 32 bytes (same MetricCount, double the per-entry size)
+- **Timestamps Payload (compact):** Effectively unlimited with delta encoding (each metric delta must fit in uint16)
+- **Timestamps Payload (extended):** Up to ~4GB per metric (uint32 delta offsets)
+- **Values Payload:** Same limits as timestamps
 
-**Maximum Blob Size Calculation:**
+**Maximum Blob Size Calculation (V1 / V2 Compact):**
 ```
 Max Blob Size = Header + Index + Timestamps + Values + Padding
               = 32 bytes + Index Size + 64KB + 64KB + ~24 bytes padding
@@ -582,12 +651,12 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 ```
 
 **Index Size by Metric Count:**
-| Metrics | Index Size | Max Blob Size | Notes                |
-|---------|------------|---------------|----------------------|
-| 100     | 1,600 B    | ~129 KB       | Optimal range        |
-| 500     | 8,000 B    | ~136 KB       | Good performance     |
-| 1,000   | 16,000 B   | ~144 KB       | Near practical limit |
-| 4,000   | 64,000 B   | ~191 KB       | Maximum recommended  |
+| Metrics | Compact Index (16B) | Extended Index (32B) | Notes                  |
+|---------|---------------------|----------------------|------------------------|
+| 100     | 1,600 B             | 3,200 B              | Optimal range          |
+| 500     | 8,000 B             | 16,000 B             | Good performance       |
+| 1,000   | 16,000 B            | 32,000 B             | Near practical limit   |
+| 4,000   | 64,000 B            | 128,000 B            | Maximum recommended    |
 
 **Practical Blob Size:** 129KB - 191KB (depending on metric count)
 
@@ -618,7 +687,7 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 | Component  | Size         | Details                 |
 |------------|--------------|-------------------------|
 | Header     | 32 B         | Fixed                   |
-| Index      | 2,400 B      | 150 × 16 bytes          |
+| Index      | 2,400 B      | 150 × 16 bytes (compact) |
 | Timestamps | ~300 B       | Delta + Zstd compressed |
 | Values     | 12,000 B     | Raw float64             |
 | **Total**  | **14,732 B** | ~14.4 KB                |
@@ -638,8 +707,9 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 
 ### Layout Version
 - **V1 (default):** Map-based index, insertion-order storage. Simple. No upgrade coordination needed.
-- **V2 (`WithBlobLayoutV2()`):** Sorted index with binary search. Better cache locality for iteration. Deterministic metric ordering. Requires consumer upgrade before producer.
-- **V2 + Shared Timestamps (`WithSharedTimestamps()`):** V2 with timestamp deduplication. 24-73% blob size savings when many metrics share collection intervals. Requires consumer upgrade before producer.
+- **V2 Compact (`WithBlobLayoutV2()`):** Sorted index with binary search. 16-byte entries with uint16 delta offsets. Better cache locality for iteration. Deterministic metric ordering. Requires consumer upgrade before producer.
+- **V2 Extended:** Automatically selected by the V2 encoder when any metric exceeds compact limits (offset delta > uint16 or count > 65,535). 32-byte entries with uint32 delta offsets. Removes per-metric data size ceiling.
+- **V2 + Shared Timestamps (`WithSharedTimestamps()`):** V2 with timestamp deduplication. 24-73% blob size savings when many metrics share collection intervals. Compatible with both compact and extended index modes. Requires consumer upgrade before producer.
 
 ## Usage Guidelines
 
@@ -667,6 +737,12 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 - Deterministic MetricID ordering is needed (e.g., reproducible blob comparisons)
 - Iteration performance matters (contiguous memory access vs map iteration)
 - All consumers have been upgraded to V2-compatible mebo versions
+- The encoder automatically selects compact (16B) or extended (32B) index entries based on data characteristics
+
+**When V2 Extended mode triggers:**
+- Any metric's per-metric offset delta exceeds uint16 range (>65,535 bytes)
+- Any metric's data point count exceeds 65,535
+- No explicit option needed — the encoder detects and switches automatically
 
 **Use V2 + Shared Timestamps (`WithSharedTimestamps()`) when:**
 - Many metrics share the same collection intervals (common in monitoring)
@@ -677,21 +753,31 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 
 **With Delta Encoding (current implementation for both offsets):**
 - **Optimal Size:** 4KB - 256KB per blob for best performance
-- **Both Payloads:** Effectively unlimited total size (limited by per-metric delta ≤65,535 bytes)
+- **Both Payloads (V1/V2 compact):** Effectively unlimited total size (limited by per-metric delta ≤65,535 bytes)
+- **Both Payloads (V2 extended):** Up to ~4GB per payload (uint32 delta offsets)
 - **Practical Recommendations:**
   - For 100-500 metrics: Target 32KB - 512KB total blob size
   - For 1000+ metrics: Can scale to several MB with appropriate per-metric sizing
-  - Keep individual metric data < 32KB for optimal delta efficiency
+  - Keep individual metric data < 32KB for optimal delta efficiency (compact mode)
+  - Use V2 extended mode when per-metric data exceeds 64KB
 
-**Per-Metric Constraints:**
+**Per-Metric Constraints (V1 / V2 Compact):**
 - Each metric's timestamp delta must fit in uint16 (≤65,535 bytes)
 - Each metric's value delta must fit in uint16 (≤65,535 bytes)
 - With raw encoding (8 bytes/point): Max 8,191 data points per metric
-- With delta/compressed encoding: Typically supports 10,000+ data points per metric## Implementation Considerations
+- With delta/compressed encoding: Typically supports 10,000+ data points per metric
 
-### Offset Delta Encoding (TimestampOffset & ValueOffset)
+**Per-Metric Constraints (V2 Extended):**
+- Per-metric delta widened to uint32 range (up to ~4GB per delta)
+- Count widened to uint32: up to 4,294,967,295 data points per metric
+- With raw encoding (8 bytes/point): Max ~536 million data points per metric
+- Extended mode is selected automatically by the encoder when compact limits are exceeded
 
-Both `TimestampOffset` and `ValueOffset` fields in `IndexEntry` use delta encoding to maximize the effective range of the uint16 type.
+## Implementation Considerations
+
+### Offset Delta Encoding
+
+Both `TimestampOffset` and `ValueOffset` fields in `IndexEntry` use delta encoding across all formats. Compact entries (V1 `0xEA10` / V2 `0xEA20`) use uint16 deltas; extended entries (V2 `0xEA30`) use uint32 deltas.
 
 **Encoding Process (in NumericEncoder):**
 ```go
@@ -805,14 +891,15 @@ func (r *MetricRegistry) GetName(hash uint64) (string, bool) {
 - **Flexible encoding:** Choose optimal strategy per use case (Raw, Delta, Gorilla, Chimp)
 - **Memory efficient:** Minimal overhead, cache-friendly structures
 - **Deterministic ordering:** V2 sorted index provides reproducible metric iteration order
-- **Extended addressing:** Delta encoding allows uint16 offsets to address much larger payloads effectively
+- **Extended addressing:** Delta encoding allows uint16 offsets to address much larger payloads effectively (V1/V2 compact); V2 extended uses uint32 delta offsets for even larger payloads
 - **Platform independent:** Well-defined binary format
 - **Orthogonal design:** Layout version (V1/V2) and encoding algorithms (Raw, Delta, Gorilla, Chimp) are independent choices
+- **Adaptive index:** V2 automatically selects compact (16B) or extended (32B) entries based on data characteristics, removing per-metric size ceilings without overhead for small blobs
 
 ### Limitations
 - **External names:** Requires application-level hash→name mapping
 - **Sequential access:** Compressed/encoded data (Gorilla, Chimp, Delta) requires sequential decoding
-- **Per-metric size constraint:** Each metric's data delta must fit in uint16 (≤65,535 bytes for both timestamps and values)
+- **Per-metric size constraint (V1/V2 compact):** Each metric's data delta must fit in uint16 (≤65,535 bytes for both timestamps and values); V2 extended removes this constraint
 - **V2 upgrade coordination:** V2 layout requires all consumers to be upgraded before producers
 - **No schema evolution:** Format changes require version bumps
 
@@ -822,10 +909,11 @@ The Mebo format provides an optimal balance of space efficiency, lookup performa
 
 Key design elements:
 - **Hash-based identification:** Eliminates metric name storage overhead with collision-safe 64-bit xxHash64 hashes
-- **Dual delta offset encoding:** Both TimestampOffset AND ValueOffset use delta encoding, extending the effective addressing range of uint16 offsets for both payloads
+- **Dual delta offset encoding:** Both TimestampOffset AND ValueOffset use delta encoding, extending the effective addressing range of uint16 offsets for both payloads (compact mode); extended mode uses uint32 delta offsets for larger per-metric sizing
 - **Columnar storage:** Separates timestamps and values for optimal compression and access patterns
 - **Flexible encoding:** Per-blob configurable strategies (Raw, Delta, Gorilla, Chimp) with optional compression
 - **Versioned layout:** V1 map-based index for simplicity; V2 sorted-slice index for cache locality, deterministic ordering, and binary search
+- **Adaptive index entries:** V2 encoder automatically selects compact (16B, `0xEA20`) or extended (32B, `0xEA30`) entries, providing seamless scaling from small to large blobs
 - **Orthogonal features:** Layout version, encoding algorithms, shared timestamps, and compression are independent choices that can be freely combined
 
 This makes Mebo suitable for both small, focused datasets and large-scale monitoring scenarios with thousands of metrics and millions of data points.

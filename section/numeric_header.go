@@ -147,5 +147,5 @@ func IsNumericBlob(data []byte) bool {
 	options := uint16(data[0]) | (uint16(data[1]) << 8)
 	magicNumber := options & MagicNumberMask
 
-	return magicNumber == MagicNumericV1Opt || magicNumber == MagicNumericV2Opt
+	return magicNumber == MagicNumericV1Opt || magicNumber == MagicNumericV2Opt || magicNumber == MagicNumericV2ExtOpt
 }

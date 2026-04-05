@@ -2413,3 +2413,88 @@ func TestNumericDecoder_MalformedIndex_IndexOffsetExceedsPayload(t *testing.T) {
 		require.ErrorIs(t, err, errs.ErrInvalidIndexOffsets)
 	})
 }
+
+// TestNumericDecoder_ReservedByteCorruption verifies that the decoder returns
+// ErrInvalidReservedBytes when the reserved bytes of an extended (32B) index
+// entry are non-zero.
+func TestNumericDecoder_ReservedByteCorruption(t *testing.T) {
+	startTime := time.Now()
+
+	// Create a valid extended-mode blob (count triggers 0xEA30)
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+		WithBlobLayoutV2(),
+	)
+	require.NoError(t, err)
+
+	numPoints := 70_000 // triggers extended mode via count > uint16
+	require.NoError(t, encoder.StartMetricID(6001, numPoints))
+	for i := range numPoints {
+		require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro()+int64(i)*1_000_000, 1.0, ""))
+	}
+	require.NoError(t, encoder.EndMetric())
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify it's actually extended format
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	require.Equal(t, uint16(section.MagicNumericV2ExtOpt), options&section.MagicNumberMask)
+
+	// Corrupt a reserved byte in the first extended index entry (bytes 24-31 are reserved).
+	// The first index entry starts at HeaderSize (32).
+	entryStart := section.HeaderSize
+	data[entryStart+24] = 0xFF // corrupt reserved byte
+
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err)
+	require.ErrorIs(t, err, errs.ErrInvalidReservedBytes)
+}
+
+// TestNumericDecoder_MaliciousMagicExtendedTruncatedData verifies that a blob
+// crafted with magic 0xEA30 (extended 32B entries) but only enough data for
+// 16B entries does not panic. The decoder must perform strict bounds checking
+// on the index section size.
+func TestNumericDecoder_MaliciousMagicExtendedTruncatedData(t *testing.T) {
+	startTime := time.Now()
+	engine := endian.GetLittleEndianEngine()
+
+	// Create a valid compact-mode blob (small data, 16B entries)
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeRaw),
+		WithBlobLayoutV2(),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, encoder.StartMetricID(7001, 2))
+	require.NoError(t, encoder.AddDataPoint(startTime.UnixMicro(), 1.0, ""))
+	require.NoError(t, encoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 2.0, ""))
+	require.NoError(t, encoder.EndMetric())
+
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	// Verify it's compact format (0xEA20) with 16B entries
+	options := uint16(data[0]) | (uint16(data[1]) << 8)
+	require.Equal(t, uint16(section.MagicNumericV2Opt), options&section.MagicNumberMask)
+
+	// Maliciously overwrite magic to 0xEA30 (extended 32B entries) and inflate
+	// MetricCount so the expected index section (metricCount × 32) exceeds the
+	// data actually present. This simulates a crafted blob designed to trick
+	// the decoder into reading past the end of the buffer.
+	newOptions := (options & ^uint16(section.MagicNumberMask)) | uint16(section.MagicNumericV2ExtOpt)
+	engine.PutUint16(data[0:2], newOptions)
+	engine.PutUint32(data[12:16], 100) // inflate metric count: 100 × 32B = 3200 bytes expected
+
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+
+	_, err = decoder.Decode()
+	require.Error(t, err, "decoder must not panic on truncated extended index data")
+	require.ErrorIs(t, err, errs.ErrInvalidIndexEntrySize)
+}

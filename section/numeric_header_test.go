@@ -163,6 +163,17 @@ func TestIsNumericBlob(t *testing.T) {
 		require.True(t, result)
 	})
 
+	t.Run("Valid numeric V2 extended blob", func(t *testing.T) {
+		data := make([]byte, HeaderSize)
+		// Set 0xEA30 magic with little-endian byte order
+		data[0] = 0x30
+		data[1] = 0xEA
+
+		result := IsNumericBlob(data)
+
+		require.True(t, result)
+	})
+
 	t.Run("Text blob (wrong magic)", func(t *testing.T) {
 		// Create data with text blob magic number (0xEB10)
 		data := make([]byte, HeaderSize)

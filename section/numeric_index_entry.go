@@ -83,11 +83,10 @@ type NumericIndexEntry struct {
 
 	// Count is the number of data points (timestamps/values) for this metric.
 	//
-	// Offset: 8, Size: 2 bytes (store as uint16 on disk)
+	// Compact (V1/V2): Offset 8, Size 2 bytes (uint16 on disk, max 65535)
+	// Extended (V2Ext): Offset 8, Size 4 bytes (uint32 on disk, max 4294967295)
 	//
-	// NOTE: On disk, this field is stored as uint16 (2 bytes) to save space.
-	// In memory, we use int to avoid frequent type conversions during processing.
-	// The maximum count per metric is limited by the uint16 range (65535 points).
+	// NOTE: In memory, we use int to avoid frequent type conversions during processing.
 	Count int
 }
 
@@ -155,20 +154,71 @@ func (e *NumericIndexEntry) WriteToSlice(data []byte, offset int, engine endian.
 	return offset + NumericIndexEntrySize
 }
 
+// Bytes32 returns the index entry as a 32-byte slice using extended format.
+//
+// Layout (32 bytes, cache-line aligned — 2 entries per 64B L1 cache line):
+//   - [0:8]   MetricID   (uint64)
+//   - [8:12]  Count      (uint32)
+//   - [12:16] TsOffset   (uint32)
+//   - [16:20] ValOffset  (uint32)
+//   - [20:24] TagOffset  (uint32)
+//   - [24:32] Reserved   (8 bytes, zero)
+//
+// Parameters:
+//   - engine: Endian engine for byte order
+//
+// Returns:
+//   - []byte: 32-byte index entry with uint32 count/offsets and 8-byte reserved tail
+func (e *NumericIndexEntry) Bytes32(engine endian.EndianEngine) []byte {
+	var b [NumericExtIndexEntrySize]byte
+	engine.PutUint64(b[0:8], e.MetricID)
+	engine.PutUint32(b[8:12], uint32(e.Count))            //nolint: gosec
+	engine.PutUint32(b[12:16], uint32(e.TimestampOffset)) //nolint: gosec
+	engine.PutUint32(b[16:20], uint32(e.ValueOffset))     //nolint: gosec
+	engine.PutUint32(b[20:24], uint32(e.TagOffset))       //nolint: gosec
+	// b[24:32] reserved (zero-initialized)
+
+	return b[:]
+}
+
+// WriteToSlice32 writes a 32-byte extended index entry to a pre-allocated slice
+// and returns the next position.
+//
+// Layout: MetricID(8) + Count(4) + TsOffset(4) + ValOffset(4) + TagOffset(4) + Reserved(8) = 32
+//
+// Parameters:
+//   - data: Pre-allocated byte slice (must have space for 32 bytes at offset)
+//   - offset: Starting position in data slice
+//   - engine: Endian engine for byte order
+//
+// Returns:
+//   - int: Next write position (offset + 32)
+func (e *NumericIndexEntry) WriteToSlice32(data []byte, offset int, engine endian.EndianEngine) int {
+	engine.PutUint64(data[offset:offset+8], e.MetricID)
+	engine.PutUint32(data[offset+8:offset+12], uint32(e.Count))            //nolint: gosec
+	engine.PutUint32(data[offset+12:offset+16], uint32(e.TimestampOffset)) //nolint: gosec
+	engine.PutUint32(data[offset+16:offset+20], uint32(e.ValueOffset))     //nolint: gosec
+	engine.PutUint32(data[offset+20:offset+24], uint32(e.TagOffset))       //nolint: gosec
+	// Explicitly zero reserved bytes to enforce "must be 0" contract
+	clear(data[offset+24 : offset+32])
+
+	return offset + NumericExtIndexEntrySize
+}
+
 // NewNumericIndexEntry creates a new NumericIndexEntry with the specified metric ID and count.
 //
 // Offsets are initialized to zero and should be set by the encoder.
 //
 // Parameters:
 //   - metricID: Unique 64-bit metric identifier
-//   - count: Number of data points for this metric (1-65535)
+//   - count: Number of data points for this metric
 //
 // Returns:
 //   - NumericIndexEntry: New index entry with zero offsets
-func NewNumericIndexEntry(metricID uint64, count uint16) NumericIndexEntry {
+func NewNumericIndexEntry(metricID uint64, count int) NumericIndexEntry {
 	return NumericIndexEntry{
 		MetricID:        metricID,
-		Count:           int(count),
+		Count:           count,
 		TimestampOffset: 0,
 		ValueOffset:     0,
 		TagOffset:       0,
@@ -195,6 +245,49 @@ func ParseNumericIndexEntry(data []byte, engine endian.EndianEngine) (NumericInd
 		TimestampOffset: int(engine.Uint16(data[10:12])),
 		ValueOffset:     int(engine.Uint16(data[12:14])),
 		TagOffset:       int(engine.Uint16(data[14:16])),
+	}, nil
+}
+
+// ParseNumericIndexEntryExt parses a 32-byte extended NumericIndexEntry from a byte slice.
+//
+// Layout: MetricID(8) + Count(uint32, 4) + TsOffset(4) + ValOffset(4) + TagOffset(4) + Reserved(8) = 32
+//
+// Parameters:
+//   - data: Byte slice containing index entry (must be at least 32 bytes)
+//   - engine: Endian engine for byte order
+//
+// Returns:
+//   - NumericIndexEntry: Parsed index entry with uint32-range count and offsets
+//   - error: ErrInvalidIndexEntrySize if data is too short
+func ParseNumericIndexEntryExt(data []byte, engine endian.EndianEngine) (NumericIndexEntry, error) {
+	if len(data) < NumericExtIndexEntrySize {
+		return NumericIndexEntry{}, errs.ErrInvalidIndexEntrySize
+	}
+
+	// Validate reserved bytes (24-32) are zero per the wire format contract
+	for _, b := range data[24:32] {
+		if b != 0 {
+			return NumericIndexEntry{}, errs.ErrInvalidReservedBytes
+		}
+	}
+
+	count := engine.Uint32(data[8:12])
+	tsOff := engine.Uint32(data[12:16])
+	valOff := engine.Uint32(data[16:20])
+	tagOff := engine.Uint32(data[20:24])
+
+	// Guard against silent int overflow on 32-bit platforms where int is 32 bits.
+	// On 64-bit this check is optimized away by the compiler (maxSafeUint32 == MaxUint32).
+	if count > maxSafeUint32 || tsOff > maxSafeUint32 || valOff > maxSafeUint32 || tagOff > maxSafeUint32 {
+		return NumericIndexEntry{}, errs.ErrIndexEntryOverflow
+	}
+
+	return NumericIndexEntry{
+		MetricID:        engine.Uint64(data[0:8]),
+		Count:           int(count),
+		TimestampOffset: int(tsOff),
+		ValueOffset:     int(valOff),
+		TagOffset:       int(tagOff),
 	}, nil
 }
 

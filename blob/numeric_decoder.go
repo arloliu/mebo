@@ -143,7 +143,7 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 
 	// Step 3.5: If shared timestamps flag is set, parse and apply shared timestamp table
 	if d.header.Flag.HasSharedTimestamps() {
-		indexEnd := indexOffset + d.metricCount*section.NumericIndexEntrySize
+		indexEnd := indexOffset + d.metricCount*d.header.Flag.IndexEntrySize()
 		sharedTableEnd := int(d.header.TimestampPayloadOffset)
 
 		if sharedTableEnd <= indexEnd {
@@ -260,15 +260,19 @@ func (d *NumericDecoder) parseMetricNames() ([]string, int, error) {
 // Returns the parsed index entries in order and the metric IDs for verification.
 // Uses the provided decompressed payload sizes to calculate entry lengths correctly.
 // When needMetricIDs is false, the metricIDs slice is not allocated (returns nil).
-func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloadSize, tagPayloadSize int, needMetricIDs bool) ([]section.NumericIndexEntry, []uint64, error) {
-	indexSize := section.NumericIndexEntrySize * d.metricCount
+func (d *NumericDecoder) parseIndexEntries(
+	indexOffset, tsPayloadSize, valPayloadSize, tagPayloadSize int,
+	needMetricIDs bool,
+) ([]section.NumericIndexEntry, []uint64, error) {
+	entrySize := d.header.Flag.IndexEntrySize()
+	indexSize := entrySize * d.metricCount
 	if len(d.data) < indexOffset+indexSize {
 		return nil, nil, errs.ErrInvalidIndexEntrySize
 	}
 
 	indexData := d.data[indexOffset : indexOffset+indexSize]
 	// Use int for accumulated offsets to prevent uint16 overflow
-	// Index entries store deltas as uint16, but absolute offsets can exceed 65535
+	// Index entries store deltas as uint16/uint32, but absolute offsets can exceed those ranges
 	var lastTsOffset int
 	var lastValOffset int
 	var lastTagOffset int
@@ -281,12 +285,18 @@ func (d *NumericDecoder) parseIndexEntries(indexOffset, tsPayloadSize, valPayloa
 		metricIDs = make([]uint64, d.metricCount)
 	}
 
+	// Select parser based on entry size (compact 16B vs extended 32B)
+	parseEntry := section.ParseNumericIndexEntry
+	if entrySize == section.NumericExtIndexEntrySize {
+		parseEntry = section.ParseNumericIndexEntryExt
+	}
+
 	var err error
 	for i := 0; i < d.metricCount; i++ {
-		start := i * section.NumericIndexEntrySize
-		end := start + section.NumericIndexEntrySize
+		start := i * entrySize
+		end := start + entrySize
 
-		indexEntries[i], err = section.ParseNumericIndexEntry(indexData[start:end], d.engine)
+		indexEntries[i], err = parseEntry(indexData[start:end], d.engine)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/arloliu/mebo/endian"
+	"github.com/arloliu/mebo/errs"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,7 +42,7 @@ func TestNumericIndexEntry_WriteToMethods_Consistency(t *testing.T) {
 	testCases := []struct {
 		name         string
 		metricID     uint64
-		count        uint16
+		count        int
 		timestampOff int
 		valueOff     int
 		engine       endian.EndianEngine
@@ -180,4 +181,150 @@ func TestNumericIndexEntry_WriteToSlice_OffsetHandling(t *testing.T) {
 		require.Equal(t, entries[i].TimestampOffset, parsed.TimestampOffset)
 		require.Equal(t, entries[i].ValueOffset, parsed.ValueOffset)
 	}
+}
+
+func TestNumericIndexEntry_Bytes32_RoundTrip(t *testing.T) {
+	tests := []struct {
+		name   string
+		entry  NumericIndexEntry
+		engine endian.EndianEngine
+	}{
+		{
+			name: "little-endian within uint16 range",
+			entry: NumericIndexEntry{
+				MetricID:        0x123456789ABCDEF0,
+				Count:           42,
+				TimestampOffset: 1000,
+				ValueOffset:     2000,
+				TagOffset:       3000,
+			},
+			engine: endian.GetLittleEndianEngine(),
+		},
+		{
+			name: "big-endian exceeding uint16 range",
+			entry: NumericIndexEntry{
+				MetricID:        0xFEDCBA9876543210,
+				Count:           100_000,
+				TimestampOffset: 100_000,
+				ValueOffset:     200_000,
+				TagOffset:       300_000,
+			},
+			engine: endian.GetBigEndianEngine(),
+		},
+		{
+			name: "max uint32 offsets and count",
+			entry: NumericIndexEntry{
+				MetricID:        1,
+				Count:           NumericMaxCount,
+				TimestampOffset: NumericExtMaxOffset,
+				ValueOffset:     NumericExtMaxOffset,
+				TagOffset:       NumericExtMaxOffset,
+			},
+			engine: endian.GetLittleEndianEngine(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := tt.entry.Bytes32(tt.engine)
+			require.Len(t, data, NumericExtIndexEntrySize)
+
+			// Verify reserved bytes are zero (last 8 bytes)
+			for i := 24; i < 32; i++ {
+				require.Equal(t, byte(0), data[i], "reserved byte at offset %d should be zero", i)
+			}
+
+			parsed, err := ParseNumericIndexEntryExt(data, tt.engine)
+			require.NoError(t, err)
+			require.Equal(t, tt.entry.MetricID, parsed.MetricID)
+			require.Equal(t, tt.entry.Count, parsed.Count)
+			require.Equal(t, tt.entry.TimestampOffset, parsed.TimestampOffset)
+			require.Equal(t, tt.entry.ValueOffset, parsed.ValueOffset)
+			require.Equal(t, tt.entry.TagOffset, parsed.TagOffset)
+		})
+	}
+}
+
+func TestNumericIndexEntry_WriteToSlice32(t *testing.T) {
+	ie := NumericIndexEntry{
+		MetricID:        0x1122334455667788,
+		Count:           7,
+		TimestampOffset: 80_000,
+		ValueOffset:     160_000,
+		TagOffset:       240_000,
+	}
+	engine := endian.GetLittleEndianEngine()
+
+	buf := make([]byte, NumericExtIndexEntrySize)
+	n := ie.WriteToSlice32(buf, 0, engine)
+
+	require.Equal(t, NumericExtIndexEntrySize, n)
+
+	// Should produce same result as Bytes32()
+	expected := ie.Bytes32(engine)
+	require.Equal(t, expected, buf[:n])
+}
+
+func TestNumericIndexEntry_WriteToSlice32_Sequential(t *testing.T) {
+	entries := []NumericIndexEntry{
+		{MetricID: 1111, Count: 10, TimestampOffset: 70_000, ValueOffset: 70_000, TagOffset: 0},
+		{MetricID: 2222, Count: 20, TimestampOffset: 80_000, ValueOffset: 80_000, TagOffset: 0},
+		{MetricID: 3333, Count: 30, TimestampOffset: 90_000, ValueOffset: 90_000, TagOffset: 0},
+	}
+
+	engine := endian.GetLittleEndianEngine()
+	buf := make([]byte, NumericExtIndexEntrySize*len(entries))
+
+	offset := 0
+	for i := range entries {
+		offset = entries[i].WriteToSlice32(buf, offset, engine)
+	}
+
+	require.Equal(t, len(buf), offset)
+
+	for i := range entries {
+		start := i * NumericExtIndexEntrySize
+		end := start + NumericExtIndexEntrySize
+
+		parsed, err := ParseNumericIndexEntryExt(buf[start:end], engine)
+		require.NoError(t, err)
+		require.Equal(t, entries[i].MetricID, parsed.MetricID)
+		require.Equal(t, entries[i].Count, parsed.Count)
+		require.Equal(t, entries[i].TimestampOffset, parsed.TimestampOffset)
+		require.Equal(t, entries[i].ValueOffset, parsed.ValueOffset)
+		require.Equal(t, entries[i].TagOffset, parsed.TagOffset)
+	}
+}
+
+func TestParseNumericIndexEntryExt_TooShort(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	data := make([]byte, NumericExtIndexEntrySize-1)
+
+	_, err := ParseNumericIndexEntryExt(data, engine)
+	require.ErrorIs(t, err, errs.ErrInvalidIndexEntrySize)
+}
+
+func TestParseNumericIndexEntryExt_NonZeroReservedBytes(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+
+	entry := NumericIndexEntry{
+		MetricID:        0x123456789ABCDEF0,
+		Count:           100,
+		TimestampOffset: 1000,
+		ValueOffset:     2000,
+		TagOffset:       3000,
+	}
+
+	data := entry.Bytes32(engine)
+	require.Len(t, data, NumericExtIndexEntrySize)
+
+	// Verify clean data parses successfully
+	_, err := ParseNumericIndexEntryExt(data, engine)
+	require.NoError(t, err)
+
+	// Corrupt a reserved byte
+	data[25] = 0xFF
+
+	_, err = ParseNumericIndexEntryExt(data, engine)
+	require.ErrorIs(t, err, errs.ErrInvalidReservedBytes)
 }
