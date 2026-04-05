@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
-	"math"
 	"slices"
 	"time"
 
@@ -150,6 +149,32 @@ func (e *NumericEncoder) cloneHeader() *section.NumericHeader {
 	return &cloned
 }
 
+// MaxDataPoints returns the maximum number of data points a single metric can hold
+// safely without overflowing the 16-bit offset index. This limit depends on the
+// uncompressed byte size of the chosen encoding combinations.
+func (e *NumericEncoder) MaxDataPoints() int {
+	tsEnc := e.header.Flag.TimestampEncoding()
+	tsBytes := 9   // Default safe worst-case for delta varints
+	switch tsEnc { //nolint:exhaustive // other enum values use the default fallback
+	case format.TypeRaw:
+		tsBytes = 8
+	case format.TypeDeltaPacked:
+		tsBytes = 5 // Max 17 bytes per 4 values -> ~4.25
+	default:
+		// tsBytes already initialized to 9
+	}
+
+	valEnc := e.header.Flag.ValueEncoding()
+	valBytes := 9 // Gorilla/Chimp worst case is ~65-69 bits (~9 bytes)
+	if valEnc == format.TypeRaw {
+		valBytes = 8
+	}
+
+	maxBytes := max(tsBytes, valBytes)
+
+	return section.NumericMaxOffset / maxBytes
+}
+
 // NewNumericEncoder creates a new NumericEncoder with the given start time.
 //
 // The encoder will grow dynamically as metrics are added, up to MaxMetricCount (65536).
@@ -186,9 +211,9 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	case format.TypeChimp:
 		encoder.valEncoder = ienc.NewNumericChimpEncoder()
 	case format.TypeDelta:
-		return nil, fmt.Errorf("value encoding %s not supported yet", enc.String())
+		return nil, fmt.Errorf("%w: value encoding %s not supported yet", errs.ErrUnsupportedEncoding, enc.String())
 	default:
-		return nil, fmt.Errorf("invalid value encoding: %s", enc.String())
+		return nil, fmt.Errorf("%w: invalid value encoding %s", errs.ErrUnsupportedEncoding, enc.String())
 	}
 
 	enc = encoder.header.Flag.TimestampEncoding()
@@ -200,7 +225,7 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	case format.TypeDeltaPacked:
 		encoder.tsEncoder = ienc.NewTimestampDeltaPackedEncoder()
 	default:
-		return nil, fmt.Errorf("invalid timestamp encoding: %s", enc.String())
+		return nil, fmt.Errorf("%w: invalid timestamp encoding %s", errs.ErrUnsupportedEncoding, enc.String())
 	}
 
 	encoder.tagEncoder = ienc.NewTagEncoder(encoder.engine)
@@ -249,8 +274,9 @@ func (e *NumericEncoder) StartMetricID(metricID uint64, numOfDataPoints int) err
 		return errs.ErrInvalidMetricID
 	}
 
-	if numOfDataPoints <= 0 || numOfDataPoints > math.MaxUint16 {
-		return errs.ErrInvalidNumOfDataPoints
+	maxPoints := e.MaxDataPoints()
+	if numOfDataPoints <= 0 || numOfDataPoints > maxPoints {
+		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, maxPoints)
 	}
 
 	if len(e.indexEntries) >= MaxMetricCount {
@@ -323,8 +349,9 @@ func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int)
 		e.collisionTracker = collision.NewTracker()
 	}
 
-	if numOfDataPoints <= 0 || numOfDataPoints > math.MaxUint16 {
-		return errs.ErrInvalidNumOfDataPoints
+	maxPoints := e.MaxDataPoints()
+	if numOfDataPoints <= 0 || numOfDataPoints > maxPoints {
+		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, maxPoints)
 	}
 
 	if len(e.indexEntries) >= MaxMetricCount {

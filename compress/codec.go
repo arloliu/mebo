@@ -3,6 +3,7 @@ package compress
 import (
 	"fmt"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 )
 
@@ -145,7 +146,7 @@ func CreateCodec(compressionType format.CompressionType, target string) (Codec, 
 	case format.CompressionLZ4:
 		return NewLZ4Compressor(), nil
 	default:
-		return nil, fmt.Errorf("invalid %s compression: %s", target, compressionType)
+		return nil, fmt.Errorf("%w: invalid %s compression %s", errs.ErrUnsupportedCompression, target, compressionType)
 	}
 }
 
@@ -162,5 +163,5 @@ func GetCodec(compressionType format.CompressionType) (Codec, error) {
 		return codec, nil
 	}
 
-	return nil, fmt.Errorf("unsupported compression type: %s", compressionType)
+	return nil, fmt.Errorf("%w: %s", errs.ErrUnsupportedCompression, compressionType)
 }
