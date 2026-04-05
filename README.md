@@ -509,6 +509,8 @@ When enabled, the encoder detects metrics with identical timestamp sequences and
 
 **Important**: All consumers must be upgraded to a mebo version that supports V2 decoding **before** enabling this on producers. The decoder accepts both V1 and V2 formats, so upgrade consumers first, then enable this option on producers.
 
+> 📖 See [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md) for detection algorithm, binary format, decode cache, and performance analysis.
+
 ## Advanced Usage
 
 ### BlobSet: Unified Multi-Blob Access
@@ -683,7 +685,7 @@ metricID = mebo.MetricID("cpu.usage")  // Returns uint64
 9. **Materialize wisely**: Only materialize when random access pattern justifies the cost (>100 accesses).
 10. **Monitor memory**: Materialization can use significant memory for large datasets (~16 bytes/point).
 11. **Use tags judiciously**: Tags add 8-16 bytes overhead per point; only enable when needed.
-12. **Enable shared timestamps**: When most metrics share the same collection schedule, use `WithSharedTimestamps()` for 24-73% size savings with minimal decode overhead (~5-11%). Upgrade all consumers to V2-capable versions before enabling on producers.
+12. **Enable shared timestamps**: When most metrics share the same collection schedule, use `WithSharedTimestamps()` for 24-73% size savings with minimal decode overhead (~5-11%). Upgrade all consumers to V2-capable versions before enabling on producers. See [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md).
 13. **Profile your workload**: Test different configurations with your actual data to find optimal settings.
 
 ## Thread Safety
@@ -746,7 +748,8 @@ We welcome contributions! Before starting:
 
 - 📚 [API Documentation](https://pkg.go.dev/github.com/arloliu/mebo)
 - 📖 [Design Document](docs/DESIGN.md)
-- 🧪 [Benchmark Report](tests/fbs_compare/BENCHMARK_REPORT.md)
+- 🔗 [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md)
+- 🧪 [Benchmark Report](docs/PERFORMANCE_V2.md)
 - 💡 [Examples](examples/)
   - [Blob Set Demo](examples/blob_set_demo/) - Multi-blob queries and materialization
 
@@ -814,5 +817,6 @@ This project is licensed under the Apache License - see the [LICENSE](LICENSE) f
 ## Acknowledgments
 
 - **Gorilla compression** algorithm from Facebook's [Gorilla paper](http://www.vldb.org/pvldb/vol8/p1816-teller.pdf) (VLDB 2015)
+- **Chimp compression** algorithm from the [CHIMP paper](https://www.vldb.org/pvldb/vol15/p3058-liakos.pdf) (VLDB 2022)
 - **Delta-of-delta encoding** inspiration from time-series databases
 - **xxHash64** from [Yann Collet](https://github.com/Cyan4973/xxHash)
