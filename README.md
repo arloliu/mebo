@@ -282,8 +282,8 @@ For full guidance on encoding selection, materialization thresholds, tags overhe
 | Object | Thread safety |
 |--------|--------------|
 | Encoders | Not thread-safe. Use one encoder per goroutine. |
-| Blobs | Immutable and safe for concurrent reads. |
-| Decoders | Safe for concurrent reads from multiple goroutines. |
+| Decoders | Not thread-safe and not reusable. Create a new decoder for each decode operation. |
+| Blobs | Immutable after decoding. Safe for concurrent reads from multiple goroutines. |
 | BlobSets | Safe for concurrent reads. |
 | MaterializedBlobSets | Safe for concurrent reads. |
 

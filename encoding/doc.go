@@ -258,7 +258,11 @@
 //
 // Encoders: Not thread-safe. Use one encoder per goroutine.
 //
-// Decoders: Thread-safe for concurrent reads from different goroutines.
+// Internal decoders (this package): Stateless and safe for concurrent reads from different goroutines.
+//
+// Blob-level decoders (blob.NumericDecoder, blob.TextDecoder): Not thread-safe and not reusable.
+// Create a new decoder for each decode operation. The decoded Blobs are immutable and safe for
+// concurrent reads.
 //
 // Buffer Pool: Thread-safe with internal synchronization.
 //
