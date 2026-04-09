@@ -214,7 +214,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 		currentSeqCount++
 	}
 
-	// Handle second timestamp (first delta) if we have it
+	// Handle second timestamp (first delta) if we have it.
 	if startIdx < tsLen && currentSeqCount == 1 {
 		ts := timestampsUs[startIdx]
 		delta := ts - prevTS
@@ -225,16 +225,27 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 		startIdx++
 	}
 
-	// Encode remaining timestamps as delta-of-deltas
-	for _, ts := range timestampsUs[startIdx:] {
-		delta := ts - prevTS
-		deltaOfDelta := delta - prevDelta
-		// Zigzag encoding
-		zigzag := (deltaOfDelta << 1) ^ (deltaOfDelta >> 63)
-		// Varint encoding
-		e.appendUnsigned(uint64(zigzag)) //nolint:gosec
-		prevTS = ts
-		prevDelta = delta
+	remaining := timestampsUs[startIdx:]
+	if shouldUseDeltaOfDeltaSIMD(len(remaining)) {
+		var deltaBuf [deltaOfDeltaSIMDChunkSize]int64
+
+		for len(remaining) > 0 {
+			n := min(len(remaining), deltaOfDeltaSIMDChunkSize)
+			prevTS, prevDelta = deltaOfDeltaIntoActive(deltaBuf[:n], remaining[:n], prevTS, prevDelta)
+
+			for _, deltaOfDelta := range deltaBuf[:n] {
+				zigzag := (deltaOfDelta << 1) ^ (deltaOfDelta >> 63)
+				e.appendUnsigned(uint64(zigzag)) //nolint:gosec
+			}
+
+			remaining = remaining[n:]
+		}
+	} else {
+		for _, ts := range remaining {
+			deltaOfDelta := nextDeltaOfDelta(ts, &prevTS, &prevDelta)
+			zigzag := (deltaOfDelta << 1) ^ (deltaOfDelta >> 63)
+			e.appendUnsigned(uint64(zigzag)) //nolint:gosec
+		}
 	}
 
 	// Update encoder state

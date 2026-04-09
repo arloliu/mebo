@@ -159,21 +159,39 @@ func (e *TimestampDeltaPackedEncoder) WriteSlice(timestampsUs []int64) {
 		startIdx++
 	}
 
-	// Remaining timestamps: group varint packed delta-of-deltas
-	for _, ts := range timestampsUs[startIdx:] {
-		delta := ts - prevTS
-		deltaOfDelta := delta - prevDelta
-		zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec
+	remaining := timestampsUs[startIdx:]
+	if shouldUseDeltaOfDeltaSIMD(len(remaining)) {
+		var deltaBuf [deltaOfDeltaSIMDChunkSize]int64
 
-		e.pending[e.pendingLen] = zigzag
-		e.pendingLen++
+		for len(remaining) > 0 {
+			n := min(len(remaining), deltaOfDeltaSIMDChunkSize)
+			prevTS, prevDelta = deltaOfDeltaIntoActive(deltaBuf[:n], remaining[:n], prevTS, prevDelta)
 
-		if e.pendingLen == groupSize {
-			e.flushGroup(groupSize)
+			for _, deltaOfDelta := range deltaBuf[:n] {
+				zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec
+
+				e.pending[e.pendingLen] = zigzag
+				e.pendingLen++
+
+				if e.pendingLen == groupSize {
+					e.flushGroup(groupSize)
+				}
+			}
+
+			remaining = remaining[n:]
 		}
+	} else {
+		for _, ts := range remaining {
+			deltaOfDelta := nextDeltaOfDelta(ts, &prevTS, &prevDelta)
+			zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec
 
-		prevTS = ts
-		prevDelta = delta
+			e.pending[e.pendingLen] = zigzag
+			e.pendingLen++
+
+			if e.pendingLen == groupSize {
+				e.flushGroup(groupSize)
+			}
+		}
 	}
 
 	e.prevTS = prevTS

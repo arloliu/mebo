@@ -7,6 +7,7 @@ LINT_TIMEOUT    := 5m
 COVERAGE_DIR    := ./.coverage
 COVERAGE_OUT    := $(COVERAGE_DIR)/coverage.out
 COVERAGE_HTML   := $(COVERAGE_DIR)/coverage.html
+ENCODING_PKG    := ./internal/encoding
 
 # Source files
 ALL_GO_FILES    := $(shell find . -name "*.go" -not -path "./tests/fbs_compare/*" -not -path "./vendor/*")
@@ -20,7 +21,7 @@ GOLANGCI_LINT_VERSION := 2.5.0
 # Default target
 .DEFAULT_GOAL := help
 
-.PHONY: fix test test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
+.PHONY: fix test test-encoding-simd test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
 
 fix:
 	@echo "Running go fmt and goimports..."
@@ -30,13 +31,21 @@ fix:
 	@go fix ./...
 	@echo "go fix applied to all files."
 
-## test: Run all tests with race detector and CGO disabled
+## test: Run all tests with race detector, CGO disabled, and focused SIMD encoder coverage
 test: clean-test-results
 	@echo "Running tests with race detector..."
 	@CGO_ENABLED=1 go test $(TEST_DIRS) -short -timeout=$(TEST_TIMEOUT) -race || (echo "Tests failed with race detector" && exit 1)
 	@echo "Running tests with CGO_ENABLED=0..."
 	@CGO_ENABLED=0 go test $(TEST_DIRS) -short -timeout=$(TEST_TIMEOUT) || (echo "Tests failed with CGO disabled" && exit 1)
+	@echo "Running internal/encoding tests with GOEXPERIMENT=simd..."
+	@GOEXPERIMENT=simd go test $(ENCODING_PKG) -short -timeout=$(TEST_TIMEOUT) || (echo "SIMD tests failed for $(ENCODING_PKG)" && exit 1)
 	@echo "All tests passed!"
+
+## test-encoding-simd: Run internal/encoding tests with GOEXPERIMENT=simd
+test-encoding-simd: clean-test-results
+	@echo "Running internal/encoding tests with GOEXPERIMENT=simd..."
+	@GOEXPERIMENT=simd go test $(ENCODING_PKG) -short -timeout=$(TEST_TIMEOUT) || (echo "SIMD tests failed for $(ENCODING_PKG)" && exit 1)
+	@echo "SIMD tests passed for $(ENCODING_PKG)!"
 
 ## test-race: Run tests with race detector only
 test-race: clean-test-results

@@ -1,0 +1,139 @@
+#include "textflag.h"
+
+TEXT ·deltaOfDeltaIntoASMAVX2Bulk(SB), NOSPLIT, $0-56
+	MOVQ dst_base+0(FP), DI
+	MOVQ src_base+24(FP), SI
+	MOVQ count+48(FP), AX
+
+	TESTQ AX, AX
+	JLE done
+
+loop:
+	VMOVDQU (SI), Y0
+	VMOVDQU -8(SI), Y1
+	VMOVDQU -16(SI), Y2
+	VPADDQ Y1, Y1, Y3
+	VPSUBQ Y3, Y0, Y0
+	VPADDQ Y2, Y0, Y0
+	VMOVDQU Y0, (DI)
+	ADDQ $32, SI
+	ADDQ $32, DI
+	SUBQ $4, AX
+	JG loop
+
+done:
+	VZEROUPPER
+	RET
+
+TEXT ·deltaOfDeltaIntoASMAVX512(SB), NOSPLIT, $0-80
+	MOVQ dst_base+0(FP), DI
+	MOVQ src_base+24(FP), SI
+	MOVQ src_len+32(FP), CX
+	MOVQ prevTS+48(FP), R8
+	MOVQ prevDelta+56(FP), R9
+
+	CMPQ CX, $10
+	JLT scalarAll512
+
+	MOVQ (SI), R10
+	MOVQ R10, R11
+	SUBQ R8, R11
+	MOVQ R11, R12
+	SUBQ R9, R12
+	MOVQ R12, (DI)
+	MOVQ R10, R8
+	MOVQ R11, R9
+
+	MOVQ 8(SI), R10
+	MOVQ R10, R11
+	SUBQ R8, R11
+	MOVQ R11, R12
+	SUBQ R9, R12
+	MOVQ R12, 8(DI)
+	MOVQ R10, R8
+	MOVQ R11, R9
+
+	MOVQ CX, DX
+	SUBQ $2, DX
+	ANDQ $-8, DX
+	JLE afterBulk512
+
+	LEAQ 16(SI), R10
+	LEAQ 16(DI), R11
+	MOVQ DX, AX
+
+loop512:
+	VMOVDQU64 (R10), Z0
+	VMOVDQU64 -8(R10), Z1
+	VMOVDQU64 -16(R10), Z2
+	VPADDQ Z1, Z1, Z3
+	VPSUBQ Z3, Z0, Z0
+	VPADDQ Z2, Z0, Z0
+	VMOVDQU64 Z0, (R11)
+	ADDQ $64, R10
+	ADDQ $64, R11
+	SUBQ $8, AX
+	JG loop512
+
+afterBulk512:
+	MOVQ DX, AX
+	ADDQ $2, AX
+	CMPQ AX, CX
+	JGE noTail512
+
+	MOVQ -8(SI)(AX*8), R8
+	MOVQ -16(SI)(AX*8), R10
+	MOVQ R8, R9
+	SUBQ R10, R9
+
+tailLoop512:
+	CMPQ AX, CX
+	JGE doneTail512
+	MOVQ (SI)(AX*8), R10
+	MOVQ R10, R11
+	SUBQ R8, R11
+	MOVQ R11, R12
+	SUBQ R9, R12
+	MOVQ R12, (DI)(AX*8)
+	MOVQ R10, R8
+	MOVQ R11, R9
+	INCQ AX
+	JMP tailLoop512
+
+doneTail512:
+	MOVQ R8, lastTS+64(FP)
+	MOVQ R9, lastDelta+72(FP)
+	VZEROUPPER
+	RET
+
+noTail512:
+	MOVQ -8(SI)(CX*8), R8
+	MOVQ -16(SI)(CX*8), R10
+	MOVQ R8, R11
+	SUBQ R10, R11
+	MOVQ R8, lastTS+64(FP)
+	MOVQ R11, lastDelta+72(FP)
+	VZEROUPPER
+	RET
+
+scalarAll512:
+	XORQ AX, AX
+
+scalarLoop512:
+	CMPQ AX, CX
+	JGE scalarDone512
+	MOVQ (SI)(AX*8), R10
+	MOVQ R10, R11
+	SUBQ R8, R11
+	MOVQ R11, R12
+	SUBQ R9, R12
+	MOVQ R12, (DI)(AX*8)
+	MOVQ R10, R8
+	MOVQ R11, R9
+	INCQ AX
+	JMP scalarLoop512
+
+scalarDone512:
+	MOVQ R8, lastTS+64(FP)
+	MOVQ R9, lastDelta+72(FP)
+	RET
