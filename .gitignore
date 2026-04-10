@@ -12,5 +12,7 @@
 /*.html
 /*.pprof
 
+*.test
+
 tests/compat/testdata/
 tests/compat/compat
