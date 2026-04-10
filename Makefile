@@ -18,6 +18,9 @@ LATEST_GIT_TAG  := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v
 LINTER_GOMOD          := -modfile=linter.go.mod
 GOLANGCI_LINT_VERSION := 2.5.0
 
+# Go version detection for feature gating
+GO_MINOR        := $(shell go version | sed 's/.*go[0-9][0-9]*\.\([0-9][0-9]*\).*/\1/')
+
 # Default target
 .DEFAULT_GOAL := help
 
@@ -37,15 +40,23 @@ test: clean-test-results
 	@CGO_ENABLED=1 go test $(TEST_DIRS) -short -timeout=$(TEST_TIMEOUT) -race || (echo "Tests failed with race detector" && exit 1)
 	@echo "Running tests with CGO_ENABLED=0..."
 	@CGO_ENABLED=0 go test $(TEST_DIRS) -short -timeout=$(TEST_TIMEOUT) || (echo "Tests failed with CGO disabled" && exit 1)
-	@echo "Running internal/encoding tests with GOEXPERIMENT=simd..."
-	@GOEXPERIMENT=simd go test $(ENCODING_PKG) -short -timeout=$(TEST_TIMEOUT) || (echo "SIMD tests failed for $(ENCODING_PKG)" && exit 1)
+	@if [ $(GO_MINOR) -ge 26 ]; then \
+		echo "Running internal/encoding tests with GOEXPERIMENT=simd..."; \
+		GOEXPERIMENT=simd go test $(ENCODING_PKG) -short -timeout=$(TEST_TIMEOUT) || (echo "SIMD tests failed for $(ENCODING_PKG)" && exit 1); \
+	else \
+		echo "Skipping GOEXPERIMENT=simd tests (requires Go >= 1.26, found Go 1.$(GO_MINOR))"; \
+	fi
 	@echo "All tests passed!"
 
-## test-encoding-simd: Run internal/encoding tests with GOEXPERIMENT=simd
+## test-encoding-simd: Run internal/encoding tests with GOEXPERIMENT=simd (requires Go >= 1.26)
 test-encoding-simd: clean-test-results
-	@echo "Running internal/encoding tests with GOEXPERIMENT=simd..."
-	@GOEXPERIMENT=simd go test $(ENCODING_PKG) -short -timeout=$(TEST_TIMEOUT) || (echo "SIMD tests failed for $(ENCODING_PKG)" && exit 1)
-	@echo "SIMD tests passed for $(ENCODING_PKG)!"
+	@if [ $(GO_MINOR) -ge 26 ]; then \
+		echo "Running internal/encoding tests with GOEXPERIMENT=simd..."; \
+		GOEXPERIMENT=simd go test $(ENCODING_PKG) -short -timeout=$(TEST_TIMEOUT) || (echo "SIMD tests failed for $(ENCODING_PKG)" && exit 1); \
+		echo "SIMD tests passed for $(ENCODING_PKG)!"; \
+	else \
+		echo "Skipping GOEXPERIMENT=simd tests (requires Go >= 1.26, found Go 1.$(GO_MINOR))"; \
+	fi
 
 ## test-race: Run tests with race detector only
 test-race: clean-test-results
