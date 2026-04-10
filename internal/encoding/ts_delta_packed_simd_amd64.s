@@ -76,10 +76,17 @@ groupLoop:
 	VPSHUFB Y3, Y1, Y5
 	VPSHUFB Y4, Y2, Y6
 	VPOR Y6, Y5, Y5
-	VPSLLQ $63, Y5, Y6
-	VPSRAQ $63, Y6, Y6
-	VPSRLQ $1, Y5, Y5
-	VPXORQ Y6, Y5, Y5
+
+	// Zigzag decode: decoded = (v >> 1) ^ -(v & 1)
+	// AVX2 lacks VPSRAQ (64-bit arithmetic right shift). We emulate
+	// -(v & 1) by shifting bit 0 to the sign position and using
+	// VPCMPGTQ against zero to broadcast it across 64 bits.
+	VPSRLQ   $1, Y5, Y0      // Y0 = v >> 1 (logical right shift)
+	VPSLLQ   $63, Y5, Y1     // Y1 = v << 63 (bit 0 at sign position)
+	VPXOR    Y6, Y6, Y6      // Y6 = 0
+	VPCMPGTQ Y1, Y6, Y5      // Y5 = (0 > (v<<63)) = -1 if bit0=1, else 0
+	VPXOR    Y0, Y5, Y5      // Y5 = (v >> 1) ^ -(v & 1) = decoded
+
 	VMOVDQU Y5, 0(SP)
 
 	MOVQ 0(SP), AX
