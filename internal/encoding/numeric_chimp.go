@@ -427,15 +427,143 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 	prevValue := firstBits
 	dst[0] = math.Float64frombits(prevValue)
+	_ = dst[count-1] // bounds-check elimination
 
 	storedLeading := 65
 
 	for i := 1; i < count; i++ {
-		if !chimpDecodeNext(&br, &prevValue, &storedLeading) {
+		flag, ok := br.read2Bits()
+		if !ok {
 			return i
 		}
 
-		dst[i] = math.Float64frombits(prevValue)
+		switch flag {
+		case 0: // Value unchanged
+			dst[i] = math.Float64frombits(prevValue)
+			storedLeading = 65
+
+			// Batch: count consecutive unchanged values (00 flag pairs)
+			remaining := count - i - 1
+			if remaining >= 4 {
+				zeros := chimpCountUnchangedRun(&br, remaining)
+				prevFloat := math.Float64frombits(prevValue)
+				for j := range zeros {
+					dst[i+1+j] = prevFloat
+				}
+				i += zeros
+			}
+
+		case 1: // Trailing-zero optimized
+			header, ok := readChimpTrailingHeader(&br)
+			if !ok {
+				return i
+			}
+
+			leading := chimpLeadingDecode[header>>6]
+
+			sigBits := int(header & 0x3F) //nolint:gosec // G115: masked to 6 bits, bounded 0..63
+			if sigBits == 0 {
+				sigBits = 64
+			}
+
+			meaningful, ok := br.readBits(sigBits)
+			if !ok {
+				return i
+			}
+
+			trailingZeros := 64 - leading - sigBits
+			if trailingZeros < 0 {
+				return i
+			}
+
+			prevValue ^= meaningful << trailingZeros
+			dst[i] = math.Float64frombits(prevValue)
+			storedLeading = 65
+
+		case 2: // Reuse previous leading
+			if storedLeading > 64 {
+				return i
+			}
+
+			sigBits := 64 - storedLeading
+
+			meaningful, ok := br.readBits(sigBits)
+			if !ok {
+				return i
+			}
+
+			prevValue ^= meaningful
+			dst[i] = math.Float64frombits(prevValue)
+
+		case 3: // New leading
+			leadingBucket, ok := br.read3Bits()
+			if !ok {
+				return i
+			}
+
+			leading := chimpLeadingDecode[leadingBucket]
+			storedLeading = leading
+			sigBits := 64 - leading
+
+			meaningful, ok := br.readBits(sigBits)
+			if !ok {
+				return i
+			}
+
+			prevValue ^= meaningful
+			dst[i] = math.Float64frombits(prevValue)
+
+		default:
+			return i
+		}
+	}
+
+	return count
+}
+
+// chimpCountUnchangedRun counts consecutive Chimp "unchanged" flags (00 bit pairs)
+// from the current position in the bit reader. Each pair represents one unchanged value.
+// Follows the same consume-after-check pattern as bitReader.countLeadingZeroBits.
+func chimpCountUnchangedRun(br *bitReader, maxPairs int) int {
+	count := 0
+
+	for count < maxPairs {
+		if br.bitCount == 0 {
+			if !br.fillBuffer() {
+				return count
+			}
+		}
+
+		leadingZeros := min(bits.LeadingZeros64(br.bitBuf), br.bitCount)
+
+		// Complete pairs we can extract from consecutive zeros
+		pairs := min(leadingZeros/2, maxPairs-count)
+		bitsToConsume := pairs * 2
+
+		// Found a 1-bit within the buffer: consume pairs and stop
+		if leadingZeros < br.bitCount {
+			if bitsToConsume > 0 {
+				br.bitBuf <<= bitsToConsume
+				br.bitCount -= bitsToConsume
+				count += pairs
+			}
+
+			break
+		}
+
+		// All buffer bits were zeros: consume and refill on next iteration.
+		// Only consume complete pairs — an odd trailing zero stays for the
+		// next read2Bits call since it might be part of a non-00 flag.
+		if bitsToConsume > 0 {
+			br.bitBuf <<= bitsToConsume
+			br.bitCount -= bitsToConsume
+			count += pairs
+		}
+
+		// Odd zero left over (leadingZeros was odd) — can't form a pair
+		if leadingZeros%2 != 0 {
+			break
+		}
 	}
 
 	return count

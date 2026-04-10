@@ -299,6 +299,158 @@ func TestNumericChimpDecoder_EmptyData(t *testing.T) {
 	require.Zero(t, val)
 }
 
+// === DecodeAll Tests ===
+
+func TestNumericChimpDecoder_DecodeAll_MatchesAll(t *testing.T) {
+	testCases := []struct {
+		name   string
+		values []float64
+	}{
+		{
+			name:   "single_value",
+			values: []float64{42.0},
+		},
+		{
+			name:   "two_values",
+			values: []float64{1.0, 2.0},
+		},
+		{
+			name:   "unchanged_exactly_4",
+			values: []float64{100.0, 100.0, 100.0, 100.0},
+		},
+		{
+			name:   "unchanged_3_no_batch",
+			values: []float64{100.0, 100.0, 100.0},
+		},
+		{
+			name: "unchanged_long_run",
+			values: func() []float64 {
+				v := make([]float64, 50)
+				for i := range v {
+					v[i] = 42.0
+				}
+
+				return v
+			}(),
+		},
+		{
+			name:   "unchanged_then_change",
+			values: []float64{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
+		},
+		{
+			name:   "varying_values",
+			values: []float64{1.0, 10.0, 100.0, 1000.0, 10000.0, 0.1, 0.01},
+		},
+		{
+			name:   "similar_values",
+			values: []float64{100.0, 100.1, 100.2, 100.3, 100.4, 100.5},
+		},
+		{
+			name: "special_values",
+			values: []float64{
+				0.0,
+				math.Copysign(0, -1),
+				1.0,
+				-1.0,
+				math.MaxFloat64,
+				math.SmallestNonzeroFloat64,
+				math.Inf(1),
+				math.Inf(-1),
+			},
+		},
+		{
+			name: "sinusoidal_1000",
+			values: func() []float64 {
+				v := make([]float64, 1000)
+				for i := range v {
+					v[i] = 100.0 + float64(i)*0.1 + math.Sin(float64(i)*0.1)*5.0
+				}
+
+				return v
+			}(),
+		},
+		{
+			name: "unchanged_100_cross_buffer",
+			values: func() []float64 {
+				// 100 identical values forces chimpCountUnchangedRun to cross
+				// the 64-bit buffer boundary (32 pairs = 64 bits per refill)
+				v := make([]float64, 100)
+				for i := range v {
+					v[i] = 99.9
+				}
+
+				return v
+			}(),
+		},
+		{
+			name: "unchanged_200_then_change",
+			values: func() []float64 {
+				v := make([]float64, 202)
+				for i := range 200 {
+					v[i] = 42.0
+				}
+				v[200] = 99.0
+				v[201] = 42.0
+
+				return v
+			}(),
+		},
+		{
+			name:   "sticky_latency",
+			values: generateStickyMetric(200, 12.5, 0.04, 0.15),
+		},
+		{
+			name:   "jittered",
+			values: generateJitteredValues(300, 100.0, 0.02, 42),
+		},
+	}
+
+	decoder := NewNumericChimpDecoder()
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			encoder := NewNumericChimpEncoder()
+			encoder.WriteSlice(tc.values)
+			data := append([]byte(nil), encoder.Bytes()...)
+			encoder.Finish()
+
+			count := len(tc.values)
+
+			// Reference: decode via All() iterator
+			allResult := make([]float64, 0, count)
+			for v := range decoder.All(data, count) {
+				allResult = append(allResult, v)
+			}
+			require.Equal(t, count, len(allResult), "All() count mismatch")
+
+			// DecodeAll: decode into pre-allocated slice
+			dst := make([]float64, count)
+			produced := decoder.DecodeAll(data, count, dst)
+			require.Equal(t, count, produced, "DecodeAll produced wrong count")
+
+			for i := range count {
+				if math.IsNaN(allResult[i]) {
+					require.True(t, math.IsNaN(dst[i]), "DecodeAll NaN mismatch at %d", i)
+				} else {
+					require.Equal(t, allResult[i], dst[i], "DecodeAll mismatch at %d", i)
+				}
+			}
+		})
+	}
+}
+
+func TestNumericChimpDecoder_DecodeAll_EdgeCases(t *testing.T) {
+	decoder := NewNumericChimpDecoder()
+
+	// Empty/nil data
+	require.Equal(t, 0, decoder.DecodeAll(nil, 0, nil))
+	require.Equal(t, 0, decoder.DecodeAll([]byte{}, 0, nil))
+
+	// dst too small
+	dst := make([]float64, 1)
+	require.Equal(t, 0, decoder.DecodeAll([]byte{0x01}, 5, dst))
+}
+
 func TestNumericChimpRoundTrip_LargeDataset(t *testing.T) {
 	encoder := NewNumericChimpEncoder()
 

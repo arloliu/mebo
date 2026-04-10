@@ -227,6 +227,9 @@ func BenchmarkNumericChimpDecoder_DecodeAll(b *testing.B) {
 			dst := make([]float64, count)
 
 			b.ReportAllocs()
+			if count > 0 {
+				b.SetBytes(int64(count * 8))
+			}
 			b.ResetTimer()
 
 			for b.Loop() {

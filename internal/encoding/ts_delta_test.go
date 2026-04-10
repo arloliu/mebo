@@ -491,6 +491,142 @@ func TestTimestampDeltaDecoder_InvalidData(t *testing.T) {
 	require.True(t, len(timestamps) <= 5, "Should not decode more than expected count")
 }
 
+// === DecodeAll Tests ===
+
+func TestTimestampDeltaDecoder_DecodeAll_MatchesAll(t *testing.T) {
+	testCases := []struct {
+		name       string
+		timestamps []int64
+	}{
+		{
+			name: "regular_1s_intervals",
+			timestamps: func() []int64 {
+				ts := make([]int64, 250)
+				base := int64(1672531200000000)
+				for i := range ts {
+					ts[i] = base + int64(i)*1_000_000
+				}
+
+				return ts
+			}(),
+		},
+		{
+			name: "jittered_intervals",
+			timestamps: func() []int64 {
+				return generateTimestampsWithJitter(500, 1_000_000, 0.05)
+			}(),
+		},
+		{
+			name: "large_deltas",
+			timestamps: func() []int64 {
+				now := time.Now().UnixMicro()
+
+				return []int64{
+					now,
+					now + 86400000000,
+					now - 3600000000,
+					now + 604800000000,
+					now,
+				}
+			}(),
+		},
+		{
+			name:       "identical_timestamps",
+			timestamps: []int64{1672531200000000, 1672531200000000, 1672531200000000, 1672531200000000},
+		},
+		{
+			name:       "single_timestamp",
+			timestamps: []int64{1672531200000000},
+		},
+		{
+			name:       "two_timestamps",
+			timestamps: []int64{1672531200000000, 1672531201000000},
+		},
+		{
+			name:       "extreme_varints",
+			timestamps: extremeVarintTimestamps(),
+		},
+		{
+			name: "negative_deltas",
+			timestamps: func() []int64 {
+				now := time.Now().UnixMicro()
+
+				return []int64{now, now + 1000000, now - 2000000, now + 5000000, now - 1000000}
+			}(),
+		},
+	}
+
+	decoder := NewTimestampDeltaDecoder()
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			encoder := NewTimestampDeltaEncoder()
+			encoder.WriteSlice(tc.timestamps)
+			encoded := append([]byte(nil), encoder.Bytes()...)
+			encoder.Finish()
+
+			// Reference: decode via All() iterator
+			var allResult []int64
+			for ts := range decoder.All(encoded, len(tc.timestamps)) {
+				allResult = append(allResult, ts)
+			}
+			require.Equal(t, tc.timestamps, allResult, "All() reference mismatch")
+
+			// DecodeAll: decode into pre-allocated slice
+			dst := make([]int64, len(tc.timestamps))
+			produced := decoder.DecodeAll(encoded, len(tc.timestamps), dst)
+			require.Equal(t, len(tc.timestamps), produced, "DecodeAll produced wrong count")
+			require.Equal(t, allResult, dst, "DecodeAll result differs from All()")
+		})
+	}
+}
+
+func TestTimestampDeltaDecoder_DecodeAll_Randomized(t *testing.T) {
+	rng := rand.New(rand.NewSource(0xDEAD))
+	decoder := NewTimestampDeltaDecoder()
+
+	for i := range 64 {
+		count := 2 + rng.Intn(200)
+		timestamps := make([]int64, count)
+
+		current := rng.Int63n(1<<20) - (1 << 19)
+		timestamps[0] = current
+
+		delta := rng.Int63n(1<<20) - (1 << 19)
+		for j := 1; j < count; j++ {
+			delta += rng.Int63n(1<<19) - (1 << 18)
+			current += delta
+			timestamps[j] = current
+		}
+
+		encoder := NewTimestampDeltaEncoder()
+		encoder.WriteSlice(timestamps)
+		encoded := append([]byte(nil), encoder.Bytes()...)
+		encoder.Finish()
+
+		dst := make([]int64, count)
+		produced := decoder.DecodeAll(encoded, count, dst)
+
+		require.Equalf(t, count, produced, "sequence %d: wrong count", i)
+		require.Equalf(t, timestamps, dst, "sequence %d: mismatch", i)
+	}
+}
+
+func TestTimestampDeltaDecoder_DecodeAll_EdgeCases(t *testing.T) {
+	decoder := NewTimestampDeltaDecoder()
+
+	// Empty data
+	require.Equal(t, 0, decoder.DecodeAll(nil, 0, nil))
+	require.Equal(t, 0, decoder.DecodeAll([]byte{}, 0, nil))
+
+	// dst too small
+	dst := make([]int64, 1)
+	require.Equal(t, 0, decoder.DecodeAll([]byte{0x01}, 5, dst))
+
+	// Negative count
+	require.Equal(t, 0, decoder.DecodeAll([]byte{0x01}, -1, dst))
+}
+
 func TestTimestampDeltaDecoder_At_MaxVarintLength(t *testing.T) {
 	timestamps := extremeVarintTimestamps()
 

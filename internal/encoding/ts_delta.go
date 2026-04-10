@@ -531,6 +531,11 @@ func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 // This method is optimized for bulk decoding when the caller needs all values in a slice,
 // avoiding the per-element yield overhead of the All() iterator.
 //
+// The inner loop inlines the varint and zigzag decode to eliminate per-element function
+// call overhead. The first 3 varint bytes are unrolled (covering 1, 2, and 3-byte varints
+// which represent >99% of real-world time-series delta-of-deltas), with a general loop
+// fallback for 4+ byte varints.
+//
 // Parameters:
 //   - data: Delta-of-delta encoded byte slice from TimestampDeltaEncoder.Bytes()
 //   - count: Expected number of timestamps to decode
@@ -543,6 +548,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		return 0
 	}
 
+	// Decode first timestamp (full varint)
 	first, offset, ok := decodeVarint64(data, 0)
 	if !ok {
 		return 0
@@ -555,6 +561,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		return 1
 	}
 
+	// Decode second timestamp (zigzag + varint delta)
 	zigzag, offset, ok := decodeVarint64(data, offset)
 	if !ok {
 		return 1
@@ -565,17 +572,88 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 	dst[1] = curTS
 
 	prevDelta := delta
+	dataLen := len(data)
+	_ = dst[count-1] // bounds-check elimination hint
+
 	for produced := 2; produced < count; produced++ {
-		deltaZigzag, nextOffset, ok := decodeVarint64(data, offset)
-		if !ok {
+		if offset >= dataLen {
 			return produced
 		}
-		offset = nextOffset
 
-		deltaOfDelta := decodeZigZag64(deltaZigzag)
-		prevDelta += deltaOfDelta
+		// Inline varint decode: unrolled for 1/2/3-byte varints, fused with zigzag
+		b := data[offset]
+		offset++
+
+		if b < 0x80 {
+			// 1-byte varint (DoD=0 for regular intervals): fused zigzag decode
+			v := uint64(b)
+			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
+			curTS += prevDelta
+			dst[produced] = curTS
+
+			continue
+		}
+
+		// 2-byte varint
+		v := uint64(b & 0x7f)
+
+		if offset >= dataLen {
+			return produced
+		}
+
+		b = data[offset]
+		offset++
+		v |= uint64(b&0x7f) << 7
+
+		if b < 0x80 {
+			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
+			curTS += prevDelta
+			dst[produced] = curTS
+
+			continue
+		}
+
+		// 3-byte varint (typical for jittery intervals)
+		if offset >= dataLen {
+			return produced
+		}
+
+		b = data[offset]
+		offset++
+		v |= uint64(b&0x7f) << 14
+
+		if b < 0x80 {
+			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
+			curTS += prevDelta
+			dst[produced] = curTS
+
+			continue
+		}
+
+		// 4+ byte varint (rare for time-series data)
+		shift := uint(21)
+
+		for {
+			if offset >= dataLen {
+				return produced
+			}
+
+			b = data[offset]
+			offset++
+			v |= uint64(b&0x7f) << shift
+
+			if b < 0x80 {
+				break
+			}
+
+			shift += 7
+			if shift >= 63 { // equivalent to binary.MaxVarintLen64 (10 bytes)
+				return produced
+			}
+		}
+
+		prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
 		curTS += prevDelta
-
 		dst[produced] = curTS
 	}
 

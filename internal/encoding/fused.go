@@ -280,7 +280,8 @@ func FusedGorillaTagAll(valData, tagData []byte, count int, yield func(int, floa
 }
 
 // decodeDeltaTimestamp decodes a single timestamp from a delta-of-delta stream,
-// updating the state in place.
+// updating the state in place. The varint decode is inlined for 1/2/3-byte varints
+// to eliminate function call overhead in the fused decoder hot loop.
 //
 // Parameters:
 //   - ds: Mutable delta decoder state
@@ -288,25 +289,71 @@ func FusedGorillaTagAll(valData, tagData []byte, count int, yield func(int, floa
 //
 // Returns true if decoding succeeded.
 func decodeDeltaTimestamp(ds *deltaState, data []byte) bool {
-	zigzag, newOffset, ok := decodeVarint64(data, ds.offset)
-	if !ok {
+	offset := ds.offset
+	if offset >= len(data) {
 		return false
 	}
 
-	decoded := decodeZigZag64(zigzag)
+	// Inline varint decode: 1-byte fast path
+	b := data[offset]
+	offset++
+
+	var v uint64
+	if b < 0x80 {
+		v = uint64(b)
+	} else {
+		v = uint64(b & 0x7f)
+
+		if offset >= len(data) {
+			return false
+		}
+		b = data[offset]
+		offset++
+		v |= uint64(b&0x7f) << 7
+
+		if b >= 0x80 {
+			if offset >= len(data) {
+				return false
+			}
+			b = data[offset]
+			offset++
+			v |= uint64(b&0x7f) << 14
+
+			if b >= 0x80 {
+				// 4+ byte varint (rare)
+				shift := uint(21)
+				for {
+					if offset >= len(data) {
+						return false
+					}
+					b = data[offset]
+					offset++
+					v |= uint64(b&0x7f) << shift
+					if b < 0x80 {
+						break
+					}
+					shift += 7
+					if shift >= 63 {
+						return false
+					}
+				}
+			}
+		}
+	}
+
+	// Fused zigzag decode
+	decoded := int64((v >> 1) ^ -(v & 1)) //nolint:gosec
 
 	if ds.seqCount == 1 {
-		// Second timestamp: decoded is the delta
 		ds.delta = decoded
 		ds.curTS += ds.delta
 		ds.prevDelta = ds.delta
 	} else {
-		// Third+ timestamp: decoded is delta-of-delta
 		ds.prevDelta += decoded
 		ds.curTS += ds.prevDelta
 	}
 
-	ds.offset = newOffset
+	ds.offset = offset
 	ds.seqCount++
 
 	return true
