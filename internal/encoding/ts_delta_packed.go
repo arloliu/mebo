@@ -382,7 +382,7 @@ func NewTimestampDeltaPackedDecoder() TimestampDeltaPackedDecoder {
 //
 // Returns:
 //   - iter.Seq[int64]: Iterator yielding decoded timestamps
-func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64] { //nolint:cyclop // inherent complexity of Group Varint decoding
+func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64] { //nolint:cyclop // packed decode has intentional scalar tail and SIMD branches
 	return func(yield func(int64) bool) {
 		if len(data) == 0 || count <= 0 {
 			return
@@ -415,39 +415,55 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 			return
 		}
 
-		// Remaining timestamps: Group Varint packed delta-of-deltas
 		prevDelta := delta
 		remaining := count - 2
 
-		// Fast path: full groups of 4
+		// SIMD bulk path: decode into a scratch buffer, then yield from it.
+		if shouldUseDeltaPackedDecodeSIMD(remaining) {
+			var scratch [deltaPackedDecodeSIMDScratchSize]int64
+
+			for remaining > 0 {
+				n := min(remaining, deltaPackedDecodeSIMDScratchSize)
+
+				bulk, bulkOK := decodeDeltaPackedIntoActive(
+					scratch[:n], data[offset:], n, curTS, prevDelta,
+				)
+				if !bulkOK || bulk.produced == 0 {
+					break
+				}
+
+				for _, ts := range scratch[:bulk.produced] {
+					if !yield(ts) {
+						return
+					}
+				}
+
+				offset += bulk.consumed
+				curTS = bulk.lastTS
+				prevDelta = bulk.lastDelta
+				remaining -= bulk.produced
+			}
+
+			if remaining == 0 {
+				return
+			}
+		}
+
+		// Scalar full-group path
 		for remaining >= groupSize && offset < len(data) {
-			cb := data[offset]
-			offset++
+			var zz [groupSize]uint64
+			var byteLen [groupSize]int
+
+			consumed, ok2 := decodePackedGroupScalar(data, offset, &zz, &byteLen)
+			if !ok2 {
+				return
+			}
+
+			offset += consumed
+			remaining -= groupSize
 
 			for i := range groupSize {
-				tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
-				byteLen := groupVarintLengths[tag]
-
-				if offset+byteLen > len(data) {
-					return
-				}
-
-				var zz uint64
-				switch tag {
-				case 0:
-					zz = uint64(data[offset])
-				case 1:
-					zz = uint64(binary.LittleEndian.Uint16(data[offset:]))
-				case 2:
-					zz = uint64(binary.LittleEndian.Uint32(data[offset:]))
-				case 3:
-					zz = binary.LittleEndian.Uint64(data[offset:])
-				default:
-					return
-				}
-				offset += byteLen
-
-				deltaOfDelta := decodeZigZag64(zz)
+				deltaOfDelta := decodeZigZag64(zz[i])
 				prevDelta += deltaOfDelta
 				curTS += prevDelta
 
@@ -455,11 +471,9 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 					return
 				}
 			}
-
-			remaining -= groupSize
 		}
 
-		// Tail: partial group (< 4 values)
+		// Scalar tail: partial group (< 4 values)
 		if remaining > 0 && offset < len(data) {
 			cb := data[offset]
 			offset++
@@ -511,7 +525,7 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 //
 // Returns:
 //   - int: Number of values successfully decoded into dst
-func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int64) int { //nolint:cyclop // inherent complexity of Group Varint decoding
+func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int64) int { //nolint:cyclop // packed decode has intentional scalar tail and SIMD branches
 	if len(data) == 0 || count <= 0 || len(dst) < count {
 		return 0
 	}
@@ -539,39 +553,39 @@ func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int
 	curTS += delta
 	dst[1] = curTS
 
-	// Remaining timestamps: Group Varint packed delta-of-deltas
 	prevDelta := delta
 	produced := 2
+	remaining := count - 2
 
-	// Fast path: full groups of 4
-	for produced+groupSize <= count && offset < len(data) {
-		cb := data[offset]
-		offset++
+	// SIMD bulk path
+	if shouldUseDeltaPackedDecodeSIMD(remaining) {
+		bulk, ok2 := decodeDeltaPackedIntoActive(
+			dst[produced:produced+remaining], data[offset:], remaining, curTS, prevDelta,
+		)
+		if ok2 && bulk.produced > 0 {
+			produced += bulk.produced
+			offset += bulk.consumed
+			curTS = bulk.lastTS
+			prevDelta = bulk.lastDelta
+			remaining -= bulk.produced
+		}
+	}
+
+	// Scalar full-group path
+	for remaining >= groupSize && offset < len(data) {
+		var zz [groupSize]uint64
+		var byteLen [groupSize]int
+
+		consumed, ok2 := decodePackedGroupScalar(data, offset, &zz, &byteLen)
+		if !ok2 {
+			return produced
+		}
+
+		offset += consumed
+		remaining -= groupSize
 
 		for i := range groupSize {
-			tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
-			byteLen := groupVarintLengths[tag]
-
-			if offset+byteLen > len(data) {
-				return produced
-			}
-
-			var zz uint64
-			switch tag {
-			case 0:
-				zz = uint64(data[offset])
-			case 1:
-				zz = uint64(binary.LittleEndian.Uint16(data[offset:]))
-			case 2:
-				zz = uint64(binary.LittleEndian.Uint32(data[offset:]))
-			case 3:
-				zz = binary.LittleEndian.Uint64(data[offset:])
-			default:
-				return produced
-			}
-			offset += byteLen
-
-			deltaOfDelta := decodeZigZag64(zz)
+			deltaOfDelta := decodeZigZag64(zz[i])
 			prevDelta += deltaOfDelta
 			curTS += prevDelta
 			dst[produced] = curTS
@@ -579,12 +593,11 @@ func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int
 		}
 	}
 
-	// Tail: partial group (< 4 values)
-	if produced < count && offset < len(data) {
+	// Scalar tail: partial group (< 4 values)
+	if remaining > 0 && offset < len(data) {
 		cb := data[offset]
 		offset++
 
-		remaining := count - produced
 		for i := range remaining {
 			tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
 			byteLen := groupVarintLengths[tag]
@@ -617,6 +630,45 @@ func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int
 	}
 
 	return produced
+}
+
+// decodePackedGroupScalar reads one full 4-value Group Varint group from data[offset:],
+// storing zigzag values in zz and byte widths in byteLen.
+// Returns (total bytes consumed including control byte, ok).
+func decodePackedGroupScalar(data []byte, offset int, zz *[groupSize]uint64, byteLen *[groupSize]int) (int, bool) {
+	if offset >= len(data) {
+		return 0, false
+	}
+
+	cb := data[offset]
+	pos := offset + 1
+
+	for i := range groupSize {
+		tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+		bl := groupVarintLengths[tag]
+		byteLen[i] = bl
+
+		if pos+bl > len(data) {
+			return 0, false
+		}
+
+		switch tag {
+		case 0:
+			zz[i] = uint64(data[pos])
+		case 1:
+			zz[i] = uint64(binary.LittleEndian.Uint16(data[pos:]))
+		case 2:
+			zz[i] = uint64(binary.LittleEndian.Uint32(data[pos:]))
+		case 3:
+			zz[i] = binary.LittleEndian.Uint64(data[pos:])
+		default:
+			return 0, false
+		}
+
+		pos += bl
+	}
+
+	return pos - offset, true
 }
 
 // At returns the timestamp at the specified index.

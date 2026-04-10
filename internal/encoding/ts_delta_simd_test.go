@@ -136,3 +136,79 @@ func TestTimestampDeltaPackedEncoderBackendsMatch(t *testing.T) {
 		require.Equalf(t, scalarBytes, gotBytes, "%s backend encoded bytes mismatch", deltaOfDeltaBackendName(backend))
 	}
 }
+
+func TestTimestampDeltaDecoderBackendsMatch(t *testing.T) {
+	timestamps := benchmarkDeltaOfDeltaTimestamps(256)
+	decoder := NewTimestampDeltaDecoder()
+
+	for _, backend := range deltaOfDeltaBackends {
+		if !deltaOfDeltaBackendSupported(backend) {
+			continue
+		}
+
+		t.Run(deltaOfDeltaBackendName(backend), func(t *testing.T) {
+			restore := setDeltaOfDeltaBackendForTest(backend)
+			encoder := NewTimestampDeltaEncoder()
+			encoder.WriteSlice(timestamps)
+			encoded := append([]byte(nil), encoder.Bytes()...)
+			count := encoder.Len()
+			encoder.Finish()
+			restore()
+
+			decoded := make([]int64, count)
+			produced := decoder.DecodeAll(encoded, count, decoded)
+			require.Equal(t, count, produced)
+			require.Equal(t, timestamps, decoded[:produced])
+
+			iterDecoded := make([]int64, 0, count)
+			for ts := range decoder.All(encoded, count) {
+				iterDecoded = append(iterDecoded, ts)
+			}
+			require.Equal(t, timestamps, iterDecoded)
+
+			for i, expected := range timestamps {
+				got, ok := decoder.At(encoded, i, count)
+				require.True(t, ok, "At(%d) failed", i)
+				require.Equal(t, expected, got)
+			}
+		})
+	}
+}
+
+func TestTimestampDeltaPackedDecoderBackendsMatch(t *testing.T) {
+	timestamps := benchmarkDeltaOfDeltaTimestamps(256)
+	decoder := NewTimestampDeltaPackedDecoder()
+
+	for _, backend := range deltaOfDeltaBackends {
+		if !deltaOfDeltaBackendSupported(backend) {
+			continue
+		}
+
+		t.Run(deltaOfDeltaBackendName(backend), func(t *testing.T) {
+			restore := setDeltaOfDeltaBackendForTest(backend)
+			encoder := NewTimestampDeltaPackedEncoder()
+			encoder.WriteSlice(timestamps)
+			encoded := append([]byte(nil), encoder.Bytes()...)
+			count := encoder.Len()
+			encoder.Finish()
+			restore()
+
+			decoded := make([]int64, count)
+			produced := decoder.DecodeAll(encoded, count, decoded)
+			require.Equal(t, count, produced)
+			require.Equal(t, timestamps, decoded[:produced])
+
+			iterDecoded := make([]int64, 0, count)
+			for ts := range decoder.All(encoded, count) {
+				iterDecoded = append(iterDecoded, ts)
+			}
+			require.Equal(t, timestamps, iterDecoded)
+
+			for i, expected := range timestamps {
+				got, ok := decoder.At(encoded, i, count)
+				require.True(t, ok, "At(%d) failed", i)
+				require.Equal(t, expected, got)
+			}
+		})
+	}
+}
