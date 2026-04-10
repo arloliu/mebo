@@ -232,20 +232,11 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 		for len(remaining) > 0 {
 			n := min(len(remaining), deltaOfDeltaSIMDChunkSize)
 			prevTS, prevDelta = deltaOfDeltaIntoActive(deltaBuf[:n], remaining[:n], prevTS, prevDelta)
-
-			for _, deltaOfDelta := range deltaBuf[:n] {
-				zigzag := (deltaOfDelta << 1) ^ (deltaOfDelta >> 63)
-				e.appendUnsigned(uint64(zigzag)) //nolint:gosec
-			}
-
+			e.writeVarintBatch(deltaBuf[:n])
 			remaining = remaining[n:]
 		}
 	} else {
-		for _, ts := range remaining {
-			deltaOfDelta := nextDeltaOfDelta(ts, &prevTS, &prevDelta)
-			zigzag := (deltaOfDelta << 1) ^ (deltaOfDelta >> 63)
-			e.appendUnsigned(uint64(zigzag)) //nolint:gosec
-		}
+		prevTS, prevDelta = e.writeVarintDirect(remaining, prevTS, prevDelta)
 	}
 
 	// Update encoder state
@@ -253,21 +244,57 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 	e.prevDelta = prevDelta
 }
 
+// writeVarintBatch encodes pre-computed delta-of-delta values as zigzag + LEB128 varint.
+// Pre-grows the buffer once for the entire batch, then uses direct append to eliminate
+// per-value function call and capacity-check overhead.
+func (e *TimestampDeltaEncoder) writeVarintBatch(dods []int64) {
+	e.buf.Grow(len(dods) * binary.MaxVarintLen64)
+
+	for _, dod := range dods {
+		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec
+		if zigzag <= 0x7F {
+			e.buf.B = append(e.buf.B, byte(zigzag))
+		} else {
+			e.buf.B = binary.AppendUvarint(e.buf.B, zigzag)
+		}
+	}
+}
+
+// writeVarintDirect fuses DoD computation + zigzag + varint write for the scalar path.
+// Used when the input is below the SIMD DoD threshold.
+func (e *TimestampDeltaEncoder) writeVarintDirect(
+	timestamps []int64,
+	prevTS int64,
+	prevDelta int64,
+) (lastTS int64, lastDelta int64) {
+	e.buf.Grow(len(timestamps) * binary.MaxVarintLen64)
+
+	for _, ts := range timestamps {
+		delta := ts - prevTS
+		dod := delta - prevDelta
+		prevTS = ts
+		prevDelta = delta
+
+		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec
+		if zigzag <= 0x7F {
+			e.buf.B = append(e.buf.B, byte(zigzag))
+		} else {
+			e.buf.B = binary.AppendUvarint(e.buf.B, zigzag)
+		}
+	}
+
+	return prevTS, prevDelta
+}
+
 func (e *TimestampDeltaEncoder) appendUnsigned(value uint64) {
 	if value <= 0x7F {
-		e.appendSingleByte(byte(value))
+		e.buf.B = append(e.buf.B, byte(value))
+
 		return
 	}
 
-	const maxLen = binary.MaxVarintLen64
-	e.buf.Grow(maxLen)
+	e.buf.Grow(binary.MaxVarintLen64)
 	e.buf.B = binary.AppendUvarint(e.buf.B, value)
-}
-
-func (e *TimestampDeltaEncoder) appendSingleByte(b byte) {
-	idx := len(e.buf.B)
-	e.buf.ExtendOrGrow(1)
-	e.buf.B[idx] = b
 }
 
 // reserveFor pre-allocates buffer space using fixed estimates for optimal performance.
@@ -279,19 +306,9 @@ func (e *TimestampDeltaEncoder) reserveFor(count int) {
 		return
 	}
 
-	// Use fixed estimates based on typical time-series patterns:
-	// - First timestamp: ~6 bytes (varint-encoded microseconds)
-	// - Second timestamp: ~3 bytes (delta)
-	// - Regular intervals: ~1.5 bytes average (delta-of-delta)
-	// - Conservative estimate: 3 bytes per timestamp
-	perEntry := max(3, 1)
-
-	// Conservative upper bound for irregular data
-	const maxPerEntry = 5
-	if maxPerEntry > perEntry {
-		perEntry = maxPerEntry
-	}
-
+	// Conservative estimate: 5 bytes per entry covers typical time-series patterns.
+	// The per-chunk Grow in writeVarintBatch handles the rare worst case (10 bytes/entry).
+	const perEntry = 5
 	reserve := perEntry*count + binary.MaxVarintLen64
 	e.buf.Grow(reserve)
 }
