@@ -160,7 +160,9 @@ func (e *TimestampDeltaPackedEncoder) WriteSlice(timestampsUs []int64) {
 	}
 
 	remaining := timestampsUs[startIdx:]
-	if shouldUseDeltaOfDeltaSIMD(len(remaining)) {
+	if shouldUseDeltaPackedEncodeSIMD(len(remaining)) {
+		prevTS, prevDelta = e.writeSliceSIMDFused(remaining, prevTS, prevDelta)
+	} else if shouldUseDeltaOfDeltaSIMD(len(remaining)) {
 		var deltaBuf [deltaOfDeltaSIMDChunkSize]int64
 
 		for len(remaining) > 0 {
@@ -196,6 +198,53 @@ func (e *TimestampDeltaPackedEncoder) WriteSlice(timestampsUs []int64) {
 
 	e.prevTS = prevTS
 	e.prevDelta = prevDelta
+}
+
+// writeSliceSIMDFused encodes remaining timestamps using the SIMD-fused pipeline:
+// DoD computation (SIMD) → zigzag + tag-classify + pack (AVX2 kernel).
+//
+// This avoids the per-element zigzag loop and per-group flushGroup overhead by
+// delegating the entire encode to the AVX2 kernel which handles zigzag encoding,
+// branchless tag classification, and variable-width packing in a single pass.
+func (e *TimestampDeltaPackedEncoder) writeSliceSIMDFused(
+	remaining []int64,
+	prevTS int64,
+	prevDelta int64,
+) (lastTS int64, lastDelta int64) {
+	var deltaBuf [deltaOfDeltaSIMDChunkSize]int64
+
+	for len(remaining) > 0 {
+		n := min(len(remaining), deltaOfDeltaSIMDChunkSize)
+		prevTS, prevDelta = deltaOfDeltaIntoActive(deltaBuf[:n], remaining[:n], prevTS, prevDelta)
+
+		// SIMD-fused encode for full groups
+		nGroups := n / groupSize
+		if nGroups > 0 {
+			nValues := nGroups * groupSize
+			// Worst case: 1 control byte + 32 payload bytes per group + 8 bytes write slack
+			maxBytes := nGroups*33 + 8
+			startLen := len(e.buf.B)
+			e.buf.Grow(maxBytes)
+			e.buf.B = e.buf.B[:startLen+maxBytes]
+			written := encodeDeltaPackedGroupsSIMD(e.buf.B[startLen:], deltaBuf[:nValues], nGroups)
+			e.buf.B = e.buf.B[:startLen+written]
+		}
+
+		// Tail (< groupSize values) via scalar path
+		for i := nGroups * groupSize; i < n; i++ {
+			zigzag := uint64((deltaBuf[i] << 1) ^ (deltaBuf[i] >> 63)) //nolint:gosec
+			e.pending[e.pendingLen] = zigzag
+			e.pendingLen++
+
+			if e.pendingLen == groupSize {
+				e.flushGroup(groupSize)
+			}
+		}
+
+		remaining = remaining[n:]
+	}
+
+	return prevTS, prevDelta
 }
 
 // Bytes returns the encoded byte slice. Any pending partial group is flushed first.
