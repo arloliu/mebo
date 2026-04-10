@@ -4,14 +4,6 @@ package encoding
 
 import "simd/archsimd"
 
-func archSIMDAVX2Enabled() bool {
-	return archsimd.X86.AVX2()
-}
-
-func archSIMDAVX512Enabled() bool {
-	return archsimd.X86.AVX512()
-}
-
 func deltaOfDeltaIntoArchSIMDAVX2(dst []int64, src []int64, prevTS int64, prevDelta int64) (lastTS int64, lastDelta int64) {
 	if len(src) < 6 {
 		return deltaOfDeltaIntoScalar(dst, src, prevTS, prevDelta)

@@ -2,16 +2,6 @@
 
 package encoding
 
-import "golang.org/x/sys/cpu"
-
-func asmAVX2Enabled() bool {
-	return cpu.X86.HasAVX2
-}
-
-func asmAVX512Enabled() bool {
-	return cpu.X86.HasAVX512
-}
-
 //go:noescape
 func deltaOfDeltaIntoASMAVX2Bulk(dst []int64, src []int64, count int)
 

@@ -1,5 +1,7 @@
 package encoding
 
+import "github.com/arloliu/mebo/internal/arch"
+
 const (
 	deltaOfDeltaSIMDChunkSize    = 256
 	deltaOfDeltaSIMDMinLenAVX2   = 64
@@ -33,19 +35,19 @@ func init() {
 }
 
 func defaultDeltaOfDeltaBackend() deltaOfDeltaBackend {
-	if archSIMDAVX512Enabled() {
+	if arch.X86ArchSIMDHasAVX512() {
 		return deltaOfDeltaBackendArchSIMDAVX512
 	}
 
-	if asmAVX512Enabled() {
+	if arch.X86HasAVX512() {
 		return deltaOfDeltaBackendAsmAVX512
 	}
 
-	if asmAVX2Enabled() {
+	if arch.X86HasAVX2() {
 		return deltaOfDeltaBackendAsmAVX2
 	}
 
-	if archSIMDAVX2Enabled() {
+	if arch.X86ArchSIMDHasAVX2() {
 		return deltaOfDeltaBackendArchSIMDAVX2
 	}
 
@@ -74,38 +76,38 @@ func deltaOfDeltaBackendSupported(backend deltaOfDeltaBackend) bool {
 	case deltaOfDeltaBackendScalar:
 		return true
 	case deltaOfDeltaBackendAsmAVX2:
-		return asmAVX2Enabled()
+		return arch.X86HasAVX2()
 	case deltaOfDeltaBackendAsmAVX512:
-		return asmAVX512Enabled()
+		return arch.X86HasAVX512()
 	case deltaOfDeltaBackendArchSIMDAVX2:
-		return archSIMDAVX2Enabled()
+		return arch.X86ArchSIMDHasAVX2()
 	case deltaOfDeltaBackendArchSIMDAVX512:
-		return archSIMDAVX512Enabled()
+		return arch.X86ArchSIMDHasAVX512()
 	default:
 		return false
 	}
 }
 
 func setActiveDeltaOfDeltaBackend(backend deltaOfDeltaBackend) {
-	if backend == deltaOfDeltaBackendAsmAVX512 && asmAVX512Enabled() {
+	if backend == deltaOfDeltaBackendAsmAVX512 && arch.X86HasAVX512() {
 		activeDeltaOfDeltaBackend = deltaOfDeltaBackendAsmAVX512
 
 		return
 	}
 
-	if backend == deltaOfDeltaBackendArchSIMDAVX512 && archSIMDAVX512Enabled() {
+	if backend == deltaOfDeltaBackendArchSIMDAVX512 && arch.X86ArchSIMDHasAVX512() {
 		activeDeltaOfDeltaBackend = deltaOfDeltaBackendArchSIMDAVX512
 
 		return
 	}
 
-	if backend == deltaOfDeltaBackendAsmAVX2 && asmAVX2Enabled() {
+	if backend == deltaOfDeltaBackendAsmAVX2 && arch.X86HasAVX2() {
 		activeDeltaOfDeltaBackend = deltaOfDeltaBackendAsmAVX2
 
 		return
 	}
 
-	if backend == deltaOfDeltaBackendArchSIMDAVX2 && archSIMDAVX2Enabled() {
+	if backend == deltaOfDeltaBackendArchSIMDAVX2 && arch.X86ArchSIMDHasAVX2() {
 		activeDeltaOfDeltaBackend = deltaOfDeltaBackendArchSIMDAVX2
 
 		return
