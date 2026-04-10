@@ -77,6 +77,13 @@ func (h *NumericHeader) Parse(data []byte) error {
 	h.ValuePayloadOffset = engine.Uint32(data[24:28])
 	h.TagPayloadOffset = engine.Uint32(data[28:32])
 
+	if h.MetricCount > maxSafeUint32 ||
+		h.TimestampPayloadOffset > maxSafeUint32 ||
+		h.ValuePayloadOffset > maxSafeUint32 ||
+		h.TagPayloadOffset > maxSafeUint32 {
+		return errs.ErrHeaderOffsetOverflow
+	}
+
 	return h.Flag.Validate()
 }
 

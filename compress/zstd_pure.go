@@ -14,8 +14,9 @@ import (
 var zstdDecoderPool = sync.Pool{
 	New: func() any {
 		decoder, err := zstd.NewReader(nil,
-			zstd.WithDecoderConcurrency(1), // Single-threaded for predictable performance
-			zstd.WithDecoderLowmem(false),  // Use more memory for better performance
+			zstd.WithDecoderConcurrency(1),                       // Single-threaded for predictable performance
+			zstd.WithDecoderLowmem(false),                        // Use more memory for better performance
+			zstd.WithDecoderMaxMemory(uint64(maxDecompressSize)), // Cap decompressed size to 128MB
 		)
 		if err != nil {
 			// This should never happen with valid options

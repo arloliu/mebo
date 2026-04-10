@@ -1,6 +1,11 @@
 package compress
 
-import "github.com/klauspost/compress/s2"
+import (
+	"fmt"
+
+	"github.com/arloliu/mebo/errs"
+	"github.com/klauspost/compress/s2"
+)
 
 type S2Compressor struct{}
 
@@ -37,10 +42,19 @@ func (c S2Compressor) Compress(data []byte) ([]byte, error) {
 //
 // Returns:
 //   - []byte: Decompressed data (nil if input is empty)
-//   - error: Decompression error if data is corrupted
+//   - error: Decompression error if data is corrupted or decompressed size exceeds 128MB
 func (c S2Compressor) Decompress(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
+	}
+
+	decodedLen, err := s2.DecodedLen(data)
+	if err != nil {
+		return nil, fmt.Errorf("s2: invalid frame header: %w", err)
+	}
+
+	if decodedLen > maxDecompressSize {
+		return nil, fmt.Errorf("%w: s2 decoded size %d exceeds limit %d", errs.ErrDecompressedSizeExceedsLimit, decodedLen, maxDecompressSize)
 	}
 
 	return s2.Decode(nil, data)

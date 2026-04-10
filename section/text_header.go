@@ -45,7 +45,7 @@ func NewTextHeader(startTime time.Time, metricCount int) (*TextHeader, error) {
 		StartTime:   startTime.UnixMicro(),
 		Flag:        NewTextFlag(),
 		IndexOffset: IndexOffsetOffset,
-		DataOffset:  uint32(IndexOffsetOffset + metricCount*TextIndexEntrySize), //nolint: gosec
+		DataOffset:  uint32(IndexOffsetOffset + metricCount*TextIndexEntrySize), //nolint:gosec
 		MetricCount: uint32(metricCount),
 	}, nil
 }
@@ -77,6 +77,12 @@ func (h *TextHeader) Parse(data []byte) error {
 	h.DataOffset = engine.Uint32(data[20:24])
 	h.DataSize = engine.Uint32(data[24:28])
 	copy(h.Reserved[:], data[28:32])
+
+	if h.MetricCount > maxSafeUint32 ||
+		h.DataOffset > maxSafeUint32 ||
+		h.DataSize > maxSafeUint32 {
+		return errs.ErrHeaderOffsetOverflow
+	}
 
 	if !h.IsValidFlags() {
 		return errs.ErrInvalidHeaderFlags

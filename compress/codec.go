@@ -7,6 +7,10 @@ import (
 	"github.com/arloliu/mebo/format"
 )
 
+// maxDecompressSize is the upper bound on decompressed payload size across all codecs.
+// Matches the 128 MB limit used by the LZ4 codec.
+const maxDecompressSize = 128 * 1024 * 1024
+
 // Compressor provides high-performance compression and decompression for mebo time-series data.
 //
 // The interface is optimized for mebo's columnar time-series data where:

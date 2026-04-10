@@ -76,13 +76,12 @@ func (c LZ4Compressor) Decompress(data []byte) ([]byte, error) {
 	}
 
 	bufSize := len(data) * 4
-	const maxSize = 128 * 1024 * 1024 // 128MB safety limit
 
-	for bufSize <= maxSize {
+	for bufSize <= maxDecompressSize {
 		buf := make([]byte, bufSize)
 		n, err := lz4.UncompressBlock(data, buf)
 		if err != nil {
-			if errors.Is(err, lz4.ErrInvalidSourceShortBuffer) && bufSize < maxSize {
+			if errors.Is(err, lz4.ErrInvalidSourceShortBuffer) && bufSize < maxDecompressSize {
 				bufSize *= 2 // Double buffer size and retry
 				continue
 			}
@@ -93,6 +92,6 @@ func (c LZ4Compressor) Decompress(data []byte) ([]byte, error) {
 		return buf[:n], nil
 	}
 
-	// Buffer exceeded maxSize - likely corrupted data or unreasonable compression ratio
+	// Buffer exceeded maxDecompressSize - likely corrupted data or unreasonable compression ratio
 	return nil, lz4.ErrInvalidSourceShortBuffer
 }

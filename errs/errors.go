@@ -39,4 +39,6 @@ var (
 	ErrDataSizeMismatch              = errors.New("data size mismatch")
 	ErrUnsupportedEncoding           = errors.New("unsupported encoding type")
 	ErrUnsupportedCompression        = errors.New("unsupported compression type")
+	ErrHeaderOffsetOverflow          = errors.New("header offset exceeds platform int range")
+	ErrDecompressedSizeExceedsLimit  = errors.New("decompressed size exceeds limit")
 )
