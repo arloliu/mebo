@@ -516,6 +516,20 @@ decode becomes the dominant cost.
 
 **Impact: 1.5-2x numeric decode speedup** | Complexity: High | Priority: Medium
 
+> **Status (2026-06-13): Closed as written — premises stale.** This phase
+> targeted the old stateful bitReader. The June windowed rewrite
+> (`peekBits64` + two-shift contiguous extraction) removed what PEXT would
+> have replaced; an external design review (Codex) concluded PEXT is
+> zero-or-negative against the current code (multi-cycle PEXT vs 1-cycle
+> shifts on a contiguous field), refill branches are already gone, and the
+> remaining branches are semantic dispatch. Measured: `GOAMD64=v3` (compiler
+> BMI2) gives ~2-3% codec / ~2% e2e — a consumer build-flag tip, not a
+> library change. The one credible successor idea is **two-stream
+> interleaved decode** (alternate two independent metric streams to hide the
+> serial bit-position dependency; est. 5-15% codec-local, 2-5% e2e on
+> materialization paths) — tracked as future work, not part of this phase.
+> See [perf/GORILLA_PHASE5_ASSESSMENT.md](perf/GORILLA_PHASE5_ASSESSMENT.md).
+
 ### Problem
 
 Gorilla and Chimp encoders/decoders are the numeric value codecs. Current decode throughput:
