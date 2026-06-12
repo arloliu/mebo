@@ -8,6 +8,9 @@
 | **Format impact** | None — `Finish()` delegates to the same assembly code; byte-identical |
 | **Predecessor** | [BLOB_ENCODE_ALLOCATION_OPTIMIZATION.md](BLOB_ENCODE_ALLOCATION_OPTIMIZATION.md) ("Remaining levers" #2) |
 
+> **User guide**: see [Buffer Reuse with FinishInto](../ADVANCED_USAGE.md#buffer-reuse-with-finishinto)
+> for usage patterns and ownership rules.
+
 ## Summary
 
 After round 2, the final blob `make([]byte, blobSize)` in `Finish()` was the

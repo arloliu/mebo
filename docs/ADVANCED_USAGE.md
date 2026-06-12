@@ -5,6 +5,7 @@ This document covers advanced features of Mebo beyond the basic encode/decode wo
 ## Table of Contents
 
 - [Bulk Insertion](#bulk-insertion)
+- [Buffer Reuse with FinishInto](#buffer-reuse-with-finishinto)
 - [BlobSet: Multi-Blob Queries](#blobset-multi-blob-queries)
 - [BlobSet: Materialized Random Access](#blobset-materialized-random-access)
 - [Tags](#tags)
@@ -47,6 +48,84 @@ encoder.StartMetricID(metricID, 1000)
 encoder.AddDataPoints(timestamps, values, tags)
 encoder.EndMetric()
 ```
+
+---
+
+## Buffer Reuse with FinishInto
+
+`Finish()` allocates a fresh slice for every blob it returns — on the 200-metric
+reference workload that is ~0.4 MB of garbage per encode, which is ~88% of all
+bytes the encode path allocates. That allocation is unavoidable for `Finish()`
+because the caller owns the returned slice indefinitely, so the encoder can
+never recycle it.
+
+`FinishInto(dst []byte)` removes it by letting *you* own the memory. It appends
+the encoded blob to `dst` and returns the extended slice, following the same
+append semantics as the standard library (`strconv.AppendInt`,
+`encoding/binary.Append`):
+
+- Content up to `len(dst)` is preserved; the blob occupies the appended region.
+- If `dst` has enough spare capacity, **no allocation happens at all**.
+- On error, `dst` is returned unchanged, so `buf, err = encoder.FinishInto(buf)`
+  is always safe.
+- `FinishInto(nil)` is exactly equivalent to `Finish()`.
+
+Both `NumericEncoder` and `TextEncoder` support it.
+
+### Basic usage
+
+```go
+var buf []byte // reused across encodes
+
+for batch := range incoming {
+    encoder, _ := mebo.NewDefaultNumericEncoder(batch.StartTime)
+
+    for _, m := range batch.Metrics {
+        encoder.StartMetricID(m.ID, len(m.Points))
+        for _, p := range m.Points {
+            encoder.AddDataPoint(p.Ts, p.Val, "")
+        }
+        encoder.EndMetric()
+    }
+
+    blobBytes, err := encoder.FinishInto(buf[:0]) // reuse buf's capacity
+    if err != nil {
+        return err
+    }
+
+    writeToStorage(blobBytes) // copy out or finish using before next encode
+    buf = blobBytes           // keep the grown buffer for the next round
+}
+```
+
+The first iteration allocates once; every following iteration encodes with
+zero blob allocation (the buffer is already large enough after a few rounds).
+On the reference workload this cuts encode allocations from ~393 KB/op to
+~42 KB/op (−89%) and wall time by ~5%.
+
+### Ownership rule
+
+The returned slice aliases `dst`. Do **not** reset and reuse the buffer while
+anything still references the previous blob's contents — including a decoder:
+`NewNumericDecoder(blobBytes)` keeps reading from that memory. Reuse the buffer
+only after the blob has been fully consumed (written to disk/network, copied,
+or all decoding finished).
+
+### When to use it
+
+| Use case | Why it helps |
+|---|---|
+| **Ingest pipeline / TSDB writer** — encode one blob per flush interval, write it to disk or object storage, repeat | The blob is consumed (written) immediately, so one buffer can serve every flush. Steady-state encode produces near-zero garbage, keeping GC pause pressure flat regardless of flush rate. |
+| **Network shipping with framing** — append a length prefix or envelope header to `dst` first, then `FinishInto(dst)` | The blob is serialized directly behind your framing bytes in one contiguous buffer — no second copy to assemble the message. |
+| **Batch re-encoding / compaction** — read N old blobs, re-encode into new ones in a loop | Same buffer cycles through the whole compaction run instead of allocating per blob. |
+| **Concatenated blob files** — append multiple blobs back-to-back into one buffer before a single write | Call `FinishInto(buf)` repeatedly *without* resetting: each call appends the next blob after the previous one. |
+
+### When to stick with Finish()
+
+- One-off or low-frequency encoding — the single allocation is irrelevant.
+- The blob's lifetime is unclear or long (cached, shared across goroutines):
+  owning a fresh slice per blob is simpler and safer than tracking when a
+  shared buffer may be recycled.
 
 ---
 
