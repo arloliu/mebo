@@ -998,47 +998,143 @@ func TestDecodeBlobSet_MultipleTextBlobs(t *testing.T) {
 func TestDecodeBlobSet_MixedBlobs(t *testing.T) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	// Create numeric blob
-	numEncoder, err := NewNumericEncoder(startTime)
-	require.NoError(t, err)
-	err = numEncoder.StartMetricID(500, 2)
-	require.NoError(t, err)
-	err = numEncoder.AddDataPoint(startTime.UnixMicro(), 50.0, "")
-	require.NoError(t, err)
-	err = numEncoder.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 51.0, "")
-	require.NoError(t, err)
-	err = numEncoder.EndMetric()
-	require.NoError(t, err)
-	numData, err := numEncoder.Finish()
-	require.NoError(t, err)
+	makeNumericData := func(t *testing.T, metricID uint64, base time.Time, vals []float64) []byte {
+		t.Helper()
+		enc, err := NewNumericEncoder(base)
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricID(metricID, len(vals)))
+		for i, v := range vals {
+			require.NoError(t, enc.AddDataPoint(base.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+		}
+		require.NoError(t, enc.EndMetric())
+		data, err := enc.Finish()
+		require.NoError(t, err)
 
-	// Create text blob
-	textEncoder, err := NewTextEncoder(startTime.Add(time.Hour))
-	require.NoError(t, err)
-	err = textEncoder.StartMetricID(600, 2)
-	require.NoError(t, err)
-	err = textEncoder.AddDataPoint(startTime.Add(time.Hour).UnixMicro(), "alpha", "")
-	require.NoError(t, err)
-	err = textEncoder.AddDataPoint(startTime.Add(time.Hour+time.Second).UnixMicro(), "beta", "")
-	require.NoError(t, err)
-	err = textEncoder.EndMetric()
-	require.NoError(t, err)
-	textData, err := textEncoder.Finish()
-	require.NoError(t, err)
+		return data
+	}
 
-	// Decode the blob set
-	blobSet, err := DecodeBlobSet(numData, textData)
-	require.NoError(t, err)
-	require.Len(t, blobSet.numericBlobs, 1)
-	require.Len(t, blobSet.textBlobs, 1)
+	makeTextData := func(t *testing.T, metricID uint64, base time.Time, vals []string) []byte {
+		t.Helper()
+		enc, err := NewTextEncoder(base)
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricID(metricID, len(vals)))
+		for i, v := range vals {
+			require.NoError(t, enc.AddDataPoint(base.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+		}
+		require.NoError(t, enc.EndMetric())
+		data, err := enc.Finish()
+		require.NoError(t, err)
 
-	// Verify numeric blob
-	require.True(t, blobSet.numericBlobs[0].HasMetricID(500))
-	require.Equal(t, 2, blobSet.numericBlobs[0].Len(500))
+		return data
+	}
 
-	// Verify text blob
-	require.True(t, blobSet.textBlobs[0].HasMetricID(600))
-	require.Equal(t, 2, blobSet.textBlobs[0].Len(600))
+	t.Run("data point values survive decode", func(t *testing.T) {
+		numData := makeNumericData(t, 500, startTime, []float64{50.0, 51.0})
+		textData := makeTextData(t, 600, startTime.Add(time.Hour), []string{"alpha", "beta"})
+
+		blobSet, err := DecodeBlobSet(numData, textData)
+		require.NoError(t, err)
+		require.Len(t, blobSet.numericBlobs, 1)
+		require.Len(t, blobSet.textBlobs, 1)
+
+		// Verify numeric data point values and timestamps
+		var numericDPs []NumericDataPoint
+		for _, dp := range blobSet.AllNumerics(500) {
+			numericDPs = append(numericDPs, dp)
+		}
+		require.Len(t, numericDPs, 2)
+		require.Equal(t, startTime.UnixMicro(), numericDPs[0].Ts)
+		require.Equal(t, 50.0, numericDPs[0].Val)
+		require.Equal(t, startTime.Add(time.Second).UnixMicro(), numericDPs[1].Ts)
+		require.Equal(t, 51.0, numericDPs[1].Val)
+
+		// Verify text data point values and timestamps
+		var textDPs []TextDataPoint
+		for _, dp := range blobSet.AllTexts(600) {
+			textDPs = append(textDPs, dp)
+		}
+		require.Len(t, textDPs, 2)
+		require.Equal(t, startTime.Add(time.Hour).UnixMicro(), textDPs[0].Ts)
+		require.Equal(t, "alpha", textDPs[0].Val)
+		require.Equal(t, startTime.Add(time.Hour+time.Second).UnixMicro(), textDPs[1].Ts)
+		require.Equal(t, "beta", textDPs[1].Val)
+	})
+
+	t.Run("type isolation", func(t *testing.T) {
+		numData := makeNumericData(t, 500, startTime, []float64{50.0})
+		textData := makeTextData(t, 600, startTime.Add(time.Hour), []string{"alpha"})
+
+		blobSet, err := DecodeBlobSet(numData, textData)
+		require.NoError(t, err)
+
+		// Numeric metric ID must not appear in text iteration
+		count := 0
+		for range blobSet.AllTexts(500) {
+			count++
+		}
+		require.Zero(t, count, "numeric metric ID should not appear in AllTexts")
+
+		// Text metric ID must not appear in numeric iteration
+		count = 0
+		for range blobSet.AllNumerics(600) {
+			count++
+		}
+		require.Zero(t, count, "text metric ID should not appear in AllNumerics")
+
+		// Point-access also respects type boundaries
+		_, ok := blobSet.NumericAt(600, 0)
+		require.False(t, ok, "NumericAt should return false for a text metric ID")
+		_, ok = blobSet.TextAt(500, 0)
+		require.False(t, ok, "TextAt should return false for a numeric metric ID")
+	})
+
+	t.Run("text-first input order", func(t *testing.T) {
+		numData := makeNumericData(t, 500, startTime, []float64{50.0, 51.0})
+		textData := makeTextData(t, 600, startTime.Add(time.Hour), []string{"alpha", "beta"})
+
+		// Pass text blob before numeric blob — routing must still be correct
+		blobSet, err := DecodeBlobSet(textData, numData)
+		require.NoError(t, err)
+		require.Len(t, blobSet.numericBlobs, 1)
+		require.Len(t, blobSet.textBlobs, 1)
+
+		dp, ok := blobSet.NumericAt(500, 0)
+		require.True(t, ok)
+		require.Equal(t, 50.0, dp.Val)
+
+		dp2, ok := blobSet.TextAt(600, 0)
+		require.True(t, ok)
+		require.Equal(t, "alpha", dp2.Val)
+	})
+
+	t.Run("multiple mixed blobs", func(t *testing.T) {
+		numData1 := makeNumericData(t, 500, startTime, []float64{50.0, 51.0})
+		numData2 := makeNumericData(t, 501, startTime.Add(time.Hour), []float64{100.0})
+		textData1 := makeTextData(t, 600, startTime.Add(2*time.Hour), []string{"alpha", "beta"})
+		textData2 := makeTextData(t, 601, startTime.Add(3*time.Hour), []string{"gamma"})
+
+		blobSet, err := DecodeBlobSet(numData1, numData2, textData1, textData2)
+		require.NoError(t, err)
+		require.Len(t, blobSet.numericBlobs, 2)
+		require.Len(t, blobSet.textBlobs, 2)
+
+		// Spot-check each metric's data via point access
+		dp, ok := blobSet.NumericAt(500, 1)
+		require.True(t, ok)
+		require.Equal(t, 51.0, dp.Val)
+
+		dp, ok = blobSet.NumericAt(501, 0)
+		require.True(t, ok)
+		require.Equal(t, 100.0, dp.Val)
+
+		dp2, ok := blobSet.TextAt(600, 1)
+		require.True(t, ok)
+		require.Equal(t, "beta", dp2.Val)
+
+		dp2, ok = blobSet.TextAt(601, 0)
+		require.True(t, ok)
+		require.Equal(t, "gamma", dp2.Val)
+	})
 }
 
 // TestDecodeBlobSet_InvalidBlob tests decoding with invalid blob data
