@@ -3,9 +3,10 @@ package encoding
 import "github.com/arloliu/mebo/internal/arch"
 
 const (
-	deltaPackedDecodeSIMDMinLenAVX2     = 64
-	deltaPackedDecodeSIMDScratchSize    = 256
-	deltaPackedDecodeSIMDSafeLoadWindow = 32 // minimum safe readable bytes for a VPSHUFB load
+	deltaPackedDecodeSIMDMinLenAVX2           = 64
+	deltaPackedDecodeSIMDScratchSize          = 256
+	deltaPackedDecodeSIMDSafeLoadWindow       = 32 // minimum safe readable bytes for a VPSHUFB load
+	deltaPackedDecodeSIMDSafeLoadWindowAVX512 = 64 // minimum safe readable bytes for the ZMM pair load
 )
 
 // deltaPackedDecodeBackend selects the decode implementation for Group Varint packed timestamps.
@@ -14,6 +15,7 @@ type deltaPackedDecodeBackend uint8
 const (
 	deltaPackedDecodeBackendScalar deltaPackedDecodeBackend = iota
 	deltaPackedDecodeBackendAsmAVX2
+	deltaPackedDecodeBackendAsmAVX512
 )
 
 // deltaPackedDecodeMeta holds precomputed metadata for one Group Varint control byte.
@@ -54,6 +56,13 @@ var (
 // deltaPackedDecodeTotalBytes holds the total payload byte count for each control byte.
 // Stride is 1 byte, value range 4-32.
 var deltaPackedDecodeTotalBytes [256]uint8
+
+// deltaPackedDecodeValidMasks holds, for each control byte, a 32-bit mask with
+// bit i set iff byte i of the group's 32-byte shuffled output is a real
+// payload byte (shuffle[i] != 0x80). The AVX-512 kernel combines two entries
+// into a 64-bit k-register for zeroing-masked VPERMB, which (unlike VPSHUFB)
+// has no high-bit zeroing sentinel.
+var deltaPackedDecodeValidMasks [256]uint32
 
 func init() {
 	initDeltaPackedDecodeTable()
@@ -99,6 +108,14 @@ func initDeltaPackedDecodeTable() {
 		deltaPackedDecodeTotalBytes[cb] = meta.totalBytes
 		copy(deltaPackedDecodeShuffles[cb*32:(cb+1)*32], meta.shuffle[:])
 
+		var valid uint32
+		for i := range 32 {
+			if meta.shuffle[i] != 0x80 {
+				valid |= 1 << uint(i) //nolint:gosec // i is 0..31
+			}
+		}
+		deltaPackedDecodeValidMasks[cb] = valid
+
 		for i := range 32 {
 			deltaPackedDecodeShufflesLoDup[cb*32+i] = 0x80
 			deltaPackedDecodeShufflesHiDup[cb*32+i] = 0x80
@@ -137,6 +154,10 @@ func init() {
 }
 
 func defaultDeltaPackedDecodeBackend() deltaPackedDecodeBackend {
+	if arch.X86HasAVX512VBMI() {
+		return deltaPackedDecodeBackendAsmAVX512
+	}
+
 	if arch.X86HasAVX2() {
 		return deltaPackedDecodeBackendAsmAVX2
 	}
@@ -145,6 +166,12 @@ func defaultDeltaPackedDecodeBackend() deltaPackedDecodeBackend {
 }
 
 func setActiveDeltaPackedDecodeBackend(backend deltaPackedDecodeBackend) {
+	if backend == deltaPackedDecodeBackendAsmAVX512 && arch.X86HasAVX512VBMI() {
+		activeDeltaPackedDecodeBackend = deltaPackedDecodeBackendAsmAVX512
+
+		return
+	}
+
 	if backend == deltaPackedDecodeBackendAsmAVX2 && arch.X86HasAVX2() {
 		activeDeltaPackedDecodeBackend = deltaPackedDecodeBackendAsmAVX2
 
@@ -169,6 +196,8 @@ func deltaPackedDecodeBackendName(backend deltaPackedDecodeBackend) string {
 		return "Scalar"
 	case deltaPackedDecodeBackendAsmAVX2:
 		return "AsmAVX2"
+	case deltaPackedDecodeBackendAsmAVX512:
+		return "AsmAVX512"
 	default:
 		return "Unknown"
 	}
@@ -180,6 +209,8 @@ func deltaPackedDecodeBackendSupported(backend deltaPackedDecodeBackend) bool {
 		return true
 	case deltaPackedDecodeBackendAsmAVX2:
 		return arch.X86HasAVX2()
+	case deltaPackedDecodeBackendAsmAVX512:
+		return arch.X86HasAVX512VBMI()
 	default:
 		return false
 	}
@@ -188,14 +219,16 @@ func deltaPackedDecodeBackendSupported(backend deltaPackedDecodeBackend) bool {
 var allDeltaPackedDecodeBackends = [...]deltaPackedDecodeBackend{
 	deltaPackedDecodeBackendScalar,
 	deltaPackedDecodeBackendAsmAVX2,
+	deltaPackedDecodeBackendAsmAVX512,
 }
 
 func shouldUseDeltaPackedDecodeSIMD(remainingValues int) bool {
-	if activeDeltaPackedDecodeBackend == deltaPackedDecodeBackendAsmAVX2 {
+	switch activeDeltaPackedDecodeBackend { //nolint:exhaustive // scalar handled by default
+	case deltaPackedDecodeBackendAsmAVX2, deltaPackedDecodeBackendAsmAVX512:
 		return remainingValues >= deltaPackedDecodeSIMDMinLenAVX2
+	default:
+		return false
 	}
-
-	return false
 }
 
 // decodeDeltaPackedIntoActive decodes as many full Group Varint groups as possible
@@ -221,11 +254,14 @@ func decodeDeltaPackedIntoActive(
 	prevTS int64,
 	prevDelta int64,
 ) (deltaPackedDecodeProgress, bool) {
-	if activeDeltaPackedDecodeBackend == deltaPackedDecodeBackendAsmAVX2 {
+	switch activeDeltaPackedDecodeBackend { //nolint:exhaustive // scalar handled by default
+	case deltaPackedDecodeBackendAsmAVX512:
+		return decodeDeltaPackedASMAVX512(dst, data, groupCount, prevTS, prevDelta)
+	case deltaPackedDecodeBackendAsmAVX2:
 		return decodeDeltaPackedASMAVX2(dst, data, groupCount, prevTS, prevDelta)
+	default:
+		return decodeDeltaPackedScalarBulk(dst, data, groupCount, prevTS, prevDelta)
 	}
-
-	return decodeDeltaPackedScalarBulk(dst, data, groupCount, prevTS, prevDelta)
 }
 
 // decodeDeltaPackedScalarBulk is the scalar bulk helper used as:

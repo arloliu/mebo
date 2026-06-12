@@ -254,3 +254,157 @@ done:
 	MOVQ R12, lastDelta+112(FP)
 	VZEROUPPER
 	RET
+
+// func decodeDeltaPackedASMAVX512BulkPairs(
+//     dst []int64,                 FP+0..23
+//     data []byte,                 FP+24..47
+//     nGroups int,                 FP+48
+//     totalBytesTable *[256]uint8, FP+56
+//     validMasks *[256]uint32,     FP+64
+//     prevTS int64,                FP+72
+//     prevDelta int64,             FP+80
+// ) (consumed int, produced int, lastTS int64, lastDelta int64)
+//      FP+88       FP+96          FP+104       FP+112
+//
+// Decodes 2 Group Varint groups (8 values) per iteration:
+//   - one 64-byte ZMM load covers both payloads (and the second control byte)
+//   - zeroing-masked VPERMB expands both groups to 8 little-endian uint64 lanes
+//     (VPERMB has no 0x80 sentinel, so invalid lanes are zeroed via K1)
+//   - vectorized zigzag using VPSRAQ (64-bit arithmetic shift, AVX-512 only)
+//   - two 8-wide prefix sums (VALIGNQ+VPADDQ, 3 steps each) produce deltas
+//     then timestamps; carries stay broadcast in Z8/Z9 across iterations
+//
+// Exits to the caller when fewer than 2 groups remain, the 64-byte load
+// window would cross the end of data, or a pair's combined payload exceeds
+// 63 bytes (both groups near-maximal width; the AVX2/scalar path finishes).
+//
+// Requires AVX-512 F+BW+VBMI (gated by arch.X86HasAVX512VBMI).
+TEXT ·decodeDeltaPackedASMAVX512BulkPairs(SB), NOSPLIT, $0-120
+	MOVQ dst_base+0(FP), DI
+	MOVQ data_base+24(FP), SI
+	MOVQ data_len+32(FP), DX
+	MOVQ nGroups+48(FP), R8
+	MOVQ totalBytesTable+56(FP), R9
+	MOVQ validMasks+64(FP), R10
+	MOVQ SI, R13
+	XORQ R14, R14
+
+	// Z8 = broadcast(prevTS), Z9 = broadcast(prevDelta)
+	MOVQ prevTS+72(FP), AX
+	VPBROADCASTQ AX, Z8
+	MOVQ prevDelta+80(FP), AX
+	VPBROADCASTQ AX, Z9
+
+	// Z10 = 0, Z11 = broadcast(7) for lane-7 extraction
+	VPXORQ Z10, Z10, Z10
+	MOVQ $7, AX
+	VPBROADCASTQ AX, Z11
+
+	// K2 selects the high 32 bytes (group 1 lane indices)
+	MOVQ $0xFFFFFFFF00000000, AX
+	KMOVQ AX, K2
+
+	// BP = shuffle table base (loop invariant)
+	LEAQ ·deltaPackedDecodeShuffles(SB), BP
+
+pairLoop512:
+	CMPQ R8, $2
+	JLT  done512
+
+	// Window check: SI-base + 1 + 64 <= dataLen
+	MOVQ SI, AX
+	SUBQ R13, AX
+	ADDQ $65, AX
+	CMPQ AX, DX
+	JGT  done512
+
+	// cb0 / tb0
+	MOVBQZX (SI), CX
+	MOVBQZX (R9)(CX*1), BX
+
+	// cb1 at SI + 1 + tb0 (inside the checked window) / tb1
+	LEAQ 1(SI)(BX*1), AX
+	MOVBQZX (AX), R11
+	MOVBQZX (R9)(R11*1), R12
+
+	// Pair payload must fit the 64-byte window: tb0 + tb1 <= 63
+	LEAQ (BX)(R12*1), AX
+	CMPQ AX, $63
+	JGT  done512
+
+	// Z0 = 64-byte payload window starting at payload0
+	VMOVDQU64 1(SI), Z0
+
+	// Z3 = combined VPERMB index vector:
+	//   low 32B  = shuffles[cb0]
+	//   high 32B = shuffles[cb1] + (tb0 + 1)   (cb1 byte sits between payloads)
+	MOVQ CX, AX
+	SHLQ $5, AX
+	VMOVDQU (BP)(AX*1), Y3
+	MOVQ R11, AX
+	SHLQ $5, AX
+	VMOVDQU (BP)(AX*1), Y4
+	VINSERTI64X4 $1, Y4, Z3, Z3
+	LEAQ 1(BX), AX
+	VPBROADCASTB AX, Z5
+	VPADDB Z5, Z3, K2, Z3
+
+	// K1 = valid-byte mask: valid[cb0] | valid[cb1]<<32
+	MOVLQZX (R10)(CX*4), AX
+	MOVLQZX (R10)(R11*4), R15
+	SHLQ $32, R15
+	ORQ  R15, AX
+	KMOVQ AX, K1
+
+	// Z1 = 8 zero-extended little-endian uint64 zigzag values
+	VPERMB.Z Z0, Z3, K1, Z1
+
+	// Zigzag decode: dod = (v >> 1) ^ -(v & 1)
+	VPSRLQ $1, Z1, Z5
+	VPSLLQ $63, Z1, Z6
+	VPSRAQ $63, Z6, Z6
+	VPXORQ Z6, Z5, Z5
+
+	// Prefix sum #1: deltas = inclusive_prefix(dod) + broadcast(prevDelta)
+	VALIGNQ $7, Z10, Z5, Z6
+	VPADDQ Z6, Z5, Z5
+	VALIGNQ $6, Z10, Z5, Z6
+	VPADDQ Z6, Z5, Z5
+	VALIGNQ $4, Z10, Z5, Z6
+	VPADDQ Z6, Z5, Z5
+	VPADDQ Z9, Z5, Z12
+
+	// Prefix sum #2: ts = inclusive_prefix(deltas) + broadcast(prevTS)
+	VALIGNQ $7, Z10, Z12, Z6
+	VPADDQ Z6, Z12, Z7
+	VALIGNQ $6, Z10, Z7, Z6
+	VPADDQ Z6, Z7, Z7
+	VALIGNQ $4, Z10, Z7, Z6
+	VPADDQ Z6, Z7, Z7
+	VPADDQ Z8, Z7, Z13
+
+	VMOVDQU64 Z13, (DI)
+
+	// Carries: broadcast lane 7 of deltas/timestamps for the next iteration
+	VPERMQ Z12, Z11, Z9
+	VPERMQ Z13, Z11, Z8
+
+	// Advance: 2 control bytes + both payloads; 8 values written
+	LEAQ 2(BX)(R12*1), AX
+	ADDQ AX, SI
+	ADDQ $64, DI
+	ADDQ $8, R14
+	SUBQ $2, R8
+	JMP  pairLoop512
+
+done512:
+	MOVQ SI, AX
+	SUBQ R13, AX
+	MOVQ AX, consumed+88(FP)
+	MOVQ R14, produced+96(FP)
+	MOVQ X8, AX
+	MOVQ AX, lastTS+104(FP)
+	MOVQ X9, AX
+	MOVQ AX, lastDelta+112(FP)
+	VZEROUPPER
+	RET

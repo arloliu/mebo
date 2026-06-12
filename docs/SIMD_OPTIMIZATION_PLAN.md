@@ -360,6 +360,12 @@ This increases the ratio of SIMD to scalar work and amortizes the carry-in/carry
 
 **Impact: 1.5x over AVX2 decode** | Complexity: Medium | Priority: Medium-High
 
+> **Status (2026-06-13): Implemented** — `decodeDeltaPackedASMAVX512BulkPairs`
+> (2 groups/iteration, zeroing-masked VPERMB, dual 8-wide prefix sums).
+> Measured: DecodeAll 10k 6,417 → 4,694 ns (1.37×), All iterator 10k 1.10×,
+> large-blob deltapacked Materialize −13%. See
+> [perf/AVX512_PACKED_DECODER.md](perf/AVX512_PACKED_DECODER.md).
+
 ### Problem
 
 The packed decoder only has AVX2 and Scalar backends. AVX-512 is available on the target CPU

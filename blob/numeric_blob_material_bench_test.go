@@ -35,6 +35,10 @@ func BenchmarkMaterialize(b *testing.B) {
 		{"Large_Raw-Raw_WithTags", format.TypeRaw, format.TypeRaw, 100, 5000, true},
 		{"Large_Delta-Gorilla_NoTags", format.TypeDelta, format.TypeGorilla, 100, 5000, false},
 		{"Large_Delta-Gorilla_WithTags", format.TypeDelta, format.TypeGorilla, 100, 5000, true},
+
+		// DeltaPacked timestamps exercise the SIMD bulk decoder in decodeTimestampsSlice
+		{"Medium_DeltaPacked-Raw_NoTags", format.TypeDeltaPacked, format.TypeRaw, 50, 1000, false},
+		{"Large_DeltaPacked-Raw_NoTags", format.TypeDeltaPacked, format.TypeRaw, 100, 5000, false},
 	}
 
 	for _, tc := range testCases {

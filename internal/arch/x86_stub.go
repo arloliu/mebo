@@ -13,3 +13,9 @@ func X86HasAVX2() bool {
 func X86HasAVX512() bool {
 	return false
 }
+
+// X86HasAVX512VBMI reports whether the current x86 CPU supports the AVX-512
+// baseline plus the VBMI extension. Always returns false on non-amd64 platforms.
+func X86HasAVX512VBMI() bool {
+	return false
+}
