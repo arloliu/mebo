@@ -7,8 +7,14 @@ import (
 
 // BlobBufferDefaultSize is the default size of the ByteBuffer obtained from the pool.
 const (
-	BlobBufferDefaultSize     = 1024 * 16       // 16KiB
-	BlobBufferMaxThreshold    = 1024 * 128      // 128KiB
+	BlobBufferDefaultSize = 1024 * 16 // 16KiB
+	// BlobBufferMaxThreshold bounds the capacity of buffers returned to the pool.
+	// It must comfortably cover a typical full blob payload (e.g. 200 metrics ×
+	// 200 points ≈ 240KiB for Gorilla values); buffers above the previous 128KiB
+	// threshold were dropped on Put, forcing every encode to re-grow the payload
+	// buffer from 16KiB through ~10 reallocs. sync.Pool still releases idle
+	// buffers at GC, so retention is temporary and bounded.
+	BlobBufferMaxThreshold    = 1024 * 1024     // 1MiB
 	BlobSetBufferDefaultSize  = 1024 * 1024     // 1MiB
 	BlobSetBufferMaxThreshold = 1024 * 1024 * 8 // 8MiB
 )
@@ -107,8 +113,10 @@ func (bb *ByteBuffer) Grow(requiredBytes int) {
 	// Calculate growth size based on current buffer size
 	growBy := BlobBufferDefaultSize
 	if cap(bb.B) > 4*BlobBufferDefaultSize {
-		// For larger buffers, grow by 25% to balance memory and reallocation cost
-		growBy = cap(bb.B) / 4
+		// For larger buffers, double the capacity. Payload buffers routinely
+		// reach hundreds of KiB; 25% growth caused ~10 reallocs (and full
+		// copies) per blob encode, dominating the encoder's allocation profile.
+		growBy = cap(bb.B)
 	}
 
 	// Ensure we grow enough for at least the required bytes

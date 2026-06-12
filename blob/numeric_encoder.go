@@ -77,6 +77,8 @@ type NumericEncoder struct {
 
 	curMetricID uint64 // current metric ID being encoded
 	claimed     int    // number of data points claimed for the current metric
+	curPoints   int    // number of data points added to the current metric
+	hasTag      bool   // cached header.Flag.HasTag() for the per-point hot path
 
 	// Encoder state tracking: groups related fields for better cache locality.
 	// Each encoderState (24 bytes) keeps related fields together (lastOffset, offset, length),
@@ -249,6 +251,7 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	}
 
 	encoder.tagEncoder = ienc.NewTagEncoder(encoder.engine)
+	encoder.hasTag = encoder.header.Flag.HasTag()
 
 	if err := encoder.setCodecs(*encoder.header); err != nil {
 		return nil, err
@@ -326,6 +329,7 @@ func (e *NumericEncoder) startMetric(metricID uint64, numOfDataPoints int) error
 	// Set current metric state
 	e.curMetricID = metricID
 	e.claimed = numOfDataPoints
+	e.curPoints = 0
 
 	return nil
 }
@@ -1070,14 +1074,15 @@ func (e *NumericEncoder) buildDedupTsPayload(allTsBytes []byte, groups []tsGroup
 // Returns:
 //   - error: ErrTooManyDataPoints if adding would exceed claimed data point count.
 func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string) error {
-	if e.tsEncoder.Len()-e.ts.length >= e.claimed {
+	if e.curPoints >= e.claimed {
 		return errs.ErrTooManyDataPoints
 	}
+	e.curPoints++
 
 	e.tsEncoder.Write(timestamp)
 	e.valEncoder.Write(value)
 	// Only encode tags if tag support is enabled
-	if e.header.Flag.HasTag() {
+	if e.hasTag {
 		e.tagEncoder.Write(tag)
 		// Track if any non-empty tag is written (branchless check for hot path)
 		if tag != "" {
@@ -1117,13 +1122,19 @@ func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tag
 		return fmt.Errorf("mismatched lengths: %d timestamps, %d tags", tsLen, tagLen)
 	}
 
-	curCount := e.tsEncoder.Len() - e.ts.length // current data points count equal to: total added - previously added
-	if curCount+tsLen > e.claimed {
+	if e.curPoints+tsLen > e.claimed {
 		return errs.ErrTooManyDataPoints
 	}
+	e.curPoints += tsLen
 
 	e.tsEncoder.WriteSlice(timestamps)
 	e.valEncoder.WriteSlice(values)
+
+	// Only encode tags if tag support is enabled
+	if !e.hasTag {
+		return nil
+	}
+
 	if tagLen > 0 {
 		e.tagEncoder.WriteSlice(tags)
 		// Track if any non-empty tag exists in the slice

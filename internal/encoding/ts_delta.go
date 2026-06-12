@@ -252,9 +252,14 @@ func (e *TimestampDeltaEncoder) writeVarintBatch(dods []int64) {
 
 	for _, dod := range dods {
 		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec
-		if zigzag <= 0x7F {
+		switch {
+		case zigzag < 1<<7:
 			e.buf.B = append(e.buf.B, byte(zigzag))
-		} else {
+		case zigzag < 1<<14:
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7))
+		case zigzag < 1<<21:
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)|0x80, byte(zigzag>>14))
+		default:
 			e.buf.B = binary.AppendUvarint(e.buf.B, zigzag)
 		}
 	}
@@ -276,9 +281,14 @@ func (e *TimestampDeltaEncoder) writeVarintDirect(
 		prevDelta = delta
 
 		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec
-		if zigzag <= 0x7F {
+		switch {
+		case zigzag < 1<<7:
 			e.buf.B = append(e.buf.B, byte(zigzag))
-		} else {
+		case zigzag < 1<<14:
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7))
+		case zigzag < 1<<21:
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)|0x80, byte(zigzag>>14))
+		default:
 			e.buf.B = binary.AppendUvarint(e.buf.B, zigzag)
 		}
 	}
@@ -287,14 +297,21 @@ func (e *TimestampDeltaEncoder) writeVarintDirect(
 }
 
 func (e *TimestampDeltaEncoder) appendUnsigned(value uint64) {
-	if value <= 0x7F {
+	// Unrolled 1/2/3-byte fast paths: real-world delta-of-deltas are almost
+	// always ≤ 3 bytes (e.g. ±0.1% jitter on 1s intervals → 2-byte varints).
+	// Each case is a single append with straight-line stores, avoiding the
+	// per-byte loop in binary.AppendUvarint.
+	switch {
+	case value < 1<<7:
 		e.buf.B = append(e.buf.B, byte(value))
-
-		return
+	case value < 1<<14:
+		e.buf.B = append(e.buf.B, byte(value)|0x80, byte(value>>7))
+	case value < 1<<21:
+		e.buf.B = append(e.buf.B, byte(value)|0x80, byte(value>>7)|0x80, byte(value>>14))
+	default:
+		e.buf.Grow(binary.MaxVarintLen64)
+		e.buf.B = binary.AppendUvarint(e.buf.B, value)
 	}
-
-	e.buf.Grow(binary.MaxVarintLen64)
-	e.buf.B = binary.AppendUvarint(e.buf.B, value)
 }
 
 // reserveFor pre-allocates buffer space using fixed estimates for optimal performance.
