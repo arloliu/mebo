@@ -68,47 +68,9 @@ func newGorillaState(valData []byte) (gorillaState, bool) {
 //   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
 func FusedDeltaGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
 	return func(yield func(int64, float64) bool) {
-		if count == 0 || len(tsData) == 0 || len(valData) == 0 {
-			return
-		}
-
-		// Initialize timestamp delta-of-delta state
-		tsFirst, tsOffset, tsOk := decodeVarint64(tsData, 0)
-		if !tsOk {
-			return
-		}
-
-		ds := deltaState{
-			curTS:    int64(tsFirst), //nolint:gosec
-			offset:   tsOffset,
-			seqCount: 1,
-		}
-
-		// Initialize Gorilla value state
-		gs, valOk := newGorillaState(valData)
-		if !valOk {
-			return
-		}
-
-		// Yield first data point
-		if !yield(ds.curTS, gs.prevFloat) {
-			return
-		}
-
-		// Decode remaining data points
-		for i := 1; i < count; i++ {
-			if !decodeDeltaTimestamp(&ds, tsData) {
-				return
-			}
-
-			if !decodeGorillaValue(&gs) {
-				return
-			}
-
-			if !yield(ds.curTS, gs.prevFloat) {
-				return
-			}
-		}
+		FusedDeltaGorillaEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
+			return yield(ts, val)
+		})
 	}
 }
 
@@ -486,47 +448,9 @@ func newChimpState(valData []byte) (chimpState, bool) {
 //   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
 func FusedDeltaChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
 	return func(yield func(int64, float64) bool) {
-		if count == 0 || len(tsData) == 0 || len(valData) == 0 {
-			return
-		}
-
-		// Initialize timestamp delta-of-delta state
-		tsFirst, tsOffset, tsOk := decodeVarint64(tsData, 0)
-		if !tsOk {
-			return
-		}
-
-		ds := deltaState{
-			curTS:    int64(tsFirst), //nolint:gosec
-			offset:   tsOffset,
-			seqCount: 1,
-		}
-
-		// Initialize Chimp value state
-		cs, valOk := newChimpState(valData)
-		if !valOk {
-			return
-		}
-
-		// Yield first data point
-		if !yield(ds.curTS, cs.prevFloat) {
-			return
-		}
-
-		// Decode remaining data points
-		for i := 1; i < count; i++ {
-			if !decodeDeltaTimestamp(&ds, tsData) {
-				return
-			}
-
-			if !decodeChimpValue(&cs) {
-				return
-			}
-
-			if !yield(ds.curTS, cs.prevFloat) {
-				return
-			}
-		}
+		FusedDeltaChimpEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
+			return yield(ts, val)
+		})
 	}
 }
 
@@ -864,78 +788,9 @@ func decodeDeltaPackedTimestamp(dps *deltaPackedState, data []byte) bool {
 //   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
 func FusedDeltaPackedGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
 	return func(yield func(int64, float64) bool) {
-		if count == 0 || len(tsData) == 0 || len(valData) == 0 {
-			return
-		}
-
-		// Initialize Gorilla value state
-		gs, valOk := newGorillaState(valData)
-		if !valOk {
-			return
-		}
-
-		// First timestamp (full varint)
-		first, offset, tsOk := decodeVarint64(tsData, 0)
-		if !tsOk {
-			return
-		}
-
-		var dps deltaPackedState
-		dps.curTS = int64(first) //nolint:gosec
-		dps.offset = offset
-
-		if !yield(dps.curTS, gs.prevFloat) {
-			return
-		}
-
-		if count == 1 {
-			return
-		}
-
-		// Second timestamp
-		zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
-		if !tsOk {
-			return
-		}
-
-		delta := decodeZigZag64(zigzag)
-		dps.curTS += delta
-		dps.prevDelta = delta
-		dps.offset = offset
-
-		if !decodeGorillaValue(&gs) {
-			return
-		}
-
-		if !yield(dps.curTS, gs.prevFloat) {
-			return
-		}
-
-		// Remaining: Group Varint packed delta-of-deltas
-		remaining := count - 2
-		dps.groupLen = groupSize
-
-		for remaining > 0 {
-			if remaining < groupSize {
-				dps.groupLen = remaining
-			}
-
-			for range dps.groupLen {
-				if !decodeDeltaPackedTimestamp(&dps, tsData) {
-					return
-				}
-
-				if !decodeGorillaValue(&gs) {
-					return
-				}
-
-				if !yield(dps.curTS, gs.prevFloat) {
-					return
-				}
-			}
-
-			remaining -= dps.groupLen
-		}
+		FusedDeltaPackedGorillaEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
+			return yield(ts, val)
+		})
 	}
 }
 
@@ -1053,78 +908,9 @@ func FusedDeltaPackedGorillaTagAll(tsData, valData, tagData []byte, count int, t
 //   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
 func FusedDeltaPackedChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
 	return func(yield func(int64, float64) bool) {
-		if count == 0 || len(tsData) == 0 || len(valData) == 0 {
-			return
-		}
-
-		// Initialize Chimp value state
-		cs, valOk := newChimpState(valData)
-		if !valOk {
-			return
-		}
-
-		// First timestamp (full varint)
-		first, offset, tsOk := decodeVarint64(tsData, 0)
-		if !tsOk {
-			return
-		}
-
-		var dps deltaPackedState
-		dps.curTS = int64(first) //nolint:gosec
-		dps.offset = offset
-
-		if !yield(dps.curTS, cs.prevFloat) {
-			return
-		}
-
-		if count == 1 {
-			return
-		}
-
-		// Second timestamp
-		zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
-		if !tsOk {
-			return
-		}
-
-		delta := decodeZigZag64(zigzag)
-		dps.curTS += delta
-		dps.prevDelta = delta
-		dps.offset = offset
-
-		if !decodeChimpValue(&cs) {
-			return
-		}
-
-		if !yield(dps.curTS, cs.prevFloat) {
-			return
-		}
-
-		// Remaining: Group Varint packed delta-of-deltas
-		remaining := count - 2
-		dps.groupLen = groupSize
-
-		for remaining > 0 {
-			if remaining < groupSize {
-				dps.groupLen = remaining
-			}
-
-			for range dps.groupLen {
-				if !decodeDeltaPackedTimestamp(&dps, tsData) {
-					return
-				}
-
-				if !decodeChimpValue(&cs) {
-					return
-				}
-
-				if !yield(dps.curTS, cs.prevFloat) {
-					return
-				}
-			}
-
-			remaining -= dps.groupLen
-		}
+		FusedDeltaPackedChimpEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
+			return yield(ts, val)
+		})
 	}
 }
 
