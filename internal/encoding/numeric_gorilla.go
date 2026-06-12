@@ -33,9 +33,9 @@ const (
 // See https://www.vldb.org/pvldb/vol8/p1816-teller.pdf for algorithm details.
 type NumericGorillaEncoder struct {
 	// Hot path fields (frequently accessed, keep together for cache locality)
-	bitBuf        uint64 // Bit buffer for accumulating bits before writing to byte buffer
+	bitBuf        uint64 // Pending bits, MSB-aligned (bit 63 is the next bit to be written)
 	prevValue     uint64 // Previous value (as uint64 bits)
-	bitCount      int    // Number of valid bits in bitBuf
+	bitCount      int    // Number of valid bits in bitBuf (0-63)
 	count         int    // Number of values encoded
 	prevLeading   int    // Leading zeros in previous XOR
 	prevTrailing  int    // Trailing zeros in previous XOR
@@ -91,11 +91,14 @@ func (e *NumericGorillaEncoder) Write(val float64) {
 	e.count++
 	valBits := math.Float64bits(val)
 
+	// Worst case per value: 13-bit header + 64 meaningful bits → two 8-byte spills.
+	e.buf.Grow(16)
+
 	if e.firstValue {
 		e.firstValue = false
 		e.prevValue = valBits
 		// Write first value uncompressed
-		e.writeBits(valBits, 64)
+		e.appendBits(valBits, 64)
 
 		return
 	}
@@ -119,48 +122,22 @@ func (e *NumericGorillaEncoder) WriteSlice(values []float64) {
 		return
 	}
 
+	// Pre-grow once for the whole slice: worst case ~77 bits ≈ 10 bytes per value.
+	e.buf.Grow(len(values)*10 + 16)
+
 	// Process first value
 	if e.firstValue {
 		e.count++
 		valBits := math.Float64bits(values[0])
 		e.firstValue = false
 		e.prevValue = valBits
-		e.writeBits(valBits, 64)
+		e.appendBits(valBits, 64)
 		values = values[1:]
 	}
 
-	// Batch process: detect runs of identical values
-	i := 0
-	for i < len(values) {
-		valBits := math.Float64bits(values[i])
-
-		// Look ahead for identical values
-		j := i + 1
-		for j < len(values) && math.Float64bits(values[j]) == valBits {
-			j++
-		}
-
-		runLength := j - i
-		if runLength > 1 && valBits == e.prevValue {
-			// Optimize: write multiple 0 bits at once for unchanged values
-			e.writeMultipleZeroBits(runLength)
-			e.count += runLength
-			i = j
-		} else {
-			// Normal encoding for single value or changed value
-			e.count++
-			e.writeValue(valBits)
-			i++
-		}
-	}
-}
-
-func (e *NumericGorillaEncoder) writeMultipleZeroBits(count int) {
-	// Write multiple 0 bits efficiently
-	for count > 0 {
-		bitsToWrite := min(count, 64)
-		e.writeBits(0, bitsToWrite)
-		count -= bitsToWrite
+	for _, val := range values {
+		e.count++
+		e.writeValue(math.Float64bits(val))
 	}
 }
 
@@ -265,19 +242,17 @@ func (e *NumericGorillaEncoder) writeValue(valBits uint64) {
 	e.prevValue = valBits
 
 	if xor == 0 {
-		// Fast path: Value unchanged - inline the critical operation
-		// This eliminates function call overhead for the most common case in constant data
-		e.bitBuf = (e.bitBuf << 1) // No OR needed (bit is 0)
+		// Value unchanged: a single 0 bit. bitBuf is MSB-aligned, so only the
+		// count advances; the bit itself is already zero.
 		e.bitCount++
 		if e.bitCount == 64 {
-			e.flushBits()
+			e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
+			e.bitBuf = 0
+			e.bitCount = 0
 		}
 
 		return
 	}
-
-	// Value changed: write control bit 1
-	e.writeBit(1)
 
 	// Calculate leading and trailing zeros
 	leading := bits.LeadingZeros64(xor)
@@ -302,21 +277,16 @@ func (e *NumericGorillaEncoder) writeValue(valBits uint64) {
 	//   - count > 2: can potentially reuse previous block
 	// We also need prevBlockSize > 0 to ensure we have valid previous block info
 	if e.count > 2 && e.prevBlockSize > 0 && leading >= e.prevLeading && trailing >= e.prevTrailing {
-		// Same block: write control bit 0 + meaningful bits
-		e.writeBit(0)
-		// Use cached prevBlockSize instead of recomputing (performance optimization)
-		e.writeBits(xor>>e.prevTrailing, e.prevBlockSize)
+		// Same block: control bit 1, reuse bit 0, then meaningful bits
+		e.appendBits(0b10, 2)
+		e.appendBits(xor>>uint(e.prevTrailing), e.prevBlockSize) //nolint:gosec // G115: bit widths/counts bounded to 0..64
 	} else {
-		// Different block: write control bit 1 + block info + meaningful bits
+		// Different block: control bit 1, new-block bit 1, 5-bit leading,
+		// 6-bit (blockSize-1), then meaningful bits
 		blockSize := 64 - leading - trailing
-		e.writeBit(1)
-
-		// 5 bits for leading zeros (0-31)
-		e.write5Bits(uint64(leading)) //nolint:gosec // G115: leading is always 0-31, safe conversion
-		// 6 bits for block size (1-64, encoded as 0-63)
-		e.write6Bits(uint64(blockSize - 1)) //nolint:gosec // G115: blockSize-1 is always 0-63, safe conversion
-		// meaningful bits
-		e.writeBits(xor>>trailing, blockSize)
+		header := uint64(0b11)<<11 | uint64(leading)<<6 | uint64(blockSize-1) //nolint:gosec // G115: leading is 0-31, blockSize-1 is 0-63
+		e.appendBits(header, 13)
+		e.appendBits(xor>>uint(trailing), blockSize) //nolint:gosec // G115: bit widths/counts bounded to 0..64
 
 		e.prevLeading = leading
 		e.prevTrailing = trailing
@@ -324,146 +294,47 @@ func (e *NumericGorillaEncoder) writeValue(valBits uint64) {
 	}
 }
 
-// writeBit writes a single bit to the bit buffer.
+// appendBits writes the low numBits bits of value to the stream, MSB-first.
 //
-// This is a performance-critical function used by writeValue.
-// It accumulates bits in a 64-bit buffer and flushes to the byte buffer
-// when full (every 8 bits).
-//
-// The bit is stored in the most significant position and shifted left
-// as more bits are added, ensuring correct byte-order when flushed.
-func (e *NumericGorillaEncoder) writeBit(bit uint64) {
-	e.bitBuf = (e.bitBuf << 1) | bit
-	e.bitCount++
-
-	if e.bitCount == 64 {
-		e.flushBits()
-	}
-}
-
-// writeBits writes multiple bits to the bit buffer.
-//
-// This is a performance-critical function used extensively in compression.
-// It efficiently handles writing 1-64 bits at once, automatically flushing
-// the bit buffer to the byte buffer when necessary.
+// This is the single hot-path bit append primitive: it OR-merges the bits into
+// the MSB-aligned accumulator and spills exactly one 8-byte big-endian word to
+// the byte buffer when the accumulator fills. The caller must ensure buffer
+// capacity (Write/WriteSlice pre-grow), so the append never reallocates.
 //
 // Parameters:
-//   - value: the bits to write (only the least significant 'numBits' are used)
+//   - value: the bits to write (only the least significant numBits are used)
 //   - numBits: number of bits to write (1-64)
-func (e *NumericGorillaEncoder) writeBits(value uint64, numBits int) {
-	if numBits == 0 {
-		return
-	}
+func (e *NumericGorillaEncoder) appendBits(value uint64, numBits int) {
+	m := value << (64 - uint(numBits)) //nolint:gosec // G115: numBits bounded to 1..64; MSB-align (numBits==64 → shift 0)
+	e.bitBuf |= m >> uint(e.bitCount)  //nolint:gosec // G115: bit widths/counts bounded to 0..64
 
-	// Mask value to only include the specified number of bits
-	if numBits < 64 {
-		value &= (1 << numBits) - 1
-	}
-
-	// Calculate how many bits fit in current buffer
-	available := 64 - e.bitCount
-
-	if numBits <= available {
-		// All bits fit in current buffer
-		e.bitBuf = (e.bitBuf << numBits) | value
-		e.bitCount += numBits
-
-		if e.bitCount == 64 {
-			e.flushBits()
-		}
+	total := e.bitCount + numBits
+	if total >= 64 {
+		e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
+		spill := 64 - e.bitCount
+		e.bitBuf = m << uint(spill) //nolint:gosec // G115: spill bounded to 1..64; spill==64 → 0 (Go defines shift ≥ width as 0)
+		e.bitCount = total - 64
 	} else {
-		// Split across buffer boundary
-		// Write high bits that fit in current buffer
-		highBits := numBits - available
-		e.bitBuf = (e.bitBuf << available) | (value >> highBits)
-		e.bitCount = 64
-		e.flushBits()
-
-		// Write remaining low bits to new buffer
-		e.bitBuf = value & ((1 << highBits) - 1)
-		e.bitCount = highBits
+		e.bitCount = total
 	}
 }
 
-// write5Bits writes exactly 5 bits, handling buffer boundary splits.
-func (e *NumericGorillaEncoder) write5Bits(value uint64) {
-	value &= 0x1F // Mask to 5 bits
-	available := 64 - e.bitCount
-	if available >= 5 {
-		// Fast path: fits in current buffer
-		e.bitBuf = (e.bitBuf << 5) | value
-		e.bitCount += 5
-		if e.bitCount >= 64 {
-			e.flushBits()
-		}
-	} else {
-		// Slow path: split across boundary
-		highBits := 5 - available
-		e.bitBuf = (e.bitBuf << available) | (value >> highBits)
-		e.bitCount = 64
-		e.flushBits()
-
-		e.bitBuf = value & ((1 << highBits) - 1)
-		e.bitCount = highBits
-	}
-}
-
-// write6Bits writes exactly 6 bits, handling buffer boundary splits.
-func (e *NumericGorillaEncoder) write6Bits(value uint64) {
-	value &= 0x3F // Mask to 6 bits
-	available := 64 - e.bitCount
-	if available >= 6 {
-		// Fast path: fits in current buffer
-		e.bitBuf = (e.bitBuf << 6) | value
-		e.bitCount += 6
-		if e.bitCount >= 64 {
-			e.flushBits()
-		}
-	} else {
-		// Slow path: split across boundary
-		highBits := 6 - available
-		e.bitBuf = (e.bitBuf << available) | (value >> highBits)
-		e.bitCount = 64
-		e.flushBits()
-
-		e.bitBuf = value & ((1 << highBits) - 1)
-		e.bitCount = highBits
-	}
-}
-
-// flushBits writes the current bit buffer to the byte buffer.
-//
-// This converts accumulated bits into bytes and appends them to the byte buffer.
-// The bit buffer is organized as big-endian (most significant bits first).
+// flushBits writes the remaining partial bits (< 64) to the byte buffer,
+// zero-padding the final byte. The bit buffer is MSB-aligned, so bytes are
+// emitted most-significant first.
 func (e *NumericGorillaEncoder) flushBits() {
 	if e.bitCount == 0 {
 		return
 	}
 
-	// Calculate how many bytes we need
 	numBytes := (e.bitCount + 7) / 8
 
-	// Ensure buffer has capacity
-	e.buf.Grow(numBytes)
-
-	// Shift bits to align to byte boundary (left-align)
-	alignedBits := e.bitBuf << (64 - e.bitCount)
-
-	// Write bytes in big-endian order (most significant byte first)
 	startLen := e.buf.Len()
 	e.buf.ExtendOrGrow(numBytes)
-
 	bs := e.buf.Slice(startLen, startLen+numBytes)
 
-	// Fast path: use binary.BigEndian for 8-byte writes
-	if numBytes == 8 {
-		binary.BigEndian.PutUint64(bs, alignedBits)
-	} else {
-		// Slow path: write partial bytes
-		for i := range numBytes {
-			shift := 56 - (i * 8)
-			bs[i] = byte(alignedBits >> shift)
-		}
+	for i := range numBytes {
+		bs[i] = byte(e.bitBuf >> (56 - i*8)) // top numBytes bytes of the accumulator
 	}
 
 	// Clear bit buffer
@@ -492,6 +363,30 @@ var _ encoding.ColumnarDecoder[float64] = NumericGorillaDecoder{}
 //   - NumericGorillaDecoder: A new decoder instance (stateless, can be reused)
 func NewNumericGorillaDecoder() NumericGorillaDecoder {
 	return NumericGorillaDecoder{}
+}
+
+// peekBits64 returns up to 64 bits starting at absolute bit position bitPos,
+// MSB-aligned. Bits beyond the end of data read as zero.
+//
+// This is the hot-path read primitive for the windowed Gorilla decoder: one
+// unaligned 8-byte big-endian load plus one extra byte yields a full 64-bit
+// window at any bit offset, replacing the per-call refill branches of the
+// stateful bitReader.
+func peekBits64(data []byte, bitPos int) uint64 {
+	i := bitPos >> 3
+	s := uint(bitPos & 7) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+
+	if i+9 <= len(data) {
+		return binary.BigEndian.Uint64(data[i:])<<s | uint64(data[i+8])>>(8-s)
+	}
+
+	// Tail: assemble from the remaining bytes, zero-padded.
+	var tmp [9]byte
+	if i < len(data) {
+		copy(tmp[:], data[i:])
+	}
+
+	return binary.BigEndian.Uint64(tmp[:8])<<s | uint64(tmp[8])>>(8-s)
 }
 
 // gorillaBlockState caches block metadata to support Gorilla decoder reuse logic.
@@ -567,205 +462,84 @@ func (d NumericGorillaDecoder) All(data []byte, count int) iter.Seq[float64] {
 			return
 		}
 
-		if len(data) >= 64 {
-			_ = data[63]
-		}
-
-		br := newBitReader(data)
-
-		// Read first value (uncompressed)
-		firstBits, ok := br.readBits(64)
-		if !ok {
+		totalBits := len(data) * 8
+		if totalBits < 64 {
 			return
 		}
-		prevValue := firstBits
+
+		prevValue := peekBits64(data, 0)
 		prevFloat := math.Float64frombits(prevValue)
 		if !yield(prevFloat) {
 			return
 		}
 
-		if count == 1 {
-			return
-		}
+		bitPos := 64
+		produced := 1
 
-		remaining := count - 1
-		if remaining <= gorillaSmallSequenceThreshold {
-			d.decodeAllSmall(br, prevValue, prevFloat, remaining, yield)
-			return
-		}
+		trailing := 0
+		blockSize := 0
+		blockValid := false
 
-		d.decodeAllLarge(br, prevValue, prevFloat, remaining, yield)
-	}
-}
-
-func (NumericGorillaDecoder) decodeAllSmall(br *bitReader, prevValue uint64, prevFloat float64, remaining int, yield func(float64) bool) {
-	trailing := 0
-	blockSize := 0
-	blockValid := false
-
-	for remaining > 0 {
-		controlBit, ok := br.readBit()
-		if !ok {
-			return
-		}
-
-		if controlBit == 0 {
-			if !yield(prevFloat) {
-				return
-			}
-			remaining--
-
-			continue
-		}
-
-		// Value changed - decode it
-		reuseBit, ok := br.readBit()
-		if !ok {
-			return
-		}
-
-		var trailingBits, blockSizeBits int
-		if reuseBit == 0 {
-			if !blockValid {
-				return
-			}
-			trailingBits = trailing
-			blockSizeBits = blockSize
-		} else {
-			leading, ok := br.read5Bits()
-			if !ok {
-				return
-			}
-			sizeBits, ok := br.read6Bits()
-			if !ok {
-				return
-			}
-			blockSizeBits = sizeBits + 1
-			if blockSizeBits < 1 || blockSizeBits > 64 {
-				return
-			}
-			trailingBits = 64 - leading - blockSizeBits
-			if trailingBits < 0 || trailingBits > 64 {
+		for produced < count {
+			if bitPos >= totalBits {
 				return
 			}
 
-			trailing = trailingBits
-			blockSize = blockSizeBits
-			blockValid = true
-		}
+			w := peekBits64(data, bitPos)
 
-		meaningful, ok := br.readBits(blockSizeBits)
-		if !ok {
-			return
-		}
+			if w>>63 == 0 {
+				// Run of unchanged values: count leading zero control bits in the window.
+				zeros := bits.LeadingZeros64(w)
+				run := min(zeros, count-produced, totalBits-bitPos)
+				for range run {
+					if !yield(prevFloat) {
+						return
+					}
+				}
+				produced += run
+				bitPos += run
 
-		shift := uint64(trailingBits) // #nosec G115 -- trailingBits constrained to [0,64]
-		prevValue ^= meaningful << shift
-		prevFloat = math.Float64frombits(prevValue)
-		if !yield(prevFloat) {
-			return
-		}
-		remaining--
-	}
-}
+				continue
+			}
 
-func (NumericGorillaDecoder) decodeAllLarge(br *bitReader, prevValue uint64, prevFloat float64, remaining int, yield func(float64) bool) {
-	if remaining <= 0 {
-		return
-	}
+			// Changed value: control bit 1 already seen in the window.
+			var consumed int
+			if (w>>62)&1 == 0 {
+				// Reuse previous block window.
+				if !blockValid {
+					return
+				}
+				consumed = 2
+			} else {
+				leading := int(w>>57) & 0x1F    //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				blockSize = int(w>>51)&0x3F + 1 //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				trailing = 64 - leading - blockSize
+				if trailing < 0 || trailing > 64 {
+					return
+				}
+				blockValid = true
+				consumed = 13
+			}
 
-	state := gorillaBlockState{}
-	produced := 0
+			if bitPos+consumed+blockSize > totalBits {
+				return
+			}
 
-	for produced < remaining {
-		controlBit, ok := br.readBit()
-		if !ok {
-			return
-		}
+			var meaningful uint64
+			if blockSize <= 64-consumed {
+				meaningful = (w << uint(consumed)) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			} else {
+				meaningful = peekBits64(data, bitPos+consumed) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			}
+			bitPos += consumed + blockSize
 
-		if controlBit == 0 {
-			// Value unchanged - yield it
+			prevValue ^= meaningful << uint(trailing) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			prevFloat = math.Float64frombits(prevValue)
 			if !yield(prevFloat) {
 				return
 			}
 			produced++
-
-			// Check if there are more unchanged values in a row
-			// Only use batch counting if we have significant remaining values
-			if remaining-produced >= 8 {
-				unchangedCount, ok := br.countLeadingZeroBits(remaining - produced)
-				if !ok {
-					return
-				}
-
-				// Yield all batched unchanged values
-				for range unchangedCount {
-					if !yield(prevFloat) {
-						return
-					}
-				}
-				produced += unchangedCount
-
-				if produced >= remaining {
-					return
-				}
-
-				// Next bit must be 1, read and skip it
-				controlBit, ok = br.readBit()
-				if !ok {
-					return
-				}
-
-				if controlBit == 0 {
-					// Shouldn't happen, but handle gracefully
-					if !yield(prevFloat) {
-						return
-					}
-					produced++
-
-					continue
-				}
-			} else {
-				// For small remaining counts, use simple loop
-				for produced < remaining {
-					controlBit, ok = br.readBit()
-					if !ok {
-						return
-					}
-					if controlBit != 0 {
-						break
-					}
-
-					if !yield(prevFloat) {
-						return
-					}
-					produced++
-				}
-
-				if produced >= remaining {
-					return
-				}
-			}
 		}
-
-		// Value changed - decode the new value
-		trailing, blockSize, ok := state.next(br)
-		if !ok {
-			return
-		}
-
-		meaningfulBits, ok := br.readBits(blockSize)
-		if !ok {
-			return
-		}
-
-		shift := uint64(trailing) // #nosec G115 -- trailing validated by gorillaBlockState
-		prevValue ^= meaningfulBits << shift
-		prevFloat = math.Float64frombits(prevValue)
-		if !yield(prevFloat) {
-			return
-		}
-		produced++
 	}
 }
 
@@ -859,102 +633,79 @@ func (d NumericGorillaDecoder) DecodeAll(data []byte, count int, dst []float64) 
 		return 0
 	}
 
-	if len(data) >= 64 {
-		_ = data[63]
-	}
-
-	br := newBitReader(data)
-
-	firstBits, ok := br.readBits(64)
-	if !ok {
+	totalBits := len(data) * 8
+	if totalBits < 64 {
 		return 0
 	}
-	prevValue := firstBits
-	dst[0] = math.Float64frombits(prevValue)
 
-	if count == 1 {
-		return 1
-	}
+	prevValue := peekBits64(data, 0)
+	prevFloat := math.Float64frombits(prevValue)
+	dst[0] = prevFloat
+	bitPos := 64
+	produced := 1
 
-	remaining := count - 1
-	produced := 0
-	state := gorillaBlockState{}
+	trailing := 0
+	blockSize := 0
+	blockValid := false
 
-	for produced < remaining {
-		controlBit, ok := br.readBit()
-		if !ok {
-			return produced + 1
+	for produced < count {
+		if bitPos >= totalBits {
+			return produced
 		}
 
-		if controlBit == 0 {
-			dst[produced+1] = math.Float64frombits(prevValue)
-			produced++
+		w := peekBits64(data, bitPos)
 
-			// Batch counting for large runs of unchanged values
-			if remaining-produced >= 8 {
-				unchangedCount, ok := br.countLeadingZeroBits(remaining - produced)
-				if !ok {
-					return produced + 1
-				}
-
-				prevFloat := math.Float64frombits(prevValue)
-				for i := range unchangedCount {
-					dst[produced+1+i] = prevFloat
-				}
-				produced += unchangedCount
-
-				if produced >= remaining {
-					return count
-				}
-
-				controlBit, ok = br.readBit()
-				if !ok {
-					return produced + 1
-				}
-
-				if controlBit == 0 {
-					dst[produced+1] = math.Float64frombits(prevValue)
-					produced++
-
-					continue
-				}
-			} else {
-				for produced < remaining {
-					controlBit, ok = br.readBit()
-					if !ok {
-						return produced + 1
-					}
-					if controlBit != 0 {
-						break
-					}
-
-					dst[produced+1] = math.Float64frombits(prevValue)
-					produced++
-				}
-
-				if produced >= remaining {
-					return count
-				}
+		if w>>63 == 0 {
+			// Run of unchanged values: count leading zero control bits in the window.
+			zeros := bits.LeadingZeros64(w)
+			run := min(zeros, count-produced, totalBits-bitPos)
+			for range run {
+				dst[produced] = prevFloat
+				produced++
 			}
+			bitPos += run
+
+			continue
 		}
 
-		trailing, blockSize, ok := state.next(br)
-		if !ok {
-			return produced + 1
+		// Changed value: control bit 1 already seen in the window.
+		var consumed int
+		if (w>>62)&1 == 0 {
+			// Reuse previous block window.
+			if !blockValid {
+				return produced
+			}
+			consumed = 2
+		} else {
+			leading := int(w>>57) & 0x1F    //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			blockSize = int(w>>51)&0x3F + 1 //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			trailing = 64 - leading - blockSize
+			if trailing < 0 || trailing > 64 {
+				return produced
+			}
+			blockValid = true
+			consumed = 13
 		}
 
-		meaningfulBits, ok := br.readBits(blockSize)
-		if !ok {
-			return produced + 1
+		if bitPos+consumed+blockSize > totalBits {
+			return produced
 		}
 
-		shift := uint64(trailing) // #nosec G115 -- trailing validated by gorillaBlockState
-		prevValue ^= meaningfulBits << shift
-		dst[produced+1] = math.Float64frombits(prevValue)
+		var meaningful uint64
+		if blockSize <= 64-consumed {
+			meaningful = (w << uint(consumed)) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		} else {
+			meaningful = peekBits64(data, bitPos+consumed) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		}
+		bitPos += consumed + blockSize
+
+		prevValue ^= meaningful << uint(trailing) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		prevFloat = math.Float64frombits(prevValue)
+		dst[produced] = prevFloat
 		produced++
 	}
 
-	return count
+	return produced
 }
 
 // At retrieves the float64 value at the specified index from the Gorilla-compressed data.
@@ -1148,85 +899,6 @@ func (br *bitReader) readBit() (uint64, bool) {
 	br.bitCount--
 
 	return bit, true
-}
-
-// countLeadingZeroBits counts consecutive zero bits from the current position.
-//
-// This method is optimized for detecting runs of unchanged values in Gorilla compression,
-// where each unchanged value is encoded as a single zero bit. By reading and counting
-// multiple zero bits at once, we can dramatically reduce function call overhead.
-//
-// Parameters:
-//   - maxCount: maximum number of zeros to count (typically remaining values to decode)
-//
-// Returns:
-//   - Number of consecutive zero bits found (0 to maxCount)
-//   - true if the read was successful, false if end of data reached
-//
-// Performance: This can provide 3-5x speedup for sequences with many unchanged values
-// by batching the detection instead of calling readBit() repeatedly.
-func (br *bitReader) countLeadingZeroBits(maxCount int) (int, bool) {
-	if maxCount <= 0 {
-		return 0, true
-	}
-
-	// Fast path: check first bit quickly
-	// If it's not zero, we can return immediately without counting
-	if br.bitCount == 0 {
-		if !br.fillBuffer() {
-			return 0, false
-		}
-	}
-
-	// Check if the first bit is 1 (value changed)
-	if br.bitBuf>>63 != 0 {
-		return 0, true
-	}
-
-	// First bit is 0, continue counting
-	count := 0
-
-	for count < maxCount {
-		// Ensure we have bits in the buffer
-		if br.bitCount == 0 {
-			if !br.fillBuffer() {
-				// End of data - return what we've counted so far
-				return count, count > 0
-			}
-		}
-
-		// Count leading zeros in the current buffer
-		// Use bits.LeadingZeros64 for efficient CPU instruction usage
-		leadingZeros := bits.LeadingZeros64(br.bitBuf)
-
-		// Clamp to available bits in buffer and remaining count needed
-		available := br.bitCount
-		if leadingZeros > available {
-			leadingZeros = available
-		}
-
-		remaining := maxCount - count
-		if leadingZeros > remaining {
-			leadingZeros = remaining
-		}
-
-		// If we found a 1-bit, stop counting
-		if leadingZeros < br.bitCount {
-			// Consume the zero bits we counted
-			br.bitBuf <<= leadingZeros
-			br.bitCount -= leadingZeros
-			count += leadingZeros
-
-			return count, true
-		}
-
-		// All bits in buffer were zeros, consume them and continue
-		br.bitBuf <<= leadingZeros
-		br.bitCount -= leadingZeros
-		count += leadingZeros
-	}
-
-	return count, true
 }
 
 // read2Bits reads exactly 2 bits with fast path.

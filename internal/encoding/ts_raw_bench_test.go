@@ -36,9 +36,6 @@ func BenchmarkTimestampRawEncoder_WriteSlice(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(size.name, func(b *testing.B) {
-			encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
-			defer encoder.Finish()
-
 			// Generate test data
 			timestamps := make([]int64, size.count)
 			base := int64(1609459200000) // 2021-01-01 00:00:00 UTC
@@ -50,6 +47,7 @@ func BenchmarkTimestampRawEncoder_WriteSlice(b *testing.B) {
 			b.ReportAllocs()
 
 			for b.Loop() {
+				encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
 				encoder.WriteSlice(timestamps)
 				encoder.Finish()
 			}

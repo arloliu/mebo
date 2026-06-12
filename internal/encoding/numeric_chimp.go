@@ -76,9 +76,9 @@ var chimpLeadingDecode = [8]int{0, 8, 12, 16, 18, 20, 22, 24}
 // PVLDB 15(11), 2022.
 type NumericChimpEncoder struct {
 	// Hot path fields (frequently accessed, keep together for cache locality)
-	bitBuf             uint64 // Bit buffer for accumulating bits before writing to byte buffer
+	bitBuf             uint64 // Pending bits, MSB-aligned (bit 63 is the next bit to be written)
 	prevValue          uint64 // Previous value (as uint64 bits)
-	bitCount           int    // Number of valid bits in bitBuf
+	bitCount           int    // Number of valid bits in bitBuf (0-63)
 	count              int    // Number of values encoded
 	storedLeadingZeros int    // Leading zeros from previous XOR (rounded to bucket boundary)
 	firstValue         bool   // True if this is the first value
@@ -116,10 +116,13 @@ func (e *NumericChimpEncoder) Write(val float64) {
 	e.count++
 	valBits := math.Float64bits(val)
 
+	// Worst case per value: 11-bit header + 64 significant bits → two 8-byte spills.
+	e.buf.Grow(16)
+
 	if e.firstValue {
 		e.firstValue = false
 		e.prevValue = valBits
-		e.writeBits(valBits, 64)
+		e.appendBits(valBits, 64)
 
 		return
 	}
@@ -140,12 +143,15 @@ func (e *NumericChimpEncoder) WriteSlice(values []float64) {
 		return
 	}
 
+	// Pre-grow once for the whole slice: worst case ~75 bits ≈ 10 bytes per value.
+	e.buf.Grow(len(values)*10 + 16)
+
 	if e.firstValue {
 		e.count++
 		valBits := math.Float64bits(values[0])
 		e.firstValue = false
 		e.prevValue = valBits
-		e.writeBits(valBits, 64)
+		e.appendBits(valBits, 64)
 		values = values[1:]
 	}
 
@@ -226,21 +232,15 @@ func (e *NumericChimpEncoder) writeValue(valBits uint64) {
 	e.prevValue = valBits
 
 	if xor == 0 {
-		// Flag 00: value unchanged — inline the 2-bit write to avoid function call overhead
-		available := 64 - e.bitCount
-		if available >= 2 {
-			e.bitBuf <<= 2
-			e.bitCount += 2
-			if e.bitCount == 64 {
-				e.flushBits()
-			}
-		} else {
-			// Split: 1 bit fits in current buffer, 1 bit carries over
-			e.bitBuf <<= 1
-			e.bitCount = 64
-			e.flushBits()
+		// Flag 00: value unchanged. bitBuf is MSB-aligned, so only the count
+		// advances; the two flag bits are already zero.
+		total := e.bitCount + 2
+		if total >= 64 {
+			e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
 			e.bitBuf = 0
-			e.bitCount = 1
+			e.bitCount = total - 64
+		} else {
+			e.bitCount = total
 		}
 
 		// Reset stored leading zeros so next changed value forces "new leading" path
@@ -265,57 +265,53 @@ func (e *NumericChimpEncoder) writeValue(valBits uint64) {
 		significantBitsField := uint64(significantBits) //nolint:gosec // significantBits is clamped to 1..64 and masked below
 
 		// Write: 01 flag + 3-bit leading bucket + 6-bit significant bits count + significant bits
-		e.writeBits((1<<9)|(chimpLeadingRepresentation[leadingZeros]<<6)|(significantBitsField&0x3F), 11) // flag 01 + 3-bit leading + 6-bit sigBits
-		e.writeBits(xor>>trailingZeros, significantBits)
+		e.appendBits((1<<9)|(chimpLeadingRepresentation[leadingZeros]<<6)|(significantBitsField&0x3F), 11) // flag 01 + 3-bit leading + 6-bit sigBits
+		e.appendBits(xor>>uint(trailingZeros), significantBits)                                            //nolint:gosec // G115: bit widths/counts bounded to 0..64
 
 		// Reset stored leading to force new-leading on next change
 		e.storedLeadingZeros = 65
 	} else if leadingRounded == e.storedLeadingZeros {
 		// Flag 10: reuse previous leading zeros
 		significantBits := 64 - leadingRounded
-		e.writeBits(2, 2) // flag 10
-		e.writeBits(xor, significantBits)
+		e.appendBits(2, 2) // flag 10
+		e.appendBits(xor, significantBits)
 	} else {
 		// Flag 11: new leading zeros
 		e.storedLeadingZeros = leadingRounded
 		significantBits := 64 - leadingRounded
 
-		e.writeBits((3<<3)|chimpLeadingRepresentation[leadingZeros], 5) // flag 11 + 3-bit leading
-		e.writeBits(xor, significantBits)
+		e.appendBits((3<<3)|chimpLeadingRepresentation[leadingZeros], 5) // flag 11 + 3-bit leading
+		e.appendBits(xor, significantBits)
 	}
 }
 
-// writeBits writes multiple bits to the bit buffer.
-func (e *NumericChimpEncoder) writeBits(value uint64, numBits int) {
-	if numBits == 0 {
-		return
-	}
+// appendBits writes the low numBits bits of value to the stream, MSB-first.
+//
+// Same hot-path primitive as NumericGorillaEncoder.appendBits: OR-merge into
+// the MSB-aligned accumulator, spill exactly one 8-byte big-endian word when
+// it fills. Callers pre-grow the buffer, so the append never reallocates.
+//
+// Parameters:
+//   - value: the bits to write (only the least significant numBits are used)
+//   - numBits: number of bits to write (1-64)
+func (e *NumericChimpEncoder) appendBits(value uint64, numBits int) {
+	m := value << (64 - uint(numBits)) //nolint:gosec // G115: numBits bounded to 1..64; MSB-align (numBits==64 → shift 0)
+	e.bitBuf |= m >> uint(e.bitCount)  //nolint:gosec // G115: bit widths/counts bounded to 0..64
 
-	if numBits < 64 {
-		value &= (1 << numBits) - 1
-	}
-
-	available := 64 - e.bitCount
-
-	if numBits <= available {
-		e.bitBuf = (e.bitBuf << numBits) | value
-		e.bitCount += numBits
-
-		if e.bitCount == 64 {
-			e.flushBits()
-		}
+	total := e.bitCount + numBits
+	if total >= 64 {
+		e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
+		spill := 64 - e.bitCount
+		e.bitBuf = m << uint(spill) //nolint:gosec // G115: spill bounded to 1..64; spill==64 → 0 (Go defines shift ≥ width as 0)
+		e.bitCount = total - 64
 	} else {
-		highBits := numBits - available
-		e.bitBuf = (e.bitBuf << available) | (value >> highBits)
-		e.bitCount = 64
-		e.flushBits()
-
-		e.bitBuf = value & ((1 << highBits) - 1)
-		e.bitCount = highBits
+		e.bitCount = total
 	}
 }
 
-// flushBits writes the current bit buffer to the byte buffer.
+// flushBits writes the remaining partial bits (< 64) to the byte buffer,
+// zero-padding the final byte. The bit buffer is MSB-aligned, so bytes are
+// emitted most-significant first.
 func (e *NumericChimpEncoder) flushBits() {
 	if e.bitCount == 0 {
 		return
@@ -323,19 +319,12 @@ func (e *NumericChimpEncoder) flushBits() {
 
 	numBytes := (e.bitCount + 7) / 8
 
-	alignedBits := e.bitBuf << (64 - e.bitCount)
-
 	startLen := e.buf.Len()
 	e.buf.ExtendOrGrow(numBytes)
 	bs := e.buf.Slice(startLen, startLen+numBytes)
 
-	if numBytes == 8 {
-		binary.BigEndian.PutUint64(bs, alignedBits)
-	} else {
-		for i := range numBytes {
-			shift := 56 - (i * 8)
-			bs[i] = byte(alignedBits >> shift)
-		}
+	for i := range numBytes {
+		bs[i] = byte(e.bitBuf >> (56 - i*8)) // top numBytes bytes of the accumulator
 	}
 
 	e.bitBuf = 0
@@ -368,34 +357,125 @@ func NewNumericChimpDecoder() NumericChimpDecoder {
 //
 // Returns:
 //   - iter.Seq[float64]: Iterator yielding decoded float64 values
-func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] {
+func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] { //nolint:cyclop // windowed XOR decode has four inherent flag branches
 	return func(yield func(float64) bool) {
 		if len(data) == 0 || count == 0 {
 			return
 		}
 
-		br := bitReader{data: data}
-
-		// Read first value (uncompressed)
-		firstBits, ok := br.readBits(64)
-		if !ok {
+		totalBits := len(data) * 8
+		if totalBits < 64 {
 			return
 		}
 
-		prevValue := firstBits
-		if !yield(math.Float64frombits(prevValue)) {
+		prevValue := peekBits64(data, 0)
+		prevFloat := math.Float64frombits(prevValue)
+		if !yield(prevFloat) {
 			return
 		}
+
+		bitPos := 64
+		produced := 1
 
 		storedLeading := 65 // Sentinel: no valid previous leading
 
-		for i := 1; i < count; i++ {
-			if !chimpDecodeNext(&br, &prevValue, &storedLeading) {
+		for produced < count {
+			if bitPos+2 > totalBits {
 				return
 			}
 
-			if !yield(math.Float64frombits(prevValue)) {
-				return
+			w := peekBits64(data, bitPos)
+
+			switch w >> 62 {
+			case 0: // Value unchanged: batch the whole run of 00 flag pairs in the window
+				pairs := bits.LeadingZeros64(w) / 2
+				run := min(pairs, count-produced, (totalBits-bitPos)/2)
+				for range run {
+					if !yield(prevFloat) {
+						return
+					}
+				}
+				produced += run
+				bitPos += run * 2
+				storedLeading = 65
+
+			case 1: // Trailing-zero optimized
+				leading := chimpLeadingDecode[(w>>59)&0x07]
+
+				sigBits := int(w>>53) & 0x3F //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				if sigBits == 0 {
+					sigBits = 64
+				}
+
+				trailingZeros := 64 - leading - sigBits
+				if trailingZeros < 0 || bitPos+11+sigBits > totalBits {
+					return
+				}
+
+				var meaningful uint64
+				if sigBits <= 53 {
+					meaningful = (w << 11) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				} else {
+					meaningful = peekBits64(data, bitPos+11) >> (64 - uint(sigBits))
+				}
+				bitPos += 11 + sigBits
+
+				prevValue ^= meaningful << uint(trailingZeros)
+				prevFloat = math.Float64frombits(prevValue)
+				if !yield(prevFloat) {
+					return
+				}
+				produced++
+				storedLeading = 65
+
+			case 2: // Reuse previous leading
+				if storedLeading > 64 {
+					return
+				}
+
+				sigBits := 64 - storedLeading
+				if bitPos+2+sigBits > totalBits {
+					return
+				}
+
+				var meaningful uint64
+				if sigBits <= 62 {
+					meaningful = (w << 2) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				} else {
+					meaningful = peekBits64(data, bitPos+2) >> (64 - uint(sigBits))
+				}
+				bitPos += 2 + sigBits
+
+				prevValue ^= meaningful
+				prevFloat = math.Float64frombits(prevValue)
+				if !yield(prevFloat) {
+					return
+				}
+				produced++
+
+			default: // case 3: New leading
+				leading := chimpLeadingDecode[(w>>59)&0x07]
+				storedLeading = leading
+				sigBits := 64 - leading
+
+				if bitPos+5+sigBits > totalBits {
+					return
+				}
+
+				var meaningful uint64
+				if sigBits <= 59 {
+					meaningful = (w << 5) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				} else {
+					meaningful = peekBits64(data, bitPos+5) >> (64 - uint(sigBits))
+				}
+				bitPos += 5 + sigBits
+
+				prevValue ^= meaningful
+				prevFloat = math.Float64frombits(prevValue)
+				if !yield(prevFloat) {
+					return
+				}
+				produced++
 			}
 		}
 	}
@@ -418,155 +498,113 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 		return 0
 	}
 
-	br := bitReader{data: data}
-
-	firstBits, ok := br.readBits(64)
-	if !ok {
+	totalBits := len(data) * 8
+	if totalBits < 64 {
 		return 0
 	}
 
-	prevValue := firstBits
-	dst[0] = math.Float64frombits(prevValue)
+	prevValue := peekBits64(data, 0)
+	prevFloat := math.Float64frombits(prevValue)
+	dst[0] = prevFloat
+	bitPos := 64
+	produced := 1
 	_ = dst[count-1] // bounds-check elimination
 
 	storedLeading := 65
 
-	for i := 1; i < count; i++ {
-		flag, ok := br.read2Bits()
-		if !ok {
-			return i
+	for produced < count {
+		if bitPos+2 > totalBits {
+			return produced
 		}
 
-		switch flag {
-		case 0: // Value unchanged
-			dst[i] = math.Float64frombits(prevValue)
+		w := peekBits64(data, bitPos)
+
+		switch w >> 62 {
+		case 0: // Value unchanged: batch the whole run of 00 flag pairs in the window
+			pairs := bits.LeadingZeros64(w) / 2
+			run := min(pairs, count-produced, (totalBits-bitPos)/2)
+			for range run {
+				dst[produced] = prevFloat
+				produced++
+			}
+			bitPos += run * 2
 			storedLeading = 65
 
-			// Batch: count consecutive unchanged values (00 flag pairs)
-			remaining := count - i - 1
-			if remaining >= 4 {
-				zeros := chimpCountUnchangedRun(&br, remaining)
-				prevFloat := math.Float64frombits(prevValue)
-				for j := range zeros {
-					dst[i+1+j] = prevFloat
-				}
-				i += zeros
-			}
-
 		case 1: // Trailing-zero optimized
-			header, ok := readChimpTrailingHeader(&br)
-			if !ok {
-				return i
-			}
+			leading := chimpLeadingDecode[(w>>59)&0x07]
 
-			leading := chimpLeadingDecode[header>>6]
-
-			sigBits := int(header & 0x3F) //nolint:gosec // G115: masked to 6 bits, bounded 0..63
+			sigBits := int(w>>53) & 0x3F //nolint:gosec // G115: bit widths/counts bounded to 0..64
 			if sigBits == 0 {
 				sigBits = 64
 			}
 
-			meaningful, ok := br.readBits(sigBits)
-			if !ok {
-				return i
-			}
-
 			trailingZeros := 64 - leading - sigBits
-			if trailingZeros < 0 {
-				return i
+			if trailingZeros < 0 || bitPos+11+sigBits > totalBits {
+				return produced
 			}
 
-			prevValue ^= meaningful << trailingZeros
-			dst[i] = math.Float64frombits(prevValue)
+			var meaningful uint64
+			if sigBits <= 53 {
+				meaningful = (w << 11) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			} else {
+				meaningful = peekBits64(data, bitPos+11) >> (64 - uint(sigBits))
+			}
+			bitPos += 11 + sigBits
+
+			prevValue ^= meaningful << uint(trailingZeros)
+			prevFloat = math.Float64frombits(prevValue)
+			dst[produced] = prevFloat
+			produced++
 			storedLeading = 65
 
 		case 2: // Reuse previous leading
 			if storedLeading > 64 {
-				return i
+				return produced
 			}
 
 			sigBits := 64 - storedLeading
-
-			meaningful, ok := br.readBits(sigBits)
-			if !ok {
-				return i
+			if bitPos+2+sigBits > totalBits {
+				return produced
 			}
+
+			var meaningful uint64
+			if sigBits <= 62 {
+				meaningful = (w << 2) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			} else {
+				meaningful = peekBits64(data, bitPos+2) >> (64 - uint(sigBits))
+			}
+			bitPos += 2 + sigBits
 
 			prevValue ^= meaningful
-			dst[i] = math.Float64frombits(prevValue)
+			prevFloat = math.Float64frombits(prevValue)
+			dst[produced] = prevFloat
+			produced++
 
-		case 3: // New leading
-			leadingBucket, ok := br.read3Bits()
-			if !ok {
-				return i
-			}
-
-			leading := chimpLeadingDecode[leadingBucket]
+		default: // case 3: New leading
+			leading := chimpLeadingDecode[(w>>59)&0x07]
 			storedLeading = leading
 			sigBits := 64 - leading
 
-			meaningful, ok := br.readBits(sigBits)
-			if !ok {
-				return i
+			if bitPos+5+sigBits > totalBits {
+				return produced
 			}
+
+			var meaningful uint64
+			if sigBits <= 59 {
+				meaningful = (w << 5) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			} else {
+				meaningful = peekBits64(data, bitPos+5) >> (64 - uint(sigBits))
+			}
+			bitPos += 5 + sigBits
 
 			prevValue ^= meaningful
-			dst[i] = math.Float64frombits(prevValue)
-
-		default:
-			return i
+			prevFloat = math.Float64frombits(prevValue)
+			dst[produced] = prevFloat
+			produced++
 		}
 	}
 
-	return count
-}
-
-// chimpCountUnchangedRun counts consecutive Chimp "unchanged" flags (00 bit pairs)
-// from the current position in the bit reader. Each pair represents one unchanged value.
-// Follows the same consume-after-check pattern as bitReader.countLeadingZeroBits.
-func chimpCountUnchangedRun(br *bitReader, maxPairs int) int {
-	count := 0
-
-	for count < maxPairs {
-		if br.bitCount == 0 {
-			if !br.fillBuffer() {
-				return count
-			}
-		}
-
-		leadingZeros := min(bits.LeadingZeros64(br.bitBuf), br.bitCount)
-
-		// Complete pairs we can extract from consecutive zeros
-		pairs := min(leadingZeros/2, maxPairs-count)
-		bitsToConsume := pairs * 2
-
-		// Found a 1-bit within the buffer: consume pairs and stop
-		if leadingZeros < br.bitCount {
-			if bitsToConsume > 0 {
-				br.bitBuf <<= bitsToConsume
-				br.bitCount -= bitsToConsume
-				count += pairs
-			}
-
-			break
-		}
-
-		// All buffer bits were zeros: consume and refill on next iteration.
-		// Only consume complete pairs — an odd trailing zero stays for the
-		// next read2Bits call since it might be part of a non-00 flag.
-		if bitsToConsume > 0 {
-			br.bitBuf <<= bitsToConsume
-			br.bitCount -= bitsToConsume
-			count += pairs
-		}
-
-		// Odd zero left over (leadingZeros was odd) — can't form a pair
-		if leadingZeros%2 != 0 {
-			break
-		}
-	}
-
-	return count
+	return produced
 }
 
 // At retrieves the float64 value at the specified index from the Chimp-compressed data.
