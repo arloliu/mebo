@@ -428,6 +428,75 @@ func TestNumericEncoder_Finish(t *testing.T) {
 	})
 }
 
+func TestNumericEncoder_FinishInto(t *testing.T) {
+	// encodeFixture adds two metrics with fixed data and a fixed start time so
+	// two encoders produce byte-identical blobs.
+	encodeFixture := func(t *testing.T) *NumericEncoder {
+		t.Helper()
+		encoder, err := NewNumericEncoder(time.Unix(1700000000, 0).UTC())
+		require.NoError(t, err)
+		base := int64(1700000000000000)
+
+		require.NoError(t, encoder.StartMetricID(100, 2))
+		require.NoError(t, encoder.AddDataPoints([]int64{base, base + 1000000}, []float64{1.5, 2.5}, nil))
+		require.NoError(t, encoder.EndMetric())
+
+		require.NoError(t, encoder.StartMetricID(200, 1))
+		require.NoError(t, encoder.AddDataPoint(base+2000000, 3.5, ""))
+		require.NoError(t, encoder.EndMetric())
+
+		return encoder
+	}
+
+	t.Run("NilDstEqualsFinish", func(t *testing.T) {
+		want, err := encodeFixture(t).Finish()
+		require.NoError(t, err)
+
+		got, err := encodeFixture(t).FinishInto(nil)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	})
+
+	t.Run("PreservesPrefix", func(t *testing.T) {
+		want, err := encodeFixture(t).Finish()
+		require.NoError(t, err)
+
+		prefix := []byte("prefix-bytes")
+		got, err := encodeFixture(t).FinishInto(append([]byte(nil), prefix...))
+		require.NoError(t, err)
+		require.Equal(t, prefix, got[:len(prefix)])
+		require.Equal(t, want, got[len(prefix):])
+	})
+
+	t.Run("ReusesCapacity", func(t *testing.T) {
+		want, err := encodeFixture(t).Finish()
+		require.NoError(t, err)
+
+		dst := make([]byte, 0, len(want)+1024)
+		got, err := encodeFixture(t).FinishInto(dst)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+		// No reallocation: the result shares dst's backing array.
+		require.Same(t, &dst[:1][0], &got[0])
+
+		// The blob round-trips through the decoder.
+		decoder, err := NewNumericDecoder(got)
+		require.NoError(t, err)
+		decoded, err := decoder.Decode()
+		require.NoError(t, err)
+		require.Equal(t, 2, decoded.MetricCount())
+	})
+
+	t.Run("ErrorReturnsDstUnchanged", func(t *testing.T) {
+		encoder := createTestEncoder(t)
+		dst := []byte("existing")
+		got, err := encoder.FinishInto(dst)
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrNoMetricsAdded)
+		require.Equal(t, []byte("existing"), got)
+	})
+}
+
 func TestNumericEncoder_ValidationMethods(t *testing.T) {
 	encoder := createTestEncoder(t)
 

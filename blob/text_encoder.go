@@ -376,6 +376,26 @@ func (e *TextEncoder) EndMetric() error {
 // Finish completes the encoding and returns the final blob as a byte slice.
 // After calling Finish, the encoder cannot be reused.
 func (e *TextEncoder) Finish() ([]byte, error) {
+	return e.finishAppend(nil)
+}
+
+// FinishInto completes the encoding like Finish, but appends the encoded blob
+// to dst instead of allocating a fresh slice, and returns the extended slice.
+// The contents of dst up to len(dst) are preserved; the blob occupies the
+// appended region. If dst has sufficient capacity, no allocation occurs.
+//
+// The returned slice must not be reused for another blob while a decoder
+// still references its contents.
+//
+// Returns:
+//   - []byte: dst with the complete encoded blob appended
+//   - error: dst unchanged plus ErrMetricNotEnded, ErrNoMetricsAdded, or
+//     compression errors (same conditions as Finish)
+func (e *TextEncoder) FinishInto(dst []byte) ([]byte, error) {
+	return e.finishAppend(dst)
+}
+
+func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 	// Return buffers to pool even on error paths
 	defer func() {
 		if e.buf != nil {
@@ -389,11 +409,11 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 
 	// Check state
 	if e.curMetricID != 0 {
-		return nil, errs.ErrMetricNotEnded
+		return dst, errs.ErrMetricNotEnded
 	}
 
 	if len(e.indexEntries) == 0 {
-		return nil, errs.ErrNoMetricsAdded
+		return dst, errs.ErrNoMetricsAdded
 	}
 
 	// Clone header for immutability
@@ -413,7 +433,7 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 	if e.dataCodec != nil {
 		compressedData, err = e.dataCodec.Compress(dataBytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to compress data: %w", err)
+			return dst, fmt.Errorf("failed to compress data: %w", err)
 		}
 	} else {
 		compressedData = dataBytes
@@ -426,7 +446,7 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 		var err error
 		namesPayload, err = ienc.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode metric names: %w", err)
+			return dst, fmt.Errorf("failed to encode metric names: %w", err)
 		}
 		header.Flag.SetHasMetricNames(true)
 	}
@@ -442,9 +462,9 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 	indexEntriesSize := len(e.indexEntries) * section.TextIndexEntrySize
 	blobSize := headerSize + len(namesPayload) + indexEntriesSize + len(compressedData)
 
-	// Allocate exact-size buffer for the final blob
-	// No need for pooled buffer since we return this directly to caller
-	blob := make([]byte, blobSize)
+	// Extend dst by exactly blobSize bytes (allocating only when capacity is
+	// insufficient) and assemble the blob in the appended region.
+	full, blob := appendBlobRegion(dst, blobSize)
 	offset := 0
 
 	// Write header
@@ -459,7 +479,7 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 	for i := range e.indexEntries {
 		entryOffset := offset + i*section.TextIndexEntrySize
 		if err := e.indexEntries[i].WriteToSlice(blob[entryOffset:], e.engine); err != nil {
-			return nil, fmt.Errorf("failed to write index entry: %w", err)
+			return dst, fmt.Errorf("failed to write index entry: %w", err)
 		}
 	}
 	offset += indexEntriesSize
@@ -467,7 +487,7 @@ func (e *TextEncoder) Finish() ([]byte, error) {
 	// Write compressed data
 	copy(blob[offset:], compressedData)
 
-	return blob, nil
+	return full, nil
 }
 
 // cloneHeader creates a shallow copy of the encoder's header for immutability.

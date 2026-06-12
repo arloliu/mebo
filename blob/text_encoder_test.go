@@ -354,6 +354,55 @@ func TestTextEncoder_Finish_ActiveMetric(t *testing.T) {
 	require.ErrorIs(t, err, errs.ErrMetricNotEnded)
 }
 
+func TestTextEncoder_FinishInto(t *testing.T) {
+	blobTS := time.Unix(1700000000, 0).UTC()
+
+	encodeFixture := func(t *testing.T) *TextEncoder {
+		t.Helper()
+		encoder, err := NewTextEncoder(blobTS)
+		require.NoError(t, err)
+
+		require.NoError(t, encoder.StartMetricID(12345, 2))
+		require.NoError(t, encoder.AddDataPoint(blobTS.UnixMicro(), "hello", ""))
+		require.NoError(t, encoder.AddDataPoint(blobTS.UnixMicro()+1000000, "world", ""))
+		require.NoError(t, encoder.EndMetric())
+
+		return encoder
+	}
+
+	want, err := encodeFixture(t).Finish()
+	require.NoError(t, err)
+
+	t.Run("NilDstEqualsFinish", func(t *testing.T) {
+		got, err := encodeFixture(t).FinishInto(nil)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	})
+
+	t.Run("PreservesPrefixAndReusesCapacity", func(t *testing.T) {
+		prefix := []byte("prefix")
+		dst := make([]byte, 0, len(prefix)+len(want)+1024)
+		dst = append(dst, prefix...)
+
+		got, err := encodeFixture(t).FinishInto(dst)
+		require.NoError(t, err)
+		require.Equal(t, prefix, got[:len(prefix)])
+		require.Equal(t, want, got[len(prefix):])
+		require.Same(t, &dst[0], &got[0])
+	})
+
+	t.Run("ErrorReturnsDstUnchanged", func(t *testing.T) {
+		encoder, err := NewTextEncoder(blobTS)
+		require.NoError(t, err)
+
+		dst := []byte("existing")
+		got, err := encoder.FinishInto(dst)
+		require.Error(t, err)
+		require.ErrorIs(t, err, errs.ErrNoMetricsAdded)
+		require.Equal(t, []byte("existing"), got)
+	})
+}
+
 func TestTextEncoder_Finish_Success_IDMode(t *testing.T) {
 	blobTS := time.Now()
 	encoder, err := NewTextEncoder(blobTS)

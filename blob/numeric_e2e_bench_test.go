@@ -110,6 +110,50 @@ func BenchmarkE2EEncode_DeltaPackedGorilla(b *testing.B) {
 	benchmarkE2EEncode(b, format.TypeDeltaPacked, format.TypeGorilla)
 }
 
+// BenchmarkE2EEncodeInto_DeltaGorilla mirrors BenchmarkE2EEncode_DeltaGorilla
+// but reuses a caller-provided buffer via FinishInto, eliminating the final
+// blob allocation (the dominant allocation of the encode path).
+func BenchmarkE2EEncodeInto_DeltaGorilla(b *testing.B) {
+	d := genE2EBenchData(200, 200)
+	b.ReportAllocs()
+
+	var buf []byte
+	for b.Loop() {
+		encoder, err := NewNumericEncoder(d.start,
+			WithTimestampEncoding(format.TypeDelta),
+			WithTimestampCompression(format.CompressionNone),
+			WithValueEncoding(format.TypeGorilla),
+			WithValueCompression(format.CompressionNone),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		for i, id := range d.metricIDs {
+			if err = encoder.StartMetricID(id, d.ppm); err != nil {
+				b.Fatal(err)
+			}
+			base := i * d.ppm
+			for j := range d.ppm {
+				if err = encoder.AddDataPoint(d.timestamps[base+j], d.values[base+j], ""); err != nil {
+					b.Fatal(err)
+				}
+			}
+			if err = encoder.EndMetric(); err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		buf, err = encoder.FinishInto(buf[:0])
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(buf) == 0 {
+			b.Fatal("empty blob")
+		}
+	}
+}
+
 func BenchmarkE2EIterate_DeltaGorilla(b *testing.B) {
 	d := genE2EBenchData(200, 200)
 	blobBytes := e2eBenchEncode(b, d, format.TypeDelta, format.TypeGorilla)

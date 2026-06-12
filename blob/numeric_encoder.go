@@ -594,6 +594,43 @@ func validateBlobSize(blobSize int) error {
 //   - error: ErrMetricNotEnded if a metric was started but not ended, ErrNoMetricsAdded if no metrics
 //     were added, or compression errors
 func (e *NumericEncoder) Finish() ([]byte, error) {
+	return e.finishAppend(nil)
+}
+
+// FinishInto finalizes the encoding process like Finish, but appends the
+// encoded blob to dst instead of allocating a fresh slice, and returns the
+// extended slice. The contents of dst up to len(dst) are preserved; the blob
+// occupies the appended region. If dst has sufficient capacity, no allocation
+// occurs — this avoids the dominant allocation of the encode path when
+// callers reuse a buffer across blobs (e.g. dst = dst[:0] between encodes).
+//
+// The returned slice must not be reused for another blob while a decoder
+// still references its contents.
+//
+// Returns:
+//   - []byte: dst with the complete encoded blob appended
+//   - error: dst unchanged plus ErrMetricNotEnded, ErrNoMetricsAdded, or
+//     compression errors (same conditions as Finish)
+func (e *NumericEncoder) FinishInto(dst []byte) ([]byte, error) {
+	return e.finishAppend(dst)
+}
+
+// appendBlobRegion extends dst by blobSize bytes, reallocating only when the
+// capacity is insufficient. Returns the extended slice and the writable
+// region for the blob.
+func appendBlobRegion(dst []byte, blobSize int) (full, blob []byte) {
+	start := len(dst)
+	if cap(dst)-start >= blobSize {
+		full = dst[: start+blobSize : cap(dst)]
+	} else {
+		full = make([]byte, start+blobSize)
+		copy(full, dst)
+	}
+
+	return full, full[start:]
+}
+
+func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	// Return cached slices to pool before any returns (including error paths)
 	defer e.releasePooledSlices()
 
@@ -603,12 +640,12 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	defer e.tagEncoder.Finish()
 
 	if e.curMetricID != 0 {
-		return nil, errs.ErrMetricNotEnded
+		return dst, errs.ErrMetricNotEnded
 	}
 
 	// Validate at least one metric was added
 	if len(e.indexEntries) == 0 {
-		return nil, errs.ErrNoMetricsAdded
+		return dst, errs.ErrNoMetricsAdded
 	}
 
 	// Clone header to keep original immutable (preparation for stateless encoder pattern)
@@ -674,12 +711,12 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Compress timestamp and value payloads
 	tsPayload, err := e.tsCodec.Compress(rawTsBytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to compress timestamp payload: %w", err)
+		return dst, fmt.Errorf("failed to compress timestamp payload: %w", err)
 	}
 
 	valPayload, err := e.valCodec.Compress(rawValBytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to compress value payload: %w", err)
+		return dst, fmt.Errorf("failed to compress value payload: %w", err)
 	}
 
 	// Only compress tag payload if tag support is enabled
@@ -687,7 +724,7 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	if finalHeader.Flag.HasTag() {
 		tagPayload, err = e.tagCodec.Compress(rawTagBytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to compress tag payload: %w", err)
+			return dst, fmt.Errorf("failed to compress tag payload: %w", err)
 		}
 	}
 
@@ -697,7 +734,7 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	if e.collisionTracker != nil && finalHeader.Flag.HasMetricNames() {
 		metricNamesPayload, err = ienc.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode metric names: %w", err)
+			return dst, fmt.Errorf("failed to encode metric names: %w", err)
 		}
 		// Update IndexOffset to account for metric names payload (positioned after header)
 		finalHeader.IndexOffset = uint32(section.HeaderSize + len(metricNamesPayload)) //nolint: gosec
@@ -708,7 +745,7 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	indexEntriesSize := entrySize * len(e.indexEntries)
 	blobSize := section.HeaderSize + len(metricNamesPayload) + indexEntriesSize + sharedTableSize + len(tsPayload) + len(valPayload) + len(tagPayload)
 	if err := validateBlobSize(blobSize); err != nil {
-		return nil, err
+		return dst, err
 	}
 
 	// Set header payload offsets — safe because blobSize fits in uint32.
@@ -716,9 +753,9 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	finalHeader.ValuePayloadOffset = finalHeader.TimestampPayloadOffset + uint32(len(tsPayload))                      //nolint: gosec
 	finalHeader.TagPayloadOffset = finalHeader.ValuePayloadOffset + uint32(len(valPayload))                           //nolint: gosec
 
-	// Allocate exact-size buffer for the final blob
-	// No need for pooled buffer since we return this directly to caller
-	blob := make([]byte, blobSize)
+	// Extend dst by exactly blobSize bytes (allocating only when capacity is
+	// insufficient) and assemble the blob in the appended region.
+	full, blob := appendBlobRegion(dst, blobSize)
 	offset := 0
 
 	// Copy cloned header with all computed fields
@@ -747,7 +784,7 @@ func (e *NumericEncoder) Finish() ([]byte, error) {
 	// Copy tag payload
 	copy(blob[offset:], tagPayload)
 
-	return blob, nil
+	return full, nil
 }
 
 // releasePooledSlices returns cached slices to their respective pools.
