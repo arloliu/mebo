@@ -6,6 +6,7 @@ This document covers advanced features of Mebo beyond the basic encode/decode wo
 
 - [Bulk Insertion](#bulk-insertion)
 - [Buffer Reuse with FinishInto](#buffer-reuse-with-finishinto)
+- [Callback Iteration with ForEach](#callback-iteration-with-foreach)
 - [BlobSet: Multi-Blob Queries](#blobset-multi-blob-queries)
 - [BlobSet: Materialized Random Access](#blobset-materialized-random-access)
 - [Tags](#tags)
@@ -126,6 +127,66 @@ or all decoding finished).
 - The blob's lifetime is unclear or long (cached, shared across goroutines):
   owning a fresh slice per blob is simpler and safer than tracking when a
   shared buffer may be recycled.
+
+---
+
+## Callback Iteration with ForEach
+
+`All()` returns a Go 1.23 range-over-func iterator — idiomatic and pleasant,
+but the `iter.Seq2` shape has an irreducible cost: the iterator is a
+heap-allocated closure, and the compiler must also move your range loop body
+to the heap because it is passed into a dynamically-called function. On a
+200-metric scan that is ~600 small allocations and ~25% of iteration time.
+
+`ForEach` is the callback (push) equivalent. It yields exactly the same
+`(index, NumericDataPoint)` sequence, but through a static call chain that
+keeps everything on the stack:
+
+```go
+// Iterator style (idiomatic, allocates per metric):
+for i, dp := range nb.All(metricID) {
+    process(i, dp)
+}
+
+// Callback style (hot paths, allocation-free):
+nb.ForEach(metricID, func(i int, dp NumericDataPoint) bool {
+    process(i, dp)
+    return true // return false to stop early
+})
+```
+
+`ForEach` returns `false` if the metric does not exist (it returns `true`
+when iteration was merely stopped early). `ForEachByName` is the name-lookup
+variant.
+
+### Performance
+
+On the 200×200 reference workload (delta+gorilla, the default configuration),
+a full scan through `ForEach` runs **~26% faster** than `All()` —
+5.2 vs 7.0 ns per point — and performs **2 allocations instead of ~600**.
+
+To make a scan fully allocation-free, hoist the callback out of the metric
+loop so its closure is created once:
+
+```go
+var sum float64
+fn := func(_ int, dp NumericDataPoint) bool { // created once
+    sum += dp.Val
+    return true
+}
+for _, id := range metricIDs {
+    nb.ForEach(id, fn)
+}
+```
+
+### When to use which
+
+- **`All()`** — application code, readability first. The cost is small in
+  absolute terms and the `for range` form composes with `break`/`continue`
+  naturally.
+- **`ForEach`** — hot read paths that scan many metrics or run per query:
+  query engines, downsampling/aggregation jobs, format converters, anything
+  where iteration shows up in profiles.
 
 ---
 

@@ -21,6 +21,7 @@ type e2eBenchData struct {
 	start      time.Time
 }
 
+//nolint:unparam // dimensions kept parametric for ad-hoc profiling runs
 func genE2EBenchData(numMetrics, ppm int) *e2eBenchData {
 	rng := rand.New(rand.NewSource(42))
 	start := time.Unix(1700000000, 0).UTC()
@@ -150,6 +151,44 @@ func BenchmarkE2EEncodeInto_DeltaGorilla(b *testing.B) {
 		}
 		if len(buf) == 0 {
 			b.Fatal("empty blob")
+		}
+	}
+}
+
+// BenchmarkE2EForEach_DeltaGorilla mirrors BenchmarkE2EIterate_DeltaGorilla
+// but consumes data points through the callback-style ForEach instead of the
+// All iterator.
+func BenchmarkE2EForEach_DeltaGorilla(b *testing.B) {
+	d := genE2EBenchData(200, 200)
+	blobBytes := e2eBenchEncode(b, d, format.TypeDelta, format.TypeGorilla)
+
+	decoder, err := NewNumericDecoder(blobBytes)
+	if err != nil {
+		b.Fatal(err)
+	}
+	nb, err := decoder.Decode()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var sink int64
+		var vsink float64
+		fn := func(_ int, dp NumericDataPoint) bool {
+			sink += dp.Ts
+			vsink += dp.Val
+
+			return true
+		}
+		for _, id := range d.metricIDs {
+			if !nb.ForEach(id, fn) {
+				b.Fatal("metric not found")
+			}
+		}
+		if sink == 0 && vsink == 0 {
+			b.Fatal("no data")
 		}
 	}
 }

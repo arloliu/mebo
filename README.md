@@ -122,7 +122,7 @@ for dp := range decoded.All(cpuID) {
 value, ok := decoded.ValueAt(cpuID, 5)
 ```
 
-For bulk insertion, buffer reuse with `FinishInto`, multi-blob queries, materialization, tags, and custom IDs, see [Advanced Usage](docs/ADVANCED_USAGE.md).
+For bulk insertion, buffer reuse with `FinishInto`, callback iteration with `ForEach`, multi-blob queries, materialization, tags, and custom IDs, see [Advanced Usage](docs/ADVANCED_USAGE.md).
 
 ## Performance
 
@@ -308,7 +308,7 @@ Deprecated features are maintained for at least 2 minor versions before removal.
 
 - [API Reference](https://pkg.go.dev/github.com/arloliu/mebo)
 - [Performance Guide](docs/PERFORMANCE_V2.md) — full benchmark tables and scaling analysis
-- [Advanced Usage](docs/ADVANCED_USAGE.md) — BlobSet, materialization, tags, bulk insertion, FinishInto buffer reuse
+- [Advanced Usage](docs/ADVANCED_USAGE.md) — BlobSet, materialization, tags, bulk insertion, FinishInto buffer reuse, ForEach callback iteration
 - [Best Practices](docs/BEST_PRACTICES.md) — encoding selection, operational guidance
 - [FlatBuffers Comparison](docs/COMPARISON_FLATBUFFERS.md) — head-to-head benchmark
 - [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md) — V2 format and deployment
