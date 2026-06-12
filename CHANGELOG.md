@@ -7,6 +7,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-13
+
+### Added
+- `ForEach` callback iteration API on `NumericBlob` and `TextBlob` — zero-allocation alternative to `All()`
+- `FinishInto` on encoders for buffer-reusing blob finalization (eliminates alloc on repeated encode cycles)
+
+### Changed
+- Rewrote Gorilla/Chimp bit-reader/writer with windowed reads and accumulator writes (~15% decode speedup)
+- Eliminated iterator closure heap escapes in `All()` hot paths
+- Eliminated payload buffer realloc churn in pool and blob encode paths
+
+### Performance
+- AVX-512 VBMI backend for packed timestamp decoding
+- Fixed AVX-512 packed decoder tail guard (correctness fix under non-aligned lengths)
+
+## [1.6.0] - 2026-04-11
+
+### Added
+- SIMD acceleration for `DeltaPacked` timestamps: AVX2 group-varint encode kernel and AVX-512 decode kernel
+- `internal/arch` package for CPU/SIMD capability detection
+
+### Changed
+- Inlined varint serialization in `TimestampDeltaEncoder.WriteSlice`
+- Inlined varint decode in `DecodeAll` and Chimp bulk decode paths
+
+### Fixed
+- AVX2 decode kernel: replaced AVX-512-only instructions that caused illegal instruction faults
+- Security: capped decompression output size and guarded header offset casts against overflow
+
+### Infrastructure
+- CI matrix updated to test Go 1.25 and 1.26
+- `GOEXPERIMENT=simd` gated on Go ≥ 1.26
+
+## [1.5.0] - 2026-04-06
+
+### Added
+- **V2 blob format**: Chimp XOR encoding, `DeltaPacked` timestamp encoding, shared-timestamp section, sorted index
+- `DecodeAll` batch decode method on all decoders
+- Shared timestamp cache (`AllTimestamps`) for V2 blobs — single decode amortized across all metrics
+- Adaptive index entries for V2 format
+- Cross-version compatibility test harness
+- `ErrEmptyBlobSet`, `ErrInvalidTimestampData`, `ErrDataSizeMismatch` sentinel errors
+
+### Changed
+- Fused multi-stream decoders to eliminate `iter.Pull` goroutine overhead
+- `BlobSet.Materialize` now uses `ForEach` internally for correct tag alignment
+
+### Fixed
+- Integer overflow in `BlobSet` sort comparators
+- Option precedence in `NewTaggedNumericEncoder` / `NewTaggedTextEncoder`
+- Error propagation from `WithTextTimestampEncoding` and `WithTextDataCompression`
+- Index offset validation in numeric and text decoders (guards against malformed blobs)
+- Stale `TagOffset` deltas when dynamically disabling empty-tag encoding
+- `TagAt` returns empty string (not `false`) for tagless blobs
+
+## [1.4.3] - 2025-11-28
+
+### Fixed
+- `TimestampDeltaEncoder.Reset` did not reset internal state correctly
+
+## [1.4.2] - 2025-11-25
+
+### Changed
+- Removed `gozstd` (cgo zstd) entirely; pure-Go zstd only
+
+## [1.4.1] - 2025-11-25
+
+### Changed
+- Disabled cgo zstd build path in preparation for full removal
+
+## [1.4.0] - 2025-11-03
+
+### Added
+- Helper methods on `BlobSet`: iteration, length, and accessor utilities
+
+## [1.3.2] - 2025-10-21
+
+### Added
+- JSON stream parser for large metric datasets in `measure` tooling
+
+## [1.3.1] - 2025-10-15
+
+### Changed
+- Optimized `TimestampDeltaEncoder` buffer estimation (fewer reallocations)
+- Optimized `TimestampDeltaDecoder` inner iteration loop
+
+## [1.3.0] - 2025-10-14
+
+### Added
+- Options API and `ChunkPPMs` metric to regression analysis package
+
+## [1.2.0] - 2025-10-12
+
+### Added
+- `regression` package: re-encode-based compression regression analysis
+
+## [1.1.1] - 2025-10-12
+
+### Fixed
+- `BlobSet` methods incorrectly handled tag support flags
+
+## [1.1.0] - 2025-10-11
+
+### Added
+- Selective metric materialization for `BlobSet` (`MaterializeMetrics`)
+- `AddFromRows` on encoders with encoder-level slice caching
+- Typed slice pool (`internal/pool`) for efficient memory reuse
+
+### Changed
+- Optimized Gorilla decoder: batch unchanged-value detection
+- Introduced varint decode fast path in timestamp delta decoder
+- Timestamp delta encoder fast paths (reduced branch overhead)
+- Optimized `NumericDecoder` performance
+- `NumericBlob` struct field reordering for better CPU cache locality
+- Removed redundant engine field from blob structs
+
+### Fixed
+- Empty tag payload handling when tags are disabled
+- `TagAt` now correctly returns `true` with empty string for tagless blobs
+
 ## [1.0.0] - 2025-10-08
 
 ### Added - Core Features
@@ -136,5 +256,18 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/arloliu/mebo/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/arloliu/mebo/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/arloliu/mebo/compare/v1.4.3...v1.5.0
+[1.4.3]: https://github.com/arloliu/mebo/compare/v1.4.2...v1.4.3
+[1.4.2]: https://github.com/arloliu/mebo/compare/v1.4.1...v1.4.2
+[1.4.1]: https://github.com/arloliu/mebo/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/arloliu/mebo/compare/v1.3.2...v1.4.0
+[1.3.2]: https://github.com/arloliu/mebo/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/arloliu/mebo/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/arloliu/mebo/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/arloliu/mebo/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/arloliu/mebo/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/arloliu/mebo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/arloliu/mebo/releases/tag/v1.0.0
