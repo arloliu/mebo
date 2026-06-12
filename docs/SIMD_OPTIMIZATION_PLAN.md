@@ -433,6 +433,16 @@ are offset by `totalBytes[cb0]`.
 
 **Impact: 1.3-1.5x decode speedup** | Complexity: Low-Medium | Priority: Medium
 
+> **Status (2026-06-13): Investigated — rejected.** The projected gain was
+> relative to the pre-2026-06 baseline; the unrolled 1/2/3-byte varint ladder
+> landed in the meantime closed most of it. A full two-pass prototype
+> (scalar varint pass → AVX-512 dual-prefix-sum kernel) won −23% only on
+> randomly-mixed-width streams, but regressed the project's own irregular
+> benchmark suite (Jitter_5pct +30%, HighVariance +17%) where varint widths
+> are branch-predictable, and the deciding factor (width *predictability*)
+> is not detectable upfront. See
+> [perf/DELTA_TWOPASS_DECODE_INVESTIGATION.md](perf/DELTA_TWOPASS_DECODE_INVESTIGATION.md).
+
 ### Problem
 
 `TimestampDeltaDecoder.DecodeAll()` (`ts_delta.go:524-566`) is fully scalar. At 10k timestamps

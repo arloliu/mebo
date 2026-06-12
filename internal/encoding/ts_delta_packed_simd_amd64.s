@@ -279,7 +279,9 @@ done:
 // 63 bytes (both groups near-maximal width; the AVX2/scalar path finishes).
 //
 // Requires AVX-512 F+BW+VBMI (gated by arch.X86HasAVX512VBMI).
-TEXT ·decodeDeltaPackedASMAVX512BulkPairs(SB), NOSPLIT, $0-120
+// Frame size 8 (one unused word) forces the assembler to save/restore BP,
+// which the pair loop uses as the loop-invariant shuffle table base.
+TEXT ·decodeDeltaPackedASMAVX512BulkPairs(SB), NOSPLIT, $8-120
 	MOVQ dst_base+0(FP), DI
 	MOVQ data_base+24(FP), SI
 	MOVQ data_len+32(FP), DX

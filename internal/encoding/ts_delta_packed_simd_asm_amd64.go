@@ -78,8 +78,10 @@ func decodeDeltaPackedASMAVX512(
 	prevTS int64,
 	prevDelta int64,
 ) (deltaPackedDecodeProgress, bool) {
+	// The kernel needs 1 control byte + a 64-byte load window = 65 readable
+	// bytes for its first iteration.
 	nGroups := min(groupCount/groupSize, len(dst)/groupSize)
-	if nGroups < 2 || len(data) < deltaPackedDecodeSIMDSafeLoadWindowAVX512+2 {
+	if nGroups < 2 || len(data) < deltaPackedDecodeSIMDSafeLoadWindowAVX512+1 {
 		return decodeDeltaPackedASMAVX2(dst, data, groupCount, prevTS, prevDelta)
 	}
 
