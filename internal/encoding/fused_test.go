@@ -342,3 +342,50 @@ func TestChimpValState_SetCount(t *testing.T) {
 			"unbounded drain should read padding zeros as phantom unchanged values")
 	})
 }
+
+// TestGorillaValState_SetCount verifies that SetCount bounds an unbounded
+// Next() drain to exactly the logical count, the wrapper-level counterpart of
+// the Chimp test. With the cap living in the Next() wrapper, the bulk fused
+// loops (which call decodeGorillaValue directly) stay free of per-value cost.
+func TestGorillaValState_SetCount(t *testing.T) {
+	// Constant values: first stored in full (64 bits), each repeat is a single
+	// "0" control bit; the final byte's padding zeros look like more unchanged
+	// values to an unbounded drain.
+	values := []float64{42.0, 42.0}
+
+	valEncoder := NewNumericGorillaEncoder()
+	valEncoder.WriteSlice(values)
+	valData := make([]byte, len(valEncoder.Bytes()))
+	copy(valData, valEncoder.Bytes())
+	valEncoder.Finish()
+
+	t.Run("SetCount bounds the drain", func(t *testing.T) {
+		st, ok := NewGorillaValState(valData)
+		require.True(t, ok)
+		st.SetCount(len(values))
+
+		got := []float64{st.Val()}
+		for st.Next() {
+			got = append(got, st.Val())
+		}
+
+		require.Equal(t, values, got)
+	})
+
+	t.Run("unbounded drain over-produces phantom values", func(t *testing.T) {
+		st, ok := NewGorillaValState(valData)
+		require.True(t, ok)
+		// No SetCount: remaining defaults to math.MaxInt.
+
+		n := 1 // first value already available via Val()
+		for st.Next() {
+			n++
+			if n > 100 { // safety cap against a runaway loop
+				break
+			}
+		}
+
+		require.Greater(t, n, len(values),
+			"unbounded drain should read padding zeros as phantom unchanged values")
+	})
+}
