@@ -30,6 +30,7 @@ type gorillaState struct {
 	trailing   int
 	blockSize  int
 	zeroRun    int // pending run of unchanged values already counted from the stream
+	remaining  int // values still to be decoded; math.MaxInt when unconstrained
 	blockValid bool
 }
 
@@ -49,6 +50,7 @@ func newGorillaState(valData []byte) (gorillaState, bool) {
 		totalBits: len(valData) * 8,
 		prevValue: prev,
 		prevFloat: math.Float64frombits(prev),
+		remaining: math.MaxInt,
 	}, true
 }
 
@@ -338,9 +340,14 @@ func decodeDeltaTimestamp(ds *deltaState, data []byte) bool {
 //
 // Returns true if decoding succeeded.
 func decodeGorillaValue(gs *gorillaState) bool {
+	if gs.remaining <= 0 {
+		return false
+	}
+
 	if gs.zeroRun > 0 {
 		// Pending unchanged values: prevFloat is already correct.
 		gs.zeroRun--
+		gs.remaining--
 
 		return true
 	}
@@ -352,10 +359,12 @@ func decodeGorillaValue(gs *gorillaState) bool {
 	w := peekBits64(gs.data, gs.bitPos)
 
 	if w>>63 == 0 {
-		// Run of unchanged values: count leading zero control bits in the window.
-		run := min(bits.LeadingZeros64(w), gs.totalBits-gs.bitPos)
+		// Run of unchanged values: count leading zero control bits in the window,
+		// capped by remaining count to avoid treating tail padding zeros as real values.
+		run := min(bits.LeadingZeros64(w), gs.totalBits-gs.bitPos, gs.remaining)
 		gs.bitPos += run
 		gs.zeroRun = run - 1 // this call consumes the first value of the run
+		gs.remaining--
 
 		return true
 	}
@@ -393,6 +402,7 @@ func decodeGorillaValue(gs *gorillaState) bool {
 
 	gs.prevValue ^= meaningful << uint(gs.trailing)
 	gs.prevFloat = math.Float64frombits(gs.prevValue)
+	gs.remaining--
 
 	return true
 }

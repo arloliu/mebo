@@ -479,7 +479,11 @@ func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 	for i := range e.indexEntries {
 		entryOffset := offset + i*section.TextIndexEntrySize
 		if err := e.indexEntries[i].WriteToSlice(blob[entryOffset:], e.engine); err != nil {
-			return dst, fmt.Errorf("failed to write index entry: %w", err)
+			// Return nil, not dst: appendBlobRegion may have mutated the backing
+			// array in-place, so returning dst with its original length would leave
+			// the caller holding a slice whose backing array has partial blob bytes
+			// written past len(dst).
+			return nil, fmt.Errorf("failed to write index entry: %w", err)
 		}
 	}
 	offset += indexEntriesSize

@@ -1162,10 +1162,10 @@ func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tag
 	if e.curPoints+tsLen > e.claimed {
 		return errs.ErrTooManyDataPoints
 	}
-	e.curPoints += tsLen
 
 	e.tsEncoder.WriteSlice(timestamps)
 	e.valEncoder.WriteSlice(values)
+	e.curPoints += tsLen
 
 	// Only encode tags if tag support is enabled
 	if !e.hasTag {

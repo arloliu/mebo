@@ -60,6 +60,19 @@ func NewGorillaValState(valData []byte) (GorillaValState, bool) {
 	return GorillaValState{gs: gs}, ok
 }
 
+// SetCount constrains the state to exactly count values total (including the
+// first value already consumed by NewGorillaValState). Call this when iterating
+// via Next() without an outer count-bounded loop; without it, trailing padding
+// zeros in the final byte of a Gorilla stream can be misread as extra unchanged
+// values.
+func (s *GorillaValState) SetCount(count int) {
+	if count > 1 {
+		s.gs.remaining = count - 1
+	} else {
+		s.gs.remaining = 0
+	}
+}
+
 // Next decodes the next value. Returns false when the stream is exhausted or
 // corrupted.
 func (s *GorillaValState) Next() bool {

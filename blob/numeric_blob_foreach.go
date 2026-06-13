@@ -32,6 +32,10 @@ import (
 //	    return true
 //	})
 func (b NumericBlob) ForEach(metricID uint64, yield func(idx int, dp NumericDataPoint) bool) bool {
+	if yield == nil {
+		return false
+	}
+
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return false
@@ -51,6 +55,10 @@ func (b NumericBlob) ForEach(metricID uint64, yield func(idx int, dp NumericData
 //   - bool: false if the metric name does not exist in the blob, true
 //     otherwise (including when iteration was stopped early by yield).
 func (b NumericBlob) ForEachByName(metricName string, yield func(idx int, dp NumericDataPoint) bool) bool {
+	if yield == nil {
+		return false
+	}
+
 	entry, ok := b.lookupMetricEntry(metricName)
 	if !ok {
 		return false
@@ -68,11 +76,20 @@ func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield fun
 		return
 	}
 
+	if entry.TimestampOffset+entry.TimestampLength > len(b.tsPayload) ||
+		entry.ValueOffset+entry.ValueLength > len(b.valPayload) {
+		return
+	}
+
 	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 	valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
 
 	var tagBytes []byte
 	if b.HasTag() && len(b.tagPayload) > 0 {
+		if entry.TagOffset+entry.TagLength > len(b.tagPayload) {
+			return
+		}
+
 		tagBytes = b.tagPayload[entry.TagOffset : entry.TagOffset+entry.TagLength]
 	}
 
