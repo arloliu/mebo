@@ -76,21 +76,22 @@ func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield fun
 		return
 	}
 
-	if entry.TimestampOffset+entry.TimestampLength > len(b.tsPayload) ||
-		entry.ValueOffset+entry.ValueLength > len(b.valPayload) {
+	// Guard against corrupt/crafted index entries whose offsets fall outside the
+	// payloads; return silently rather than panicking on the slice. Shares the
+	// overflow-safe bounds helpers with the All/random-access paths.
+	tsBytes, tsOk := safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)
+	valBytes, valOk := safeSlice(b.valPayload, entry.ValueOffset, entry.ValueLength)
+	if !tsOk || !valOk {
 		return
 	}
 
-	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
-	valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-
 	var tagBytes []byte
 	if b.HasTag() && len(b.tagPayload) > 0 {
-		if entry.TagOffset+entry.TagLength > len(b.tagPayload) {
+		var tagOk bool
+		tagBytes, tagOk = safeSlice(b.tagPayload, entry.TagOffset, entry.TagLength)
+		if !tagOk {
 			return
 		}
-
-		tagBytes = b.tagPayload[entry.TagOffset : entry.TagOffset+entry.TagLength]
 	}
 
 	b.forEachDataPoint(tsBytes, valBytes, tagBytes, entry.Count, yield)

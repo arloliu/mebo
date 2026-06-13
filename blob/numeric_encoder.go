@@ -1114,7 +1114,6 @@ func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string
 	if e.curPoints >= e.claimed {
 		return errs.ErrTooManyDataPoints
 	}
-	e.curPoints++
 
 	e.tsEncoder.Write(timestamp)
 	e.valEncoder.Write(value)
@@ -1126,6 +1125,10 @@ func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string
 			e.hasNonEmptyTags = true
 		}
 	}
+
+	// Advance only after every write succeeds, so a panic inside Write cannot
+	// leave curPoints inflated for a subsequently-recovered encoder.
+	e.curPoints++
 
 	return nil
 }
@@ -1165,28 +1168,31 @@ func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tag
 
 	e.tsEncoder.WriteSlice(timestamps)
 	e.valEncoder.WriteSlice(values)
-	e.curPoints += tsLen
 
 	// Only encode tags if tag support is enabled
-	if !e.hasTag {
-		return nil
+	if e.hasTag {
+		if tagLen > 0 {
+			e.tagEncoder.WriteSlice(tags)
+			// Track if any non-empty tag exists in the slice
+			for _, tag := range tags {
+				if tag != "" {
+					e.hasNonEmptyTags = true
+					break // Early exit once we find one non-empty tag
+				}
+			}
+		} else {
+			// If no tags provided, write empty strings for each data point
+			emptyTags := make([]string, tsLen)
+			e.tagEncoder.WriteSlice(emptyTags)
+			// No need to set hasNonEmptyTags - all are empty
+		}
 	}
 
-	if tagLen > 0 {
-		e.tagEncoder.WriteSlice(tags)
-		// Track if any non-empty tag exists in the slice
-		for _, tag := range tags {
-			if tag != "" {
-				e.hasNonEmptyTags = true
-				break // Early exit once we find one non-empty tag
-			}
-		}
-	} else {
-		// If no tags provided, write empty strings for each data point
-		emptyTags := make([]string, tsLen)
-		e.tagEncoder.WriteSlice(emptyTags)
-		// No need to set hasNonEmptyTags - all are empty
-	}
+	// Advance the point count only after every payload write for this batch
+	// (timestamps, values, and tags) has completed, so a panic inside any
+	// WriteSlice cannot leave curPoints inflated and corrupt admission control
+	// or EndMetric accounting on a subsequently-recovered encoder.
+	e.curPoints += tsLen
 
 	return nil
 }

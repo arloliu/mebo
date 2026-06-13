@@ -412,19 +412,52 @@ func (b NumericBlob) lookupMetricEntry(metricName string) (section.NumericIndexE
 // Internal helper methods that work with NumericIndexEntry directly.
 // These eliminate duplication between ByID and ByName methods.
 
+// safeSlice returns payload[offset:offset+length] when that range lies fully
+// within payload, or nil,false otherwise. It guards the public iteration and
+// random-access paths against corrupt or crafted index entries whose
+// offset/length fall outside the payload, so they return empty results instead
+// of panicking. The comparison is written to avoid int overflow on hostile
+// offset/length values.
+func safeSlice(payload []byte, offset, length int) ([]byte, bool) {
+	if offset < 0 || length < 0 || offset > len(payload) || length > len(payload)-offset {
+		return nil, false
+	}
+
+	return payload[offset : offset+length], true
+}
+
+// safeSuffix returns payload[offset:] when offset is within payload, or
+// nil,false otherwise. Used by the variable-length tag paths that slice from an
+// offset to the end of the payload.
+func safeSuffix(payload []byte, offset int) ([]byte, bool) {
+	if offset < 0 || offset > len(payload) {
+		return nil, false
+	}
+
+	return payload[offset:], true
+}
+
 // allFromEntry returns an iterator over (index, NumericDataPoint) for the given entry.
 func (b NumericBlob) allFromEntry(entry section.NumericIndexEntry) iter.Seq2[int, NumericDataPoint] {
 	if entry.Count == 0 {
 		return func(yield func(int, NumericDataPoint) bool) {}
 	}
 
-	// Get timestamp, value, and tag byte slices
-	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
-	valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+	// Guard against corrupt/crafted index entries whose offsets fall outside the
+	// payloads; return an empty iterator rather than panicking on the slice.
+	tsBytes, tsOk := safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)
+	valBytes, valOk := safeSlice(b.valPayload, entry.ValueOffset, entry.ValueLength)
+	if !tsOk || !valOk {
+		return func(yield func(int, NumericDataPoint) bool) {}
+	}
 
 	var tagBytes []byte
 	if b.HasTag() && len(b.tagPayload) > 0 {
-		tagBytes = b.tagPayload[entry.TagOffset : entry.TagOffset+entry.TagLength]
+		var tagOk bool
+		tagBytes, tagOk = safeSlice(b.tagPayload, entry.TagOffset, entry.TagLength)
+		if !tagOk {
+			return func(yield func(int, NumericDataPoint) bool) {}
+		}
 	}
 
 	// Return optimized iterator based on encoding types
@@ -448,7 +481,10 @@ func (b NumericBlob) allTimestampsFromEntry(entry section.NumericIndexEntry) ite
 		}
 	}
 
-	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+	tsBytes, ok := safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)
+	if !ok {
+		return func(yield func(int64) bool) {}
+	}
 
 	return b.decodeTimestamps(tsBytes, entry.Count)
 }
@@ -459,7 +495,10 @@ func (b NumericBlob) allValuesFromEntry(entry section.NumericIndexEntry) iter.Se
 		return func(yield func(float64) bool) {}
 	}
 
-	valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+	valBytes, ok := safeSlice(b.valPayload, entry.ValueOffset, entry.ValueLength)
+	if !ok {
+		return func(yield func(float64) bool) {}
+	}
 
 	return b.decodeValues(valBytes, entry.Count)
 }
@@ -482,8 +521,10 @@ func (b NumericBlob) allTagsFromEntry(entry section.NumericIndexEntry) iter.Seq[
 		}
 	}
 
-	start := entry.TagOffset
-	tagBytes := b.tagPayload[start:]
+	tagBytes, ok := safeSuffix(b.tagPayload, entry.TagOffset)
+	if !ok {
+		return func(yield func(string) bool) {}
+	}
 
 	return b.decodeTags(tagBytes, count)
 }
@@ -495,7 +536,10 @@ func (b NumericBlob) timestampAtFromEntry(entry section.NumericIndexEntry, index
 		return 0, false
 	}
 
-	tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+	tsBytes, ok := safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)
+	if !ok {
+		return 0, false
+	}
 
 	switch b.tsEncType { //nolint: exhaustive
 	case format.TypeRaw:
@@ -583,8 +627,10 @@ func (b NumericBlob) tagAtFromEntry(entry section.NumericIndexEntry, index int) 
 	}
 
 	// Get tag bytes starting from this metric's offset
-	tagStart := entry.TagOffset
-	tagBytes := b.tagPayload[tagStart:]
+	tagBytes, ok := safeSuffix(b.tagPayload, entry.TagOffset)
+	if !ok {
+		return "", false
+	}
 
 	// Tags always support random access
 	decoder := ienc.NewTagDecoder(b.Engine())

@@ -294,3 +294,51 @@ func TestFusedDeltaTagAll(t *testing.T) {
 	require.Equal(t, timestamps, gotTS)
 	require.Equal(t, tags, gotTags)
 }
+
+// TestChimpValState_SetCount verifies that SetCount bounds an unbounded Next()
+// drain to exactly the logical count, preventing trailing padding zeros in the
+// final byte from being misread as extra unchanged ("00" flag pair) values.
+// This mirrors GorillaValState.SetCount.
+func TestChimpValState_SetCount(t *testing.T) {
+	// Constant values: the first is stored in full (64 bits); each repeat is a
+	// 2-bit "00" flag pair. With few points the final byte holds padding zeros
+	// that look like additional unchanged pairs.
+	values := []float64{42.0, 42.0}
+
+	valEncoder := NewNumericChimpEncoder()
+	valEncoder.WriteSlice(values)
+	valData := make([]byte, len(valEncoder.Bytes()))
+	copy(valData, valEncoder.Bytes())
+	valEncoder.Finish()
+
+	t.Run("SetCount bounds the drain", func(t *testing.T) {
+		st, ok := NewChimpValState(valData)
+		require.True(t, ok)
+		st.SetCount(len(values))
+
+		got := []float64{st.Val()}
+		for st.Next() {
+			got = append(got, st.Val())
+		}
+
+		require.Equal(t, values, got)
+	})
+
+	t.Run("unbounded drain over-produces phantom values", func(t *testing.T) {
+		st, ok := NewChimpValState(valData)
+		require.True(t, ok)
+		// No SetCount: remaining defaults to math.MaxInt, so padding zeros leak
+		// in as phantom unchanged values.
+
+		n := 1 // first value already available via Val()
+		for st.Next() {
+			n++
+			if n > 100 { // safety cap against a runaway loop
+				break
+			}
+		}
+
+		require.Greater(t, n, len(values),
+			"unbounded drain should read padding zeros as phantom unchanged values")
+	})
+}

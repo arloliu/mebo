@@ -99,6 +99,19 @@ func NewChimpValState(valData []byte) (ChimpValState, bool) {
 	return ChimpValState{cs: cs}, ok
 }
 
+// SetCount constrains the state to exactly count values total (including the
+// first value already consumed by NewChimpValState). Call this when iterating
+// via Next() without an outer count-bounded loop; without it, trailing padding
+// zeros in the final byte of a Chimp stream can be misread as extra unchanged
+// values.
+func (s *ChimpValState) SetCount(count int) {
+	if count > 1 {
+		s.cs.remaining = count - 1
+	} else {
+		s.cs.remaining = 0
+	}
+}
+
 // Next decodes the next value. Returns false when the stream is exhausted or
 // corrupted.
 func (s *ChimpValState) Next() bool {

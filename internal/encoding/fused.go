@@ -420,6 +420,7 @@ type chimpState struct {
 	prevFloat     float64
 	storedLeading int
 	zeroRun       int // pending run of unchanged values already counted from the stream
+	remaining     int // values still to be decoded; math.MaxInt when unconstrained
 }
 
 // newChimpState initializes Chimp decode state from the value payload,
@@ -439,6 +440,7 @@ func newChimpState(valData []byte) (chimpState, bool) {
 		prevValue:     prev,
 		prevFloat:     math.Float64frombits(prev),
 		storedLeading: 65,
+		remaining:     math.MaxInt,
 	}, true
 }
 
@@ -589,9 +591,14 @@ func FusedChimpTagAll(valData, tagData []byte, count int, yield func(int, float6
 //
 // Returns true if decoding succeeded.
 func decodeChimpValue(cs *chimpState) bool {
+	if cs.remaining <= 0 {
+		return false
+	}
+
 	if cs.zeroRun > 0 {
 		// Pending unchanged values: prevFloat is already correct.
 		cs.zeroRun--
+		cs.remaining--
 
 		return true
 	}
@@ -604,7 +611,9 @@ func decodeChimpValue(cs *chimpState) bool {
 
 	switch w >> 62 {
 	case 0: // Value unchanged: batch the whole run of 00 flag pairs in the window
-		run := min(bits.LeadingZeros64(w)/2, (cs.totalBits-cs.bitPos)/2)
+		// Cap the run by remaining so trailing padding zeros in the final byte are
+		// not misread as real unchanged values when an outer count is set.
+		run := min(bits.LeadingZeros64(w)/2, (cs.totalBits-cs.bitPos)/2, cs.remaining)
 		cs.bitPos += run * 2
 		cs.zeroRun = run - 1 // this call consumes the first value of the run
 		cs.storedLeading = 65
@@ -675,6 +684,8 @@ func decodeChimpValue(cs *chimpState) bool {
 		cs.prevValue ^= meaningful
 		cs.prevFloat = math.Float64frombits(cs.prevValue)
 	}
+
+	cs.remaining--
 
 	return true
 }
