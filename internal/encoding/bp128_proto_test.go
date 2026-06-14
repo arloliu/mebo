@@ -16,8 +16,20 @@ import (
 	"simd/archsimd"
 	"testing"
 
+	"github.com/arloliu/mebo/internal/arch"
 	"github.com/stretchr/testify/require"
 )
+
+// skipUnlessArchSIMDAVX512 skips the prototype when the host CPU lacks AVX-512.
+// The archsimd Uint64x8 (512-bit) ops below compile under GOEXPERIMENT=simd
+// regardless of hardware, so calling them on a non-AVX-512 CPU (e.g. most CI
+// runners) faults with SIGILL. Mirror the production guard in ts_delta_simd.go.
+func skipUnlessArchSIMDAVX512(tb testing.TB) {
+	tb.Helper()
+	if !arch.X86ArchSIMDHasAVX512() {
+		tb.Skip("BP128 archsimd prototype requires AVX-512 (archsimd Uint64x8)")
+	}
+}
 
 const bpLanes = 8
 const bpPerLane = 32
@@ -147,6 +159,7 @@ func makeDods(blocks int, jitterPct float64) []uint64 {
 }
 
 func TestBP128Proto_RoundTripAndRatio(t *testing.T) {
+	skipUnlessArchSIMDAVX512(t)
 	for _, jit := range []float64{0, 0.1, 0.5, 2.0} {
 		vals := makeDods(40, jit) // 40*256 = 10240 values
 		packed, widths := bpEncode(vals)
@@ -169,6 +182,7 @@ func avgWidth(w []uint8) float64 {
 }
 
 func BenchmarkBP128Proto_PackUnpack(b *testing.B) {
+	skipUnlessArchSIMDAVX512(b)
 	vals := makeDods(157, 0.1) // ~40k values, realistic low-jitter
 	packed, widths := bpEncode(vals)
 	dst := make([]uint64, len(vals))
@@ -236,6 +250,7 @@ func bpFullDecode(packed []uint64, widths []uint8, firstTS int64, n int, dst []u
 }
 
 func BenchmarkBP128Proto_FullVsDelta(b *testing.B) {
+	skipUnlessArchSIMDAVX512(b)
 	const n = 40192 // multiple of 256
 	ts := genTimestamps(n+1, 0.1, 1)
 	scratch := make([]uint64, 0, n+bpBlock)
@@ -309,6 +324,7 @@ func bpEncodeInto(packed []uint64, widths []uint8, vals []uint64) ([]uint64, []u
 }
 
 func BenchmarkBP128Proto_EncodePooled(b *testing.B) {
+	skipUnlessArchSIMDAVX512(b)
 	const n = 40192
 	ts := genTimestamps(n+1, 0.1, 1)
 	scratch := make([]uint64, 0, n+bpBlock)
@@ -338,6 +354,7 @@ func BenchmarkBP128Proto_EncodePooled(b *testing.B) {
 }
 
 func BenchmarkBP128Proto_EncodeSIMDDod(b *testing.B) {
+	skipUnlessArchSIMDAVX512(b)
 	const n = 40192
 	ts := genTimestamps(n+1, 0.1, 1)
 	zz := make([]uint64, 0, n+bpBlock)
