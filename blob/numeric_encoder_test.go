@@ -3462,3 +3462,13 @@ func TestNumericEncoder_V2CountTriggerExtended(t *testing.T) {
 	require.True(t, ok)
 	require.InDelta(t, 99.9, val, 1e-10)
 }
+
+func TestNumericEncoder_ALP(t *testing.T) {
+	enc, err := NewNumericEncoder(time.Now(), WithValueEncoding(format.TypeALP))
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 3))
+	require.NoError(t, enc.AddDataPoints([]int64{1, 2, 3}, []float64{1.5, 2.5, 3.5}, nil))
+	require.NoError(t, enc.EndMetric())
+	_, err = enc.Finish()
+	require.NoError(t, err)
+}

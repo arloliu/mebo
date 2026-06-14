@@ -613,6 +613,14 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 		valBytes = b.valPayload[valStart:]
 
 		return decoder.At(valBytes, index, count)
+	case format.TypeALP:
+		// ALP is also variable-length compressed; needs the endian engine.
+		engine := b.Engine()
+		decoder := ienc.NewNumericALPDecoder(engine)
+
+		valBytes = b.valPayload[valStart:]
+
+		return decoder.At(valBytes, index, count)
 	default:
 		// Other encodings don't support random access
 		return 0, false
@@ -649,6 +657,13 @@ func (b NumericBlob) tagAtFromEntry(entry section.NumericIndexEntry, index int) 
 //
 // All other combinations fall back to generic implementation.
 func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
+	// ALP values have no stateful fused decoder, so the generic path would pay
+	// per-point iter.Pull overhead. Materialize ts+values via DecodeAll and zip
+	// instead (works for any timestamp encoding).
+	if b.ValueEncoding() == format.TypeALP {
+		return b.allDataPointsMaterialized(tsBytes, valBytes, tagBytes, count)
+	}
+
 	// Fastest path: optimize for raw encoding (supports random access via At())
 	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeRaw {
 		return b.allDataPointsRaw(tsBytes, valBytes, tagBytes, count)
@@ -1096,6 +1111,41 @@ func (b NumericBlob) allDataPointsRawChimp(tsBytes, valBytes, tagBytes []byte, c
 	}
 }
 
+// allDataPointsMaterialized decodes timestamps and values into scratch slices via
+// the slice-decode (DecodeAll) dispatch, then yields them by index. This avoids
+// the per-point iter.Pull coroutine overhead of allDataPointsGeneric, and is the
+// right trade for value codecs that have a fast batch DecodeAll but no stateful
+// fused decoder (e.g. ALP). Works for any timestamp encoding.
+func (b NumericBlob) allDataPointsMaterialized(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
+	tsBuf := make([]int64, count)
+	b.decodeTimestampsSlice(tsBytes, count, tsBuf)
+	valBuf := make([]float64, count)
+	b.decodeValuesSlice(valBytes, count, valBuf)
+
+	if !b.HasTag() {
+		return func(yield func(int, NumericDataPoint) bool) {
+			for i := range count {
+				if !yield(i, NumericDataPoint{Ts: tsBuf[i], Val: valBuf[i]}) {
+					return
+				}
+			}
+		}
+	}
+
+	tagIter := b.decodeTags(tagBytes, count)
+
+	return func(yield func(int, NumericDataPoint) bool) {
+		tagNext, tagStop := iter.Pull(tagIter)
+		defer tagStop()
+		for i := range count {
+			tag, _ := tagNext()
+			if !yield(i, NumericDataPoint{Ts: tsBuf[i], Val: valBuf[i], Tag: tag}) {
+				return
+			}
+		}
+	}
+}
+
 // allDataPointsGeneric is the fallback for unsupported encoding combinations (uses iter.Pull).
 func (b NumericBlob) allDataPointsGeneric(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
 	// If tags are disabled, use simple iteration without tag decoder
@@ -1204,6 +1254,11 @@ func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] 
 	case format.TypeChimp:
 		decoder := ienc.NewNumericChimpDecoder()
 		return decoder.All(valBytes, count)
+	case format.TypeALP:
+		engine := b.Engine()
+		decoder := ienc.NewNumericALPDecoder(engine)
+
+		return decoder.All(valBytes, count)
 	default:
 		return func(yield func(float64) bool) {}
 	}
@@ -1264,6 +1319,11 @@ func (b NumericBlob) decodeValuesSlice(valBytes []byte, count int, dst []float64
 		return decoder.DecodeAll(valBytes, count, dst)
 	case format.TypeChimp:
 		decoder := ienc.NewNumericChimpDecoder()
+
+		return decoder.DecodeAll(valBytes, count, dst)
+	case format.TypeALP:
+		engine := b.Engine()
+		decoder := ienc.NewNumericALPDecoder(engine)
 
 		return decoder.DecodeAll(valBytes, count, dst)
 	default:
