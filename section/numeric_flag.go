@@ -36,6 +36,7 @@ var (
 		uint8(format.TypeRaw):     {},
 		uint8(format.TypeGorilla): {},
 		uint8(format.TypeChimp):   {},
+		uint8(format.TypeALP):     {},
 	}
 
 	validTimestampCompressions = map[uint8]struct{}{
