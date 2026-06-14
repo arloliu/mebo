@@ -11,7 +11,12 @@ ENCODING_PKG    := ./internal/encoding
 
 # Source files
 ALL_GO_FILES    := $(shell find . -name "*.go" -not -path "./tests/fbs_compare/*" -not -path "./vendor/*")
-TEST_DIRS       := $(sort $(dir $(shell find . -name "*_test.go" -not -path "./tests/fbs_compare/*" -not -path "./tests/measure/jsonstream/*" -not -path "./vendor/*")))
+# Root-module test dirs only. Everything under tests/ is a separate Go module
+# (own go.mod) and cannot be tested from the root module; those run via
+# TEST_SUBMODULES below.
+TEST_DIRS       := $(sort $(dir $(shell find . -name "*_test.go" -not -path "./tests/*" -not -path "./vendor/*")))
+# Nested modules (own go.mod) whose tests run as part of `make test`.
+TEST_SUBMODULES := tests/measurev2
 LATEST_GIT_TAG  := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
 
 # Linter configuration
@@ -46,6 +51,10 @@ test: clean-test-results
 	else \
 		echo "Skipping GOEXPERIMENT=simd tests (requires Go >= 1.26, found Go 1.$(GO_MINOR))"; \
 	fi
+	@for mod in $(TEST_SUBMODULES); do \
+		echo "Running $$mod submodule tests..."; \
+		(cd $$mod && CGO_ENABLED=1 go test ./... -short -timeout=$(TEST_TIMEOUT) -race) || (echo "Tests failed for $$mod" && exit 1); \
+	done
 	@echo "All tests passed!"
 
 ## test-encoding-simd: Run internal/encoding tests with GOEXPERIMENT=simd (requires Go >= 1.26)
