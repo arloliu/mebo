@@ -12,6 +12,7 @@ const (
 	TypeGorilla     EncodingType = 0x3 // TypeGorilla represents Gorilla encoding for numeric values.
 	TypeChimp       EncodingType = 0x4 // TypeChimp represents Chimp encoding for numeric values.
 	TypeDeltaPacked EncodingType = 0x5 // TypeDeltaPacked represents delta-of-delta encoding with Group Varint packing for timestamps.
+	TypeALP         EncodingType = 0x6 // TypeALP represents Adaptive Lossless floating-Point encoding for numeric values.
 
 	CompressionNone CompressionType = 0x1 // CompressionNone represents no compression.
 	CompressionZstd CompressionType = 0x2 // CompressionZstd represents Zstandard compression.
@@ -32,6 +33,8 @@ func (e EncodingType) String() string {
 		return "Chimp"
 	case TypeDeltaPacked:
 		return "DeltaPacked"
+	case TypeALP:
+		return "ALP"
 	default:
 		return "Unknown"
 	}
