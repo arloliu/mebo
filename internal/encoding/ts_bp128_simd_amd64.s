@@ -1,0 +1,153 @@
+#include "textflag.h"
+
+TEXT ·bp128PackBlockAVX512(SB), NOSPLIT, $0-32
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVQ w+16(FP), R8
+
+	XORQ R9, R9
+	TESTQ R8, R8
+	JEQ packDone
+
+	XORQ AX, AX
+	MOVQ $32, CX
+	VPXORQ Z31, Z31, Z31
+
+packLoop:
+	VMOVDQU64 (SI), Z0
+	ADDQ $64, SI
+
+	MOVQ AX, X2
+	VPSLLQ X2, Z0, Z1
+	VPORQ Z1, Z31, Z31
+
+	MOVQ AX, DX
+	ADDQ R8, DX
+	CMPQ DX, $64
+	JLT packNoFlush
+
+	VMOVDQU64 Z31, (DI)
+	ADDQ $64, DI
+	ADDQ $8, R9
+	CMPQ DX, $64
+	JEQ packFlushExact
+
+	MOVQ $64, R10
+	SUBQ AX, R10
+	MOVQ R10, X2
+	VPSRLQ X2, Z0, Z31
+	SUBQ $64, DX
+	MOVQ DX, AX
+	JMP packNext
+
+packFlushExact:
+	VPXORQ Z31, Z31, Z31
+	XORQ AX, AX
+	JMP packNext
+
+packNoFlush:
+	MOVQ DX, AX
+
+packNext:
+	DECQ CX
+	JNZ packLoop
+
+	TESTQ AX, AX
+	JEQ packDone
+	VMOVDQU64 Z31, (DI)
+	ADDQ $8, R9
+
+packDone:
+	MOVQ R9, nwords+24(FP)
+	VZEROUPPER
+	RET
+
+TEXT ·bp128UnpackBlockAVX512(SB), NOSPLIT, $0-24
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVQ w+16(FP), R8
+
+	TESTQ R8, R8
+	JNE unpackNonZero
+
+	MOVQ $32, CX
+	VPXORQ Z31, Z31, Z31
+
+unpackZeroLoop:
+	VMOVDQU64 Z31, (DI)
+	ADDQ $64, DI
+	DECQ CX
+	JNZ unpackZeroLoop
+	VZEROUPPER
+	RET
+
+unpackNonZero:
+	MOVQ $-1, R10
+	CMPQ R8, $64
+	JGE unpackMaskReady
+	MOVQ $1, R10
+	MOVQ R8, CX
+	SHLQ CL, R10
+	DECQ R10
+
+unpackMaskReady:
+	VPBROADCASTQ R10, Z30
+	VMOVDQU64 (SI), Z0
+	ADDQ $64, SI
+	XORQ AX, AX
+	XORQ R9, R9
+
+unpackLoop:
+	MOVQ AX, R11
+	ADDQ R8, R11
+	CMPQ R11, $64
+	JLT unpackNoBoundary
+	JEQ unpackExactBoundary
+
+	VMOVDQU64 (SI), Z2
+	ADDQ $64, SI
+	MOVQ AX, X3
+	VPSRLQ X3, Z0, Z1
+	MOVQ $64, R12
+	SUBQ AX, R12
+	MOVQ R12, X3
+	VPSLLQ X3, Z2, Z3
+	VPORQ Z3, Z1, Z1
+	VPANDQ Z30, Z1, Z1
+	VMOVDQU64 Z1, (DI)
+	ADDQ $64, DI
+	VMOVDQU64 Z2, Z0
+	SUBQ $64, R11
+	MOVQ R11, AX
+	JMP unpackNext
+
+unpackExactBoundary:
+	MOVQ AX, X3
+	VPSRLQ X3, Z0, Z1
+	VPANDQ Z30, Z1, Z1
+	VMOVDQU64 Z1, (DI)
+	ADDQ $64, DI
+	INCQ R9
+	CMPQ R9, $32
+	JGE unpackDone
+	VMOVDQU64 (SI), Z0
+	ADDQ $64, SI
+	XORQ AX, AX
+	JMP unpackLoop
+
+unpackNoBoundary:
+	MOVQ AX, X3
+	VPSRLQ X3, Z0, Z1
+	VPANDQ Z30, Z1, Z1
+	VMOVDQU64 Z1, (DI)
+	ADDQ $64, DI
+	MOVQ R11, AX
+
+unpackNext:
+	INCQ R9
+	CMPQ R9, $32
+	JLT unpackLoop
+
+unpackDone:
+	VZEROUPPER
+	RET
