@@ -3,8 +3,15 @@ package section
 import (
 	"testing"
 
+	"github.com/arloliu/mebo/format"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNumericFlag_ALPValueEncodingValid(t *testing.T) {
+	f := NewNumericFlag()
+	f.SetValueEncoding(format.TypeALP)
+	require.NoError(t, f.Validate())
+}
 
 func TestNumericFlag_IsValidMagicNumber(t *testing.T) {
 	tests := []struct {
