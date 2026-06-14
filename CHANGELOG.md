@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `TypeALP = 0x6`: ALP (Adaptive Lossless floating-Point) value codec is now a first-class,
+  user-selectable value encoding. Select it via `WithValueEncoding(format.TypeALP)` on the
+  numeric encoder. ALP typically achieves 3–5× better compression than Chimp/Gorilla on
+  low-decimal-precision gauge data (2–4 dp). **Forward-incompatible addition**: blobs written
+  with `TypeALP` cannot be read by older mebo versions; blobs written with prior encodings are
+  entirely unaffected.
+
 ## [1.7.0] - 2026-06-13
 
 ### Added
