@@ -232,6 +232,8 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 		encoder.valEncoder = ienc.NewNumericGorillaEncoder()
 	case format.TypeChimp:
 		encoder.valEncoder = ienc.NewNumericChimpEncoder()
+	case format.TypeALP:
+		encoder.valEncoder = ienc.NewNumericALPEncoder(encoder.engine)
 	case format.TypeDelta:
 		return nil, fmt.Errorf("%w: value encoding %s not supported yet", errs.ErrUnsupportedEncoding, enc.String())
 	default:
@@ -416,7 +418,7 @@ func (e *NumericEncoder) EndMetric() error {
 	// BEFORE calculating lengths. This ensures the length includes all flushed data.
 	// For other encodings, this is a no-op as Bytes() just returns the buffer.
 	valEnc := e.header.Flag.ValueEncoding()
-	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp {
+	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp || valEnc == format.TypeALP {
 		_ = e.valEncoder.Bytes() // Flush pending bits
 	}
 

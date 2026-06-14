@@ -103,6 +103,12 @@ func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield fun
 // they return is constructed and invoked in this frame and never escapes —
 // this is what makes ForEach allocation-free where All cannot be.
 func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	// ALP values: materialize ts+values and zip (avoids generic iter.Pull overhead).
+	if b.ValueEncoding() == format.TypeALP {
+		b.allDataPointsMaterialized(tsBytes, valBytes, tagBytes, count)(yield)
+		return
+	}
+
 	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeRaw {
 		b.allDataPointsRaw(tsBytes, valBytes, tagBytes, count)(yield)
 		return

@@ -6,9 +6,12 @@ package blob
 // changes can be profiled in-repo with -cpuprofile without the external harness.
 
 import (
+	"math"
 	"math/rand"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
 )
@@ -221,4 +224,54 @@ func BenchmarkE2EIterate_DeltaGorilla(b *testing.B) {
 			b.Fatal("no data")
 		}
 	}
+}
+
+// TestNumericBlob_ALP_BeatsChimpOnDecimals builds an ALP blob and a Chimp blob
+// over the same 2-dp decimal gauge series (n=1000 points, single metric) and
+// asserts that ALP's finished byte length is strictly smaller than Chimp's.
+// ALP's integer-pair encoding is tailored for quantized decimals and should
+// compress them far more efficiently than Chimp's XOR bit-packing.
+func TestNumericBlob_ALP_BeatsChimpOnDecimals(t *testing.T) {
+	const n = 1000
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	rng := rand.New(rand.NewSource(42))
+	intervalUs := int64(15 * time.Second / time.Microsecond)
+
+	timestamps := make([]int64, n)
+	values := make([]float64, n)
+	ts := startTime.UnixMicro()
+	val := 50.0 + rng.Float64()*50.0
+	for i := range n {
+		ts += intervalUs
+		timestamps[i] = ts
+		// Small-step walk quantized to 2 decimal places.
+		val += (rng.Float64()*2 - 1) * 0.5
+		values[i] = math.Round(val*100) / 100
+	}
+
+	buildBlob := func(valEnc format.EncodingType) []byte {
+		enc, err := NewNumericEncoder(startTime,
+			WithTimestampEncoding(format.TypeDelta),
+			WithTimestampCompression(format.CompressionNone),
+			WithValueEncoding(valEnc),
+			WithValueCompression(format.CompressionNone),
+		)
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricID(1, n))
+		for i := range n {
+			require.NoError(t, enc.AddDataPoint(timestamps[i], values[i], ""))
+		}
+		require.NoError(t, enc.EndMetric())
+		data, err := enc.Finish()
+		require.NoError(t, err)
+
+		return data
+	}
+
+	alpData := buildBlob(format.TypeALP)
+	chimpData := buildBlob(format.TypeChimp)
+
+	require.Lessf(t, len(alpData), len(chimpData),
+		"ALP (%d bytes) must beat Chimp (%d bytes) on 2-dp decimal data",
+		len(alpData), len(chimpData))
 }
