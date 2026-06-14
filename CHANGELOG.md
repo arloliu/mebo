@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `TypeALP` cannot be read by older mebo versions; blobs written with prior encodings are
   entirely unaffected.
 
+## [1.7.1] - 2026-06-13
+
+### Fixed
+- Security: guard `ForEach`/`ForEachByName` against a nil yield function (previously panicked on the first data point)
+- Security: bounds-check index entries before slicing payloads across all iteration and random-access paths (`All`, `AllTimestamps`, `AllValues`, `AllTags`, `ForEach`, `TimestampAt`, `TagAt`) via overflow-safe `safeSlice`/`safeSuffix` helpers, so crafted or corrupt blobs return cleanly instead of panicking; also fixes a latent `offset+length` integer overflow in the existing bounds check
+- Security: cap the Gorilla/Chimp zero-run drain against trailing byte padding (`GorillaValState`/`ChimpValState` `remaining`/`SetCount`), so padding bits in the final byte are no longer decoded as phantom values
+- Encoder point-count integrity: advance `curPoints` only after the timestamp/value/tag writes complete in `AddDataPoint`/`AddDataPoints`, so a panic mid-write cannot leave the metric with an inflated point count
+- `TextEncoder.FinishInto` now returns the caller's buffer unchanged (not `nil`) on the late index-write error, restoring the documented unchanged-`dst` contract
+
+### Performance
+- Moved the Gorilla/Chimp count cap from the per-value decode primitives to the `GorillaValState`/`ChimpValState` `Next()` wrappers (the only unbounded-drain surface), removing it from the already count-bounded bulk fused loops: ~2.7–4.1% faster full iterate-decode on 1000-point Gorilla/Chimp columns, with no allocation change and byte-identical output
+
 ## [1.7.0] - 2026-06-13
 
 ### Added
@@ -264,7 +276,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/arloliu/mebo/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/arloliu/mebo/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/arloliu/mebo/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/arloliu/mebo/compare/v1.4.3...v1.5.0
