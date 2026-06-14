@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"time"
 
 	"github.com/arloliu/mebo/format"
@@ -32,6 +33,7 @@ func AllCombos() []EncodingCombo {
 		{format.TypeRaw, "raw"},
 		{format.TypeGorilla, "gorilla"},
 		{format.TypeChimp, "chimp"},
+		{format.TypeALP, "alp"},
 	}
 
 	combos := make([]EncodingCombo, 0, len(tsEncodings)*len(valEncodings))
@@ -67,6 +69,7 @@ func SharedTSCombos() []EncodingCombo {
 		{format.TypeRaw, "raw"},
 		{format.TypeGorilla, "gorilla"},
 		{format.TypeChimp, "chimp"},
+		{format.TypeALP, "alp"},
 	}
 
 	combos := make([]EncodingCombo, 0, len(tsEncodings)*len(valEncodings))
@@ -84,6 +87,28 @@ func SharedTSCombos() []EncodingCombo {
 	return combos
 }
 
+// Profile names a realistic generator combination.
+type Profile struct {
+	Name       string
+	Decimals   int    // value quantization (decimal places); <0 = full precision
+	ValueKind  string // "gauge" | "counter" | "sparse"
+	IntervalMs int64  // scrape interval
+	BurstyGaps bool   // inject periodic gaps (large dod spikes)
+}
+
+// Profiles returns the catalog of realistic generator profiles.
+func Profiles() []Profile {
+	return []Profile{
+		{"decimal_gauge_2dp", 2, "gauge", 15000, false},
+		{"decimal_gauge_4dp", 4, "gauge", 15000, false},
+		{"counter", 0, "counter", 15000, false},
+		{"sparse_constant", 2, "sparse", 60000, false},
+		{"regular_scrape_60s", 2, "gauge", 60000, false},
+		{"bursty_scrape", 2, "gauge", 15000, true},
+		{"worst_case", -1, "gauge", 1000, false}, // full-precision random walk (old default)
+	}
+}
+
 // DataConfig holds data generation parameters.
 type DataConfig struct {
 	NumMetrics      int     `json:"num_metrics"`
@@ -91,6 +116,28 @@ type DataConfig struct {
 	ValueJitterPct  float64 `json:"value_jitter_pct"`
 	TSJitterPct     float64 `json:"ts_jitter_pct"`
 	Seed            int64   `json:"seed"`
+	Profile         string  `json:"profile,omitempty"` // realistic profile name; empty = legacy generators
+}
+
+// findProfile returns the named profile from the catalog.
+func findProfile(name string) (Profile, bool) {
+	for _, p := range Profiles() {
+		if p.Name == name {
+			return p, true
+		}
+	}
+
+	return Profile{}, false
+}
+
+// profileNames lists the available profile names for help/error text.
+func profileNames() string {
+	names := make([]string, 0, len(Profiles()))
+	for _, p := range Profiles() {
+		names = append(names, p.Name)
+	}
+
+	return strings.Join(names, ", ")
 }
 
 // ReportMetadata holds metadata about the benchmark run.

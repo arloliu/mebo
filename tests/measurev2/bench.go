@@ -167,7 +167,7 @@ func toBenchMetrics(r testing.BenchmarkResult) BenchMetrics {
 
 	return BenchMetrics{
 		NsPerOp:     float64(r.T.Nanoseconds()) / float64(n),
-		BytesPerOp:  int64(r.MemBytes) / n,
-		AllocsPerOp: int64(r.MemAllocs) / n,
+		BytesPerOp:  r.AllocedBytesPerOp(),
+		AllocsPerOp: r.AllocsPerOp(),
 	}
 }

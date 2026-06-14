@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"time"
 
@@ -27,7 +28,7 @@ type TestData struct {
 //   - Fixed seed for reproducibility
 func GenerateTestData(config DataConfig) *TestData {
 	totalPoints := config.NumMetrics * config.PointsPerMetric
-	rng := rand.New(rand.NewSource(config.Seed))
+	rng := rand.New(rand.NewSource(config.Seed)) //nolint:gosec // seeded PRNG for reproducible test data
 
 	data := &TestData{
 		MetricIDs:  make([]uint64, config.NumMetrics),
@@ -78,7 +79,7 @@ func GenerateTestData(config DataConfig) *TestData {
 // Values still vary per metric (random walk with jitter).
 func GenerateSharedTimestampData(config DataConfig) *TestData {
 	totalPoints := config.NumMetrics * config.PointsPerMetric
-	rng := rand.New(rand.NewSource(config.Seed))
+	rng := rand.New(rand.NewSource(config.Seed)) //nolint:gosec // seeded PRNG for reproducible test data
 
 	data := &TestData{
 		MetricIDs:  make([]uint64, config.NumMetrics),
@@ -126,6 +127,121 @@ func GenerateSharedTimestampData(config DataConfig) *TestData {
 	}
 
 	return data
+}
+
+// quantize rounds v to the given number of decimal places.
+// When decimals < 0 the value is returned unchanged (full precision).
+func quantize(v float64, decimals int) float64 {
+	if decimals < 0 {
+		return v
+	}
+
+	scale := math.Pow(10, float64(decimals))
+
+	return math.Round(v*scale) / scale
+}
+
+// GenerateProfile creates test data according to a named Profile.
+//
+// ValueKind controls the value generation strategy:
+//   - "gauge":   bounded small-step random walk, quantized to p.Decimals decimal places
+//   - "counter": monotonic integer-valued series
+//   - "sparse":  long runs of identical values (constant blocks) with rare steps
+//
+// When p.Decimals < 0, values are generated at full precision (old default behaviour).
+// Timestamps use p.IntervalMs as the base scrape interval with a small sub-ms jitter.
+// When p.BurstyGaps is true, a periodic +5 s gap is injected every ~50 points to
+// simulate scrape misses.
+func GenerateProfile(p Profile, cfg DataConfig) *TestData {
+	totalPoints := cfg.NumMetrics * cfg.PointsPerMetric
+	rng := rand.New(rand.NewSource(cfg.Seed)) //nolint:gosec // seeded PRNG for reproducible test data
+
+	data := &TestData{
+		MetricIDs:  make([]uint64, cfg.NumMetrics),
+		Timestamps: make([]int64, totalPoints),
+		Values:     make([]float64, totalPoints),
+		StartTime:  time.Unix(1700000000, 0),
+		Config:     cfg,
+	}
+
+	// Generate metric IDs (same hashing as GenerateTestData for consistency)
+	for i := range cfg.NumMetrics {
+		name := fmt.Sprintf("metric.%d", i+1000)
+		data.MetricIDs[i] = hash.ID(name)
+	}
+
+	baseInterval := time.Duration(p.IntervalMs) * time.Millisecond
+	// Sub-ms jitter: ±0.5 ms expressed as a fraction of the interval
+	jitterFrac := 0.0005 * float64(time.Millisecond) / float64(baseInterval)
+
+	const burstyPeriod = 50 // inject a gap every 50 points
+	const burstyGap = 5 * time.Second
+
+	for i := range cfg.NumMetrics {
+		currentTime := data.StartTime
+		currentValue := 100.0 + float64(i)*10.0
+
+		for j := range cfg.PointsPerMetric {
+			idx := i*cfg.PointsPerMetric + j
+
+			// Timestamp
+			advance := baseInterval
+			if p.BurstyGaps && j > 0 && j%burstyPeriod == 0 {
+				advance += burstyGap
+			} else {
+				jitterFactor := (rng.Float64()*2.0 - 1.0) * jitterFrac
+				jitter := time.Duration(float64(baseInterval) * jitterFactor)
+				advance += jitter
+			}
+
+			currentTime = currentTime.Add(advance)
+			data.Timestamps[idx] = currentTime.UnixMicro()
+
+			// Value
+			switch p.ValueKind {
+			case "counter":
+				// Monotonic integer-valued; step size 1–10 per point
+				step := math.Floor(rng.Float64()*10) + 1
+				currentValue += step
+				data.Values[idx] = currentValue
+
+			case "sparse":
+				// Constant for long runs; rare small step (1 in 20 chance)
+				if rng.Float64() < 0.05 {
+					step := (rng.Float64()*2.0 - 1.0) * 1.0
+					currentValue += step
+				}
+
+				data.Values[idx] = quantize(currentValue, p.Decimals)
+
+			default: // "gauge" and anything else
+				// Bounded small-step random walk: ±0.5% of current value per step
+				deltaFrac := (rng.Float64()*2.0 - 1.0) * 0.005
+				currentValue += currentValue * deltaFrac
+				data.Values[idx] = quantize(currentValue, p.Decimals)
+			}
+		}
+	}
+
+	return data
+}
+
+// shareTimestamps returns a copy of td where every metric reuses the first
+// metric's timestamp series, for the shared-timestamp benchmark matrix.
+func (td *TestData) shareTimestamps() *TestData {
+	ppm := td.Config.PointsPerMetric
+	ts := make([]int64, len(td.Timestamps))
+	for i := range td.Config.NumMetrics {
+		copy(ts[i*ppm:(i+1)*ppm], td.Timestamps[:ppm])
+	}
+
+	return &TestData{
+		MetricIDs:  td.MetricIDs,
+		Timestamps: ts,
+		Values:     td.Values,
+		StartTime:  td.StartTime,
+		Config:     td.Config,
+	}
 }
 
 // SlicePoints creates a view of the test data with only the first numPoints per metric.
