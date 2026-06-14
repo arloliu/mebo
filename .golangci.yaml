@@ -78,6 +78,10 @@ linters:
           skipRecvDeref: false
     gocyclo:
       min-complexity: 30
+    gomoddirectives:
+      # Allow local filesystem replacements (used by the tests/measurev2 and
+      # tests/compat sub-modules to point at the in-tree mebo source).
+      replace-local: true
     gomodguard:
       blocked:
         modules:
