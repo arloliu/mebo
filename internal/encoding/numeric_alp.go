@@ -1,6 +1,7 @@
 package encoding
 
 import (
+	"encoding/binary"
 	"iter"
 	"math"
 	"math/bits"
@@ -564,6 +565,46 @@ func NewNumericALPDecoder(engine endian.EndianEngine) NumericALPDecoder {
 	return NumericALPDecoder{engine: engine}
 }
 
+// alpReadBitsFast reads width bits LSB-first at absolute bitpos. The hot path is
+// a single unaligned 8-byte load + shift + mask (an intrinsic MOVQ) and is small
+// enough to inline; the tail (<8 readable bytes) and the rare width-near-64 case
+// (the field straddles the 8-byte window) fall through to alpReadBitsSlow.
+// Engine-independent — matches alpPackBits LSB-first byte order.
+func alpReadBitsFast(src []byte, bitpos, width int, mask uint64) uint64 {
+	bp := bitpos >> 3
+	sh := bitpos & 7
+	if bp+8 <= len(src) && sh+width <= 64 {
+		return (binary.LittleEndian.Uint64(src[bp:bp+8]) >> sh) & mask
+	}
+
+	return alpReadBitsSlow(src, bitpos, width, mask)
+}
+
+// alpReadBitsSlow is the cold fallback for alpReadBitsFast: it byte-assembles the
+// window (tail-safe) and applies a second-word fixup when the field straddles the
+// 64-bit boundary (sh+width > 64, reachable only for large widths such as RD rbw).
+func alpReadBitsSlow(src []byte, bitpos, width int, mask uint64) uint64 {
+	bp := bitpos >> 3
+	sh := bitpos & 7
+	clen := len(src)
+	var w uint64
+	for k := 0; bp+k < clen && k < 8; k++ {
+		w |= uint64(src[bp+k]) << (8 * k)
+	}
+	code := (w >> sh) & mask
+	if sh+width > 64 {
+		rem := sh + width - 64
+		bp2 := bp + 8
+		var w2 uint64
+		for k := 0; bp2+k < clen && k < 8; k++ {
+			w2 |= uint64(src[bp2+k]) << (8 * k)
+		}
+		code |= (w2 & ((uint64(1) << rem) - 1)) << (64 - sh)
+	}
+
+	return code
+}
+
 // alpReadBitsAt reads a width-bit LSB-first value at absolute bit offset bitpos.
 func alpReadBitsAt(src []byte, bitpos, width int) uint64 {
 	var c uint64
@@ -611,6 +652,12 @@ func (d NumericALPDecoder) allMain(data []byte, count int, yield func(float64) b
 	codes := data[15:]
 	exc := data[15+(count*width+7)/8:]
 
+	mask := ^uint64(0)
+	if width < 64 {
+		mask = (uint64(1) << width) - 1
+	}
+	clen := len(codes)
+
 	nextExc := -1
 	if nExc > 0 {
 		nextExc = int(d.engine.Uint32(exc[0:4]))
@@ -628,7 +675,16 @@ func (d NumericALPDecoder) allMain(data []byte, count int, yield func(float64) b
 				nextExc = -1
 			}
 		} else {
-			code := alpReadBitsAt(codes, bitpos, width)
+			// Inlined hot read (this is the common decimal path): single unaligned
+			// 8-byte load + shift + mask; cold cases share alpReadBitsSlow.
+			bp := bitpos >> 3
+			sh := bitpos & 7
+			var code uint64
+			if bp+8 <= clen && sh+width <= 64 {
+				code = (binary.LittleEndian.Uint64(codes[bp:bp+8]) >> sh) & mask
+			} else {
+				code = alpReadBitsSlow(codes, bitpos, width, mask)
+			}
 			v = float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee] //nolint:gosec
 		}
 		bitpos += width
@@ -653,13 +709,22 @@ func (d NumericALPDecoder) allRD(data []byte, count int, yield func(float64) boo
 	rights := data[off+(count*codeBits+7)/8:]
 	exc := data[off+(count*codeBits+7)/8+(count*rbw+7)/8:]
 
+	rightMask := ^uint64(0)
+	if rbw < 64 {
+		rightMask = (uint64(1) << rbw) - 1
+	}
+	codeMask := ^uint64(0)
+	if codeBits < 64 {
+		codeMask = (uint64(1) << codeBits) - 1
+	}
+
 	nextExc := -1
 	if nExc > 0 {
 		nextExc = int(d.engine.Uint32(exc[0:4]))
 	}
 	excIdx := 0
 	for i := range count {
-		right := alpReadBitsAt(rights, i*rbw, rbw)
+		right := alpReadBitsFast(rights, i*rbw, rbw, rightMask)
 		var left uint64
 		if i == nextExc {
 			left = uint64(d.engine.Uint16(exc[excIdx*6+4 : excIdx*6+6]))
@@ -670,9 +735,9 @@ func (d NumericALPDecoder) allRD(data []byte, count int, yield func(float64) boo
 				nextExc = -1
 			}
 		} else {
-			left = dict[alpReadBitsAt(leftCodes, i*codeBits, codeBits)]
+			left = dict[alpReadBitsFast(leftCodes, i*codeBits, codeBits, codeMask)]
 		}
-		if !yield(math.Float64frombits((left << uint(rbw)) | right)) { //nolint:gosec
+		if !yield(math.Float64frombits((left << rbw) | right)) {
 			return
 		}
 	}
