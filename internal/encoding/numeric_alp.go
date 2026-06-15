@@ -222,26 +222,50 @@ func (e *NumericALPEncoder) encodeRaw(values []float64) {
 func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 	best := math.MaxFloat64
 	for e := 0; e <= alpMaxExponent; e++ {
+		// Hoist the e-indexed table loads out of the f loop. pe/ie/pf/iff are the
+		// same table values bound to locals, so every rounded product below is
+		// bit-identical to alpPow10[e]*alpInvPow10[f] (FP is not associative — the
+		// multiply ORDER must match alpEncodeDigit exactly; binding to locals does
+		// not reorder anything).
+		pe := alpPow10[e]
+		ie := alpInvPow10[e]
 		for f := 0; f <= e; f++ {
+			pf := alpPow10[f]
+			iff := alpInvPow10[f]
 			var nExc, cnt int
 			mn := int64(math.MaxInt64)
 			mx := int64(math.MinInt64)
+			pruned := false
 			for i := 0; i < len(values); i += stride {
 				cnt++
 				// Fast estimate: plain float compare (the bit-exact check is only
 				// needed in the final encode; this only steers (e,f) selection).
-				// The multiply ORDER must match alpEncodeDigit exactly — floating
-				// point is not associative, so reassociating here would disagree
-				// with the final encode and miss the zero-exception fast path.
 				v := values[i]
-				r := math.Round(v * alpPow10[e] * alpInvPow10[f])
+				r := math.Round(v * pe * iff)
+				// Exception when out of int64 range or the round-trip disagrees.
+				// Prune: est = cnt*width + nExc*96 >= nExc*96, so once nExc*96 >= best
+				// this (e,f) cannot beat the incumbent — skip the rest of the sample.
+				// Only candidates whose est >= best are pruned (they would never
+				// update best), so the selection is unchanged.
 				if math.Abs(r) >= 9.2e18 {
 					nExc++
+					if float64(nExc)*96 >= best {
+						pruned = true
+
+						break
+					}
+
 					continue
 				}
 				d := int64(r)
-				if float64(d)*alpPow10[f]*alpInvPow10[e] != v {
+				if float64(d)*pf*ie != v {
 					nExc++
+					if float64(nExc)*96 >= best {
+						pruned = true
+
+						break
+					}
+
 					continue
 				}
 				if d < mn {
@@ -250,6 +274,9 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 				if d > mx {
 					mx = d
 				}
+			}
+			if pruned {
+				continue
 			}
 			width := 0
 			if nExc < cnt && mx >= mn {
@@ -469,7 +496,9 @@ func (e *NumericALPEncoder) Finish() {
 	e.flushed = false
 }
 
-// alpPackBits appends codes bit-packed LSB-first at the given width.
+// alpPackBits appends codes bit-packed LSB-first at the given width. It packs
+// word-at-a-time through a 64-bit accumulator, flushing whole bytes, which is
+// byte-identical to a naive bit-by-bit packer but ~width× fewer operations.
 func alpPackBits(dst []byte, codes []uint64, width int) []byte {
 	if width == 0 {
 		return dst
@@ -477,14 +506,47 @@ func alpPackBits(dst []byte, codes []uint64, width int) []byte {
 	start := len(dst)
 	nbytes := (len(codes)*width + 7) / 8
 	dst = append(dst, make([]byte, nbytes)...)
-	bitpos := 0
+
+	mask := ^uint64(0)
+	if width < 64 {
+		mask = (uint64(1) << width) - 1
+	}
+
+	pos := start
+	var acc uint64 // pending bits, valid in the low nbits
+	nbits := 0     // invariant: < 8 at loop top
 	for _, c := range codes {
-		for b := range width {
-			if c&(uint64(1)<<uint(b)) != 0 { //nolint:gosec
-				dst[start+(bitpos>>3)] |= 1 << uint(bitpos&7) //nolint:gosec
+		c &= mask
+		acc |= c << nbits
+		if nbits+width >= 64 {
+			// acc now holds 64 valid bits; the high (nbits+width-64) bits of c were
+			// dropped by the shift. Emit the 8 full bytes, then keep the dropped bits.
+			dst[pos] = byte(acc)
+			dst[pos+1] = byte(acc >> 8)
+			dst[pos+2] = byte(acc >> 16)
+			dst[pos+3] = byte(acc >> 24)
+			dst[pos+4] = byte(acc >> 32)
+			dst[pos+5] = byte(acc >> 40)
+			dst[pos+6] = byte(acc >> 48)
+			dst[pos+7] = byte(acc >> 56)
+			pos += 8
+			acc = c >> (64 - nbits) // dropped high bits (0 when nbits+width==64)
+			nbits += width - 64
+		} else {
+			nbits += width
+			for nbits >= 8 {
+				dst[pos] = byte(acc)
+				acc >>= 8
+				pos++
+				nbits -= 8
 			}
-			bitpos++
 		}
+	}
+	for nbits > 0 {
+		dst[pos] = byte(acc)
+		acc >>= 8
+		pos++
+		nbits -= 8
 	}
 
 	return dst
