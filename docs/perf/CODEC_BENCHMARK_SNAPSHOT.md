@@ -1,10 +1,10 @@
 # Codec Benchmark Snapshot
 
 End-to-end encoding-matrix measurement across realistic data profiles, produced by
-[`tests/measurev2`](../../tests/measurev2). This snapshot reflects the state **after** both
-the ALP encode speedup and the ALP **decode** speedup (5–14× — the streaming bit reader),
-and exists to motivate per-column adaptive value-codec selection: **no single value codec
-wins across data shapes.**
+[`tests/measurev2`](../../tests/measurev2). This snapshot reflects the current state of the
+ALP encode and decode optimizations (the streaming decode reader, 5–14×, plus the encode
+prune + digit-cache + RD map-reuse), and exists to motivate per-column adaptive value-codec
+selection: **no single value codec wins across data shapes.**
 
 ## Provenance
 
@@ -102,42 +102,41 @@ codec-independent (~5.7 µs/blob flat). The real read cost is **iterate** — a 
 
 | profile | codec | encode ns/1k | iterate ns/1k | encode allocs/blob |
 |---|---|---|---|---|
-| decimal_gauge_2dp | raw | 7,521 | 6,351 | 34 |
-|  | gorilla | 10,562 | 6,343 | 34 |
-|  | chimp | 13,435 | 9,076 | 34 |
-|  | alp | 79,456 | 7,377 | 1,119 |
-| decimal_gauge_4dp | raw | 7,474 | 6,407 | 34 |
-|  | gorilla | 10,660 | 6,275 | 34 |
-|  | chimp | 13,590 | 9,091 | 34 |
-|  | alp | 136,398 | 7,280 | 24,116 |
-| counter | raw | 7,539 | 6,431 | 34 |
-|  | gorilla | 10,463 | 7,156 | 34 |
-|  | chimp | 9,823 | 6,524 | 34 |
-|  | alp | 70,747 | 7,221 | 244 |
-| sparse_constant | raw | 7,548 | 6,586 | 34 |
-|  | gorilla | 7,134 | 4,777 | 34 |
-|  | chimp | 7,119 | 4,703 | 34 |
-|  | alp | 72,625 | 7,267 | 3,578 |
-| worst_case | raw | 7,284 | 6,318 | 34 |
-|  | gorilla | 10,517 | 6,211 | 34 |
-|  | chimp | 13,454 | 9,082 | 34 |
-|  | alp | 145,950 | 8,093 | 21,130 |
+| decimal_gauge_2dp | raw | 7,433 | 6,264 | 34 |
+|  | gorilla | 10,586 | 6,326 | 34 |
+|  | chimp | 13,545 | 9,161 | 34 |
+|  | alp | 50,498 | 7,205 | 925 |
+| decimal_gauge_4dp | raw | 7,483 | 6,239 | 34 |
+|  | gorilla | 10,645 | 6,323 | 34 |
+|  | chimp | 13,598 | 9,037 | 34 |
+|  | alp | 108,623 | 7,224 | 24,082 |
+| counter | raw | 7,480 | 6,233 | 34 |
+|  | gorilla | 10,439 | 7,061 | 34 |
+|  | chimp | 9,497 | 6,548 | 34 |
+|  | alp | 28,041 | 7,229 | 44 |
+| sparse_constant | raw | 7,448 | 6,367 | 34 |
+|  | gorilla | 7,133 | 4,664 | 34 |
+|  | chimp | 7,175 | 4,686 | 34 |
+|  | alp | 49,816 | 7,284 | 3,403 |
+| worst_case | raw | 7,490 | 6,379 | 34 |
+|  | gorilla | 10,755 | 6,229 | 34 |
+|  | chimp | 13,838 | 9,090 | 34 |
+|  | alp | 132,222 | 8,110 | 21,074 |
 
 ## Takeaways
 
 - **ALP is the compression champion on decimal & counter data** (2.5–6× smaller than the
-  next-best codec). Encode still costs **7–19× more CPU** than raw with high alloc counts on
-  the ALP-RD path (4dp, worst_case) — the remaining optimization target.
-- **ALP decode is now competitive**: after the streaming-reader speedup, ALP sequential
-  iterate on decimals is ~7,377 ns/1k — between gorilla (~6,343) and chimp
-  (~9,076), no longer the read-laggard it was (~19,700 ns/1k before). This removes the
-  read-cost objection to selecting ALP.
+  next-best codec). After the encode prune + digit-cache, ALP encode now costs ~4–18× raw
+  (down from ~7–19×); the ALP-RD path (4dp, worst_case) is still the most alloc-heavy and the
+  remaining optimization target.
+- **ALP decode is competitive**: the streaming-reader speedup put ALP sequential iterate at
+  ~7,205 ns/1k on decimals — between gorilla (~6,326) and chimp (~9,161), no
+  longer the read-laggard (~19,700 before). The read-cost objection to selecting ALP is gone.
 - **gorilla is the all-rounder**: best on sparse in *both* size and speed, cheap to encode,
   fastest iterate after raw.
 - **chimp** narrowly wins full-precision size; otherwise slower to iterate than gorilla.
 - **Choosing ALP blindly is still a trap on the wrong shape**: on `worst_case` it is *larger*
-  than chimp; ALP only pays where the ratio win justifies the (now much lower) read cost and
-  the encode cost.
+  than chimp; ALP only pays where the ratio win justifies the (now much lower) encode/read cost.
 - This data-dependence is the empirical case for **per-column adaptive value-codec selection**
   with raw kept as a hard floor. See
   [`ADAPTIVE_SELECTOR_EXPERIMENTS.md`](ADAPTIVE_SELECTOR_EXPERIMENTS.md) and the
