@@ -4,7 +4,7 @@
     "os": "linux",
     "arch": "amd64",
     "num_cpu": 32,
-    "timestamp": "2026-06-15T18:12:59.825594521+08:00",
+    "timestamp": "2026-06-15T22:51:58.441654001+08:00",
     "data_config": {
       "num_metrics": 200,
       "points_per_metric": 200,
@@ -27,17 +27,17 @@
       "vs_raw_ratio": 1,
       "space_savings_pct": 0,
       "encode": {
-        "ns_per_op": 355103.32792792795,
-        "bytes_per_op": 700991,
+        "ns_per_op": 373707.65194564546,
+        "bytes_per_op": 703126,
         "allocs_per_op": 35
       },
       "decode": {
-        "ns_per_op": 5622.865404714357,
+        "ns_per_op": 5742.9522597554505,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 284624.9375308642,
+        "ns_per_op": 284590.8382108018,
         "bytes_per_op": 28808,
         "allocs_per_op": 801
       }
@@ -54,17 +54,17 @@
       "vs_raw_ratio": 1.103624347157691,
       "space_savings_pct": 9.389458235908666,
       "encode": {
-        "ns_per_op": 457273.43968565814,
-        "bytes_per_op": 637040,
+        "ns_per_op": 463581.7916177047,
+        "bytes_per_op": 636735,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5559.0418956375615,
+        "ns_per_op": 5641.0384898997245,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 309315.52834168205,
+        "ns_per_op": 308768.480744708,
         "bytes_per_op": 22408,
         "allocs_per_op": 601
       }
@@ -81,17 +81,17 @@
       "vs_raw_ratio": 1.1226668993803997,
       "space_savings_pct": 10.926384259489573,
       "encode": {
-        "ns_per_op": 574910.3502347418,
-        "bytes_per_op": 622522,
+        "ns_per_op": 577161.0819672131,
+        "bytes_per_op": 624125,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5537.140253646753,
+        "ns_per_op": 5581.11394681581,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 425451.89960274467,
+        "ns_per_op": 431178.06158775365,
         "bytes_per_op": 22408,
         "allocs_per_op": 601
       }
@@ -108,18 +108,18 @@
       "vs_raw_ratio": 1.1129024165321457,
       "space_savings_pct": 10.144862195910653,
       "encode": {
-        "ns_per_op": 5748495.850961538,
-        "bytes_per_op": 5631199,
+        "ns_per_op": 5807428.892682927,
+        "bytes_per_op": 5623176,
         "allocs_per_op": 21130
       },
       "decode": {
-        "ns_per_op": 5523.521540437161,
+        "ns_per_op": 5467.317044262496,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 2158989.2702702703,
-        "bytes_per_op": 736013,
+        "ns_per_op": 292291.65578786336,
+        "bytes_per_op": 736010,
         "allocs_per_op": 1001
       }
     },
@@ -135,17 +135,17 @@
       "vs_raw_ratio": 1.7621249643866839,
       "space_savings_pct": 43.25033580418884,
       "encode": {
-        "ns_per_op": 298882.87698603753,
-        "bytes_per_op": 413509,
+        "ns_per_op": 291343.23299069994,
+        "bytes_per_op": 413582,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5621.788032839982,
+        "ns_per_op": 5618.929342525009,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 245600.24460576728,
+        "ns_per_op": 252710.05470049917,
         "bytes_per_op": 25608,
         "allocs_per_op": 801
       }
@@ -162,17 +162,17 @@
       "vs_raw_ratio": 2.1114773040612405,
       "space_savings_pct": 52.63979404009751,
       "encode": {
-        "ns_per_op": 426615.9228045326,
-        "bytes_per_op": 358401,
+        "ns_per_op": 420689.4748563218,
+        "bytes_per_op": 357664,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5686.636619428175,
+        "ns_per_op": 5605.748829412646,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 250684.01901612236,
+        "ns_per_op": 248442.87958549222,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -189,17 +189,17 @@
       "vs_raw_ratio": 2.1822968617472434,
       "space_savings_pct": 54.17672006367842,
       "encode": {
-        "ns_per_op": 543610.0844303223,
-        "bytes_per_op": 344800,
+        "ns_per_op": 538168.7163636363,
+        "bytes_per_op": 340849,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5644.742991264746,
+        "ns_per_op": 5785.023324726548,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 359313.42450569203,
+        "ns_per_op": 363282.259864365,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -216,18 +216,18 @@
       "vs_raw_ratio": 2.145701638217742,
       "space_savings_pct": 53.3951980000995,
       "encode": {
-        "ns_per_op": 5802895.8834951455,
-        "bytes_per_op": 5357819,
+        "ns_per_op": 5837985.762135922,
+        "bytes_per_op": 5363375,
         "allocs_per_op": 21130
       },
       "decode": {
-        "ns_per_op": 5591.964922813435,
+        "ns_per_op": 5636.498916731008,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 2243924.6765799257,
-        "bytes_per_op": 736012,
+        "ns_per_op": 323707.4402116402,
+        "bytes_per_op": 736011,
         "allocs_per_op": 1001
       }
     },
@@ -243,17 +243,17 @@
       "vs_raw_ratio": 1.715138974807483,
       "space_savings_pct": 41.69568678175215,
       "encode": {
-        "ns_per_op": 327165.28994252876,
-        "bytes_per_op": 423663,
+        "ns_per_op": 325145.94037299714,
+        "bytes_per_op": 423917,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5648.666176656477,
+        "ns_per_op": 5590.685327186338,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 220710.07868356345,
+        "ns_per_op": 213431.1466953251,
         "bytes_per_op": 25608,
         "allocs_per_op": 801
       }
@@ -270,17 +270,17 @@
       "vs_raw_ratio": 2.044368730850888,
       "space_savings_pct": 51.085145017660814,
       "encode": {
-        "ns_per_op": 446232.5106054763,
-        "bytes_per_op": 367176,
+        "ns_per_op": 442242.8281604845,
+        "bytes_per_op": 368500,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5627.8900268738325,
+        "ns_per_op": 5713.649014330026,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 304991.81336633663,
+        "ns_per_op": 299779.4887048193,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -297,17 +297,17 @@
       "vs_raw_ratio": 2.110687448728466,
       "space_savings_pct": 52.622071041241725,
       "encode": {
-        "ns_per_op": 583198.55078125,
-        "bytes_per_op": 364285,
+        "ns_per_op": 588694.0729927007,
+        "bytes_per_op": 364758,
         "allocs_per_op": 34
       },
       "decode": {
-        "ns_per_op": 5731.137829702858,
+        "ns_per_op": 5731.981389320892,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 405189.3040563191,
+        "ns_per_op": 408109.2804453723,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -324,18 +324,18 @@
       "vs_raw_ratio": 2.076435629501222,
       "space_savings_pct": 51.840548977662806,
       "encode": {
-        "ns_per_op": 5933978.228855722,
-        "bytes_per_op": 5356156,
+        "ns_per_op": 5901321.786069652,
+        "bytes_per_op": 5384535,
         "allocs_per_op": 21130
       },
       "decode": {
-        "ns_per_op": 5592.240267537194,
+        "ns_per_op": 5623.05365782898,
         "bytes_per_op": 32824,
         "allocs_per_op": 7
       },
       "iter_seq": {
-        "ns_per_op": 2188670.9249084247,
-        "bytes_per_op": 736012,
+        "ns_per_op": 315154.9079125034,
+        "bytes_per_op": 736011,
         "allocs_per_op": 1001
       }
     },
@@ -351,17 +351,17 @@
       "vs_raw_ratio": 1.977739241658365,
       "space_savings_pct": 49.437217053877916,
       "encode": {
-        "ns_per_op": 374205.4080076263,
-        "bytes_per_op": 1091297,
+        "ns_per_op": 352212.644549763,
+        "bytes_per_op": 1090318,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6356.703802750337,
+        "ns_per_op": 6156.687846578038,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 285888.5473785474,
+        "ns_per_op": 298835.6970502901,
         "bytes_per_op": 28808,
         "allocs_per_op": 801
       }
@@ -378,17 +378,17 @@
       "vs_raw_ratio": 2.428756985349645,
       "space_savings_pct": 58.82667528978658,
       "encode": {
-        "ns_per_op": 514234.60845588235,
-        "bytes_per_op": 960789,
+        "ns_per_op": 498586.11659192824,
+        "bytes_per_op": 960791,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6535.395485856059,
+        "ns_per_op": 6266.630451989169,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 305612.2564491654,
+        "ns_per_op": 306849.4528012279,
         "bytes_per_op": 22408,
         "allocs_per_op": 601
       }
@@ -405,17 +405,17 @@
       "vs_raw_ratio": 2.5229335487970377,
       "space_savings_pct": 60.36360131336749,
       "encode": {
-        "ns_per_op": 668170.6068144944,
-        "bytes_per_op": 944450,
+        "ns_per_op": 661472.5073280721,
+        "bytes_per_op": 944875,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6543.11576949817,
+        "ns_per_op": 6268.519590521987,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 429956.28325123154,
+        "ns_per_op": 433308.50485786254,
         "bytes_per_op": 22408,
         "allocs_per_op": 601
       }
@@ -432,18 +432,18 @@
       "vs_raw_ratio": 2.474150034040949,
       "space_savings_pct": 59.58207924978856,
       "encode": {
-        "ns_per_op": 5955974.124378109,
-        "bytes_per_op": 5944955,
+        "ns_per_op": 5973757.291457286,
+        "bytes_per_op": 5939282,
         "allocs_per_op": 21159
       },
       "decode": {
-        "ns_per_op": 6459.22179616549,
+        "ns_per_op": 6226.94298603939,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 2216157.137037037,
-        "bytes_per_op": 736012,
+        "ns_per_op": 301695.1515842839,
+        "bytes_per_op": 736011,
         "allocs_per_op": 1001
       }
     },
@@ -459,17 +459,17 @@
       "vs_raw_ratio": 1.9862341552285816,
       "space_savings_pct": 49.653468732898865,
       "encode": {
-        "ns_per_op": 328281.99888455105,
-        "bytes_per_op": 811160,
+        "ns_per_op": 323901.980118216,
+        "bytes_per_op": 810079,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6539.476345008099,
+        "ns_per_op": 6367.190964443209,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 250331.62540650406,
+        "ns_per_op": 256684.1069552427,
         "bytes_per_op": 25608,
         "allocs_per_op": 801
       }
@@ -486,17 +486,17 @@
       "vs_raw_ratio": 2.4415807234037707,
       "space_savings_pct": 59.04292696880753,
       "encode": {
-        "ns_per_op": 464973.7026804124,
-        "bytes_per_op": 683751,
+        "ns_per_op": 470655.5597633136,
+        "bytes_per_op": 684458,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6633.041800048599,
+        "ns_per_op": 6409.154176943021,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 252611.85269486794,
+        "ns_per_op": 251262.36839881708,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -513,17 +513,17 @@
       "vs_raw_ratio": 2.536773898400003,
       "space_savings_pct": 60.57985299238844,
       "encode": {
-        "ns_per_op": 629530.4300626304,
-        "bytes_per_op": 656014,
+        "ns_per_op": 620374.4600840337,
+        "bytes_per_op": 656018,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6681.823778478957,
+        "ns_per_op": 6384.096466813971,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 365960.63470728794,
+        "ns_per_op": 363925.3077154913,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -540,18 +540,18 @@
       "vs_raw_ratio": 2.4874589117908656,
       "space_savings_pct": 59.798330928809506,
       "encode": {
-        "ns_per_op": 5982348.447761194,
-        "bytes_per_op": 5666844,
+        "ns_per_op": 5880112.8564356435,
+        "bytes_per_op": 5666898,
         "allocs_per_op": 21159
       },
       "decode": {
-        "ns_per_op": 6568.965296514359,
+        "ns_per_op": 6348.160198691077,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 2236397.2981132073,
-        "bytes_per_op": 736012,
+        "ns_per_op": 326703.20587427943,
+        "bytes_per_op": 736011,
         "allocs_per_op": 1001
       }
     },
@@ -567,17 +567,17 @@
       "vs_raw_ratio": 1.9859275382454191,
       "space_savings_pct": 49.64569548778668,
       "encode": {
-        "ns_per_op": 364579.9354937328,
-        "bytes_per_op": 817410,
+        "ns_per_op": 354565.94319562573,
+        "bytes_per_op": 816036,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 7333.131149308639,
+        "ns_per_op": 6309.380183534347,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 223733.14040328603,
+        "ns_per_op": 217195.80296570898,
         "bytes_per_op": 25608,
         "allocs_per_op": 801
       }
@@ -594,17 +594,17 @@
       "vs_raw_ratio": 2.4411174235955353,
       "space_savings_pct": 59.035153723695345,
       "encode": {
-        "ns_per_op": 487399.05253784504,
-        "bytes_per_op": 693027,
+        "ns_per_op": 491957.7903966597,
+        "bytes_per_op": 690729,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6748.068529085344,
+        "ns_per_op": 6336.40636165532,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 300812.4787788533,
+        "ns_per_op": 299188.54776598373,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -621,17 +621,17 @@
       "vs_raw_ratio": 2.5362737714549333,
       "space_savings_pct": 60.572079747276256,
       "encode": {
-        "ns_per_op": 626101.8097826086,
-        "bytes_per_op": 669058,
+        "ns_per_op": 640556.5059267242,
+        "bytes_per_op": 665581,
         "allocs_per_op": 64
       },
       "decode": {
-        "ns_per_op": 6721.397397328169,
+        "ns_per_op": 6317.519307534149,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 405562.8766578249,
+        "ns_per_op": 406511.2179399727,
         "bytes_per_op": 19208,
         "allocs_per_op": 601
       }
@@ -648,18 +648,18 @@
       "vs_raw_ratio": 2.48697803897309,
       "space_savings_pct": 59.79055768369732,
       "encode": {
-        "ns_per_op": 5961936.065,
-        "bytes_per_op": 5692905,
+        "ns_per_op": 5876735.237623762,
+        "bytes_per_op": 5698411,
         "allocs_per_op": 21159
       },
       "decode": {
-        "ns_per_op": 6603.857930647199,
+        "ns_per_op": 6361.379554741144,
         "bytes_per_op": 22696,
         "allocs_per_op": 11
       },
       "iter_seq": {
-        "ns_per_op": 2221747.932835821,
-        "bytes_per_op": 736013,
+        "ns_per_op": 317700.9805540757,
+        "bytes_per_op": 736011,
         "allocs_per_op": 1001
       }
     }
