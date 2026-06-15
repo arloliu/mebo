@@ -83,12 +83,13 @@ func alpCodeBits(n int) int {
 // ---- encoder ----
 
 type NumericALPEncoder struct {
-	buf      *pool.ByteBuffer
-	engine   endian.EndianEngine
-	count    int
-	seqCount int
-	pending  []float64
-	flushed  bool
+	buf         *pool.ByteBuffer
+	engine      endian.EndianEngine
+	count       int
+	seqCount    int
+	pending     []float64
+	codeScratch []uint64 // reused digit/code buffer for the ALP-main fast path
+	flushed     bool
 }
 
 var _ encoding.ColumnarEncoder[float64] = (*NumericALPEncoder)(nil)
@@ -161,7 +162,15 @@ func (e *NumericALPEncoder) encodeColumn(values []float64) {
 	stride := alpSampleStride(n)
 
 	ee, ff := alpBestEF(values, stride)
-	main := alpMainStats(values, ee, ff)
+
+	// Reusable digit scratch: alpMainStats records each value's ALP-main digit
+	// here so the fast path can pack without a second alpEncodeDigit pass.
+	if cap(e.codeScratch) < n {
+		e.codeScratch = make([]uint64, n)
+	}
+	digits := e.codeScratch[:n]
+
+	main := alpMainStats(values, ee, ff, digits)
 	mainBits := math.MaxInt
 	if main.ok {
 		mainBits = alpMainHeaderBits + n*main.width + main.nExc*alpExcBitsMain
@@ -169,10 +178,10 @@ func (e *NumericALPEncoder) encodeColumn(values []float64) {
 
 	// Fast path: ALP main with zero exceptions means clean decimal data that ALP
 	// main compresses far better than ALP-RD ever could — skip the costly RD
-	// dictionary search entirely.
+	// dictionary search entirely, and reuse the cached digits (no recompute).
 	if main.ok && main.nExc == 0 && mainBits <= n*64 {
 		e.buf.B = append(e.buf.B, alpSchemeMain)
-		e.encodeMain(values, ee, ff, main.mn, main.width)
+		e.encodeMainFast(ee, ff, main.mn, main.width, digits)
 
 		return
 	}
@@ -222,6 +231,7 @@ func (e *NumericALPEncoder) encodeRaw(values []float64) {
 // alpBestEF searches (e,f), f<=e, minimizing estimated size over a strided sample.
 func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 	best := math.MaxFloat64
+	fullCnt := (len(values) + stride - 1) / stride
 	for e := 0; e <= alpMaxExponent; e++ {
 		// Hoist the e-indexed table loads out of the f loop. pe/ie/pf/iff are the
 		// same table values bound to locals, so every rounded product below is
@@ -244,10 +254,6 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 				v := values[i]
 				r := math.Round(v * pe * iff)
 				// Exception when out of int64 range or the round-trip disagrees.
-				// Prune: est = cnt*width + nExc*96 >= nExc*96, so once nExc*96 >= best
-				// this (e,f) cannot beat the incumbent — skip the rest of the sample.
-				// Only candidates whose est >= best are pruned (they would never
-				// update best), so the selection is unchanged.
 				if math.Abs(r) >= 9.2e18 {
 					nExc++
 					if float64(nExc)*96 >= best {
@@ -269,11 +275,27 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 
 					continue
 				}
+				upd := false
 				if d < mn {
 					mn = d
+					upd = true
 				}
 				if d > mx {
 					mx = d
+					upd = true
+				}
+				// Width lower-bound prune: est = fullCnt*width + nExc*96, and both
+				// width (=bits.Len64(mx-mn)) and nExc only grow as the scan proceeds,
+				// so once the partial bound reaches best this (e,f) cannot win — skip
+				// the rest. Catches zero-exception non-winners the nExc prune misses.
+				// est uses fullCnt at loop end when not pruned, so selection is exact.
+				if upd {
+					wcur := bits.Len64(uint64(mx - mn)) //nolint:gosec
+					if float64(fullCnt*wcur)+float64(nExc)*96 >= best {
+						pruned = true
+
+						break
+					}
 				}
 			}
 			if pruned {
@@ -295,18 +317,22 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 }
 
 // alpMainStats computes the FOR minimum, bit width, and exception count for the
-// chosen (e,f) over ALL values. ok is false if every value is an exception.
-func alpMainStats(values []float64, ee, ff int) alpMainCand {
+// chosen (e,f) over ALL values, recording each good value's digit into dst (sized
+// >= len(values)) so the fast path can reuse it. ok is false if every value is an
+// exception. dst entries for exception positions are left untouched (the fast path
+// that consumes dst only runs when nExc == 0).
+func alpMainStats(values []float64, ee, ff int, dst []uint64) alpMainCand {
 	n := len(values)
 	mn := int64(math.MaxInt64)
 	mx := int64(math.MinInt64)
 	nExc := 0
-	for _, v := range values {
+	for i, v := range values {
 		d, good := alpEncodeDigit(v, ee, ff)
 		if !good {
 			nExc++
 			continue
 		}
+		dst[i] = uint64(d) //nolint:gosec
 		if d < mn {
 			mn = d
 		}
@@ -323,6 +349,22 @@ func alpMainStats(values []float64, ee, ff int) alpMainCand {
 	}
 
 	return alpMainCand{mn: mn, width: width, nExc: nExc, ok: true}
+}
+
+// encodeMainFast packs the ALP-main fast path (zero exceptions) by reusing the
+// digit scratch filled by alpMainStats: it subtracts the FOR minimum in place and
+// bit-packs, avoiding the second alpEncodeDigit pass over the column. Output is
+// byte-identical to encodeMain when nExc == 0.
+func (e *NumericALPEncoder) encodeMainFast(ee, ff int, mn int64, width int, digits []uint64) {
+	for i := range digits {
+		digits[i] = uint64(int64(digits[i]) - mn) //nolint:gosec
+	}
+
+	eng := e.engine
+	e.buf.B = append(e.buf.B, byte(ee), byte(ff), byte(width))
+	e.buf.B = eng.AppendUint32(e.buf.B, 0)          // nExc == 0
+	e.buf.B = eng.AppendUint64(e.buf.B, uint64(mn)) //nolint:gosec
+	e.buf.B = alpPackBits(e.buf.B, digits, width)
 }
 
 func (e *NumericALPEncoder) encodeMain(values []float64, ee, ff int, mn int64, width int) {
@@ -385,21 +427,58 @@ func alpRDBuildDict(patterns []uint64, rbw int) (dict []uint64, codeOf map[uint6
 }
 
 // alpRDBestCut returns the right bit width minimizing the estimated ALP-RD size,
-// and that estimated size in bits.
+// and that estimated size in bits. The 16 candidate cuts reuse a single cleared
+// frequency map and scratch slice instead of allocating a fresh map+dict per cut,
+// and count exceptions against the (≤8-entry) top dict by linear scan — no codeOf
+// map. The chosen rbw is identical to building each dict independently.
 func alpRDBestCut(patterns []uint64) (rbw, totalBits int) {
 	best := math.MaxInt
+	n := len(patterns)
+	freq := make(map[uint64]int, n)
+	type lv struct {
+		left  uint64
+		count int
+	}
+	var lvs []lv
+	var top [alpRDMaxDictSize]uint64
 	for i := 1; i <= alpRDCutLimit; i++ {
 		r := 64 - i
-		dict, codeOf := alpRDBuildDict(patterns, r)
+		clear(freq)
+		for _, p := range patterns {
+			freq[p>>r]++
+		}
+		lvs = lvs[:0]
+		for l, c := range freq {
+			lvs = append(lvs, lv{l, c})
+		}
+		sort.Slice(lvs, func(a, b int) bool {
+			if lvs[a].count != lvs[b].count {
+				return lvs[a].count > lvs[b].count
+			}
+
+			return lvs[a].left < lvs[b].left
+		})
+		nDict := min(alpRDMaxDictSize, len(lvs))
+		for k := range nDict {
+			top[k] = lvs[k].left
+		}
 		ex := 0
 		for _, p := range patterns {
-			if _, ok := codeOf[p>>uint(r)]; !ok { //nolint:gosec
+			l := p >> r
+			found := false
+			for k := range nDict {
+				if top[k] == l {
+					found = true
+
+					break
+				}
+			}
+			if !found {
 				ex++
 			}
 		}
-		codeBits := alpCodeBits(len(dict))
-		n := len(patterns)
-		total := 8 + 8 + 8 + 32 + len(dict)*16 + n*codeBits + n*r + ex*(32+16)
+		codeBits := alpCodeBits(nDict)
+		total := 8 + 8 + 8 + 32 + nDict*16 + n*codeBits + n*r + ex*(32+16)
 		if total < best {
 			best = total
 			rbw, totalBits = r, total
@@ -494,6 +573,7 @@ func (e *NumericALPEncoder) Finish() {
 	e.count = 0
 	e.seqCount = 0
 	e.pending = nil
+	e.codeScratch = nil
 	e.flushed = false
 }
 
