@@ -140,7 +140,7 @@ func TestAlpBestEF_Differential(t *testing.T) {
 
 // genALPColumns mimics measurev2's gauge generator: ±0.5% random walk from 100,
 // quantized to `decimals` places (decimals<0 = full precision).
-func genALPColumns(nCols, nPts, decimals int, seed int64) [][]float64 {
+func genALPColumns(nCols, nPts, decimals int, seed int64) [][]float64 { //nolint:unparam // nCols kept explicit to mirror measurev2's 100-column profile
 	rng := rand.New(rand.NewSource(seed))
 	scale := math.Pow(10, float64(decimals))
 	cols := make([][]float64, nCols)
