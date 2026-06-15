@@ -1,0 +1,1941 @@
+{
+  "metadata": {
+    "go_version": "go1.26.1",
+    "os": "linux",
+    "arch": "amd64",
+    "num_cpu": 32,
+    "timestamp": "2026-06-15T18:08:40.806022534+08:00",
+    "data_config": {
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "value_jitter_pct": 0.5,
+      "ts_jitter_pct": 0.1,
+      "seed": 42,
+      "profile": "decimal_gauge_4dp"
+    }
+  },
+  "matrix": [
+    {
+      "label": "raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 643232,
+      "bytes_per_point": 16.0808,
+      "vs_raw_ratio": 1,
+      "space_savings_pct": 0,
+      "encode": {
+        "ns_per_op": 335823.2974271982,
+        "bytes_per_op": 704111,
+        "allocs_per_op": 35
+      },
+      "decode": {
+        "ns_per_op": 5599.785250778277,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 284388.63083213085,
+        "bytes_per_op": 28808,
+        "allocs_per_op": 801
+      }
+    },
+    {
+      "label": "raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 582698,
+      "bytes_per_point": 14.56745,
+      "vs_raw_ratio": 1.10388571781609,
+      "space_savings_pct": 9.410912392418291,
+      "encode": {
+        "ns_per_op": 462104.69826589595,
+        "bytes_per_op": 635584,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5694.529627096181,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 308273.6299333675,
+        "bytes_per_op": 22408,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 572686,
+      "bytes_per_point": 14.31715,
+      "vs_raw_ratio": 1.1231844326559406,
+      "space_savings_pct": 10.967426993681906,
+      "encode": {
+        "ns_per_op": 574581.7409579668,
+        "bytes_per_op": 619527,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5594.13035738231,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 431109.7078611898,
+        "bytes_per_op": 22408,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 430073,
+      "bytes_per_point": 10.751825,
+      "vs_raw_ratio": 1.4956344620564417,
+      "space_savings_pct": 33.138743097358336,
+      "encode": {
+        "ns_per_op": 5623726.202830189,
+        "bytes_per_op": 5887915,
+        "allocs_per_op": 24116
+      },
+      "decode": {
+        "ns_per_op": 5593.183315890913,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 1016451.7788378143,
+        "bytes_per_op": 736011,
+        "allocs_per_op": 1001
+      }
+    },
+    {
+      "label": "delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 365232,
+      "bytes_per_point": 9.1308,
+      "vs_raw_ratio": 1.7611600297892847,
+      "space_savings_pct": 43.21924282374011,
+      "encode": {
+        "ns_per_op": 302747.50847886613,
+        "bytes_per_op": 413881,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5665.571146693593,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 250486.86226534485,
+        "bytes_per_op": 25608,
+        "allocs_per_op": 801
+      }
+    },
+    {
+      "label": "delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 304698,
+      "bytes_per_point": 7.61745,
+      "vs_raw_ratio": 2.1110476603062707,
+      "space_savings_pct": 52.63015521615839,
+      "encode": {
+        "ns_per_op": 422944.4611738972,
+        "bytes_per_op": 360331,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5703.301399429089,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 250354.30919277857,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 294686,
+      "bytes_per_point": 7.36715,
+      "vs_raw_ratio": 2.1827708136796455,
+      "space_savings_pct": 54.186669817422015,
+      "encode": {
+        "ns_per_op": 549110.7399716848,
+        "bytes_per_op": 344418,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5901.509833000194,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 361867.29686558165,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 152073,
+      "bytes_per_point": 3.801825,
+      "vs_raw_ratio": 4.229758076713157,
+      "space_savings_pct": 76.35798592109846,
+      "encode": {
+        "ns_per_op": 5535840.827102804,
+        "bytes_per_op": 5598839,
+        "allocs_per_op": 24116
+      },
+      "decode": {
+        "ns_per_op": 5655.597609673266,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 1012079.7855946398,
+        "bytes_per_op": 736010,
+        "allocs_per_op": 1001
+      }
+    },
+    {
+      "label": "deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 375232,
+      "bytes_per_point": 9.3808,
+      "vs_raw_ratio": 1.7142247995906532,
+      "space_savings_pct": 41.66459380130342,
+      "encode": {
+        "ns_per_op": 325415.34208273893,
+        "bytes_per_op": 422579,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5680.796916201738,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 223210.5669625627,
+        "bytes_per_op": 25608,
+        "allocs_per_op": 801
+      }
+    },
+    {
+      "label": "deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 314698,
+      "bytes_per_point": 7.86745,
+      "vs_raw_ratio": 2.043965961016594,
+      "space_savings_pct": 51.0755061937217,
+      "encode": {
+        "ns_per_op": 453324.2718146718,
+        "bytes_per_op": 369455,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5855.925763836294,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 303311.7463768116,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 304686,
+      "bytes_per_point": 7.61715,
+      "vs_raw_ratio": 2.1111308035157506,
+      "space_savings_pct": 52.63202079498532,
+      "encode": {
+        "ns_per_op": 584898.4369414102,
+        "bytes_per_op": 363043,
+        "allocs_per_op": 34
+      },
+      "decode": {
+        "ns_per_op": 5642.431765820668,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 404784.8816230718,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 162073,
+      "bytes_per_point": 4.051825,
+      "vs_raw_ratio": 3.9687795005954105,
+      "space_savings_pct": 74.80333689866177,
+      "encode": {
+        "ns_per_op": 5608374.358490566,
+        "bytes_per_op": 5604644,
+        "allocs_per_op": 24116
+      },
+      "decode": {
+        "ns_per_op": 5657.502271943226,
+        "bytes_per_op": 32824,
+        "allocs_per_op": 7
+      },
+      "iter_seq": {
+        "ns_per_op": 1024617.8875739645,
+        "bytes_per_op": 736010,
+        "allocs_per_op": 1001
+      }
+    },
+    {
+      "label": "shared-raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 325236,
+      "bytes_per_point": 8.1309,
+      "vs_raw_ratio": 1.977739241658365,
+      "space_savings_pct": 49.437217053877916,
+      "encode": {
+        "ns_per_op": 350873.12306317047,
+        "bytes_per_op": 1089040,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6301.673305774074,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 286615.30668604653,
+        "bytes_per_op": 28808,
+        "allocs_per_op": 801
+      }
+    },
+    {
+      "label": "shared-raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 264702,
+      "bytes_per_point": 6.61755,
+      "vs_raw_ratio": 2.430023195895762,
+      "space_savings_pct": 58.848129446296205,
+      "encode": {
+        "ns_per_op": 501260.8231441048,
+        "bytes_per_op": 961405,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6456.113639691725,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 307020.1317287785,
+        "bytes_per_op": 22408,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "shared-raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 254690,
+      "bytes_per_point": 6.36725,
+      "vs_raw_ratio": 2.525548706270368,
+      "space_savings_pct": 60.40464404755983,
+      "encode": {
+        "ns_per_op": 661444.9517396184,
+        "bytes_per_op": 944475,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6504.608821065857,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 421363.9972027972,
+        "bytes_per_op": 22408,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "shared-raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 112077,
+      "bytes_per_point": 2.801925,
+      "vs_raw_ratio": 5.739197159095979,
+      "space_savings_pct": 82.57596015123626,
+      "encode": {
+        "ns_per_op": 5595676.995327103,
+        "bytes_per_op": 6066680,
+        "allocs_per_op": 24145
+      },
+      "decode": {
+        "ns_per_op": 6518.922257060117,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 996132.4876237623,
+        "bytes_per_op": 736012,
+        "allocs_per_op": 1001
+      }
+    },
+    {
+      "label": "shared-delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 323846,
+      "bytes_per_point": 8.09615,
+      "vs_raw_ratio": 1.9862280219610555,
+      "space_savings_pct": 49.653313267996616,
+      "encode": {
+        "ns_per_op": 321125.3032961191,
+        "bytes_per_op": 807938,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6544.619995775384,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 250388.95646892083,
+        "bytes_per_op": 25608,
+        "allocs_per_op": 801
+      }
+    },
+    {
+      "label": "shared-delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 263312,
+      "bytes_per_point": 6.5828,
+      "vs_raw_ratio": 2.442851066415507,
+      "space_savings_pct": 59.064225660414905,
+      "encode": {
+        "ns_per_op": 471159.2189751801,
+        "bytes_per_op": 684047,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6701.057499947131,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 252514.14641542127,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "shared-delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 253300,
+      "bytes_per_point": 6.3325,
+      "vs_raw_ratio": 2.5394078168180023,
+      "space_savings_pct": 60.62074026167852,
+      "encode": {
+        "ns_per_op": 600115.2054726369,
+        "bytes_per_op": 658288,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6608.791494473048,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 364612.009447889,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "shared-delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 110687,
+      "bytes_per_point": 2.767175,
+      "vs_raw_ratio": 5.811269616124748,
+      "space_savings_pct": 82.79205636535497,
+      "encode": {
+        "ns_per_op": 5527001.666666667,
+        "bytes_per_op": 5778713,
+        "allocs_per_op": 24145
+      },
+      "decode": {
+        "ns_per_op": 6695.36826884549,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 1056157.5249366018,
+        "bytes_per_op": 736012,
+        "allocs_per_op": 1001
+      }
+    },
+    {
+      "label": "shared-deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 323896,
+      "bytes_per_point": 8.0974,
+      "vs_raw_ratio": 1.9859214068713413,
+      "space_savings_pct": 49.64554002288444,
+      "encode": {
+        "ns_per_op": 361500.7556094603,
+        "bytes_per_op": 815574,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6565.334245301382,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 226459.06262626263,
+        "bytes_per_op": 25608,
+        "allocs_per_op": 801
+      }
+    },
+    {
+      "label": "shared-deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 263362,
+      "bytes_per_point": 6.58405,
+      "vs_raw_ratio": 2.4423872844222023,
+      "space_savings_pct": 59.05645241530273,
+      "encode": {
+        "ns_per_op": 491939.40457343886,
+        "bytes_per_op": 693975,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6685.271199671323,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 304076.4869739479,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "shared-deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 253350,
+      "bytes_per_point": 6.33375,
+      "vs_raw_ratio": 2.5389066508782316,
+      "space_savings_pct": 60.61296701656633,
+      "encode": {
+        "ns_per_op": 618326.4098883573,
+        "bytes_per_op": 668521,
+        "allocs_per_op": 64
+      },
+      "decode": {
+        "ns_per_op": 6708.19334999252,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 403368.4517092599,
+        "bytes_per_op": 19208,
+        "allocs_per_op": 601
+      }
+    },
+    {
+      "label": "shared-deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_per_metric": 200,
+      "total_points": 40000,
+      "encoded_bytes": 110737,
+      "bytes_per_point": 2.768425,
+      "vs_raw_ratio": 5.808645710105926,
+      "space_savings_pct": 82.78428312024278,
+      "encode": {
+        "ns_per_op": 5634314.576190476,
+        "bytes_per_op": 5782612,
+        "allocs_per_op": 24145
+      },
+      "decode": {
+        "ns_per_op": 6364.906114970191,
+        "bytes_per_op": 22696,
+        "allocs_per_op": 11
+      },
+      "iter_seq": {
+        "ns_per_op": 1020354.3604749788,
+        "bytes_per_op": 736011,
+        "allocs_per_op": 1001
+      }
+    }
+  ],
+  "scaling": [
+    {
+      "label": "raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 9632,
+          "bytes_per_point": 24.08
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 19232,
+          "bytes_per_point": 19.232
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 35232,
+          "bytes_per_point": 17.616
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 67232,
+          "bytes_per_point": 16.808
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 163232,
+          "bytes_per_point": 16.3232
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 323232,
+          "bytes_per_point": 16.1616
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 483232,
+          "bytes_per_point": 16.107733333333332
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 643232,
+          "bytes_per_point": 16.0808
+        }
+      ]
+    },
+    {
+      "label": "raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 9580,
+          "bytes_per_point": 23.95
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 18331,
+          "bytes_per_point": 18.331
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 32752,
+          "bytes_per_point": 16.376
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 61483,
+          "bytes_per_point": 15.37075
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 147805,
+          "bytes_per_point": 14.7805
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 292355,
+          "bytes_per_point": 14.61775
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 437353,
+          "bytes_per_point": 14.578433333333333
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 582698,
+          "bytes_per_point": 14.56745
+        }
+      ]
+    },
+    {
+      "label": "raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 9434,
+          "bytes_per_point": 23.585
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 17935,
+          "bytes_per_point": 17.935
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 32177,
+          "bytes_per_point": 16.0885
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 60621,
+          "bytes_per_point": 15.15525
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 145958,
+          "bytes_per_point": 14.5958
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 288212,
+          "bytes_per_point": 14.4106
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 430469,
+          "bytes_per_point": 14.348966666666668
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 572686,
+          "bytes_per_point": 14.31715
+        }
+      ]
+    },
+    {
+      "label": "raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6632,
+          "bytes_per_point": 33.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 9832,
+          "bytes_per_point": 24.58
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 16583,
+          "bytes_per_point": 16.583
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 26983,
+          "bytes_per_point": 13.4915
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 47809,
+          "bytes_per_point": 11.95225
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 110550,
+          "bytes_per_point": 11.055
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 216651,
+          "bytes_per_point": 10.83255
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 322566,
+          "bytes_per_point": 10.7522
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 430073,
+          "bytes_per_point": 10.751825
+        }
+      ]
+    },
+    {
+      "label": "delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 8832,
+          "bytes_per_point": 22.08
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 14232,
+          "bytes_per_point": 14.232
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 23232,
+          "bytes_per_point": 11.616
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 41232,
+          "bytes_per_point": 10.308
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 95232,
+          "bytes_per_point": 9.5232
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 185232,
+          "bytes_per_point": 9.2616
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 275232,
+          "bytes_per_point": 9.1744
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 365232,
+          "bytes_per_point": 9.1308
+        }
+      ]
+    },
+    {
+      "label": "delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 8780,
+          "bytes_per_point": 21.95
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 13331,
+          "bytes_per_point": 13.331
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 20752,
+          "bytes_per_point": 10.376
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 35483,
+          "bytes_per_point": 8.87075
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 79805,
+          "bytes_per_point": 7.9805
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 154355,
+          "bytes_per_point": 7.71775
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 229353,
+          "bytes_per_point": 7.6451
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 304698,
+          "bytes_per_point": 7.61745
+        }
+      ]
+    },
+    {
+      "label": "delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 8634,
+          "bytes_per_point": 21.585
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 12935,
+          "bytes_per_point": 12.935
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 20177,
+          "bytes_per_point": 10.0885
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 34621,
+          "bytes_per_point": 8.65525
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 77958,
+          "bytes_per_point": 7.7958
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 150212,
+          "bytes_per_point": 7.5106
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 222469,
+          "bytes_per_point": 7.415633333333333
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 294686,
+          "bytes_per_point": 7.36715
+        }
+      ]
+    },
+    {
+      "label": "delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6632,
+          "bytes_per_point": 33.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 9032,
+          "bytes_per_point": 22.58
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 11583,
+          "bytes_per_point": 11.583
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 14983,
+          "bytes_per_point": 7.4915
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 21809,
+          "bytes_per_point": 5.45225
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 42550,
+          "bytes_per_point": 4.255
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 78651,
+          "bytes_per_point": 3.93255
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 114566,
+          "bytes_per_point": 3.8188666666666666
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 152073,
+          "bytes_per_point": 3.801825
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 8832,
+          "bytes_per_point": 22.08
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 14432,
+          "bytes_per_point": 14.432
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 23632,
+          "bytes_per_point": 11.816
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 42232,
+          "bytes_per_point": 10.558
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 97632,
+          "bytes_per_point": 9.7632
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 190232,
+          "bytes_per_point": 9.5116
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 282632,
+          "bytes_per_point": 9.421066666666666
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 375232,
+          "bytes_per_point": 9.3808
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 8780,
+          "bytes_per_point": 21.95
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 13531,
+          "bytes_per_point": 13.531
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 21152,
+          "bytes_per_point": 10.576
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 36483,
+          "bytes_per_point": 9.12075
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 82205,
+          "bytes_per_point": 8.2205
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 159355,
+          "bytes_per_point": 7.96775
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 236753,
+          "bytes_per_point": 7.891766666666666
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 314698,
+          "bytes_per_point": 7.86745
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6432,
+          "bytes_per_point": 32.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 8634,
+          "bytes_per_point": 21.585
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 13135,
+          "bytes_per_point": 13.135
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 20577,
+          "bytes_per_point": 10.2885
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 35621,
+          "bytes_per_point": 8.90525
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 80358,
+          "bytes_per_point": 8.0358
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 155212,
+          "bytes_per_point": 7.7606
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 229869,
+          "bytes_per_point": 7.6623
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 304686,
+          "bytes_per_point": 7.61715
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 6632,
+          "bytes_per_point": 33.16
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 9032,
+          "bytes_per_point": 22.58
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 11783,
+          "bytes_per_point": 11.783
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 15383,
+          "bytes_per_point": 7.6915
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 22809,
+          "bytes_per_point": 5.70225
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 44950,
+          "bytes_per_point": 4.495
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 83651,
+          "bytes_per_point": 4.18255
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 121966,
+          "bytes_per_point": 4.065533333333334
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 162073,
+          "bytes_per_point": 4.051825
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6852,
+          "bytes_per_point": 17.13
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 11676,
+          "bytes_per_point": 11.676
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 19716,
+          "bytes_per_point": 9.858
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 35796,
+          "bytes_per_point": 8.949
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 84036,
+          "bytes_per_point": 8.4036
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 164436,
+          "bytes_per_point": 8.2218
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 244836,
+          "bytes_per_point": 8.1612
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 325236,
+          "bytes_per_point": 8.1309
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6800,
+          "bytes_per_point": 17
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 10775,
+          "bytes_per_point": 10.775
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 17236,
+          "bytes_per_point": 8.618
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 30047,
+          "bytes_per_point": 7.51175
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 68609,
+          "bytes_per_point": 6.8609
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 133559,
+          "bytes_per_point": 6.67795
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 198957,
+          "bytes_per_point": 6.6319
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 264702,
+          "bytes_per_point": 6.61755
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6654,
+          "bytes_per_point": 16.635
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 10379,
+          "bytes_per_point": 10.379
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 16661,
+          "bytes_per_point": 8.3305
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 29185,
+          "bytes_per_point": 7.29625
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 66762,
+          "bytes_per_point": 6.6762
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 129416,
+          "bytes_per_point": 6.4708
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 192073,
+          "bytes_per_point": 6.402433333333334
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 254690,
+          "bytes_per_point": 6.36725
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5444,
+          "bytes_per_point": 27.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 7052,
+          "bytes_per_point": 17.63
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 9027,
+          "bytes_per_point": 9.027
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 11467,
+          "bytes_per_point": 5.7335
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 16373,
+          "bytes_per_point": 4.09325
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 31354,
+          "bytes_per_point": 3.1354
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 57855,
+          "bytes_per_point": 2.89275
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 84170,
+          "bytes_per_point": 2.8056666666666668
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 112077,
+          "bytes_per_point": 2.801925
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6848,
+          "bytes_per_point": 17.12
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 11651,
+          "bytes_per_point": 11.651
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 19656,
+          "bytes_per_point": 9.828
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 35666,
+          "bytes_per_point": 8.9165
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 83696,
+          "bytes_per_point": 8.3696
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 163746,
+          "bytes_per_point": 8.1873
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 243796,
+          "bytes_per_point": 8.126533333333333
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 323846,
+          "bytes_per_point": 8.09615
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6796,
+          "bytes_per_point": 16.99
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 10750,
+          "bytes_per_point": 10.75
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 17176,
+          "bytes_per_point": 8.588
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 29917,
+          "bytes_per_point": 7.47925
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 68269,
+          "bytes_per_point": 6.8269
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 132869,
+          "bytes_per_point": 6.64345
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 197917,
+          "bytes_per_point": 6.5972333333333335
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 263312,
+          "bytes_per_point": 6.5828
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6650,
+          "bytes_per_point": 16.625
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 10354,
+          "bytes_per_point": 10.354
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 16601,
+          "bytes_per_point": 8.3005
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 29055,
+          "bytes_per_point": 7.26375
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 66422,
+          "bytes_per_point": 6.6422
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 128726,
+          "bytes_per_point": 6.4363
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 191033,
+          "bytes_per_point": 6.367766666666666
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 253300,
+          "bytes_per_point": 6.3325
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5444,
+          "bytes_per_point": 27.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 7048,
+          "bytes_per_point": 17.62
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 9002,
+          "bytes_per_point": 9.002
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 11407,
+          "bytes_per_point": 5.7035
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 16243,
+          "bytes_per_point": 4.06075
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 31014,
+          "bytes_per_point": 3.1014
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 57165,
+          "bytes_per_point": 2.85825
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 83130,
+          "bytes_per_point": 2.771
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 110687,
+          "bytes_per_point": 2.767175
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6848,
+          "bytes_per_point": 17.12
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 11652,
+          "bytes_per_point": 11.652
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 19658,
+          "bytes_per_point": 9.829
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 35671,
+          "bytes_per_point": 8.91775
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 83708,
+          "bytes_per_point": 8.3708
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 163771,
+          "bytes_per_point": 8.18855
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 243833,
+          "bytes_per_point": 8.127766666666666
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 323896,
+          "bytes_per_point": 8.0974
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6796,
+          "bytes_per_point": 16.99
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 10751,
+          "bytes_per_point": 10.751
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 17178,
+          "bytes_per_point": 8.589
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 29922,
+          "bytes_per_point": 7.4805
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 68281,
+          "bytes_per_point": 6.8281
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 132894,
+          "bytes_per_point": 6.6447
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 197954,
+          "bytes_per_point": 6.598466666666667
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 263362,
+          "bytes_per_point": 6.58405
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5244,
+          "bytes_per_point": 26.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 6650,
+          "bytes_per_point": 16.625
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 10355,
+          "bytes_per_point": 10.355
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 16603,
+          "bytes_per_point": 8.3015
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 29060,
+          "bytes_per_point": 7.265
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 66434,
+          "bytes_per_point": 6.6434
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 128751,
+          "bytes_per_point": 6.43755
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 191070,
+          "bytes_per_point": 6.369
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 253350,
+          "bytes_per_point": 6.33375
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 200,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 5444,
+          "bytes_per_point": 27.22
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 7048,
+          "bytes_per_point": 17.62
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 9003,
+          "bytes_per_point": 9.003
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 11409,
+          "bytes_per_point": 5.7045
+        },
+        {
+          "points_per_metric": 20,
+          "encoded_bytes": 16248,
+          "bytes_per_point": 4.062
+        },
+        {
+          "points_per_metric": 50,
+          "encoded_bytes": 31026,
+          "bytes_per_point": 3.1026
+        },
+        {
+          "points_per_metric": 100,
+          "encoded_bytes": 57190,
+          "bytes_per_point": 2.8595
+        },
+        {
+          "points_per_metric": 150,
+          "encoded_bytes": 83167,
+          "bytes_per_point": 2.7722333333333333
+        },
+        {
+          "points_per_metric": 200,
+          "encoded_bytes": 110737,
+          "bytes_per_point": 2.768425
+        }
+      ]
+    }
+  ]
+}
