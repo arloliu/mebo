@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-06-22
+
 ### Added
+- `TypeALP = 0x6`: ALP (Adaptive Lossless floating-Point) value codec is now a first-class,
+  user-selectable value encoding. Select it via `WithValueEncoding(format.TypeALP)` on the
+  numeric encoder. ALP typically achieves 3–5× better compression than Chimp/Gorilla on
+  low-decimal-precision gauge data (2–4 dp). **Forward-incompatible addition**: blobs written
+  with `TypeALP` cannot be read by older mebo versions; blobs written with prior encodings are
+  entirely unaffected.
 - Single-column callback iteration on `NumericBlob`: `ForEachValues` / `ForEachValuesByName`
   and `ForEachTimestamps` / `ForEachTimestampsByName` — zero-allocation push equivalents of
   `AllValues` / `AllTimestamps` (identical data, with a 0-based index). Hot-path scans avoid the
@@ -16,12 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Callback iteration on `NumericBlobSet`: `ForEach`, `ForEachValues`, `ForEachTimestamps` and
   their `…ByName` variants — push equivalents of the set's `All` / `AllValues` / `AllTimestamps`,
   preserving the continuous global index across blobs.
-- `TypeALP = 0x6`: ALP (Adaptive Lossless floating-Point) value codec is now a first-class,
-  user-selectable value encoding. Select it via `WithValueEncoding(format.TypeALP)` on the
-  numeric encoder. ALP typically achieves 3–5× better compression than Chimp/Gorilla on
-  low-decimal-precision gauge data (2–4 dp). **Forward-incompatible addition**: blobs written
-  with `TypeALP` cannot be read by older mebo versions; blobs written with prior encodings are
-  entirely unaffected.
 
 ### Performance
 - New `ForEach*` single-column and BlobSet iterators are allocation-free on the hot path. On
@@ -292,7 +294,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.7.1...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/arloliu/mebo/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/arloliu/mebo/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/arloliu/mebo/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/arloliu/mebo/compare/v1.5.0...v1.6.0
