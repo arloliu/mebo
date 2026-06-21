@@ -4,7 +4,7 @@
 |---|---|
 | **Date** | 2026-06-13 |
 | **Platform** | AMD Ryzen 9 9950X3D (Zen 5), linux/amd64, Go 1.26.1 |
-| **Scope** | `blob.NumericBlob` — new public API (`ForEach`, `ForEachByName`) |
+| **Scope** | `blob.NumericBlob` / `blob.NumericBlobSet` — push iteration API (`ForEach`, `ForEachValues`, `ForEachTimestamps`, +`ByName`); single-column & BlobSet variants added 2026-06-21 |
 | **Format impact** | None — read-side only |
 | **Predecessor** | [ITERATE_CLOSURE_OPTIMIZATION.md](ITERATE_CLOSURE_OPTIMIZATION.md) ("Remaining levers" #1) |
 
@@ -40,6 +40,48 @@ Implementation notes:
   combos keep their priming logic in one place (`fused_each.go`), and
   deltapacked-raw keeps its SIMD bulk path.
 
+## Why two APIs (`All*` vs `ForEach*`), not just a faster `All*`
+
+`ForEach*` is **behaviorally identical** to the matching `All*` — same values,
+same order, same indices (the equivalence tests assert this byte-for-byte). So
+the natural question is: why ship a parallel API instead of making `All*`
+faster?
+
+Because the cost is the `iter.Seq` **contract**, not the implementation. The
+two allocations and the slower hot loop are baked into the signature and no
+internal optimization removes them:
+
+1. `AllValues` returns `iter.Seq[float64]` = `func(yield func(float64) bool)`.
+   That returned closure must be heap-allocated — it captures the decoder,
+   payload slice and count and is returned across the method boundary.
+2. The caller's `for v := range blob.AllValues(id)` body is compiled into a
+   `func(float64) bool` and handed to that opaque iterator, so the loop body
+   escapes to the heap too.
+3. For the stateful codecs (Gorilla/Chimp/Delta) the decode cursor lives
+   *inside* the returned heap closure, so the hot loop does heap loads/stores
+   instead of register operations — this is the bulk of the wall-clock gap, not
+   just allocation amortization.
+
+`ForEach*` is the only shape that removes all three: it returns nothing (no
+iterator closure), takes the callback as a plain parameter down a static call
+chain (the callback stays on the caller's stack), and runs the decode loop in a
+static function (cursor in registers). **You cannot reach this floor without
+changing the signature** — which is why it is an API addition, not an internal
+tweak.
+
+They are the two standard Go iteration idioms, and they are not redundant:
+
+| | `All*` (pull / `iter.Seq`) | `ForEach*` (push / callback) |
+|---|---|---|
+| Idiom | `for v := range blob.AllValues(id)` | `blob.ForEachValues(id, fn)` |
+| Composes with | `slices.Collect`, stdlib iterator adapters; can be stored and passed around | nothing — must be consumed inline |
+| Allocation | ~3 allocs/call + heap-resident decode cursor | ~0 allocs/call + register-resident cursor |
+| Use it for | ergonomics, general use, composition | hot read paths (TSDB scans) |
+
+`All*` stays the idiomatic default; `ForEach*` is the zero-allocation escape
+hatch for the path that matters. Behavior is locked together by the equivalence
+tests, so `ForEach*` can never silently drift from `All*`.
+
 ## Results (200 metrics × 200 points, delta+gorilla, full scan of all fields)
 
 | Path | ns/op | ns/pt | B/op | allocs/op |
@@ -61,6 +103,82 @@ per-metric dispatch.
 - Early-stop, metric-not-found, and ByName tests.
 - Full test suite and `make lint` (0 issues) pass.
 - Permanent benchmark: `BenchmarkE2EForEach_DeltaGorilla`.
+
+## Extension: single-column and BlobSet ForEach (2026-06-21)
+
+The original round added `ForEach`/`ForEachByName` (full data point). This
+extension applies the same push-API shape to the single-column iterators and to
+`NumericBlobSet`, so the zero-allocation path is available whether a caller
+wants both columns, only values, or only timestamps.
+
+New public methods (`blob` package):
+
+- `NumericBlob.ForEachValues` / `ForEachValuesByName`
+- `NumericBlob.ForEachTimestamps` / `ForEachTimestampsByName`
+- `NumericBlobSet.ForEach` / `ForEachValues` / `ForEachTimestamps` (+ `…ByName`)
+
+Implementation notes:
+
+- Single-column dispatch (`forEachValuesFromEntry` / `forEachTimestampsFromEntry`)
+  mirrors `decodeValues` / `allTimestampsFromEntry` and routes to static decode
+  functions in `internal/encoding/fused_each.go`: Gorilla→`FusedGorillaEach`,
+  Chimp→`FusedChimpEach`, raw→`RawValuesEach`/`RawTimestampsEach`,
+  delta→`FusedDeltaEach`, deltaPacked→`FusedDeltaPackedEach` (new). The
+  shared-timestamp cache fast path is honored. ALP (and any future codec
+  without a static `Each`) drains `decodeValues` — identical to `AllValues`
+  (no `iter.Pull` for a single column), so no regression, it just forgoes the
+  stack-state speedup.
+- Unlike the data-point path there is **no adapter hop** to remove for a single
+  column (`decoder.All` already yields the scalar directly). The win is
+  therefore the stack-resident decode cursor (≈ the same effect documented in
+  [ITERATE_CLOSURE_OPTIMIZATION.md](ITERATE_CLOSURE_OPTIMIZATION.md)) plus the
+  elimination of the per-call iterator and loop-body allocations.
+- `RawTimestampsEach` carries a `len(data)%8 != 0` guard to stay byte-identical
+  with `TimestampRawDecoder.All` (which rejects unaligned payloads); the raw
+  *value* decoder does not reject them, so `RawValuesEach` deliberately omits
+  the guard.
+- `NumericBlobSet.ForEach*` delegate to the per-blob `ForEach*` and remap each
+  blob's local index to a continuous global index (matching the set's `All`).
+  They compound two wins: removing the set-level iterator closure *and* reaching
+  the per-blob static loops. The six methods share one generic engine,
+  `forEachAcrossBlobs[K,T]`, with the per-blob method passed as a method
+  expression so each call site is a one-liner. The generic form's closure
+  carries a runtime dictionary that adds ~16 B per metric (≈ +800 B/scan) of
+  transient garbage versus a hand-written method, with **no change in
+  allocation count or wall time** — accepted as a readability trade.
+
+### Single-blob results (200 metrics × 200 points, delta+gorilla)
+
+| Path | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `for v := range nb.AllValues(id)` | 184 µs | 16.0 KB | 601 |
+| `nb.ForEachValues(id, fn)` | 137 µs | 24 B | 2 |
+| `for ts := range nb.AllTimestamps(id)` | 148 µs | 16.0 KB | 601 |
+| `nb.ForEachTimestamps(id, fn)` | 120 µs | 24 B | 2 |
+
+Values −25%, timestamps −18%; 601→2 allocs, 16 KB→24 B (the residual 2 allocs
+are the hoisted callback, once per scan).
+
+### BlobSet results (10 blobs × 50 metrics × 200 points, delta+gorilla)
+
+| Path | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `set.AllValues` | 527 µs | 49.6 KB | 1601 |
+| `set.ForEachValues` | 407 µs | 2.4 KB | 102 |
+| `set.AllTimestamps` | 388 µs | 49.6 KB | 1601 |
+| `set.ForEachTimestamps` | 285 µs | 2.4 KB | 102 |
+| `set.All` (data points) | 730 µs | 66.4 KB | 1651 |
+| `set.ForEach` | 577 µs | 2.4 KB | 102 |
+
+−21% to −26% wall time, 1601→102 allocs (~94% fewer); the residual ~2 allocs
+per metric are the set's per-call global-index adapter closure.
+
+Verification: `TestNumericBlob_ForEachValues_MatchesAll` /
+`…ForEachTimestamps_MatchesAll` (all 9 ts×val combos, ±tags, shared-TS cache),
+early-stop / not-found / nil-yield / ByName, and the BlobSet equivalence tests
+including the sparse (metric-absent-in-some-blobs) global-index case. Permanent
+benchmarks: `BenchmarkE2E{ForEach,Iterate}{Values,Timestamps}_DeltaGorilla` and
+`BenchmarkNumericBlobSet_{All,ForEach}{,Values,Timestamps}`.
 
 ## Remaining levers
 

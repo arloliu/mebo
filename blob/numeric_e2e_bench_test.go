@@ -226,6 +226,104 @@ func BenchmarkE2EIterate_DeltaGorilla(b *testing.B) {
 	}
 }
 
+// Single-column iteration: AllValues / AllTimestamps (range-over-func) vs the
+// callback-style ForEachValues / ForEachTimestamps, default delta+gorilla combo.
+
+func BenchmarkE2EIterateValues_DeltaGorilla(b *testing.B) {
+	d := genE2EBenchData(200, 200)
+	nb := decodeE2EBlob(b, e2eBenchEncode(b, d, format.TypeDelta, format.TypeGorilla))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var vsink float64
+		for _, id := range d.metricIDs {
+			for v := range nb.AllValues(id) {
+				vsink += v
+			}
+		}
+		if vsink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkE2EForEachValues_DeltaGorilla(b *testing.B) {
+	d := genE2EBenchData(200, 200)
+	nb := decodeE2EBlob(b, e2eBenchEncode(b, d, format.TypeDelta, format.TypeGorilla))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var vsink float64
+		fn := func(_ int, v float64) bool {
+			vsink += v
+			return true
+		}
+		for _, id := range d.metricIDs {
+			nb.ForEachValues(id, fn)
+		}
+		if vsink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkE2EIterateTimestamps_DeltaGorilla(b *testing.B) {
+	d := genE2EBenchData(200, 200)
+	nb := decodeE2EBlob(b, e2eBenchEncode(b, d, format.TypeDelta, format.TypeGorilla))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var sink int64
+		for _, id := range d.metricIDs {
+			for ts := range nb.AllTimestamps(id) {
+				sink += ts
+			}
+		}
+		if sink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkE2EForEachTimestamps_DeltaGorilla(b *testing.B) {
+	d := genE2EBenchData(200, 200)
+	nb := decodeE2EBlob(b, e2eBenchEncode(b, d, format.TypeDelta, format.TypeGorilla))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var sink int64
+		fn := func(_ int, ts int64) bool {
+			sink += ts
+			return true
+		}
+		for _, id := range d.metricIDs {
+			nb.ForEachTimestamps(id, fn)
+		}
+		if sink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+// decodeE2EBlob decodes a finished blob for the iteration benchmarks.
+func decodeE2EBlob(b *testing.B, blobBytes []byte) NumericBlob {
+	b.Helper()
+	decoder, err := NewNumericDecoder(blobBytes)
+	if err != nil {
+		b.Fatal(err)
+	}
+	nb, err := decoder.Decode()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	return nb
+}
+
 // TestNumericBlob_ALP_BeatsChimpOnDecimals builds an ALP blob and a Chimp blob
 // over the same 2-dp decimal gauge series (n=1000 points, single metric) and
 // asserts that ALP's finished byte length is strictly smaller than Chimp's.

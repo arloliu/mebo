@@ -1914,3 +1914,134 @@ func BenchmarkBlobSet_HelperMethods_Combined(b *testing.B) {
 		}
 	}
 }
+
+// ==============================================================================
+// Benchmark: NumericBlobSet ForEach (callback) vs All* (range-over-func)
+// 10 blobs x 50 metrics x 200 points, default delta+gorilla encoding.
+// ==============================================================================
+
+func buildNumericBlobSetForBench(b *testing.B) (NumericBlobSet, []uint64) {
+	b.Helper()
+	blobs, err := createBlobsWithSameMetrics(10, 50, 200)
+	if err != nil {
+		b.Fatal(err)
+	}
+	set, err := NewNumericBlobSet(blobs)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	return set, blobs[0].MetricIDs()
+}
+
+func BenchmarkNumericBlobSet_AllValues(b *testing.B) {
+	set, mids := buildNumericBlobSetForBench(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var vsink float64
+		for _, m := range mids {
+			for v := range set.AllValues(m) {
+				vsink += v
+			}
+		}
+		if vsink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkNumericBlobSet_ForEachValues(b *testing.B) {
+	set, mids := buildNumericBlobSetForBench(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var vsink float64
+		fn := func(_ int, v float64) bool {
+			vsink += v
+			return true
+		}
+		for _, m := range mids {
+			set.ForEachValues(m, fn)
+		}
+		if vsink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkNumericBlobSet_AllTimestamps(b *testing.B) {
+	set, mids := buildNumericBlobSetForBench(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var sink int64
+		for _, m := range mids {
+			for ts := range set.AllTimestamps(m) {
+				sink += ts
+			}
+		}
+		if sink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkNumericBlobSet_ForEachTimestamps(b *testing.B) {
+	set, mids := buildNumericBlobSetForBench(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var sink int64
+		fn := func(_ int, ts int64) bool {
+			sink += ts
+			return true
+		}
+		for _, m := range mids {
+			set.ForEachTimestamps(m, fn)
+		}
+		if sink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkNumericBlobSet_All(b *testing.B) {
+	set, mids := buildNumericBlobSetForBench(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var sink int64
+		var vsink float64
+		for _, m := range mids {
+			for _, dp := range set.All(m) {
+				sink += dp.Ts
+				vsink += dp.Val
+			}
+		}
+		if sink == 0 && vsink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
+
+func BenchmarkNumericBlobSet_ForEach(b *testing.B) {
+	set, mids := buildNumericBlobSetForBench(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var sink int64
+		var vsink float64
+		fn := func(_ int, dp NumericDataPoint) bool {
+			sink += dp.Ts
+			vsink += dp.Val
+			return true
+		}
+		for _, m := range mids {
+			set.ForEach(m, fn)
+		}
+		if sink == 0 && vsink == 0 {
+			b.Fatal("no data")
+		}
+	}
+}
