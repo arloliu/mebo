@@ -240,3 +240,189 @@ func forEachDeltaChimp(tsBytes, valBytes []byte, count int, yield func(int, Nume
 		}
 	}
 }
+
+// ForEachValues calls yield for each value of the given metric ID in insertion
+// order, stopping early if yield returns false. The index passed to yield
+// starts at 0 and increments for each value.
+//
+// ForEachValues is the callback (push) equivalent of AllValues and yields
+// identical data. Prefer it in hot read paths: AllValues must return a
+// heap-allocated iterator and makes the caller's range loop body escape to the
+// heap, while ForEachValues dispatches straight to a static decode loop that
+// keeps the callback and decoder cursor on the stack — allocation-free per
+// call. For the stateful value codecs (Gorilla/Chimp) it is also faster because
+// the XOR decode state stays in registers instead of a heap closure.
+//
+// Parameters:
+//   - metricID: The metric ID to iterate over.
+//   - yield: Callback receiving (0-based index, value); return false to stop
+//     iteration early.
+//
+// Returns:
+//   - bool: false if the metric ID does not exist in the blob, true otherwise
+//     (including when iteration was stopped early by yield).
+func (b NumericBlob) ForEachValues(metricID uint64, yield func(idx int, val float64) bool) bool {
+	if yield == nil {
+		return false
+	}
+
+	entry, ok := b.index.GetByID(metricID)
+	if !ok {
+		return false
+	}
+
+	b.forEachValuesFromEntry(entry, yield)
+
+	return true
+}
+
+// ForEachValuesByName calls yield for each value of the given metric name in
+// insertion order, stopping early if yield returns false.
+//
+// See ForEachValues for semantics and performance characteristics.
+//
+// Returns:
+//   - bool: false if the metric name does not exist in the blob, true otherwise
+//     (including when iteration was stopped early by yield).
+func (b NumericBlob) ForEachValuesByName(metricName string, yield func(idx int, val float64) bool) bool {
+	if yield == nil {
+		return false
+	}
+
+	entry, ok := b.lookupMetricEntry(metricName)
+	if !ok {
+		return false
+	}
+
+	b.forEachValuesFromEntry(entry, yield)
+
+	return true
+}
+
+// ForEachTimestamps calls yield for each timestamp of the given metric ID in
+// insertion order, stopping early if yield returns false. The index passed to
+// yield starts at 0 and increments for each timestamp.
+//
+// ForEachTimestamps is the callback (push) equivalent of AllTimestamps and
+// yields identical data. See ForEachValues for the performance rationale; the
+// timestamp codecs (Delta / DeltaPacked) get the same stack-state speedup as
+// the XOR value codecs. The shared-timestamp cache fast path is honored.
+//
+// Returns:
+//   - bool: false if the metric ID does not exist in the blob, true otherwise
+//     (including when iteration was stopped early by yield).
+func (b NumericBlob) ForEachTimestamps(metricID uint64, yield func(idx int, ts int64) bool) bool {
+	if yield == nil {
+		return false
+	}
+
+	entry, ok := b.index.GetByID(metricID)
+	if !ok {
+		return false
+	}
+
+	b.forEachTimestampsFromEntry(entry, yield)
+
+	return true
+}
+
+// ForEachTimestampsByName calls yield for each timestamp of the given metric
+// name in insertion order, stopping early if yield returns false.
+//
+// See ForEachTimestamps for semantics and performance characteristics.
+//
+// Returns:
+//   - bool: false if the metric name does not exist in the blob, true otherwise
+//     (including when iteration was stopped early by yield).
+func (b NumericBlob) ForEachTimestampsByName(metricName string, yield func(idx int, ts int64) bool) bool {
+	if yield == nil {
+		return false
+	}
+
+	entry, ok := b.lookupMetricEntry(metricName)
+	if !ok {
+		return false
+	}
+
+	b.forEachTimestampsFromEntry(entry, yield)
+
+	return true
+}
+
+// forEachValuesFromEntry slices the value payload for the entry and dispatches
+// to the encoding-specific static decode loop. It mirrors decodeValues; keep
+// the two in sync.
+func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, yield func(int, float64) bool) {
+	if entry.Count == 0 {
+		return
+	}
+
+	valBytes, ok := safeSlice(b.valPayload, entry.ValueOffset, entry.ValueLength)
+	if !ok {
+		return
+	}
+
+	switch b.ValueEncoding() { //nolint:exhaustive // default branch drains the remaining codecs
+	case format.TypeGorilla:
+		ienc.FusedGorillaEach(valBytes, entry.Count, yield)
+	case format.TypeChimp:
+		ienc.FusedChimpEach(valBytes, entry.Count, yield)
+	case format.TypeRaw:
+		ienc.RawValuesEach(valBytes, entry.Count, b.Engine(), b.sameByteOrder, yield)
+	default:
+		// ALP (and any future codec without a static Each) drains the
+		// slice-decode iterator. For a single column this matches AllValues
+		// exactly — no iter.Pull — so there is no regression; it just does not
+		// get the stack-state speedup.
+		i := 0
+		for v := range b.decodeValues(valBytes, entry.Count) {
+			if !yield(i, v) {
+				return
+			}
+			i++
+		}
+	}
+}
+
+// forEachTimestampsFromEntry slices the timestamp payload for the entry and
+// dispatches to the encoding-specific static decode loop. It mirrors
+// allTimestampsFromEntry (including the shared-TS cache fast path); keep them in
+// sync.
+func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry, yield func(int, int64) bool) {
+	if entry.Count == 0 {
+		return
+	}
+
+	// Fast path: yield cached pre-decoded shared timestamps.
+	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
+		for i, ts := range cached {
+			if !yield(i, ts) {
+				return
+			}
+		}
+
+		return
+	}
+
+	tsBytes, ok := safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)
+	if !ok {
+		return
+	}
+
+	switch b.tsEncType { //nolint:exhaustive // default branch drains the remaining codecs
+	case format.TypeDelta:
+		ienc.FusedDeltaEach(tsBytes, entry.Count, yield)
+	case format.TypeDeltaPacked:
+		ienc.FusedDeltaPackedEach(tsBytes, entry.Count, yield)
+	case format.TypeRaw:
+		ienc.RawTimestampsEach(tsBytes, entry.Count, b.Engine(), b.sameByteOrder, yield)
+	default:
+		i := 0
+		for ts := range b.decodeTimestamps(tsBytes, entry.Count) {
+			if !yield(i, ts) {
+				return
+			}
+			i++
+		}
+	}
+}

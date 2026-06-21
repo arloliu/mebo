@@ -8,12 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Single-column callback iteration on `NumericBlob`: `ForEachValues` / `ForEachValuesByName`
+  and `ForEachTimestamps` / `ForEachTimestampsByName` — zero-allocation push equivalents of
+  `AllValues` / `AllTimestamps` (identical data, with a 0-based index). Hot-path scans avoid the
+  `iter.Seq` iterator-closure and escaping range-body allocations and keep the decode cursor on
+  the stack.
+- Callback iteration on `NumericBlobSet`: `ForEach`, `ForEachValues`, `ForEachTimestamps` and
+  their `…ByName` variants — push equivalents of the set's `All` / `AllValues` / `AllTimestamps`,
+  preserving the continuous global index across blobs.
 - `TypeALP = 0x6`: ALP (Adaptive Lossless floating-Point) value codec is now a first-class,
   user-selectable value encoding. Select it via `WithValueEncoding(format.TypeALP)` on the
   numeric encoder. ALP typically achieves 3–5× better compression than Chimp/Gorilla on
   low-decimal-precision gauge data (2–4 dp). **Forward-incompatible addition**: blobs written
   with `TypeALP` cannot be read by older mebo versions; blobs written with prior encodings are
   entirely unaffected.
+
+### Performance
+- New `ForEach*` single-column and BlobSet iterators are allocation-free on the hot path. On
+  the reference workload (delta+gorilla): `NumericBlob` values −25% / timestamps −18% with
+  601→2 allocs per scan; `NumericBlobSet` values −22% / timestamps −26% / data points −21%
+  with 1601→102 allocs (~94% fewer). Output is byte-identical to the corresponding `All*`
+  methods. Backed by new static decoders in `internal/encoding` (`FusedDeltaPackedEach`,
+  `RawValuesEach`, `RawTimestampsEach`).
 
 ## [1.7.1] - 2026-06-13
 

@@ -1,5 +1,11 @@
 package encoding
 
+import (
+	"math"
+
+	"github.com/arloliu/mebo/endian"
+)
+
 // Callback-style fused decoders ("Each" variants). These mirror the Seq2/Seq
 // iterator forms but take the yield callback as a plain parameter, which keeps
 // the caller's adapter closure and loop state on the stack: escape analysis
@@ -342,6 +348,153 @@ func FusedChimpEach(valData []byte, count int, yield func(int, float64) bool) {
 		}
 
 		if !yield(i, cs.prevFloat) {
+			return
+		}
+	}
+}
+
+// FusedDeltaPackedEach decodes Group Varint packed delta-of-delta timestamps,
+// invoking yield with (index, timestamp) for each data point. It is the
+// timestamp-only counterpart of FusedDeltaPackedGorillaEach (same packed decode
+// state machine, no value stream). Stops early if yield returns false.
+//
+// Like the other Each variants this must stay a static package-level function:
+// running the same loop inside a heap-allocated range-over-func closure body
+// keeps the deltaPackedState cursor on the heap and measures slower (see
+// docs/perf/ITERATE_CLOSURE_OPTIMIZATION.md).
+func FusedDeltaPackedEach(tsData []byte, count int, yield func(int, int64) bool) {
+	if count == 0 || len(tsData) == 0 {
+		return
+	}
+
+	// First timestamp (full varint).
+	first, offset, tsOk := decodeVarint64(tsData, 0)
+	if !tsOk {
+		return
+	}
+
+	var dps deltaPackedState
+	dps.curTS = int64(first) //nolint:gosec
+	dps.offset = offset
+
+	if !yield(0, dps.curTS) {
+		return
+	}
+
+	if count == 1 {
+		return
+	}
+
+	// Second timestamp (zigzag delta).
+	zigzag, offset, tsOk := decodeVarint64(tsData, dps.offset)
+	if !tsOk {
+		return
+	}
+
+	delta := decodeZigZag64(zigzag)
+	dps.curTS += delta
+	dps.prevDelta = delta
+	dps.offset = offset
+
+	if !yield(1, dps.curTS) {
+		return
+	}
+
+	// Remaining: Group Varint packed delta-of-deltas.
+	idx := 2
+	remaining := count - 2
+	dps.groupLen = groupSize
+
+	for remaining > 0 {
+		if remaining < groupSize {
+			dps.groupLen = remaining
+		}
+
+		for range dps.groupLen {
+			if !decodeDeltaPackedTimestamp(&dps, tsData) {
+				return
+			}
+
+			if !yield(idx, dps.curTS) {
+				return
+			}
+			idx++
+		}
+
+		remaining -= dps.groupLen
+	}
+}
+
+// RawValuesEach decodes raw (uncompressed) float64 values, invoking yield with
+// (index, value) for each data point. When nativeByteOrder is true it reuses
+// the zero-copy unsafe reinterpret of the payload; otherwise it reads each value
+// through the endian engine. Stops early if yield returns false.
+//
+// Raw decode has no stateful bit cursor, so unlike the XOR/delta variants the
+// stack-vs-heap distinction does not change throughput here — the value of the
+// static form is purely that it allocates nothing per call (no returned
+// iterator closure, no escaping range-over-func body).
+func RawValuesEach(data []byte, count int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, float64) bool) {
+	if count == 0 || len(data) < count*8 {
+		return
+	}
+
+	if nativeByteOrder {
+		floats, err := unsafeDecodeFloat64Slice(data[:count*8])
+		if err == nil && floats != nil {
+			for i, v := range floats {
+				if !yield(i, v) {
+					return
+				}
+			}
+
+			return
+		}
+		// Fall through to the safe path if the unsafe reinterpret failed.
+	}
+
+	for i := range count {
+		start := i * 8
+		bits := engine.Uint64(data[start : start+8])
+		if !yield(i, math.Float64frombits(bits)) {
+			return
+		}
+	}
+}
+
+// RawTimestampsEach decodes raw (uncompressed) int64 timestamps, invoking yield
+// with (index, timestamp) for each data point. It mirrors RawValuesEach for the
+// timestamp column. Stops early if yield returns false.
+func RawTimestampsEach(data []byte, count int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, int64) bool) {
+	if count == 0 || len(data) < count*8 {
+		return
+	}
+
+	// Match TimestampRawDecoder.All, which rejects non-8-aligned payloads
+	// outright (the raw value decoder does not, so this guard is timestamp-only).
+	// Keeps ForEachTimestamps byte-identical to AllTimestamps on malformed entries.
+	if len(data)%8 != 0 {
+		return
+	}
+
+	if nativeByteOrder {
+		ts, err := unsafeDecodeInt64Slice(data[:count*8])
+		if err == nil && ts != nil {
+			for i, v := range ts {
+				if !yield(i, v) {
+					return
+				}
+			}
+
+			return
+		}
+		// Fall through to the safe path if the unsafe reinterpret failed.
+	}
+
+	for i := range count {
+		start := i * 8
+		ts := int64(engine.Uint64(data[start : start+8])) //nolint:gosec
+		if !yield(i, ts) {
 			return
 		}
 	}
