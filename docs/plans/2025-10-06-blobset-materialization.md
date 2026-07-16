@@ -365,7 +365,7 @@ Copy all accessor methods from `MaterializedNumericBlob`:
    - Document performance benchmarks
    - Add usage examples
 
-2. **Update docs/MATERIALIZATION_DESIGN.md**
+2. **Update docs/design/materialization_design.md**
    - Add BlobSet materialization section
    - Document design decisions
    - Add API examples
@@ -566,7 +566,7 @@ ts, ok := material.TimestampAt(metricID, 2500)
 
 ### Phase 6: Documentation (1 hour)
 - [ ] Update MATERIALIZATION_PROGRESS.md
-- [ ] Update docs/MATERIALIZATION_DESIGN.md
+- [ ] Update docs/design/materialization_design.md
 - [ ] Verify all godoc comments complete
 - [ ] Add usage examples
 - [ ] Final review and commit

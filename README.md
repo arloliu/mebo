@@ -28,7 +28,7 @@ Mebo is designed for **batch processing of already-collected metrics**, not stre
 
 **Encoding**
 - Timestamp encodings: Raw, Delta, DeltaPacked (Group Varint)
-- Value encodings: Raw, Gorilla (XOR), Chimp (improved XOR, VLDB 2022)
+- Value encodings: Raw, Gorilla (XOR), Chimp (improved XOR, VLDB 2022), ALP (Adaptive Lossless floating-Point, SIGMOD 2024) for decimal-quantized data
 - Optional codec compression: Zstd, S2, LZ4
 - Shared timestamps: deduplicates identical timestamp columns across metrics
 - Optional per-point tag support
@@ -122,22 +122,27 @@ for dp := range decoded.All(cpuID) {
 value, ok := decoded.ValueAt(cpuID, 5)
 ```
 
-For bulk insertion, buffer reuse with `FinishInto`, callback iteration with `ForEach`, multi-blob queries, materialization, tags, and custom IDs, see [Advanced Usage](docs/ADVANCED_USAGE.md).
+For bulk insertion, buffer reuse with `FinishInto`, callback iteration with `ForEach`, multi-blob queries, materialization, tags, and custom IDs, see [Advanced Usage](docs/advanced_usage.md).
 
 ## Performance
 
-Benchmark: 200 metrics x 200 points (40,000 total data points), AMD Ryzen 9 9950X3D, Go go1.26.0.
+Benchmark: 200 metrics × 200 points (40,000 total data points), AMD Ryzen 9 9950X3D, Go go1.26.1.
 
 | Configuration | Bytes/Point | Space Savings | Notes |
 |---------------|------------:|:-------------:|-------|
 | Shared Delta + Chimp | 6.349 | 60.5% | Best compression; requires shared timestamps |
-| Delta + Chimp | 8.302 | 48.4% | Best without shared timestamps |
-| Delta + Gorilla | 8.540 | 46.9% | Default; well-tested XOR encoding |
-| DeltaPacked + Raw | 10.244 | 36.3% | Fastest encode (476,939 ns/op) |
-| Raw + Raw | 16.081 | 0% | Baseline |
+| Delta + Chimp | 8.297 | 48.4% | Best without shared timestamps |
+| Delta + Gorilla | 8.544 | 46.9% | Default; well-tested XOR encoding |
+| Raw + Raw | 16.081 | 0% | Baseline; fastest encode (315,017 ns/op) |
 
-- Full benchmark tables, scaling analysis, and decision tree: [Performance Guide](docs/PERFORMANCE_V2.md)
-- Mebo vs FlatBuffers head-to-head: [Comparison](docs/COMPARISON_FLATBUFFERS.md)
+That table uses general-shape random-walk data. On **decimal-quantized data** — sensor readings
+rounded to a fixed number of decimal places, a very common real-world shape — ALP does
+dramatically better: **2.854 bytes/point (5.6× smaller than raw)** on a 2-decimal-place gauge
+profile. See [Performance Guide § Codec Selection by Data Shape](docs/performance.md#codec-selection-by-data-shape)
+for the full breakdown across data shapes (decimals, counters, sparse data, full-precision noise).
+
+- Full benchmark tables, scaling analysis, and decision tree: [Performance Guide](docs/performance.md)
+- Mebo vs FlatBuffers head-to-head: [Comparison](docs/comparison_flatbuffers.md)
 
 ## Encoding Strategies
 
@@ -158,6 +163,7 @@ Delta and DeltaPacked produce similar compression ratios (~2% difference). Use D
 | Raw | 8 bytes fixed | Rapidly changing values, random access |
 | Gorilla | 1–8 bytes | Slowly changing values (CPU, memory); XOR-based, VLDB 2015 |
 | Chimp | 1–8 bytes | Same as Gorilla; ~2.9% better compression; VLDB 2022 |
+| ALP | Variable | Decimal-quantized sensor data (2–4 dp): 4–6× smaller than raw, 1–2.5× smaller than the next-best codec. No guaranteed win on genuinely full-precision data — costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
 
 ### Compression Algorithms
 
@@ -184,7 +190,7 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 
 **Result**: 6.349 bytes/point (60.5% savings) when metrics share the same sampling schedule.
 
-All consumers must be upgraded to a Mebo version that supports V2 decoding **before** enabling this on producers. See [Best Practices](docs/BEST_PRACTICES.md#shared-timestamps-upgrade-consumers-before-producers).
+All consumers must be upgraded to a Mebo version that supports V2 decoding **before** enabling this on producers. See [Best Practices](docs/best_practices.md#shared-timestamps-upgrade-consumers-before-producers).
 
 ### Balanced Default (Delta + Gorilla)
 
@@ -193,9 +199,9 @@ encoder, _ := mebo.NewDefaultNumericEncoder(time.Now())
 ```
 
 **Configuration**: Delta timestamps, Gorilla values, no codec compression.
-**Result**: 8.540 bytes/point (46.9% savings). Recommended for most workloads.
+**Result**: 8.544 bytes/point (46.9% savings). Recommended for most workloads.
 
-### Best Encode Speed (DeltaPacked + Raw)
+### Fastest Iteration (DeltaPacked + Raw)
 
 ```go
 encoder, _ := mebo.NewNumericEncoder(time.Now(),
@@ -204,7 +210,10 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 10.244 bytes/point (36.3% savings), fastest encoding throughput (476,939 ns/op for 200×200 dataset).
+**Result**: 10.244 bytes/point (36.3% savings), 216,241 ns/op sequential iteration for the
+200×200 dataset — among the fastest of any configuration. DeltaPacked's Group Varint batch
+decoding is optimized for read throughput, not encode speed; if encode speed is the priority,
+plain Raw + Raw is fastest to encode (315,017 ns/op) at the cost of no compression.
 
 ### Query-Optimized (Raw + Raw)
 
@@ -245,7 +254,8 @@ encoder, _ := mebo.NewDefaultTextEncoder(time.Now())
 │ encoding package   │    │ compress package   │
 │  (Columnar algos)  │    │  (Zstd, S2, LZ4)   │
 │ Delta, Gorilla,    │    │                    │
-│ Chimp, DeltaPacked │    │                    │
+│ Chimp, ALP,        │    │                    │
+│ DeltaPacked        │    │                    │
 └────────────────────┘    └────────────────────┘
          │                          │
          └───────────┬──────────────┘
@@ -261,7 +271,7 @@ encoder, _ := mebo.NewDefaultTextEncoder(time.Now())
 |---------|---------------|
 | `mebo` | Top-level convenience API and `MetricID` helper |
 | `blob` | High-level encoders, decoders, and BlobSet management |
-| `encoding` | Columnar encoding algorithms (Delta, DeltaPacked, Gorilla, Chimp, Raw) |
+| `encoding` | Columnar encoding algorithms (Delta, DeltaPacked, Gorilla, Chimp, ALP, Raw) |
 | `compress` | Codec compression layer (Zstd, S2, LZ4) |
 | `section` | Binary format structures, headers, index |
 | `format` | Encoding and compression type constants |
@@ -275,7 +285,7 @@ The four most important rules:
 3. **Target 50–200 points per metric** — below 10 points, fixed per-metric overhead dominates and compression degrades sharply.
 4. **Upgrade consumers before enabling shared timestamps** — the V2 decoder reads both V1 and V2 blobs; the V1 decoder cannot read V2 blobs.
 
-For full guidance on encoding selection, materialization thresholds, tags overhead, and operational deployment, see [Best Practices](docs/BEST_PRACTICES.md).
+For full guidance on encoding selection, materialization thresholds, tags overhead, and operational deployment, see [Best Practices](docs/best_practices.md).
 
 ## Thread Safety
 
@@ -307,12 +317,12 @@ Deprecated features are maintained for at least 2 minor versions before removal.
 ## Documentation
 
 - [API Reference](https://pkg.go.dev/github.com/arloliu/mebo)
-- [Performance Guide](docs/PERFORMANCE_V2.md) — full benchmark tables and scaling analysis
-- [Advanced Usage](docs/ADVANCED_USAGE.md) — BlobSet, materialization, tags, bulk insertion, FinishInto buffer reuse, ForEach callback iteration
-- [Best Practices](docs/BEST_PRACTICES.md) — encoding selection, operational guidance
-- [FlatBuffers Comparison](docs/COMPARISON_FLATBUFFERS.md) — head-to-head benchmark
-- [Shared Timestamps Guide](docs/SHARED_TIMESTAMPS.md) — V2 format and deployment
-- [Design Document](docs/DESIGN.md)
+- [Performance Guide](docs/performance.md) — full benchmark tables and scaling analysis
+- [Advanced Usage](docs/advanced_usage.md) — BlobSet, materialization, tags, bulk insertion, FinishInto buffer reuse, ForEach callback iteration
+- [Best Practices](docs/best_practices.md) — encoding selection, operational guidance
+- [FlatBuffers Comparison](docs/comparison_flatbuffers.md) — head-to-head benchmark
+- [Shared Timestamps Guide](docs/shared_timestamps.md) — V2 format and deployment
+- [Design Document](docs/design.md)
 - [Examples](examples/)
 
 ## Contributing
@@ -342,5 +352,6 @@ Apache License — see [LICENSE](LICENSE) for details.
 
 - Gorilla compression algorithm — [Facebook/Gorilla paper](http://www.vldb.org/pvldb/vol8/p1816-teller.pdf), VLDB 2015
 - Chimp compression algorithm — [CHIMP paper](https://www.vldb.org/pvldb/vol15/p3058-liakos.pdf), VLDB 2022
+- ALP compression algorithm — Afroozeh, Kuffó & Boncz, ["ALP: Adaptive Lossless floating-Point Compression"](https://doi.org/10.1145/3626717), SIGMOD 2024; reference implementation [cwida/ALP](https://github.com/cwida/ALP)
 - Delta-of-delta encoding — inspiration from InfluxDB and Prometheus storage engines
 - xxHash64 — [Yann Collet](https://github.com/Cyan4973/xxHash)

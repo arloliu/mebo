@@ -6,7 +6,7 @@
 | **Platform** | AMD Ryzen 9 9950X3D (Zen 5, full 512-bit datapath), linux/amd64, Go 1.26.1 |
 | **Scope** | `internal/encoding` delta-packed timestamp decode backend |
 | **Format impact** | None — decode-side backend; parity-tested against scalar |
-| **Plan** | [SIMD_OPTIMIZATION_PLAN.md Phase 3](../SIMD_OPTIMIZATION_PLAN.md#phase-3-avx-512-packed-decoder) |
+| **Plan** | [SIMD_OPTIMIZATION_PLAN.md Phase 3](../plans/2026-04-10-simd-optimization.md#phase-3-avx-512-packed-decoder) |
 
 ## Summary
 

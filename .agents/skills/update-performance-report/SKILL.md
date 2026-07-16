@@ -1,11 +1,11 @@
 ---
 name: update-performance-report
-description: Run encoding benchmarks and update docs/PERFORMANCE_V2.md with fresh data
+description: Run encoding benchmarks and update docs/performance.md with fresh data
 ---
 
 # Update Performance Report
 
-This skill runs the encoding benchmark matrix tool and generates `docs/PERFORMANCE_V2.md` from a template + benchmark data.
+This skill runs the encoding benchmark matrix tool and generates `docs/performance.md` from a template + benchmark data.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ This skill runs the encoding benchmark matrix tool and generates `docs/PERFORMAN
 cd tests/measurev2 && go run . -pretty -verbose -output /tmp/mebo_bench_results.json 2>&1
 ```
 
-Wait for completion. With default settings (200 metrics × 200 points, 18 combos: 9 standard + 9 shared-timestamp), this takes ~3-6 minutes.
+Wait for completion. With default settings (200 metrics × 200 points, 24 combos: 12 standard + 12 shared-timestamp — 3 timestamp encodings × 4 value encodings: Raw, Gorilla, Chimp, ALP), this takes ~3-6 minutes.
 
 ### Step 2: Generate the report
 
@@ -30,13 +30,11 @@ Run the generation script, which reads the benchmark JSON and template, fills al
 python3 .agents/skills/update-performance-report/scripts/generate_report.py \
   /tmp/mebo_bench_results.json \
   .agents/skills/update-performance-report/PERFORMANCE_TEMPLATE.md \
-  docs/PERFORMANCE_V2.md
+  docs/performance.md
 ```
 
 The script exits with code 0 on success and prints a summary (combo count, best/worst BPP).
 If any placeholders remain unfilled, it exits with code 1.
-
-**Do NOT modify `docs/PERFORMANCE.md`** — that is the original document.
 
 ### Reference: JSON structure and placeholders
 
@@ -44,8 +42,8 @@ The benchmark JSON has this structure:
 ```
 {
   "metadata": { "go_version", "os", "arch", "num_cpu", "timestamp", "data_config" },
-  "matrix": [ { per-combo benchmark results (18 entries: 9 standard + 9 shared-TS) } ],
-  "scaling": [ { per-combo bytes/point at different point counts (18 entries) } ]
+  "matrix": [ { per-combo benchmark results (24 entries: 12 standard + 12 shared-TS) } ],
+  "scaling": [ { per-combo bytes/point at different point counts (24 entries) } ]
 }
 ```
 
@@ -125,8 +123,15 @@ Generate 4-6 bullet points based on the data:
 - Which combo achieves the best compression? By how much vs raw-raw?
 - How much additional savings does shared timestamps provide over the best non-shared combo?
 - How does Chimp compare to Gorilla? (they should be close)
+- How does ALP compare to Chimp/Gorilla on this dataset? Note that this benchmark's data is a
+  full-precision random walk, not decimal-quantized — ALP's main scheme only wins big on
+  decimal-quantized data (see `docs/performance.md`'s "Codec Selection by Data Shape" section for
+  the profile-based comparison where ALP does shine). Don't overstate ALP's ranking here if it
+  isn't actually winning on this dataset.
 - How does DeltaPacked compare to Delta? (small improvement in size, advantage is decode speed)
-- Is encode speed vs compression a meaningful tradeoff?
+- Is encode speed vs compression a meaningful tradeoff? (ALP's encode is markedly slower than
+  Gorilla/Chimp — its (e,f) search cost — worth calling out if ALP appears in the top compression
+  ranks)
 - Note the decode speed difference: shared-TS combos decode faster due to smaller blob size
 
 #### `{{ENCODE_PERFORMANCE}}`
@@ -151,10 +156,13 @@ Same format, using `iter_seq.*` fields. Sort by `iter_seq.ns_per_op` ascending.
 Create a pivot table from `scaling` data for **standard (non-shared) combos only**:
 
 ```markdown
-| Points/Metric | raw-raw | raw-gorilla | raw-chimp | delta-raw | delta-gorilla | delta-chimp | deltapacked-raw | deltapacked-gorilla | deltapacked-chimp |
-|---------------|---------|-------------|-----------|-----------|---------------|-------------|-----------------|---------------------|-------------------|
-| 1 | 32.16 | ... | ... | ... | ... | ... | ... | ... | ... |
+| Points/Metric | raw-raw | raw-gorilla | raw-chimp | raw-alp | delta-raw | delta-gorilla | delta-chimp | delta-alp | deltapacked-raw | deltapacked-gorilla | deltapacked-chimp | deltapacked-alp |
+|---------------|---------|-------------|-----------|---------|-----------|---------------|-------------|-----------|-----------------|---------------------|-------------------|-----------------|
+| 1 | 32.16 | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
 ```
+
+Column set is derived from whatever labels are present in the JSON — don't hardcode this list in
+the script; it's illustrative here only.
 
 Format `bytes_per_point` to 2 decimal places.
 
@@ -163,9 +171,9 @@ Format `bytes_per_point` to 2 decimal places.
 Create a pivot table from `scaling` data for **shared-timestamp combos only**:
 
 ```markdown
-| Points/Metric | shared-raw-raw | shared-raw-gorilla | shared-raw-chimp | shared-delta-raw | shared-delta-gorilla | shared-delta-chimp | shared-deltapacked-raw | shared-deltapacked-gorilla | shared-deltapacked-chimp |
-|---------------|----------------|--------------------|----|----------|------------|----------|------------|------------|----------|
-| 1 | 26.22 | ... | ... | ... | ... | ... | ... | ... | ... |
+| Points/Metric | shared-raw-raw | shared-raw-gorilla | shared-raw-chimp | shared-raw-alp | shared-delta-raw | shared-delta-gorilla | shared-delta-chimp | shared-delta-alp | shared-deltapacked-raw | shared-deltapacked-gorilla | shared-deltapacked-chimp | shared-deltapacked-alp |
+|---------------|----------------|--------------------|----|----|------------|------------|----------|----|------------|------------|----------|----|
+| 1 | 26.22 | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
 ```
 
 Format `bytes_per_point` to 2 decimal places.
@@ -225,7 +233,7 @@ Format as a table with Zone, PPM Range, BPP at boundaries, and recommendation.
 
 ### Step 3: Verify
 
-After writing, read back `docs/PERFORMANCE_V2.md` and verify:
+After writing, read back `docs/performance.md` and verify:
 1. All placeholders are replaced (no `{{...}}` remains)
 2. Tables render correctly
 3. Numbers look reasonable (bytes/point should be 6-17 range for 200 PPM; shared-TS combos will be lower than non-shared)
@@ -240,6 +248,7 @@ These hints help generate accurate observations from the data:
 
 - **DeltaPacked vs Delta**: DeltaPacked uses Group Varint encoding for **faster decode/iteration**, not for better compression. Size difference is marginal.
 - **Chimp vs Gorilla**: Chimp typically achieves slightly better compression ratio. Both use XOR-based encoding.
+- **ALP**: Adaptive Lossless floating-Point encoding (`format.TypeALP`). Wins big (2.5–6× smaller than the next-best codec) on **decimal-quantized** data — sensor readings rounded to a fixed number of decimal places. On this skill's default benchmark data (a full-precision random walk, not decimal-quantized), ALP will NOT show its real advantage and may rank worse than Chimp/Gorilla on both size and speed — that's expected, not a regression. ALP's encode is also markedly slower than Gorilla/Chimp (per-column (e,f) search cost). See `docs/performance.md`'s "Codec Selection by Data Shape" section (sourced from `tests/measurev2`'s realistic profiles, not this matrix) for where ALP actually wins.
 - **Shared Timestamps**: `WithSharedTimestamps()` deduplicates identical timestamp sequences across metrics. When all metrics share the same sampling schedule (typical in monitoring), the timestamp column is stored once instead of N times. Savings scale with metric count: more metrics = greater benefit. Expect ~20-25% additional savings over non-shared equivalents at 200 metrics.
 - **Shared-TS decode advantage**: Shared-TS combos decode faster because the blob is smaller (less data to parse). The decode memory footprint is also smaller (shared timestamp index vs per-metric copies).
 - **Scaling**: Below ~10 points/metric, fixed per-metric overhead dominates. Above ~100, diminishing returns.

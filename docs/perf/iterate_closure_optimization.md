@@ -6,7 +6,7 @@
 | **Platform** | AMD Ryzen 9 9950X3D (Zen 5), linux/amd64, Go 1.26.1 |
 | **Scope** | `blob.NumericBlob` All() iteration paths, `internal/encoding` fused decoders |
 | **Format impact** | None — decode-side only; no encoder file touched |
-| **Predecessors** | [XOR_CODEC_BITPACK_OPTIMIZATION.md](XOR_CODEC_BITPACK_OPTIMIZATION.md) (round 1), [BLOB_ENCODE_ALLOCATION_OPTIMIZATION.md](BLOB_ENCODE_ALLOCATION_OPTIMIZATION.md) (round 2) |
+| **Predecessors** | [xor_codec_bitpack_optimization.md](xor_codec_bitpack_optimization.md) (round 1), [blob_encode_allocation_optimization.md](blob_encode_allocation_optimization.md) (round 2) |
 
 ## Summary
 

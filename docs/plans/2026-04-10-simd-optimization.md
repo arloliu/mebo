@@ -364,7 +364,7 @@ This increases the ratio of SIMD to scalar work and amortizes the carry-in/carry
 > (2 groups/iteration, zeroing-masked VPERMB, dual 8-wide prefix sums).
 > Measured: DecodeAll 10k 6,417 → 4,694 ns (1.37×), All iterator 10k 1.10×,
 > large-blob deltapacked Materialize −13%. See
-> [perf/AVX512_PACKED_DECODER.md](perf/AVX512_PACKED_DECODER.md).
+> [perf/avx512_packed_decoder.md](../perf/avx512_packed_decoder.md).
 
 ### Problem
 
@@ -441,7 +441,7 @@ are offset by `totalBytes[cb0]`.
 > benchmark suite (Jitter_5pct +30%, HighVariance +17%) where varint widths
 > are branch-predictable, and the deciding factor (width *predictability*)
 > is not detectable upfront. See
-> [perf/DELTA_TWOPASS_DECODE_INVESTIGATION.md](perf/DELTA_TWOPASS_DECODE_INVESTIGATION.md).
+> [perf/delta_twopass_decode_investigation.md](../perf/delta_twopass_decode_investigation.md).
 
 ### Problem
 
@@ -528,7 +528,7 @@ decode becomes the dominant cost.
 > interleaved decode** (alternate two independent metric streams to hide the
 > serial bit-position dependency; est. 5-15% codec-local, 2-5% e2e on
 > materialization paths) — tracked as future work, not part of this phase.
-> See [perf/GORILLA_PHASE5_ASSESSMENT.md](perf/GORILLA_PHASE5_ASSESSMENT.md).
+> See [perf/gorilla_phase5_assessment.md](../perf/gorilla_phase5_assessment.md).
 
 ### Problem
 

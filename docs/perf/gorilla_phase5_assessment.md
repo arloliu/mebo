@@ -13,7 +13,7 @@
 Plan Phase 5 (April) proposed BMI2 PEXT/PDEP to accelerate the
 "extract meaningful bits" step of Gorilla/Chimp decode. It was scoped against
 the old stateful `bitReader` with per-call refill branches. The June rewrite
-(`docs/perf/XOR_CODEC_BITPACK_OPTIMIZATION.md`) replaced that machinery with
+(`docs/perf/xor_codec_bitpack_optimization.md`) replaced that machinery with
 windowed reads (`peekBits64`: one unaligned 8-byte load + ninth byte) and a
 two-shift contiguous-field extraction:
 

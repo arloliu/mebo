@@ -6,9 +6,9 @@
 | **Platform** | AMD Ryzen 9 9950X3D (Zen 5), linux/amd64, Go 1.26.1 |
 | **Scope** | `blob.NumericBlob` / `blob.NumericBlobSet` — push iteration API (`ForEach`, `ForEachValues`, `ForEachTimestamps`, +`ByName`); single-column & BlobSet variants added 2026-06-21 |
 | **Format impact** | None — read-side only |
-| **Predecessor** | [ITERATE_CLOSURE_OPTIMIZATION.md](ITERATE_CLOSURE_OPTIMIZATION.md) ("Remaining levers" #1) |
+| **Predecessor** | [iterate_closure_optimization.md](iterate_closure_optimization.md) ("Remaining levers" #1) |
 
-> **User guide**: see [Callback Iteration with ForEach](../ADVANCED_USAGE.md#callback-iteration-with-foreach).
+> **User guide**: see [Callback Iteration with ForEach](../advanced_usage.md#callback-iteration-with-foreach).
 
 ## Summary
 
@@ -131,7 +131,7 @@ Implementation notes:
 - Unlike the data-point path there is **no adapter hop** to remove for a single
   column (`decoder.All` already yields the scalar directly). The win is
   therefore the stack-resident decode cursor (≈ the same effect documented in
-  [ITERATE_CLOSURE_OPTIMIZATION.md](ITERATE_CLOSURE_OPTIMIZATION.md)) plus the
+  [iterate_closure_optimization.md](iterate_closure_optimization.md)) plus the
   elimination of the per-call iterator and loop-body allocations.
 - `RawTimestampsEach` carries a `len(data)%8 != 0` guard to stay byte-identical
   with `TimestampRawDecoder.All` (which rejects unaligned payloads); the raw

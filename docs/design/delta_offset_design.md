@@ -132,7 +132,7 @@ The insertion-order constraint is a direct consequence of the delta encoding opt
 ## Documentation References
 
 ### Primary Documentation
-- `docs/DESIGN.md`: Complete format specification with delta encoding details
+- `docs/design.md`: Complete format specification with delta encoding details
 
 ### Code Implementation
 - `blob/float_value_encoder.go`: Delta calculation and insertion-order writing

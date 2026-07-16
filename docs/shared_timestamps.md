@@ -108,7 +108,7 @@ Timestamp savings = 149 copies × ~80 bytes/sequence = ~11,920 bytes
 Net savings = ~11,616 bytes
 ```
 
-For the full binary format specification, see the [Shared Timestamp Table section in DESIGN.md](DESIGN.md#shared-timestamp-table-optional-v2-only).
+For the full binary format specification, see the [Shared Timestamp Table section in design.md](design.md#shared-timestamp-table-optional-v2-only).
 
 ## Performance
 
@@ -284,6 +284,6 @@ The extra allocations are: refcount map, cache map, and decoded `[]int64` slices
 
 ## Related Documentation
 
-- [DESIGN.md — Shared Timestamp Table](DESIGN.md#shared-timestamp-table-optional-v2-only): Binary format specification, validation rules, and error handling
-- [PERFORMANCE_V2.md](PERFORMANCE_V2.md): Full encoding matrix with shared timestamp variants
-- [DESIGN.md — Layout Version](DESIGN.md#layout-version): V1 vs V2 layout differences
+- [design.md — Shared Timestamp Table](design.md#shared-timestamp-table-optional-v2-only): Binary format specification, validation rules, and error handling
+- [performance.md](performance.md): Full encoding matrix with shared timestamp variants
+- [design.md — Layout Version](design.md#layout-version): V1 vs V2 layout differences

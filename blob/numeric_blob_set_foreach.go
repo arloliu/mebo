@@ -10,7 +10,7 @@ package blob
 // outer closure. The ForEach* forms remove the outer closure and reach the
 // per-blob static decode loops, so they compound the per-blob stack-state
 // speedup with the removal of the set-level closure: ~21-24% faster and ~94%
-// fewer allocations on a multi-blob scan (see docs/perf/FOREACH_CALLBACK_API.md).
+// fewer allocations on a multi-blob scan (see docs/perf/foreach_callback_api.md).
 //
 // Index semantics match the set's All: the index passed to yield is the global,
 // 0-based, continuous position across all blobs (not the per-blob index).

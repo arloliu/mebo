@@ -221,7 +221,6 @@ Size = 0 bytes (zero overhead)
 - Collision during encoding: `ErrHashCollision` (includes both names)
 
 **See Also:**
-- Collision analysis: `docs/HASH_COLLISION_ANALYSIS.md`
 - Implementation: `encoding/metric_names.go`
 
 ### Metric Index
@@ -405,8 +404,6 @@ For typical workloads (150 metrics per blob):
 - 1 million blobs: Still negligible
 - 50% collision probability: ~5 billion unique metrics (birthday paradox)
 
-**See Also:** For detailed collision analysis and mitigation strategies, refer to `docs/HASH_COLLISION_ANALYSIS.md`.
-
 -   Built into Go standard library (no dependencies)
 -   Simple algorithm ensures cross-language compatibility
 
@@ -540,7 +537,7 @@ The time-series data is organized into two separate, columnar payloads to maximi
     - Irregular intervals: 40-60% compression
   - **Performance:** Sequential-only access, ~15% CPU overhead vs simple delta, O(N) decode
   - **Use Case:** Time-series metrics with regular or semi-regular sampling (recommended for 99% of cases)
-  - **Details:** See `docs/DELTA_OF_DELTA_ENCODING.md` for complete algorithm and analysis
+  - **Details:** See `docs/design/delta_of_delta_encoding.md` for complete algorithm and analysis
 
 **Compression:** Applied after encoding using algorithm specified in header (Zstd, S2, LZ4, or None).
 

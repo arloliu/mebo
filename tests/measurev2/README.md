@@ -63,13 +63,13 @@ Shows how overhead amortizes differently per encoding.
 ## Using with the Agent Skill
 
 An agent skill at `.agents/skills/update-performance-report/` can consume
-this tool's JSON output to auto-update `docs/PERFORMANCE.md`:
+this tool's JSON output to auto-update `docs/performance.md`:
 
 ```bash
 # Step 1: Run benchmarks
 cd tests/measurev2 && go run . -pretty -output /tmp/mebo_bench_results.json -verbose
 
-# Step 2: Use the agent skill to update docs/PERFORMANCE.md
+# Step 2: Use the agent skill to update docs/performance.md
 # (Ask the agent: "use the update-performance-report skill")
 ```
 

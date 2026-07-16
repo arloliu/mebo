@@ -6,7 +6,7 @@ This document benchmarks Mebo against FlatBuffers for time-series numeric data s
 **Dataset**: 200 metrics, benchmarked at 50 and 200 points/metric (10,000 and 40,000 total data points)
 **Benchmark date**: April 2026
 
-> **Scope note**: This comparison uses Mebo encodings that have a direct FlatBuffers equivalent (Raw, Delta, Gorilla with optional codec compression). Mebo-only capabilities — Chimp encoding, DeltaPacked, and shared timestamps — are excluded from this comparison since FlatBuffers has no equivalent. For those configurations, see [Performance Guide](PERFORMANCE_V2.md).
+> **Scope note**: This comparison uses Mebo encodings that have a direct FlatBuffers equivalent (Raw, Delta, Gorilla with optional codec compression). Mebo-only capabilities — Chimp encoding, DeltaPacked, and shared timestamps — are excluded from this comparison since FlatBuffers has no equivalent. For those configurations, see [Performance Guide](performance.md).
 
 ---
 
@@ -84,7 +84,7 @@ Key observations:
 - **Numeric time-series data with regular intervals**: Delta+Gorilla encoding achieves better compression than FlatBuffers+Zstd without codec overhead.
 - **Sequential read workloads**: Mebo's in-memory iteration is significantly faster for full-scan patterns.
 - **High-frequency random access**: O(1) access with zero allocations (Raw timestamp encoding).
-- **Advanced compression needs**: Chimp encoding and shared timestamps (no FlatBuffers equivalent) can achieve up to 60.5% space savings; see [Performance Guide](PERFORMANCE_V2.md).
+- **Advanced compression needs**: Chimp encoding and shared timestamps (no FlatBuffers equivalent) can achieve up to 60.5% space savings; see [Performance Guide](performance.md).
 
 ### When FlatBuffers may be preferable
 
@@ -95,4 +95,4 @@ Key observations:
 ---
 
 *Benchmark source: `tests/fbs_compare/`.*
-*For Mebo-only encoding benchmarks (Chimp, DeltaPacked, Shared Timestamps), see [Performance Guide](PERFORMANCE_V2.md).*
+*For Mebo-only encoding benchmarks (Chimp, DeltaPacked, Shared Timestamps), see [Performance Guide](performance.md).*

@@ -1,7 +1,7 @@
 # Adaptive Per-Column Codec Selection — Empirical Feasibility Study
 
 **Date:** 2026-06-15
-**Companion to:** `ADAPTIVE_SELECTOR_INVESTIGATION.md` (the literature study). This is the
+**Companion to:** `adaptive_selector_investigation.md` (the literature study). This is the
 **"don't guess, verify it"** follow-up: 5 experiments run against the *actual* mebo codecs and the
 `tests/measurev2` realistic profiles (100 metrics × 1000 points, Seed=42, all 7 profiles).
 **Every experiment was independently re-implemented by a second agent and reproduced byte-for-byte**

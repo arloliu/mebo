@@ -361,7 +361,7 @@ func FusedChimpEach(valData []byte, count int, yield func(int, float64) bool) {
 // Like the other Each variants this must stay a static package-level function:
 // running the same loop inside a heap-allocated range-over-func closure body
 // keeps the deltaPackedState cursor on the heap and measures slower (see
-// docs/perf/ITERATE_CLOSURE_OPTIMIZATION.md).
+// docs/perf/iterate_closure_optimization.md).
 func FusedDeltaPackedEach(tsData []byte, count int, yield func(int, int64) bool) {
 	if count == 0 || len(tsData) == 0 {
 		return

@@ -169,7 +169,7 @@ func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count 
 // forEachDeltaGorilla runs the fused delta+gorilla decode loop inline so the
 // user's yield is the only indirect call per element. This must stay a static
 // package-level function: the same loop inside a heap-allocated closure body
-// measures ~20% slower (see docs/perf/ITERATE_CLOSURE_OPTIMIZATION.md).
+// measures ~20% slower (see docs/perf/iterate_closure_optimization.md).
 func forEachDeltaGorilla(tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
 	if count == 0 || len(tsBytes) == 0 || len(valBytes) == 0 {
 		return

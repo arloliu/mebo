@@ -54,7 +54,7 @@ make bench-measure
 
 ## Encoding Comparison
 
-All 18 valid encoding combinations (9 standard timestamp × value + 9 with shared timestamps), benchmarked without additional compression codecs.
+All 24 valid encoding combinations (12 standard timestamp × value + 12 with shared timestamps — 3 timestamp encodings × 4 value encodings: Raw, Gorilla, Chimp, ALP), benchmarked without additional compression codecs.
 Shared-timestamp combos use `WithSharedTimestamps()` to deduplicate identical timestamp sequences across metrics.
 
 Sorted by encoded size (most efficient first):

@@ -6,9 +6,9 @@
 | **Platform** | AMD Ryzen 9 9950X3D (Zen 5), linux/amd64, Go 1.26.1 |
 | **Scope** | `blob.NumericEncoder`, `blob.TextEncoder` — new public API |
 | **Format impact** | None — `Finish()` delegates to the same assembly code; byte-identical |
-| **Predecessor** | [BLOB_ENCODE_ALLOCATION_OPTIMIZATION.md](BLOB_ENCODE_ALLOCATION_OPTIMIZATION.md) ("Remaining levers" #2) |
+| **Predecessor** | [blob_encode_allocation_optimization.md](blob_encode_allocation_optimization.md) ("Remaining levers" #2) |
 
-> **User guide**: see [Buffer Reuse with FinishInto](../ADVANCED_USAGE.md#buffer-reuse-with-finishinto)
+> **User guide**: see [Buffer Reuse with FinishInto](../advanced_usage.md#buffer-reuse-with-finishinto)
 > for usage patterns and ownership rules.
 
 ## Summary
@@ -62,7 +62,7 @@ and per-encoder setup.
 
 1. **SIMD plan Phase 3** (AVX-512 delta-packed decoder).
 2. **Iterate consumer floor** — see
-   [ITERATE_CLOSURE_OPTIMIZATION.md](ITERATE_CLOSURE_OPTIMIZATION.md):
+   [iterate_closure_optimization.md](iterate_closure_optimization.md):
    a public callback-style iteration API could close the remaining
    6.8 → 4.9 ns/pt gap (API decision).
 3. Index-entry bookkeeping is now the largest encode allocation

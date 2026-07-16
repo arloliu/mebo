@@ -1,6 +1,6 @@
 # Best Practices
 
-Detailed guidance for getting the best performance, efficiency, and reliability from Mebo. See also the [Performance Guide](PERFORMANCE_V2.md) for benchmark data backing these recommendations.
+Detailed guidance for getting the best performance, efficiency, and reliability from Mebo. See also the [Performance Guide](performance.md) for benchmark data backing these recommendations.
 
 ## Table of Contents
 
@@ -71,7 +71,7 @@ Fixed per-metric overhead (index entry, header flags, metadata) totals ~34–44 
 | 100           | ~8.6                      | Excellent |
 | 200           | ~8.5                      | Optimal — diminishing returns beyond this |
 
-For full scaling data, see [Performance Guide — Scaling Analysis](PERFORMANCE_V2.md#scaling-analysis).
+For full scaling data, see [Performance Guide — Scaling Analysis](performance.md#scaling-analysis).
 
 ### Choose the right encoding for your data
 

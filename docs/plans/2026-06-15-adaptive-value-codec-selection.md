@@ -9,7 +9,7 @@
 
 **Tech stack:** Go 1.25/1.26; `internal/encoding` columnar codecs; `format.EncodingType` (4-bit value nibble); `section.NumericFlag`; `endian.EndianEngine`; `pool.ByteBuffer`. Tests with `testing` + `stretchr/testify`; lint `go tool -modfile=linter.go.mod golangci-lint run`; full check `make test`.
 
-**Empirical grounding (see `docs/perf/ADAPTIVE_SELECTOR_EXPERIMENTS.md` + `..._INVESTIGATION.md`):**
+**Empirical grounding (see `docs/perf/adaptive_selector_experiments.md` + `..._INVESTIGATION.md`):**
 - Winner is profile-dependent (ALP decimals, gorilla sparse, chimp full-precision), nearly invariant within a homogeneous column — per-column tuning *within* a workload buys ~0.25%.
 - **Per-column is required** because per-blob loses **up to 36–80%** when ALP-friendly (decimal gauge) and gorilla-friendly (sparse/constant) metrics co-mingle in one blob (heterogeneity experiment, high confidence, reproduced).
 - Estimator choice barely affects quality; **full per-column trial-encode** is the simplest accurate selector, and is now cheap because the ALP encoder was sped up ~3–4× (`docs/perf` benchstat). So v1 uses full trial-encode (no sampling).
@@ -612,7 +612,7 @@ and the same one-line extension in `forEachDataPoint`:
 ### Task 3.2: Docs + memory
 
 - [ ] **Step 1:** CHANGELOG `[Unreleased]` → add `TypeAdaptive = 0x7`: per-column automatic value-codec selection (raw/gorilla/chimp/alp), forward-incompatible additive type; note the heterogeneity motivation and that it never regresses vs raw.
-- [ ] **Step 2:** Update `docs/perf/ADAPTIVE_SELECTOR_EXPERIMENTS.md` "chosen mechanism" → "implemented" with the measured e2e numbers.
+- [ ] **Step 2:** Update `docs/perf/adaptive_selector_experiments.md` "chosen mechanism" → "implemented" with the measured e2e numbers.
 - [ ] **Step 3:** Update the project memory note: `0x7` is now `TypeAdaptive` (BP128 reservation moved); adaptive selector shipped per-column with full trial-encode.
 - [ ] **Step 4: Commit** — `git commit -am "docs(perf): record adaptive value-codec selection as shipped"`
 

@@ -21,7 +21,7 @@ run to settle whether it earns an on-disk byte; the answer (below) is **not yet*
   PFOR + hand-written AVX-512 Plan9 asm, all in `internal/encoding/ts_bp128*.{go,s}`,
   bit-exact and lint-clean). **Deferred** — see "Spike outcome".
 
-Background research and measurements: `docs/perf/CODEC_RESEARCH_FINDINGS.md`.
+Background research and measurements: `docs/perf/codec_research_findings.md`.
 
 ## Spike outcome (2026-06-14) — why BP128 is deferred
 
@@ -195,7 +195,7 @@ iterator), BP128 decode is par, encode is ~2× slower, and the ratio win (~20%, 
 negligible-to-the-blob with shared timestamps and only meaningful for per-metric large
 columns. A permanent on-disk byte + AVX-512 maintenance is not justified by that. The lesson
 — **always benchmark against the fast batch path, never the per-point iterator** — is
-recorded here and in `docs/perf/CODEC_RESEARCH_FINDINGS.md`.
+recorded here and in `docs/perf/codec_research_findings.md`.
 
 **If revisited later**, the one untested lever that could let BP128 beat Delta on decode is a
 SIMD 2-level prefix-sum fed by BP128's parallel unpack (Delta's serial varint can't feed

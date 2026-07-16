@@ -6,7 +6,7 @@
 | **Platform** | AMD Ryzen 9 9950X3D (Zen 5), linux/amd64, Go 1.26.1 |
 | **Scope** | `TimestampDeltaDecoder.DecodeAll` (investigation only — no production change) |
 | **Outcome** | **Rejected after full prototype + same-binary A/B**; plan Phase 4 closed |
-| **Plan** | [SIMD_OPTIMIZATION_PLAN.md Phase 4](../SIMD_OPTIMIZATION_PLAN.md#phase-4-simd-delta-decode-for-unpacked-format) |
+| **Plan** | [SIMD_OPTIMIZATION_PLAN.md Phase 4](../plans/2026-04-10-simd-optimization.md#phase-4-simd-delta-decode-for-unpacked-format) |
 
 ## What was tried
 

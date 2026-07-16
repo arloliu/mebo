@@ -12,7 +12,7 @@ import "math"
 //
 // Use these only from static functions: running the same loop inside a
 // heap-allocated closure body measured ~20% slower than the Fused*Each
-// callback forms (see docs/perf/ITERATE_CLOSURE_OPTIMIZATION.md).
+// callback forms (see docs/perf/iterate_closure_optimization.md).
 //
 // The optional count cap (SetCount) lives here in the Next() wrappers rather
 // than in the unexported decode primitives, so the bulk fused loops that call

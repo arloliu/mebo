@@ -6,7 +6,7 @@
 | **Platform** | AMD Ryzen 9 9950X3D (Zen 5), linux/amd64, Go 1.26.1 |
 | **Scope** | `internal/pool`, `blob.NumericEncoder` per-point path, `TimestampDeltaEncoder` varint emission |
 | **Format impact** | None — encoded bytes identical across all 18 measurev2 combos |
-| **Predecessor** | [XOR_CODEC_BITPACK_OPTIMIZATION.md](XOR_CODEC_BITPACK_OPTIMIZATION.md) (same investigation, round 1) |
+| **Predecessor** | [xor_codec_bitpack_optimization.md](xor_codec_bitpack_optimization.md) (same investigation, round 1) |
 
 ## Summary
 
@@ -89,4 +89,4 @@ improved on iterate (−21% to −38%); raw-value iterate unchanged as expected;
    remaining allocation; unavoidable while `Finish()` returns a fresh slice,
    but a `FinishInto(dst []byte)` API could let callers reuse buffers.
 3. **SIMD plan Phase 3** (AVX-512 delta-packed decoder) and **Phase 6**
-   (batch-fused decoders) from `docs/SIMD_OPTIMIZATION_PLAN.md`.
+   (batch-fused decoders) from `docs/plans/2026-04-10-simd-optimization.md`.

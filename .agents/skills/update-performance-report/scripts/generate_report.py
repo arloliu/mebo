@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate PERFORMANCE_V2.md from benchmark JSON + template.
+"""Generate performance.md from benchmark JSON + template.
 
 Usage:
     python3 generate_report.py <benchmark_json> <template_md> <output_md>
@@ -8,7 +8,7 @@ Example:
     python3 .agents/skills/update-performance-report/scripts/generate_report.py \
         /tmp/mebo_bench_results.json \
         .agents/skills/update-performance-report/PERFORMANCE_TEMPLATE.md \
-        docs/PERFORMANCE_V2.md
+        docs/performance.md
 """
 import json
 import re
@@ -22,13 +22,13 @@ def fmt_label(label):
         ts = parts[1]
         val = parts[2]
         ts_name = {'raw': 'Raw', 'delta': 'Delta', 'deltapacked': 'DeltaPacked'}[ts]
-        val_name = {'raw': 'Raw', 'gorilla': 'Gorilla', 'chimp': 'Chimp'}[val]
+        val_name = {'raw': 'Raw', 'gorilla': 'Gorilla', 'chimp': 'Chimp', 'alp': 'ALP'}[val]
         return f"Shared {ts_name} + {val_name}"
     else:
         ts = parts[0]
         val = parts[1]
         ts_name = {'raw': 'Raw', 'delta': 'Delta', 'deltapacked': 'DeltaPacked'}[ts]
-        val_name = {'raw': 'Raw', 'gorilla': 'Gorilla', 'chimp': 'Chimp'}[val]
+        val_name = {'raw': 'Raw', 'gorilla': 'Gorilla', 'chimp': 'Chimp', 'alp': 'ALP'}[val]
         return f"{ts_name} + {val_name}"
 
 
@@ -110,6 +110,9 @@ def gen_encoding_observations(matrix):
     d_gorilla = next(r for r in matrix if r['label'] == 'delta-gorilla')
     chimp_vs_gorilla = (1 - d_chimp['bytes_per_point'] / d_gorilla['bytes_per_point']) * 100
 
+    # ALP vs Chimp (non-shared delta) — only if ALP is in this benchmark run
+    d_alp = next((r for r in matrix if r['label'] == 'delta-alp'), None)
+
     # DeltaPacked vs Delta
     dp_chimp = next(r for r in matrix if r['label'] == 'deltapacked-chimp')
     dp_vs_d = (dp_chimp['bytes_per_point'] / d_chimp['bytes_per_point'] - 1) * 100
@@ -143,6 +146,24 @@ def gen_encoding_observations(matrix):
         f"({d_chimp['bytes_per_point']:.3f} BPP) vs Delta + Gorilla "
         f"({d_gorilla['bytes_per_point']:.3f} BPP). Both use XOR-based floating-point encoding."
     )
+    if d_alp is not None:
+        alp_vs_chimp = (d_alp['bytes_per_point'] / d_chimp['bytes_per_point'] - 1) * 100
+        alp_verdict = (
+            f"still {abs(alp_vs_chimp):.1f}% smaller than Chimp here"
+            if alp_vs_chimp < 0
+            else f"{alp_vs_chimp:.1f}% larger than Chimp on this dataset"
+        )
+        lines.append(
+            f"- **ALP on this dataset**: Delta + ALP is {d_alp['bytes_per_point']:.3f} BPP, "
+            f"{alp_verdict} — this benchmark's data is a full-precision random walk, not "
+            f"decimal-quantized, which is not ALP's strength. ALP's main scheme wins big "
+            f"(4–6× smaller than raw, 1–2.5× smaller than the next-best codec) specifically on "
+            f"decimal-quantized sensor data; see the "
+            f"\"Codec Selection by Data Shape\" section below for the profile-based comparison "
+            f"where it does shine. ALP's encode is also markedly slower here "
+            f"({d_alp['encode']['ns_per_op']:,.0f} vs {d_chimp['encode']['ns_per_op']:,.0f} "
+            f"ns/op for Chimp) due to its per-column (e,f) search."
+        )
     lines.append(
         f"- **DeltaPacked vs Delta**: DeltaPacked shows ~{abs(dp_vs_d):.1f}% "
         f"{'larger' if dp_vs_d > 0 else 'smaller'} encoded size than Delta "
@@ -150,23 +171,40 @@ def gen_encoding_observations(matrix):
         f"DeltaPacked's advantage is **decode/iteration speed** via Group Varint batch "
         f"decoding, not compression ratio."
     )
-    lines.append(
-        f"- **Encode speed tradeoff**: {fmt_label(fastest['label'])} encodes fastest at "
-        f"{fastest['encode']['ns_per_op']:.0f} ns/op. Raw + Raw baseline "
-        f"({raw_raw['encode']['ns_per_op']:.0f} ns/op) is not the fastest because larger "
-        f"raw data requires more memory allocation ({raw_raw['encode']['bytes_per_op']:,} "
-        f"B/op vs {fastest['encode']['bytes_per_op']:,} B/op)."
-    )
+    if fastest['label'] == raw_raw['label']:
+        lines.append(
+            f"- **Encode speed tradeoff**: {fmt_label(fastest['label'])} encodes fastest at "
+            f"{fastest['encode']['ns_per_op']:,.0f} ns/op — no delta/XOR/digit computation, "
+            f"just a byte copy, even though its allocation footprint "
+            f"({fastest['encode']['bytes_per_op']:,} B/op) is larger than most compressed "
+            f"combos (uncompressed data is bigger to begin with)."
+        )
+    else:
+        alloc_cmp = (
+            "allocates less per op"
+            if fastest['encode']['bytes_per_op'] < raw_raw['encode']['bytes_per_op']
+            else "allocates more per op"
+        )
+        lines.append(
+            f"- **Encode speed tradeoff**: {fmt_label(fastest['label'])} encodes fastest at "
+            f"{fastest['encode']['ns_per_op']:,.0f} ns/op, ahead of the Raw + Raw baseline "
+            f"({raw_raw['encode']['ns_per_op']:,.0f} ns/op) — despite doing more computation, "
+            f"it {alloc_cmp} ({fastest['encode']['bytes_per_op']:,} B/op vs "
+            f"{raw_raw['encode']['bytes_per_op']:,} B/op)."
+        )
 
     # Decode speed: shared vs non-shared
     shared_dec = sorted(shared_combos, key=lambda x: x['decode']['ns_per_op'])
     non_shared_dec = sorted(non_shared, key=lambda x: x['decode']['ns_per_op'])
+    dec_delta_pct = (1 - shared_dec[0]['decode']['ns_per_op'] / non_shared_dec[0]['decode']['ns_per_op']) * 100
+    dec_comparator = "faster than" if dec_delta_pct >= 0 else "close to (slightly slower than)"
     lines.append(
-        f"- **Decode speed**: Shared-TS combos decode "
-        f"~{(1 - shared_dec[0]['decode']['ns_per_op']/non_shared_dec[0]['decode']['ns_per_op'])*100:.0f}% "
-        f"faster than non-shared ({shared_dec[0]['decode']['ns_per_op']:.0f} vs "
-        f"{non_shared_dec[0]['decode']['ns_per_op']:.0f} ns/op) due to smaller blob size "
-        f"and shared timestamp index."
+        f"- **Decode speed**: The fastest shared-TS combo decodes "
+        f"~{abs(dec_delta_pct):.0f}% {dec_comparator} the fastest non-shared combo "
+        f"({shared_dec[0]['decode']['ns_per_op']:,.0f} vs "
+        f"{non_shared_dec[0]['decode']['ns_per_op']:,.0f} ns/op) — decode speed is dominated by "
+        f"header-parsing overhead, so blob-size differences from timestamp dedup show up more "
+        f"in memory footprint than in raw decode latency at this scale."
     )
 
     return '\n'.join(lines)
@@ -362,21 +400,35 @@ def gen_config_selection(matrix):
     )
     best_raw = raw_ts[0]
 
-    # Best balance: top 3 in both BPP and iteration
-    top3_bpp = set(r['label'] for r in by_bpp[:5])
-    top3_iter = set(r['label'] for r in by_iter[:5])
-    balance_candidates = top3_bpp & top3_iter
+    # Best balance: a combo that ranks in the top 5 for BOTH BPP and iteration speed.
+    # This intersection is frequently empty (compression leaders and speed leaders are
+    # often disjoint sets) — the fallback must NOT claim a "top ranks in both" rationale
+    # it didn't earn.
+    top5_bpp = set(r['label'] for r in by_bpp[:5])
+    top5_iter = set(r['label'] for r in by_iter[:5])
+    balance_candidates = top5_bpp & top5_iter
     if balance_candidates:
         balance = next(r for r in by_bpp if r['label'] in balance_candidates)
+        balance_rationale = "Top-5 ranked in both compression and iteration speed"
     else:
         balance = by_bpp[1]
+        balance_rationale = (
+            f"Second-best compression; no combo ranked in the top 5 for both size and "
+            f"iteration speed this run, so this favors compression — its iteration speed "
+            f"({balance['iter_seq']['ns_per_op']:,.0f} ns/op) is not notable"
+        )
+
+    if fastest_enc['label'] == raw_raw['label']:
+        fastest_enc_rationale = "No delta/XOR/digit computation, just a byte copy"
+    else:
+        fastest_enc_rationale = "Fastest encode of any combo tested, for its compression tier"
 
     return f"""| Use Case | Configuration | Key Metric | Rationale |
 |----------|---------------|------------|-----------|
 | **Best compression** | {fmt_label(best['label'])} | {best['bytes_per_point']:.3f} BPP ({best['space_savings_pct']:.1f}% savings) | Lowest bytes/point; shared timestamps eliminate redundant storage |
-| **Fastest iteration** | {fmt_label(fastest_iter['label'])} | {fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op | Fastest sequential scan; raw values avoid decode overhead |
-| **Fastest encode** | {fmt_label(fastest_enc['label'])} | {fastest_enc['encode']['ns_per_op']:,.0f} ns/op | Minimal encode computation; delta reduces buffer size |
-| **Best balance** | {fmt_label(balance['label'])} | {balance['bytes_per_point']:.3f} BPP, {balance['iter_seq']['ns_per_op']:,.0f} ns/op iter | Top ranks in both compression and iteration speed |
+| **Fastest iteration** | {fmt_label(fastest_iter['label'])} | {fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op | Fastest sequential scan of any combo tested |
+| **Fastest encode** | {fmt_label(fastest_enc['label'])} | {fastest_enc['encode']['ns_per_op']:,.0f} ns/op | {fastest_enc_rationale} |
+| **Best balance** | {fmt_label(balance['label'])} | {balance['bytes_per_point']:.3f} BPP, {balance['iter_seq']['ns_per_op']:,.0f} ns/op iter | {balance_rationale} |
 | **Random access** | {fmt_label(best_raw['label'])} | {best_raw['bytes_per_point']:.3f} BPP | O(1) `TimestampAt`/`ValueAt`; raw timestamps support direct indexing |
 | **Maximum throughput** | Raw + Raw | {raw_raw['encode']['ns_per_op']:,.0f} ns/op encode | Baseline; no encoding overhead but largest output |"""
 
