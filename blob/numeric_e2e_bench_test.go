@@ -114,6 +114,19 @@ func BenchmarkE2EEncode_DeltaPackedGorilla(b *testing.B) {
 	benchmarkE2EEncode(b, format.TypeDeltaPacked, format.TypeGorilla)
 }
 
+// BenchmarkE2EEncode_DeltaALP and BenchmarkE2EEncode_DeltaPackedALP extend the
+// value-encoding dimension with TypeALP (explicit opt-in via
+// WithValueEncoding), mirroring the Gorilla/Raw rows above with the same
+// shape (200 metrics x 200 points).
+
+func BenchmarkE2EEncode_DeltaALP(b *testing.B) {
+	benchmarkE2EEncode(b, format.TypeDelta, format.TypeALP)
+}
+
+func BenchmarkE2EEncode_DeltaPackedALP(b *testing.B) {
+	benchmarkE2EEncode(b, format.TypeDeltaPacked, format.TypeALP)
+}
+
 // BenchmarkE2EEncodeInto_DeltaGorilla mirrors BenchmarkE2EEncode_DeltaGorilla
 // but reuses a caller-provided buffer via FinishInto, eliminating the final
 // blob allocation (the dominant allocation of the encode path).
