@@ -41,4 +41,8 @@ var (
 	ErrUnsupportedCompression        = errors.New("unsupported compression type")
 	ErrHeaderOffsetOverflow          = errors.New("header offset exceeds platform int range")
 	ErrDecompressedSizeExceedsLimit  = errors.New("decompressed size exceeds limit")
+	ErrInvalidALPScheme              = errors.New("invalid ALP scheme byte")
+	// ErrInvalidALPColumn indicates an ALP column whose body is shorter than
+	// its header-declared layout, or whose header fields are out of range.
+	ErrInvalidALPColumn = errors.New("invalid ALP column")
 )

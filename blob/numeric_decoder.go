@@ -141,6 +141,23 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		return blob, err
 	}
 
+	// Step 3.4: If values are ALP-encoded, validate every column's structure
+	// once here (blob open), not on the decode hot path. An unknown scheme
+	// byte (>= 3) would otherwise decode silently as an empty/zero column
+	// through All/DecodeAll/At and the ForEach materialize path alike — every
+	// one of those falls through an unlabeled default: case — which is
+	// indistinguishable from data loss. See the alpScheme* doc comment in
+	// internal/encoding/numeric_alp.go for why this set is closed. A column
+	// whose body is shorter than its header-declared layout (or whose header
+	// fields are out of range) would otherwise panic deep in the decode paths
+	// on out-of-range slicing/indexing — validated here too, so both classes
+	// of corruption are caught at blob open instead of on the decode hot path.
+	if blob.valEncType == format.TypeALP {
+		if err := validateALPColumns(blob.valPayload, indexEntries, d.engine); err != nil {
+			return blob, err
+		}
+	}
+
 	// Step 3.5: If shared timestamps flag is set, parse and apply shared timestamp table
 	if d.header.Flag.HasSharedTimestamps() {
 		indexEnd := indexOffset + d.metricCount*d.header.Flag.IndexEntrySize()
@@ -356,6 +373,122 @@ func (d *NumericDecoder) parseIndexEntries(
 	}
 
 	return indexEntries, metricIDs, nil
+}
+
+// validateALPColumns checks that every ALP-encoded value column begins with
+// a known scheme byte (0=main, 1=RD, 2=raw; see internal/encoding/
+// numeric_alp.go's ALPMaxSchemeByte) and that the column's body is at least
+// as long as its own header-declared layout requires. It runs once per
+// column at blob open — this is the earliest seam that both sees the
+// decompressed column payload and can return an error — rather than inside
+// All/DecodeAll/At, whose signatures stay error-free.
+//
+// A column with a corrupt or future/unknown scheme byte would otherwise
+// decode as an empty/zero column with no indication anything went wrong. A
+// column whose declared nExc/nDict/width/codeBits/rbw fields describe a
+// layout longer than the actual column body would otherwise panic deep in
+// decodeMainInto/decodeRDInto on out-of-range slicing or indexing. For the
+// RD scheme specifically, codeBits is also bounded to at most 3 (see the
+// codeBits check below): nDict alone only bounds the number of live dict
+// entries, not the *width* of the packed codes, and decodeRDInto/allRD/atRD
+// index the fixed 8-entry dict array directly with an unpacked
+// codeBits-wide code (dict[alpReadBitsFast(...)]) — bounding codeBits to 3
+// caps every possible unpacked code at 7, which is always in range for that
+// array regardless of nDict. Together, this check makes every downstream
+// slice/index in those decode paths provably in-bounds by construction. It
+// uses >= (minimum required length), not ==, since its job is
+// bounds-safety, not pinning the encoder's exact output size.
+func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEntry, engine endian.EndianEngine) error {
+	for i := range indexEntries {
+		entry := &indexEntries[i]
+		if entry.ValueLength == 0 {
+			continue
+		}
+
+		column := valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+		scheme := column[0]
+		if scheme > ienc.ALPMaxSchemeByte {
+			return fmt.Errorf("%w: metric ID %d has ALP scheme byte %d, want 0 (main), 1 (rd), or 2 (raw)",
+				errs.ErrInvalidALPScheme, entry.MetricID, scheme)
+		}
+
+		body := column[1:]
+		count := entry.Count
+
+		// Scheme byte values below mirror the unexported alpSchemeMain (0),
+		// alpSchemeRD (1), alpSchemeRaw (2) constants in
+		// internal/encoding/numeric_alp.go — already range-checked against
+		// ALPMaxSchemeByte above, so this switch is exhaustive.
+		switch scheme {
+		case 0: // alpSchemeMain
+			const mainHeaderSize = 15
+			if len(body) < mainHeaderSize {
+				return fmt.Errorf("%w: metric ID %d has ALP main column body of %d bytes, want at least %d (fixed header)",
+					errs.ErrInvalidALPColumn, entry.MetricID, len(body), mainHeaderSize)
+			}
+
+			width := int(body[2])
+			nExc := int(engine.Uint32(body[3:7]))
+			want := mainHeaderSize + (count*width+7)/8 + nExc*12
+			if len(body) < want {
+				return fmt.Errorf("%w: metric ID %d has ALP main column body of %d bytes, want at least %d (width=%d, nExc=%d, count=%d)",
+					errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, width, nExc, count)
+			}
+		case 1: // alpSchemeRD
+			const rdHeaderSize = 7
+			if len(body) < rdHeaderSize {
+				return fmt.Errorf("%w: metric ID %d has ALP rd column body of %d bytes, want at least %d (fixed header)",
+					errs.ErrInvalidALPColumn, entry.MetricID, len(body), rdHeaderSize)
+			}
+
+			rbw := int(body[0])
+			codeBits := int(body[1])
+			nDict := int(body[2])
+			nExc := int(engine.Uint32(body[3:7]))
+			if nDict > ienc.ALPRDMaxDictSize {
+				return fmt.Errorf("%w: metric ID %d has ALP rd column nDict %d, want at most %d",
+					errs.ErrInvalidALPColumn, entry.MetricID, nDict, ienc.ALPRDMaxDictSize)
+			}
+
+			// codeBits must fit the fixed 8-entry dict array the decode paths
+			// index into. alpCodeBits(nDict) = bits.Len64(nDict-1) for a
+			// valid encoder output, which for nDict <= ALPRDMaxDictSize (8)
+			// tops out at bits.Len64(8-1) = bits.Len64(7) = 3 — so 3 is the
+			// largest codeBits an encoder can ever emit. Reject anything
+			// larger: decodeRDInto/allRD/atRD unpack a codeBits-wide code and
+			// index dict[code] with no other bound, so codeBits > 3 lets a
+			// corrupt code exceed the array and panic with index out of
+			// range. Deliberately compare against the literal 3 rather than
+			// checking `1<<codeBits > ienc.ALPRDMaxDictSize`: codeBits is an
+			// attacker-controlled byte (0-255), and Go's shift operator
+			// yields 0 for shift counts >= 64, so that form would silently
+			// pass validation for a corrupt codeBits like 64. (Codes that are
+			// < 1<<codeBits but >= nDict read a zero-valued dict entry —
+			// garbage output, not a panic — and need no separate check.)
+			const maxRDCodeBits = 3
+			if codeBits > maxRDCodeBits {
+				return fmt.Errorf("%w: metric ID %d has ALP rd column codeBits %d, want at most %d",
+					errs.ErrInvalidALPColumn, entry.MetricID, codeBits, maxRDCodeBits)
+			}
+
+			want := rdHeaderSize + nDict*2 + (count*codeBits+7)/8 + (count*rbw+7)/8 + nExc*6
+			if len(body) < want {
+				return fmt.Errorf("%w: metric ID %d has ALP rd column body of %d bytes, want at least %d (rbw=%d, codeBits=%d, nDict=%d, nExc=%d, count=%d)",
+					errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, rbw, codeBits, nDict, nExc, count)
+			}
+		case 2: // alpSchemeRaw
+			want := 1 + count*8
+			if len(column) < want {
+				return fmt.Errorf("%w: metric ID %d has ALP raw column of %d bytes, want at least %d (count=%d)",
+					errs.ErrInvalidALPColumn, entry.MetricID, len(column), want, count)
+			}
+		default:
+			// Unreachable: scheme was already range-checked against
+			// ALPMaxSchemeByte above, so it is always 0, 1, or 2 here.
+		}
+	}
+
+	return nil
 }
 
 // decodedPayloads holds the decompressed payload data.
