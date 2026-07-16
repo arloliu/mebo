@@ -14,6 +14,17 @@ func X86HasAVX512() bool {
 	return cpu.X86.HasAVX512
 }
 
+// X86HasAVX512DQ reports whether the current x86 CPU supports the AVX-512
+// Foundation plus the Doubleword-and-Quadword (DQ) extension. DQ is what
+// provides the packed float64<->int64 conversions (VCVTTPD2QQ / VCVTQQ2PD)
+// the ALP encode verify kernel needs; Foundation covers the multiplies,
+// masked stores, and packed-qword min/max. Real CPUs that report DQ always
+// report F, but both are checked so the gate never enables the kernel on a
+// core missing either half.
+func X86HasAVX512DQ() bool {
+	return cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ
+}
+
 // X86HasAVX512VBMI reports whether the current x86 CPU supports the AVX-512
 // baseline plus the VBMI extension (VPERMB byte-granular cross-lane permute).
 func X86HasAVX512VBMI() bool {

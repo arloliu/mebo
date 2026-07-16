@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- ALP encoder (`TypeALP`): two encode-only performance changes (decode paths untouched),
+  byte-identical to v1.8 output (verified against golden hashes and a 19-column cross-version
+  corpus at 10M values per column; all streams remain lossless and decodable by existing
+  readers):
+  - Adopted the magic-number fast-round technique (`(x + 2^52+2^51) - 2^52+2^51`) in the digit
+    round-trip verify pass and the (e,f) search estimator, as a hybrid: fast round for
+    `|scaled| < 2^51`, with a legacy `math.Round` fallback for the rare `|scaled| >= 2^51` domain.
+  - Added a hand-written AVX-512 (F+DQ) verify-pass kernel for the encoder's digit round-trip
+    check, gated on a runtime CPU feature probe; falls back to the existing scalar path on
+    CPUs/architectures without AVX-512DQ.
+  - On AVX-512DQ hardware, end-to-end ALP encode is ~23% faster on 2-decimal-place data, ~6%
+    faster on full-precision data, and ~20% faster on mixed-exception data vs v1.8
+    (measured). Without AVX-512DQ, the fast-round change alone accounts for ~8%
+    (2dp) / ~12% (full-precision) of that. In isolation, the AVX-512 kernel is ~11.8× faster
+    than the scalar verify pass it replaces on 2dp data (an isolated-pass figure, not
+    end-to-end).
+
 ## [1.8.0] - 2026-06-22
 
 ### Added
