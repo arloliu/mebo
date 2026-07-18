@@ -71,10 +71,11 @@ within noise, as expected for a decode-only change.
 - Full test suite and `make lint` (0 issues) pass.
 - Format stability is structural: no encoder file changed
   (`git diff --stat`: `blob/numeric_blob.go` iterators and
-  `internal/encoding/fused.go`/`fused_each.go` decoders only), and all
+  `internal/encoding/fused/fused.go` and
+  `internal/encoding/fused/fused_each.go` decoders only), and all
   round-trip tests pass.
 - Permanent codec-level benchmarks added
-  (`internal/encoding/fused_bench_test.go`).
+  (`internal/encoding/fused/fused_test.go`).
 
 ## Verified-negative results (do not pursue)
 

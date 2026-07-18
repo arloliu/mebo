@@ -7,7 +7,7 @@ LINT_TIMEOUT    := 5m
 COVERAGE_DIR    := ./.coverage
 COVERAGE_OUT    := $(COVERAGE_DIR)/coverage.out
 COVERAGE_HTML   := $(COVERAGE_DIR)/coverage.html
-ENCODING_PKG    := ./internal/encoding
+ENCODING_PKG    := ./internal/encoding/...
 
 # Source files
 ALL_GO_FILES    := $(shell find . -name "*.go" -not -path "./tests/fbs_compare/*" -not -path "./vendor/*")

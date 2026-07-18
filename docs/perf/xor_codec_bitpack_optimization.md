@@ -55,10 +55,10 @@ an ~8× imbalance on the default configuration.
 
 | File | Change |
 |---|---|
-| `internal/encoding/numeric_gorilla.go` | Encoder: `appendBits` accumulator, single-pass `WriteSlice` (lookahead removed), tail-only `flushBits`. Decoder: windowed `DecodeAll` + `All`, zero-run batching. Added `peekBits64`. Removed `decodeAllSmall`/`decodeAllLarge`/`countLeadingZeroBits`. |
-| `internal/encoding/numeric_chimp.go` | Same encoder treatment; windowed `DecodeAll` + `All` with 00-flag-pair run batching. Removed `chimpCountUnchangedRun`. |
-| `internal/encoding/fused.go` | `gorillaState`/`chimpState` converted from `bitReader` to windowed reads (`newGorillaState`/`newChimpState`); per-call zero-run draining. All 10 fused decode paths benefit (these back `NumericBlob.All`). |
-| `internal/encoding/ts_raw_bench_test.go` | Fixed benchmark that reused an encoder after `Finish()` (panicked, aborting full bench runs). |
+| `internal/encoding/value/gorilla/gorilla.go` | Encoder: `appendBits` accumulator, single-pass `WriteSlice` (lookahead removed), tail-only `flushBits`. Decoder: windowed `DecodeAll` + `All`, zero-run batching. Added `peekBits64`. Removed `decodeAllSmall`/`decodeAllLarge`/`countLeadingZeroBits`. |
+| `internal/encoding/value/chimp/chimp.go` | Same encoder treatment; windowed `DecodeAll` + `All` with 00-flag-pair run batching. Removed `chimpCountUnchangedRun`. |
+| `internal/encoding/fused/fused.go` | `gorillaState`/`chimpState` converted from `bitReader` to windowed reads (`newGorillaState`/`newChimpState`); per-call zero-run draining. All 10 fused decode paths benefit (these back `NumericBlob.All`). |
+| `internal/encoding/timestamp/raw/raw_bench_test.go` | Fixed benchmark that reused an encoder after `Finish()` (panicked, aborting full bench runs). |
 
 Cold paths (`At`, `ByteLength`, `chimpDecodeNext`) intentionally keep the old
 `bitReader` — they are not on the hot path and the reader is still correct.
