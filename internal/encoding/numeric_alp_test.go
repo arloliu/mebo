@@ -433,8 +433,9 @@ func TestNumericALP_DecodeAll_MatchesAll(t *testing.T) {
 }
 
 // BenchmarkALPAt measures single-index random access on a 10k-point 2dp
-// column (ALP main, width >= 7 — the O(width) alpReadBitsAt loop and linear
-// exception scan are the pre-optimization cost center this benchmark tracks).
+// column (ALP main, width >= 7): an O(1) windowed bit read (alpReadBitsFast)
+// plus an O(log k) binary search over the exception sidecar (k = exceptions
+// in the column). See At/atMain in numeric_alp.go for the current code path.
 func BenchmarkALPAt(b *testing.B) {
 	eng := endian.GetLittleEndianEngine()
 	vals := genALPColumns(1, 10000, 2, 123)[0]

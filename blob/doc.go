@@ -77,7 +77,8 @@
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
 //
-//	// Random access (O(log n) to O(n) depending on encoding)
+//	// Random access — complexity depends on encoding: O(1) for Raw, O(1)+O(log k)
+//	// for ALP, O(index) for Gorilla/Chimp/Delta/DeltaPacked (see ValueAt/TimestampAt)
 //	val, ok := decoder.ValueAt(metricID, 50) // Get 51st point
 //	ts, ok := decoder.TimestampAt(metricID, 50)
 //
@@ -134,8 +135,8 @@
 //
 // Numeric Encoder Options:
 //   - blob.WithLittleEndian() / blob.WithBigEndian() - Byte order
-//   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta) - Timestamp encoding
-//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla) - Value encoding
+//   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta|TypeDeltaPacked) - Timestamp encoding
+//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla|TypeChimp|TypeALP) - Value encoding
 //   - blob.WithTimestampCompression(format.CompressionNone|Zstd|S2|LZ4) - Timestamp compression
 //   - blob.WithValueCompression(format.CompressionNone|Zstd|S2|LZ4) - Value compression
 //   - blob.WithTagsEnabled(true|false) - Enable/disable tags
@@ -157,11 +158,16 @@
 //   - Numeric: ~20 ns/point
 //   - Text: ~50 ns/point
 //
-// Random Access:
-//   - Raw encoding: O(1), ~10 ns
-//   - Delta encoding: O(n), must scan from start
-//   - Gorilla encoding: O(n), must decompress from start
-//   - Materialized: O(1), ~5 ns (direct array access)
+// Random Access (see docs/performance.md's Random Access Performance section for
+// measured ns/op across every timestamp×value combination):
+//   - Raw (timestamp or value): O(1), direct offset into a fixed-width array
+//   - ALP (value): O(1) windowed bit read + O(log k) binary search over that
+//     column's exceptions (k = exceptions in the column, not its length)
+//   - Delta, DeltaPacked (timestamp): O(index), must sequentially decode from start
+//   - Gorilla, Chimp (value): O(index), must decompress the XOR chain from start
+//   - Materialized: O(1), ~5 ns (direct array access), regardless of the
+//     underlying encoding — the one-time materialization cost decodes everything
+//     into a flat array upfront
 //
 // Materialization:
 //   - Cost: ~100 μs per metric per blob

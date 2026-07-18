@@ -35,7 +35,7 @@ Mebo is designed for **batch processing of already-collected metrics**, not stre
 
 **Access patterns**
 - Sequential iteration: O(n), zero allocations
-- Random access by index: O(1) for Raw timestamps, O(n) for Delta/Gorilla
+- Random access by index: O(1) for Raw (timestamp or value); ALP values add O(log k) for that column's exceptions; Delta/DeltaPacked timestamps and Gorilla/Chimp values are O(index) (sequential decode from the start) — see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance) for measured ns/op
 - Materialized random access: O(1) ~5 ns after one-time decode cost
 - Safe concurrent reads from all decoded blob types
 
@@ -118,7 +118,9 @@ for dp := range decoded.All(cpuID) {
     fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 }
 
-// Random access (O(1) for Raw timestamp encoding; O(n) for Delta)
+// Random access — O(index) here since the default encoder uses Gorilla values
+// (sequential XOR decode from the start of the column); use Raw or ALP values
+// for O(1)/O(1)+O(log k) random access instead
 value, ok := decoded.ValueAt(cpuID, 5)
 ```
 
@@ -148,22 +150,25 @@ for the full breakdown across data shapes (decimals, counters, sparse data, full
 
 ### Timestamp Encodings
 
-| Encoding | Size | Access | Best for |
-|----------|------|--------|----------|
+| Encoding | Size | Random access | Best for |
+|----------|------|----------------|----------|
 | Raw | 8 bytes fixed | O(1) | Irregular timestamps, random access needed |
-| Delta | 1–5 bytes | O(n) | Regular intervals (monitoring, 1-second cadence) |
-| DeltaPacked | 1–5 bytes | O(n) | Regular intervals; faster bulk decode via Group Varint |
+| Delta | 1–5 bytes | O(index) | Regular intervals (monitoring, 1-second cadence) |
+| DeltaPacked | 1–5 bytes | O(index) | Regular intervals; faster bulk decode via Group Varint |
 
 Delta and DeltaPacked produce similar compression ratios (~2% difference). Use DeltaPacked when iteration throughput matters more than encoding speed.
 
 ### Value Encodings
 
-| Encoding | Size | Best for |
-|----------|------|----------|
-| Raw | 8 bytes fixed | Rapidly changing values, random access |
-| Gorilla | 1–8 bytes | Slowly changing values (CPU, memory); XOR-based, VLDB 2015 |
-| Chimp | 1–8 bytes | Same as Gorilla; ~2.9% better compression; VLDB 2022 |
-| ALP | Variable | Decimal-quantized sensor data (2–4 dp): 4–6× smaller than raw, 1–2.5× smaller than the next-best codec. No guaranteed win on genuinely full-precision data — costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
+| Encoding | Size | Random access | Best for |
+|----------|------|----------------|----------|
+| Raw | 8 bytes fixed | O(1) | Rapidly changing values, random access |
+| Gorilla | 1–8 bytes | O(index) | Slowly changing values (CPU, memory); XOR-based, VLDB 2015 |
+| Chimp | 1–8 bytes | O(index) | Same as Gorilla; ~2.9% better compression; VLDB 2022 |
+| ALP | Variable | O(1) + O(log k)* | Decimal-quantized sensor data (2–4 dp): 4–6× smaller than raw, 1–2.5× smaller than the next-best codec. No guaranteed win on genuinely full-precision data — costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
+
+\* k = exceptions in that column, not its length — measured 25–35× faster than Gorilla/Chimp's
+`ValueAt` on 200-point columns; see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance).
 
 ### Compression Algorithms
 
