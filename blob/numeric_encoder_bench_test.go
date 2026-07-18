@@ -1,6 +1,8 @@
 package blob
 
 import (
+	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -21,6 +23,111 @@ type mixedSharedTimestampBenchmarkScenario struct {
 	sharedGroupCount   int
 	uniqueMetricCount  int
 	compressionEnabled bool
+}
+
+type addDataPointValuePattern struct {
+	name  string
+	value func(metricIdx, pointIdx int) float64
+}
+
+func BenchmarkNumericEncoder_AddDataPointPrimary(b *testing.B) {
+	pattern := addDataPointValuePatterns()[2]
+	metricIDs, timestamps, values := buildAddDataPointFixture(100, 50, pattern)
+	options := []NumericEncoderOption{
+		WithTimestampEncoding(format.TypeDelta),
+		WithValueEncoding(format.TypeGorilla),
+	}
+
+	b.Run("PerPoint", func(b *testing.B) {
+		benchmarkAddDataPointCase(b, metricIDs, timestamps, values, nil, options, false)
+	})
+	b.Run("BulkFloor", func(b *testing.B) {
+		benchmarkAddDataPointCase(b, metricIDs, timestamps, values, nil, options, true)
+	})
+}
+
+func BenchmarkNumericEncoder_AddDataPointMatrix(b *testing.B) {
+	encodings := []struct {
+		name   string
+		tsEnc  format.EncodingType
+		valEnc format.EncodingType
+	}{
+		{name: "RawRaw", tsEnc: format.TypeRaw, valEnc: format.TypeRaw},
+		{name: "RawGorilla", tsEnc: format.TypeRaw, valEnc: format.TypeGorilla},
+		{name: "RawChimp", tsEnc: format.TypeRaw, valEnc: format.TypeChimp},
+		{name: "RawALP", tsEnc: format.TypeRaw, valEnc: format.TypeALP},
+		{name: "DeltaRaw", tsEnc: format.TypeDelta, valEnc: format.TypeRaw},
+		{name: "DeltaGorilla", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla},
+		{name: "DeltaChimp", tsEnc: format.TypeDelta, valEnc: format.TypeChimp},
+		{name: "DeltaALP", tsEnc: format.TypeDelta, valEnc: format.TypeALP},
+		{name: "DeltaPackedRaw", tsEnc: format.TypeDeltaPacked, valEnc: format.TypeRaw},
+		{name: "DeltaPackedGorilla", tsEnc: format.TypeDeltaPacked, valEnc: format.TypeGorilla},
+		{name: "DeltaPackedChimp", tsEnc: format.TypeDeltaPacked, valEnc: format.TypeChimp},
+		{name: "DeltaPackedALP", tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALP},
+	}
+	modes := []struct {
+		name string
+		bulk bool
+	}{
+		{name: "PerPoint", bulk: false},
+		{name: "BulkFloor", bulk: true},
+	}
+
+	for _, encodingCase := range encodings {
+		for _, pattern := range addDataPointValuePatterns() {
+			metricIDs, timestamps, values := buildAddDataPointFixture(100, 50, pattern)
+			for _, hasTag := range []bool{false, true} {
+				var tags [][]string
+				if hasTag {
+					tags = buildAddDataPointTags(100, 50)
+				}
+				options := []NumericEncoderOption{
+					WithTimestampEncoding(encodingCase.tsEnc),
+					WithValueEncoding(encodingCase.valEnc),
+					WithTagsEnabled(hasTag),
+				}
+				for _, mode := range modes {
+					name := fmt.Sprintf("Codec/%s/Pattern/%s/Tags/%t/N/50/%s", encodingCase.name, pattern.name, hasTag, mode.name)
+					b.Run(name, func(b *testing.B) {
+						benchmarkAddDataPointCase(b, metricIDs, timestamps, values, tags, options, mode.bulk)
+					})
+				}
+			}
+		}
+	}
+
+	for _, encodingCase := range encodings {
+		for _, pattern := range []addDataPointValuePattern{addDataPointValuePatterns()[1], addDataPointValuePatterns()[2]} {
+			for _, points := range []int{200, 513} {
+				metricIDs, timestamps, values := buildAddDataPointFixture(100, points, pattern)
+				options := []NumericEncoderOption{
+					WithTimestampEncoding(encodingCase.tsEnc),
+					WithValueEncoding(encodingCase.valEnc),
+				}
+				for _, mode := range modes {
+					name := fmt.Sprintf("Long/%s/Pattern/%s/N/%d/%s", encodingCase.name, pattern.name, points, mode.name)
+					b.Run(name, func(b *testing.B) {
+						benchmarkAddDataPointCase(b, metricIDs, timestamps, values, nil, options, mode.bulk)
+					})
+				}
+			}
+		}
+	}
+
+	fullPattern := addDataPointValuePatterns()[2]
+	for _, points := range []int{1, 10, 50, 63, 64, 65, 100, 200, 512, 513} {
+		metricIDs, timestamps, values := buildAddDataPointFixture(100, points, fullPattern)
+		options := []NumericEncoderOption{
+			WithTimestampEncoding(format.TypeDelta),
+			WithValueEncoding(format.TypeGorilla),
+		}
+		for _, mode := range modes {
+			name := fmt.Sprintf("Boundary/DeltaGorilla/N/%d/%s", points, mode.name)
+			b.Run(name, func(b *testing.B) {
+				benchmarkAddDataPointCase(b, metricIDs, timestamps, values, nil, options, mode.bulk)
+			})
+		}
+	}
 }
 
 // BenchmarkSharedTimestamps_EncodedSize reports end-to-end blob size deltas
@@ -921,4 +1028,116 @@ func BenchmarkV2Layout_Encode(b *testing.B) {
 			}
 		})
 	}
+}
+
+func addDataPointValuePatterns() []addDataPointValuePattern {
+	return []addDataPointValuePattern{
+		{name: "integer", value: func(metricIdx, pointIdx int) float64 {
+			return float64(metricIdx*1000 + pointIdx)
+		}},
+		{name: "fixed2", value: func(metricIdx, pointIdx int) float64 {
+			return float64(metricIdx*10000+pointIdx*17) / 100
+		}},
+		{name: "full", value: func(metricIdx, pointIdx int) float64 {
+			return math.Sin(float64(metricIdx*131+pointIdx*17))*1000 + math.Pi
+		}},
+		{name: "mixed", value: func(metricIdx, pointIdx int) float64 {
+			if (metricIdx*50+pointIdx+1)%31 == 0 {
+				return math.Pi * float64(metricIdx+1)
+			}
+
+			return float64(metricIdx*10000+pointIdx*17) / 100
+		}},
+	}
+}
+
+//nolint:unparam // metricCount keeps fixture generation reusable beyond the permanent 100-metric matrix.
+func buildAddDataPointFixture(metricCount, pointsPerMetric int, pattern addDataPointValuePattern) ([]uint64, [][]int64, [][]float64) {
+	metricIDs := make([]uint64, metricCount)
+	timestamps := make([][]int64, metricCount)
+	values := make([][]float64, metricCount)
+	base := int64(1_700_000_000_000_000)
+
+	for metricIdx := range metricCount {
+		metricIDs[metricIdx] = uint64(metricIdx + 1)
+		timestamps[metricIdx] = make([]int64, pointsPerMetric)
+		values[metricIdx] = make([]float64, pointsPerMetric)
+		for pointIdx := range pointsPerMetric {
+			timestamps[metricIdx][pointIdx] = base + int64(pointIdx)*1_000_000 + int64((metricIdx*17+pointIdx*31)%997)
+			values[metricIdx][pointIdx] = pattern.value(metricIdx, pointIdx)
+		}
+	}
+
+	return metricIDs, timestamps, values
+}
+
+func benchmarkAddDataPointCase(
+	b *testing.B,
+	metricIDs []uint64,
+	timestamps [][]int64,
+	values [][]float64,
+	tags [][]string,
+	options []NumericEncoderOption,
+	bulk bool,
+) {
+	b.Helper()
+	start := time.Unix(1_700_000_000, 0).UTC()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		enc, err := NewNumericEncoder(start, options...)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for metricIdx, metricID := range metricIDs {
+			points := len(timestamps[metricIdx])
+			if err = enc.StartMetricID(metricID, points); err != nil {
+				b.Fatal(err)
+			}
+			if bulk {
+				var metricTags []string
+				if tags != nil {
+					metricTags = tags[metricIdx]
+				}
+				if err = enc.AddDataPoints(timestamps[metricIdx], values[metricIdx], metricTags); err != nil {
+					b.Fatal(err)
+				}
+			} else {
+				for pointIdx, timestamp := range timestamps[metricIdx] {
+					tag := ""
+					if tags != nil {
+						tag = tags[metricIdx][pointIdx]
+					}
+					if err = enc.AddDataPoint(timestamp, values[metricIdx][pointIdx], tag); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+			if err = enc.EndMetric(); err != nil {
+				b.Fatal(err)
+			}
+		}
+		data, finishErr := enc.Finish()
+		if finishErr != nil {
+			b.Fatal(finishErr)
+		}
+		if len(data) == 0 {
+			b.Fatal("empty blob")
+		}
+	}
+}
+
+func buildAddDataPointTags(metricCount, pointsPerMetric int) [][]string {
+	tags := make([][]string, metricCount)
+	for metricIdx := range metricCount {
+		tags[metricIdx] = make([]string, pointsPerMetric)
+		for pointIdx := range pointsPerMetric {
+			if (metricIdx+pointIdx)%3 == 0 {
+				tags[metricIdx][pointIdx] = "host=a"
+			}
+		}
+	}
+
+	return tags
 }

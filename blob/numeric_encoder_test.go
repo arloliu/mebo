@@ -1,6 +1,8 @@
 package blob
 
 import (
+	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -266,6 +268,36 @@ func TestNumericEncoder_AddDataPoints(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "too many data points")
 	})
+}
+
+func TestNumericEncoder_MixedPointAPIsPreserveOrder(t *testing.T) {
+	tsEncodings := []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked}
+	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP}
+	pointCounts := []int{1, 10, 50, 63, 64, 65, 100, 200, 512, 513}
+	endians := []struct {
+		name string
+		big  bool
+	}{
+		{name: "little", big: false},
+		{name: "big", big: true},
+	}
+
+	for _, tsEnc := range tsEncodings {
+		for _, valEnc := range valEncodings {
+			for _, hasTag := range []bool{false, true} {
+				for _, endianCase := range endians {
+					for _, points := range pointCounts {
+						name := fmt.Sprintf("ts=%v/val=%v/tags=%t/endian=%s/n=%d", tsEnc, valEnc, hasTag, endianCase.name, points)
+						t.Run(name, func(t *testing.T) {
+							want := encodePointAPIFixture(t, tsEnc, valEnc, hasTag, points, false, endianCase.big)
+							got := encodePointAPIFixture(t, tsEnc, valEnc, hasTag, points, true, endianCase.big)
+							require.Equal(t, want, got)
+						})
+					}
+				}
+			}
+		}
+	}
 }
 
 func TestNumericEncoder_EndMetric(t *testing.T) {
@@ -3471,4 +3503,63 @@ func TestNumericEncoder_ALP(t *testing.T) {
 	require.NoError(t, enc.EndMetric())
 	_, err = enc.Finish()
 	require.NoError(t, err)
+}
+
+func encodePointAPIFixture(
+	t *testing.T,
+	tsEnc, valEnc format.EncodingType,
+	hasTag bool,
+	points int,
+	mixed bool,
+	bigEndian bool,
+) []byte {
+	t.Helper()
+	opts := []NumericEncoderOption{
+		WithTimestampEncoding(tsEnc),
+		WithValueEncoding(valEnc),
+		WithTagsEnabled(hasTag),
+	}
+	if bigEndian {
+		opts = append(opts, WithBigEndian())
+	} else {
+		opts = append(opts, WithLittleEndian())
+	}
+	enc, err := NewNumericEncoder(time.Unix(1_700_000_000, 0).UTC(), opts...)
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, points))
+
+	timestamps := make([]int64, points)
+	values := make([]float64, points)
+	tags := make([]string, points)
+	for i := range points {
+		timestamps[i] = 1_700_000_000_000_000 + int64(i)*1_000_000 + int64((i*31)%997)
+		if i%31 == 0 {
+			values[i] = math.Pi * float64(i+1)
+		} else {
+			values[i] = float64(i*17) / 100
+		}
+		if hasTag && i%3 == 0 {
+			tags[i] = "host=a"
+		}
+	}
+
+	if mixed {
+		first := min(13, points)
+		for i := range first {
+			require.NoError(t, enc.AddDataPoint(timestamps[i], values[i], tags[i]))
+		}
+		second := min(first+17, points)
+		require.NoError(t, enc.AddDataPoints(timestamps[first:second], values[first:second], tags[first:second]))
+		for i := second; i < points; i++ {
+			require.NoError(t, enc.AddDataPoint(timestamps[i], values[i], tags[i]))
+		}
+	} else {
+		require.NoError(t, enc.AddDataPoints(timestamps, values, tags))
+	}
+
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	return data
 }
