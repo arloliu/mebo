@@ -147,7 +147,7 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 	// through All/DecodeAll/At and the ForEach materialize path alike — every
 	// one of those falls through an unlabeled default: case — which is
 	// indistinguishable from data loss. See the alpScheme* doc comment in
-	// internal/encoding/numeric_alp.go for why this set is closed. A column
+	// internal/encoding/value/alp/alp.go for why this set is closed. A column
 	// whose body is shorter than its header-declared layout (or whose header
 	// fields are out of range) would otherwise panic deep in the decode paths
 	// on out-of-range slicing/indexing — validated here too, so both classes
@@ -417,7 +417,7 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 
 		// Scheme byte values below mirror the unexported alpSchemeMain (0),
 		// alpSchemeRD (1), alpSchemeRaw (2) constants in
-		// internal/encoding/numeric_alp.go — already range-checked against
+		// internal/encoding/value/alp/alp.go — already range-checked against
 		// ALPMaxSchemeByte above, so this switch is exhaustive.
 		switch scheme {
 		case 0: // alpSchemeMain

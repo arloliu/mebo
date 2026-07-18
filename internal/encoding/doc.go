@@ -1,68 +1,40 @@
-// Package encoding provides internal implementations of columnar encoding strategies.package encoding
-
-// This package contains the concrete implementations of timestamp, numeric, and text
-// encoders/decoders used by the mebo time-series format. These implementations are
-// internal to mebo and are not part of the public API.
+// Package encoding preserves the internal codec API used by blob.
+//
+// It is a compatibility facade: blob continues to import this package while
+// concrete codecs live in codec-owned packages. The facade contains type
+// aliases and forwarding functions only; it does not own encoded layouts,
+// codec state, or decode loops.
+//
+// # Layout
+//
+// Timestamp codecs live under internal/encoding/timestamp:
+//
+//   - raw stores fixed-width int64 timestamps.
+//   - delta stores delta-of-delta timestamps with varints.
+//   - deltapacked stores delta-of-delta timestamps with Group Varint packing.
+//   - simple8b and bp128 are retained experimental codecs. They are not
+//     registered format types and blob cannot select them.
+//
+// Value codecs live under internal/encoding/value:
+//
+//   - raw stores fixed-width float64 values.
+//   - gorilla and chimp provide XOR-compressed values.
+//   - alp provides adaptive lossless floating-point compression and is a
+//     registered value encoding.
+//
+// Metadata codecs for tags, variable-length strings, and metric names live in
+// internal/encoding/metadata. Cross-column sequential iteration lives in
+// internal/encoding/fused; it combines concrete timestamp, value, and metadata
+// cursors without changing their encoded formats. Shared low-level helpers live
+// under internal/encoding/internal. Research-only codec experiments live in
+// internal/encoding/research.
 //
 // # For External Users
 //
-// This package is internal and should not be imported by external code. Use the
-// public interfaces defined in github.com/arloliu/mebo/encoding instead:
+// This package is internal and must not be imported outside this module. Use
+// the public interfaces in github.com/arloliu/mebo/encoding, the blob package,
+// or the root mebo package instead.
 //
-//   - encoding.ColumnarEncoder[T] - Generic encoding interface
-//   - encoding.ColumnarDecoder[T] - Generic decoding interface
-//
-// For most use cases, use the high-level blob package or the convenience functions
-// in the root mebo package.
-//
-// # For Custom Encoders
-//
-// To implement custom encoders, implement the encoding.ColumnarEncoder[T] interface
-// in your own package. You don't need access to these internal implementations.
-//
-// Example:
-//
-//	package myencoder
-//
-//	import "github.com/arloliu/mebo/encoding"
-//
-//	type MyEncoder struct {
-//	    // Your implementation
-//	}
-//
-//	// Implement encoding.ColumnarEncoder[T] interface
-//	func (e *MyEncoder) Write(data T) { /* ... */ }
-//	func (e *MyEncoder) WriteSlice(data []T) { /* ... */ }
-//	func (e *MyEncoder) Bytes() []byte { /* ... */ }
-//	func (e *MyEncoder) Len() int { /* ... */ }
-//	func (e *MyEncoder) Size() int { /* ... */ }
-//	func (e *MyEncoder) Reset() { /* ... */ }
-//	func (e *MyEncoder) Finish() { /* ... */ }
-//
-// # Implementation Overview
-//
-// This package provides the following encoding implementations:
-//
-// Timestamp Encoders/Decoders:
-//   - TimestampRawEncoder/Decoder - Uncompressed 64-bit timestamps
-//   - TimestampDeltaEncoder/Decoder - Delta-of-delta compression
-//
-// Numeric Value Encoders/Decoders:
-//   - NumericRawEncoder/Decoder - Uncompressed 64-bit floats
-//   - NumericGorillaEncoder/Decoder - Facebook's Gorilla compression
-//
-// Text/Tag Encoders/Decoders:
-//   - VarStringEncoder/Decoder - Variable-length string encoding
-//   - TagEncoder/Decoder - Tag metadata encoding
-//   - MetricNames encoding/decoding - Hash-based metric name storage
-//
-// # Architecture Notes
-//
-// All encoders implement the encoding.ColumnarEncoder[T] interface, which provides:
-//   - Generic type parameter T for type safety
-//   - Consistent API across all encoding strategies
-//   - Zero-allocation iteration using iter.Seq
-//   - Support for both sequential and random access (where applicable)
-//
-// For detailed documentation of each encoding strategy, see the individual files.
+// Custom encoders implement encoding.ColumnarEncoder[T] in their own package;
+// they do not need access to these internal implementations.
 package encoding

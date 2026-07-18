@@ -4,6 +4,11 @@
 **Status:** ALP wiring + measurev2 refactor — design approved, pending final review.
 BP128 timestamp codec — spike built and measured, **deferred** (evidence below).
 
+> Relocation note (2026-07-18): this document preserves the original design
+> narrative. The codec sources now live under `internal/encoding/value/alp/`
+> and `internal/encoding/timestamp/bp128/`; ALP is wired as `TypeALP`, while
+> BP128 remains unregistered.
+
 ## Goal
 
 Land the **ALP** value codec into the mebo blob format as a first-class, user-selectable

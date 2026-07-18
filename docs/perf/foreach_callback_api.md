@@ -121,7 +121,7 @@ Implementation notes:
 
 - Single-column dispatch (`forEachValuesFromEntry` / `forEachTimestampsFromEntry`)
   mirrors `decodeValues` / `allTimestampsFromEntry` and routes to static decode
-  functions in `internal/encoding/fused_each.go`: Gorilla→`FusedGorillaEach`,
+  functions in `internal/encoding/fused/fused_each.go`: Gorilla→`FusedGorillaEach`,
   Chimp→`FusedChimpEach`, raw→`RawValuesEach`/`RawTimestampsEach`,
   delta→`FusedDeltaEach`, deltaPacked→`FusedDeltaPackedEach` (new). The
   shared-timestamp cache fast path is honored. ALP (and any future codec

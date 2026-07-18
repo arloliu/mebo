@@ -593,7 +593,7 @@ The time-series data is organized into two separate, columnar payloads to maximi
 | Values       | Chimp       | O(index)            | O(N)              | Medium          |
 | Values       | ALP         | O(1) + O(log k)*    | O(N)              | Medium          |
 
-\* k = exceptions in that column (not N); see `internal/encoding/numeric_alp.go`'s
+\* k = exceptions in that column (not N); see `internal/encoding/value/alp/alp.go`'s
 `At`/`atMain`/`atRD`. Measured ns/op for every combination:
 [Performance Guide § Random Access Performance](performance.md#random-access-performance).
 

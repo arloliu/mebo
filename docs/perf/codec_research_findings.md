@@ -2,8 +2,9 @@
 
 A study of lossless compression codecs that could improve on mebo's current
 encodings, with **in-repo proof-of-concepts and production prototypes** measured
-against the real in-tree codecs. Every number below was produced by code in
-`internal/encoding/` on this machine — not copied from papers.
+against the real in-tree codecs. Every number below was produced by the
+research and codec packages under `internal/encoding/` on this machine — not
+copied from papers.
 
 - **Goal:** find lossless codecs beating mebo's current ones on the
   ratio↔throughput Pareto frontier, across three families (float64 values, int64
@@ -23,8 +24,8 @@ The active delta-of-delta SIMD backend is `AsmAVX512` (hand-written assembly).
 
 | Family | Winner | Headline result | Status |
 |---|---|---|---|
-| **float64 values** | **ALP** | **3–5× better ratio than Chimp on real decimal data**; ≈Chimp on full-precision; O(1) random access | Production codec built (`numeric_alp.go`), unwired |
-| **int64 timestamps** | **BP128** (or Simple8b) | BP128: **3× faster decode**, best ratio (needs SIMD-asm). Simple8b: −15..76% ratio, pure-Go, encode 1.84× | Simple8b built; BP128 prototyped (archsimd) |
+| **float64 values** | **ALP** | **3–5× better ratio than Chimp on real decimal data**; ≈Chimp on full-precision; O(1) random access | Production codec wired as `TypeALP` |
+| **int64 timestamps** | **BP128** (or Simple8b) | BP128: **3× faster decode**, best ratio (needs SIMD-asm). Simple8b: −15..76% ratio, pure-Go, encode 1.84× | Retained and tested, but neither is a registered format type |
 | **block layer** | **zstd dictionary** | **−58%** on small blocks; FSE/huff0 useless on XOR'd output | PoC only |
 
 **Single highest-value result:** ALP on real (decimal) metric data. mebo's own
@@ -252,13 +253,13 @@ Measured on 200 independent ~943-byte Gorilla blocks:
 
 | Artifact | Path | State |
 |---|---|---|
-| ALP production codec (main + RD + raw) | `internal/encoding/numeric_alp.go` (+ `_test.go`) | built, tested, optimized, **unwired** |
-| Simple8b production codec | `internal/encoding/ts_simple8b.go` (+ `_test.go`) | built, tested, optimized, **unwired** |
-| ALP main ratio PoC | `internal/encoding/poc_alp_test.go` | kept (ratio reference) |
-| ALP-RD ratio PoC | `internal/encoding/poc_alp_rd_test.go` | kept |
-| Simple8b ratio PoC | `internal/encoding/poc_ts_test.go` | kept |
-| Block-codec / zstd-dict / FSE PoC | `internal/encoding/poc_block_test.go` | kept |
-| BP128 SIMD prototype | `internal/encoding/bp128_proto_test.go` | `//go:build goexperiment.simd`; prototype/evidence |
+| ALP production codec (main + RD + raw) | `internal/encoding/value/alp/alp.go` (+ tests) | built, tested, optimized, wired as `TypeALP` |
+| Simple8b production codec | `internal/encoding/timestamp/simple8b/simple8b.go` (+ tests) | built, tested, **unregistered** |
+| ALP main ratio PoC | `internal/encoding/value/alp/poc_alp_test.go` | kept (ratio reference) |
+| ALP-RD ratio PoC | `internal/encoding/value/alp/poc_alp_rd_test.go` | kept |
+| Simple8b ratio PoC | `internal/encoding/research/poc_ts_test.go` | kept |
+| Block-codec / zstd-dict / FSE PoC | `internal/encoding/research/poc_block_test.go` | kept |
+| BP128 SIMD prototype | `internal/encoding/timestamp/bp128/bp128_proto_test.go` | `//go:build goexperiment.simd`; prototype/evidence |
 | Deep-research report (105 agents, cited) | session task `wdlhi8z9u` output | archived |
 
 All PoCs/codecs are lossless (round-trip asserted) and lint-clean. The BP128
