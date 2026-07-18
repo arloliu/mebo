@@ -14,9 +14,9 @@ import (
 type TextDataPoint struct {
 	// Ts is the timestamp, the unit is defined by the caller when adding data points in TextEncoder
 	Ts int64
-	// Val is the text value (max 255 characters)
+	// Val is the text value (max 255 UTF-8 bytes)
 	Val string
-	// Tag is the optional tag associated with this data point (max 255 characters)
+	// Tag is the optional tag associated with this data point (max 255 UTF-8 bytes)
 	Tag string
 }
 

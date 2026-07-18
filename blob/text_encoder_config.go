@@ -170,7 +170,7 @@ func WithTextDataCompression(codec format.CompressionType) TextEncoderOption {
 }
 
 // WithTextTagsEnabled enables per-point tags when set to true.
-// Tags are stored as text strings with a maximum length of 255 characters.
+// Tags are stored as text strings with a maximum length of 255 UTF-8 bytes.
 // Default is false.
 func WithTextTagsEnabled(enabled bool) TextEncoderOption {
 	return options.NoError(func(cfg *TextEncoderConfig) {

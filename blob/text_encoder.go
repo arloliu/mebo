@@ -20,8 +20,8 @@ import (
 // Unlike NumericEncoder which uses columnar storage (separate timestamp and value sections),
 // TextEncoder uses row-based storage where each data point is encoded as:
 //   - Timestamp (varint delta or int64 raw)
-//   - Value (uint8 length + string, max 255 chars)
-//   - Tag (uint8 length + string, max 255 chars, optional)
+//   - Value (uint8 length + string, max 255 UTF-8 bytes)
+//   - Tag (uint8 length + string, max 255 UTF-8 bytes, optional)
 //
 // The entire data section is compressed as a single unit after encoding.
 //
@@ -234,15 +234,16 @@ func (e *TextEncoder) StartMetricName(metricName string, numOfDataPoints int) er
 
 // AddDataPoint adds a single data point to the current metric.
 //
-// The value string is limited to 255 characters. The tag string is optional and limited
-// to 255 characters. If tags are disabled (default), the tag parameter is ignored.
+// The value string is limited to 255 UTF-8 bytes. The tag string is optional and
+// limited to 255 UTF-8 bytes. If tags are disabled (default), the tag parameter
+// is ignored.
 // If tags are enabled, the tag is encoded even if empty string.
 //
 // Parameters:
 //   - timestamp: Caller-defined timestamp value (e.g. microseconds since Unix epoch).
 //     The unit must be consistent across all data points in the blob.
-//   - value: Text value string (max 255 characters).
-//   - tag: Optional tag string (max 255 characters, ignored if tag support is disabled).
+//   - value: Text value string (max 255 UTF-8 bytes).
+//   - tag: Optional tag string (max 255 UTF-8 bytes, ignored if tag support is disabled).
 //
 // Returns:
 //   - error: ErrNoMetricStarted, value/tag length validation errors, or ErrTooManyDataPoints
