@@ -348,7 +348,7 @@ func WithValueCompression(comp format.CompressionType) NumericEncoderOption {
 // WithTagsEnabled enables or disables per-point tag storage.
 //
 // When enabled, each data point may carry an associated text tag of up to
-// 255 characters. Tags are stored in a separate compressed payload and do
+// 255 UTF-8 bytes. Tags are stored in a separate compressed payload and do
 // not affect timestamp or value encoding.
 //
 // Parameters:
