@@ -20,7 +20,7 @@ This skill runs the encoding benchmark matrix tool and generates `docs/performan
 cd tests/measurev2 && go run . -pretty -verbose -output /tmp/mebo_bench_results.json 2>&1
 ```
 
-Wait for completion. With default settings (200 metrics × 200 points, 24 combos: 12 standard + 12 shared-timestamp — 3 timestamp encodings × 4 value encodings: Raw, Gorilla, Chimp, ALP), this takes ~3-6 minutes.
+Wait for completion. With default settings (200 metrics × 200 points, 24 combos: 12 standard + 12 shared-timestamp — 3 timestamp encodings × 4 value encodings: Raw, Gorilla, Chimp, ALP), this takes ~5-10 minutes (5 benchmarks per combo: encode, decode, iterate, random ValueAt, random TimestampAt).
 
 ### Step 2: Generate the report
 
@@ -151,6 +151,33 @@ Same format as encode, using `decode.*` fields. Sort by `decode.ns_per_op` ascen
 
 Same format, using `iter_seq.*` fields. Sort by `iter_seq.ns_per_op` ascending.
 
+#### `{{RANDOM_ACCESS_PERFORMANCE}}`
+
+```markdown
+| Configuration | ValueAt (ns/op) | Value complexity | TimestampAt (ns/op) | Timestamp complexity |
+|---|---:|---|---:|---|
+```
+
+Sort by `random_value_at.ns_per_op + random_timestamp_at.ns_per_op` ascending. The two
+"complexity" columns come from `AT_COMPLEXITY` (a fixed dict keyed by the value/timestamp
+codec name, verified against the actual decoder implementations in `internal/encoding/`, NOT
+inferred from the benchmark numbers) — **never assume a codec is O(1) for random access just
+because its name suggests it or because a sibling axis (e.g. Raw timestamps) is O(1)**. Verified
+complexity classes as of 2026-07:
+- Raw (timestamp or value): true O(1), direct offset into a fixed-width array.
+- ALP (value): O(1) windowed bit read + O(log k) binary search over that column's exception
+  sidecar (k = exceptions in that column, not n). Not a plain O(1) — don't round it down.
+- Gorilla, Chimp (value): O(index) — must sequentially decode the XOR chain from the start of
+  the column. This is true regardless of which *timestamp* encoding the combo pairs it with;
+  don't assume "Raw + Chimp" is O(1) just because the timestamp half is.
+- Delta, DeltaPacked (timestamp): O(index) — must sequentially decode every delta from the
+  start, since each value depends on the accumulated sum before it.
+
+If a new value/timestamp encoding is ever added, its `At()` complexity MUST be verified by
+reading the actual decoder source (look for a doc comment stating Big-O, or read the loop
+structure directly) before adding it to `AT_COMPLEXITY` — do not guess from the encoding's name
+or its compression characteristics.
+
 #### `{{SCALING_TABLE_STANDARD}}`
 
 Create a pivot table from `scaling` data for **standard (non-shared) combos only**:
@@ -195,11 +222,20 @@ Determine the recommendations by comparing matrix results:
 - **Best compression**: combo with lowest `bytes_per_point`
 - **Fastest encode**: combo with lowest `encode.ns_per_op`
 - **Fastest decode/iteration**: combo with lowest `iter_seq.ns_per_op`
-- **Random access**: Raw-timestamp combos (support O(1) `TimestampAt`/`ValueAt`)
+- **Random access**: combo with lowest `random_value_at.ns_per_op + random_timestamp_at.ns_per_op`
+  across the WHOLE matrix — **do not pre-filter to Raw-timestamp combos**, see below
 
 Important domain knowledge:
 - DeltaPacked's advantage over Delta is **decode/iteration speed** (Group Varint batch decoding), not compression ratio
-- Raw timestamp combos support O(1) random access; Delta/DeltaPacked require sequential scan
+- **Do NOT assume Raw-timestamp combos are the best random-access pick, and do NOT assume any
+  combo has "O(1) TimestampAt/ValueAt" as a blanket claim.** Random access has two independent
+  axes — value encoding and timestamp encoding — with different codecs on each axis, and they
+  don't share a complexity class just because they're paired in one combo. A prior version of
+  this generator picked "best Raw-timestamp combo by BPP" and asserted flat O(1) for both axes;
+  that was wrong (e.g. "Shared Raw + Chimp" was flagged as O(1) ValueAt when Chimp's `At()` is
+  actually O(index), see `internal/encoding/numeric_chimp.go`'s `At` method — a sequential
+  XOR-chain decode). Use the real measured `random_value_at`/`random_timestamp_at` fields and
+  the `AT_COMPLEXITY` table (see `{{RANDOM_ACCESS_PERFORMANCE}}` above) instead.
 - Shared-TS combos require all metrics to share identical timestamps; the tree should branch on this criterion first
 - Use actual combo labels and benchmark numbers in the tree nodes
 
@@ -213,7 +249,7 @@ Generate a use-case → configuration table. Derive each row from actual benchma
 | Fastest iteration | Lowest `iter_seq.ns_per_op` combo | Actual ns/op |
 | Fastest encode | Lowest `encode.ns_per_op` combo | Actual ns/op |
 | Best balance | Combo that ranks in top 3 for both size and iteration speed | Both metrics |
-| Random access | Best Raw-timestamp combo by `bytes_per_point` | BPP + note O(1) access |
+| Random access | Lowest `random_value_at.ns_per_op + random_timestamp_at.ns_per_op`, full matrix | Both measured ns/op + each axis's real `AT_COMPLEXITY`, not an assumed O(1) |
 | Maximum throughput | `raw-raw` baseline | Encode ns/op |
 
 All rationale should reference specific benchmark numbers, not generic descriptions.
@@ -241,6 +277,11 @@ After writing, read back `docs/performance.md` and verify:
 5. Decision tree and config table reference actual benchmark numbers
 6. Shared-TS combos show ~20-25% additional savings over equivalent non-shared combos
 7. Shared-TS combos show faster decode (smaller blobs) but similar iteration speed
+8. Random Access table: Raw (value or timestamp) should be near the fastest on its axis; Gorilla/Chimp
+   ValueAt and Delta/DeltaPacked TimestampAt should be visibly slower (sequential decode) than Raw/ALP
+   on the same axis — if a Gorilla/Chimp combo's ValueAt looks as fast as Raw's, something is wrong
+   (check the access pattern actually varies the index; index 0 for every metric would hide the
+   O(index) cost). ALP's ValueAt should sit between Raw and Gorilla/Chimp, closer to Raw.
 
 ## Domain Knowledge for Interpreting Results
 

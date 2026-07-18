@@ -81,11 +81,18 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 | Slowly changing floats (CPU, memory) | Gorilla or Chimp value | XOR compression; ~2–5 bytes/val |
 | Rapidly changing or discontinuous values | Raw value | No decompression overhead |
 | Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; ~20–25% additional savings at 200 metrics |
-| Frequent random access needed | Raw timestamp | O(1) `TimestampAt`; Delta/DeltaPacked require sequential scan |
+| Decimal-quantized sensor data (2–4 dp) | ALP value | 2.5–6× smaller than Chimp/Gorilla on this shape; costs more to encode |
+| Frequent random-access timestamps | Raw timestamp | O(1) `TimestampAt`; Delta/DeltaPacked must sequentially decode from the start (O(index)) |
+| Frequent random-access values | Raw or ALP value | Raw is O(1); ALP is O(1) + O(log k) (k = exceptions in the column) — both far ahead of Gorilla/Chimp, which must sequentially decode the XOR chain from the start (O(index)) |
 
 DeltaPacked vs Delta: DeltaPacked uses Group Varint for **faster decode/iteration**, not better compression. Size difference is marginal (~2%). Choose DeltaPacked when iteration throughput matters more than encoding speed.
 
 Chimp vs Gorilla: Chimp achieves ~2.9% better compression ratio. Both use XOR-based encoding. Choose based on whether the marginal size reduction justifies the slightly different algorithm.
+
+Random access is not just a timestamp-encoding question — the *value* encoding matters just as
+much, and Gorilla/Chimp are the slow axis there (see
+[Performance Guide § Random Access Performance](performance.md#random-access-performance) for
+measured ns/op across every combination).
 
 ### Codec compression is optional
 

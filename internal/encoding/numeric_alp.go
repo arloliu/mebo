@@ -1283,8 +1283,10 @@ func (d NumericALPDecoder) DecodeAll(data []byte, count int, dst []float64) int 
 	}
 }
 
-// At decodes a single value directly — O(1) for ALP main/RD (compute the bit
-// offset), unlike the O(n) sequential XOR chains of Gorilla/Chimp.
+// At decodes a single value directly — an O(1) windowed bit read plus an
+// O(log k) binary search over the column's exception sidecar for ALP main/RD
+// (k = exceptions in the column, not count; see atMain/atRD), unlike the O(n)
+// sequential XOR chains of Gorilla/Chimp.
 func (d NumericALPDecoder) At(data []byte, index int, count int) (float64, bool) {
 	if index < 0 || index >= count || len(data) == 0 {
 		return 0, false

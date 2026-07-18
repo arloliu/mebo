@@ -15,6 +15,33 @@ import re
 import sys
 
 
+# At()-complexity per encoding, verified against the actual decoder implementations
+# (internal/encoding/*.go), not assumed from the encoding's name. Raw is a direct
+# offset (true O(1)). ALP is a windowed bit read (O(1)) plus a binary search over
+# that column's exception sidecar (O(log k), k = exceptions in the column, not n) —
+# genuinely different from a plain O(1), so don't collapse it into "O(1)" either.
+# Gorilla/Chimp (values) and Delta/DeltaPacked (timestamps) must sequentially decode
+# from the start of the column, so they're O(index), worst-case O(n).
+AT_COMPLEXITY = {
+    'raw': 'O(1)',
+    'alp': 'O(1) + O(log k) exceptions',
+    'gorilla': 'O(index), sequential XOR decode from the start',
+    'chimp': 'O(index), sequential XOR decode from the start',
+    'delta': 'O(index), sequential decode from the start',
+    'deltapacked': 'O(index), sequential decode from the start',
+}
+
+
+def parse_label(label):
+    """Split a combo label into (shared, ts_key, val_key), e.g.
+    'shared-delta-alp' -> (True, 'delta', 'alp')."""
+    parts = label.split('-')
+    if parts[0] == 'shared':
+        return True, parts[1], parts[2]
+
+    return False, parts[0], parts[1]
+
+
 def fmt_label(label):
     """Convert label like 'shared-delta-chimp' to 'Shared Delta + Chimp'."""
     parts = label.split('-')
@@ -225,6 +252,30 @@ def gen_perf_table(matrix, field):
     return '\n'.join(lines)
 
 
+def gen_random_access_table(matrix):
+    """Table of measured ValueAt/TimestampAt cost at a uniformly random index
+    per metric, sorted by combined (value + timestamp) cost ascending, with
+    each axis's actual At()-complexity class (from AT_COMPLEXITY, verified
+    against the decoder implementations — not inferred from the label)."""
+    def combined_ns(r):
+        return r['random_value_at']['ns_per_op'] + r['random_timestamp_at']['ns_per_op']
+
+    by_combined = sorted(matrix, key=combined_ns)
+    lines = [
+        "| Configuration | ValueAt (ns/op) | Value complexity | TimestampAt (ns/op) | Timestamp complexity |",
+        "|---|---:|---|---:|---|",
+    ]
+    for r in by_combined:
+        _, ts_key, val_key = parse_label(r['label'])
+        lines.append(
+            f"| {fmt_label(r['label'])} | {r['random_value_at']['ns_per_op']:,.0f} "
+            f"| {AT_COMPLEXITY.get(val_key, 'unknown')} "
+            f"| {r['random_timestamp_at']['ns_per_op']:,.0f} "
+            f"| {AT_COMPLEXITY.get(ts_key, 'unknown')} |"
+        )
+    return '\n'.join(lines)
+
+
 def gen_scaling_table(scaling, prefix_filter=None):
     """Generate a scaling pivot table.
 
@@ -348,12 +399,16 @@ def gen_decision_tree(matrix):
     fastest_enc = by_enc[0]
     fastest_iter = by_iter[0]
 
-    # Best raw-ts combo (for random access)
-    raw_ts = sorted(
-        [r for r in matrix if r['label'].startswith(('raw-', 'shared-raw-'))],
-        key=lambda x: x['bytes_per_point'],
+    # Best random access: lowest measured ValueAt + TimestampAt combined, picked
+    # from the FULL matrix (not pre-filtered to raw-timestamp combos) — the value
+    # encoding matters just as much as the timestamp encoding for this (see
+    # AT_COMPLEXITY; Chimp/Gorilla values are O(index), not O(1), regardless of
+    # which timestamp encoding they're paired with).
+    by_random_access = sorted(
+        matrix, key=lambda x: x['random_value_at']['ns_per_op'] + x['random_timestamp_at']['ns_per_op']
     )
-    best_raw = raw_ts[0]
+    fastest_random = by_random_access[0]
+    _, fr_ts_key, fr_val_key = parse_label(fastest_random['label'])
 
     # Best non-shared
     non_shared = sorted(
@@ -375,7 +430,7 @@ What is your priority?
 │
 ├─ Fastest iteration / decode?
 │  ├─ Sequential scan → {fmt_label(fastest_iter['label'])} ({fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op)
-│  └─ Random access  → {fmt_label(best_raw['label'])} ({best_raw['bytes_per_point']:.3f} BPP, O(1) TimestampAt/ValueAt)
+│  └─ Random access  → {fmt_label(fastest_random['label'])} (ValueAt {fastest_random['random_value_at']['ns_per_op']:,.0f} ns/op [{AT_COMPLEXITY.get(fr_val_key, '?')}], TimestampAt {fastest_random['random_timestamp_at']['ns_per_op']:,.0f} ns/op [{AT_COMPLEXITY.get(fr_ts_key, '?')}])
 │
 └─ Best balance (size + speed)?
    ├─ With shared TS → {fmt_label(by_bpp[0]['label'])} ({by_bpp[0]['bytes_per_point']:.3f} BPP, {by_bpp[0]['iter_seq']['ns_per_op']:,.0f} ns/op iter)
@@ -393,12 +448,13 @@ def gen_config_selection(matrix):
     fastest_iter = by_iter[0]
     raw_raw = next(r for r in matrix if r['label'] == 'raw-raw')
 
-    # Best raw-ts combo
-    raw_ts = sorted(
-        [r for r in matrix if r['label'].startswith(('raw-', 'shared-raw-'))],
-        key=lambda x: x['bytes_per_point'],
+    # Best random access: lowest measured ValueAt + TimestampAt combined (see
+    # gen_decision_tree for why this isn't restricted to raw-timestamp combos).
+    by_random_access = sorted(
+        matrix, key=lambda x: x['random_value_at']['ns_per_op'] + x['random_timestamp_at']['ns_per_op']
     )
-    best_raw = raw_ts[0]
+    fastest_random = by_random_access[0]
+    _, fr_ts_key, fr_val_key = parse_label(fastest_random['label'])
 
     # Best balance: a combo that ranks in the top 5 for BOTH BPP and iteration speed.
     # This intersection is frequently empty (compression leaders and speed leaders are
@@ -429,7 +485,7 @@ def gen_config_selection(matrix):
 | **Fastest iteration** | {fmt_label(fastest_iter['label'])} | {fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op | Fastest sequential scan of any combo tested |
 | **Fastest encode** | {fmt_label(fastest_enc['label'])} | {fastest_enc['encode']['ns_per_op']:,.0f} ns/op | {fastest_enc_rationale} |
 | **Best balance** | {fmt_label(balance['label'])} | {balance['bytes_per_point']:.3f} BPP, {balance['iter_seq']['ns_per_op']:,.0f} ns/op iter | {balance_rationale} |
-| **Random access** | {fmt_label(best_raw['label'])} | {best_raw['bytes_per_point']:.3f} BPP | O(1) `TimestampAt`/`ValueAt`; raw timestamps support direct indexing |
+| **Random access** | {fmt_label(fastest_random['label'])} | ValueAt {fastest_random['random_value_at']['ns_per_op']:,.0f} ns/op, TimestampAt {fastest_random['random_timestamp_at']['ns_per_op']:,.0f} ns/op | Value: {AT_COMPLEXITY.get(fr_val_key, '?')}; Timestamp: {AT_COMPLEXITY.get(fr_ts_key, '?')} |
 | **Maximum throughput** | Raw + Raw | {raw_raw['encode']['ns_per_op']:,.0f} ns/op encode | Baseline; no encoding overhead but largest output |"""
 
 
@@ -534,6 +590,7 @@ def main():
         '{{ENCODE_PERFORMANCE}}': gen_perf_table(matrix, 'encode'),
         '{{DECODE_PERFORMANCE}}': gen_perf_table(matrix, 'decode'),
         '{{ITERATION_PERFORMANCE}}': gen_perf_table(matrix, 'iter_seq'),
+        '{{RANDOM_ACCESS_PERFORMANCE}}': gen_random_access_table(matrix),
         '{{SCALING_TABLE_STANDARD}}': gen_scaling_table(scaling, 'standard'),
         '{{SCALING_TABLE_SHARED}}': gen_scaling_table(scaling, 'shared-'),
         '{{SCALING_INSIGHTS}}': gen_scaling_insights(scaling, matrix),

@@ -17,6 +17,7 @@
 tests/compat/testdata/
 tests/compat/compat
 tests/measurev2/results/
+tests/measurev2/measurev2
 
 __pycache__/
 *.pyc

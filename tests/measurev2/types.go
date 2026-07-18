@@ -176,6 +176,11 @@ type MatrixResult struct {
 	Encode  BenchMetrics `json:"encode"`
 	Decode  BenchMetrics `json:"decode"`
 	IterSeq BenchMetrics `json:"iter_seq"`
+
+	// Random-access lookup at a uniformly random index per metric (see
+	// randomAccessPattern in bench.go for why the index isn't fixed).
+	RandomValueAt     BenchMetrics `json:"random_value_at"`
+	RandomTimestampAt BenchMetrics `json:"random_timestamp_at"`
 }
 
 // ScalingPoint holds encoded size data at a specific points-per-metric count.

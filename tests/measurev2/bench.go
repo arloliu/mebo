@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/rand"
 	"testing"
 
 	"github.com/arloliu/mebo/blob"
@@ -150,6 +151,111 @@ func benchIterSeq(combo EncodingCombo, data *TestData) (BenchMetrics, error) {
 
 			// Prevent compiler from optimizing away
 			if totalValue == -1 {
+				b.Fatal("unreachable")
+			}
+		}
+	})
+
+	return toBenchMetrics(result), nil
+}
+
+// randomAccessPattern returns one uniformly random point index per metric,
+// using a seed derived from the data's own seed so the pattern is reproducible
+// across runs but distinct from the data-generation RNG stream.
+//
+// A single random index per metric (rather than a fixed first/middle/last
+// probe) is deliberate: ValueAt/TimestampAt's cost for the sequential-decode
+// encodings (Gorilla, Chimp, Delta, DeltaPacked) scales with the index itself,
+// so cherry-picking index 0 would understate their real cost and always
+// picking the last index would overstate it. A uniformly random index across
+// the whole metric reports the realistic average a "random access" workload
+// actually sees.
+func randomAccessPattern(data *TestData) []int {
+	rng := rand.New(rand.NewSource(data.Config.Seed + 1)) //nolint:gosec // seeded PRNG for reproducible benchmark access pattern
+	ppm := data.Config.PointsPerMetric
+	indices := make([]int, len(data.MetricIDs))
+	for i := range indices {
+		indices[i] = rng.Intn(ppm)
+	}
+
+	return indices
+}
+
+// benchRandomAccessValue runs a Go benchmark measuring ValueAt at a random
+// index per metric. It pre-encodes and pre-decodes, then benchmarks only the
+// lookup. See randomAccessPattern for why the index is randomized per metric
+// rather than fixed.
+func benchRandomAccessValue(combo EncodingCombo, data *TestData) (BenchMetrics, error) {
+	blobData, err := encodeBlob(combo, data)
+	if err != nil {
+		return BenchMetrics{}, err
+	}
+
+	numericBlob, err := decodeBlob(blobData)
+	if err != nil {
+		return BenchMetrics{}, err
+	}
+
+	metricIDs := data.MetricIDs
+	indices := randomAccessPattern(data)
+
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for b.Loop() {
+			var total float64
+			for i, metricID := range metricIDs {
+				val, ok := numericBlob.ValueAt(metricID, indices[i])
+				if !ok {
+					b.Fatalf("ValueAt failed for metric %d index %d", metricID, indices[i])
+				}
+				total += val
+			}
+
+			// Prevent compiler from optimizing away
+			if total == -1 {
+				b.Fatal("unreachable")
+			}
+		}
+	})
+
+	return toBenchMetrics(result), nil
+}
+
+// benchRandomAccessTimestamp runs a Go benchmark measuring TimestampAt at a
+// random index per metric, using the same access pattern as
+// benchRandomAccessValue so the two are directly comparable.
+func benchRandomAccessTimestamp(combo EncodingCombo, data *TestData) (BenchMetrics, error) {
+	blobData, err := encodeBlob(combo, data)
+	if err != nil {
+		return BenchMetrics{}, err
+	}
+
+	numericBlob, err := decodeBlob(blobData)
+	if err != nil {
+		return BenchMetrics{}, err
+	}
+
+	metricIDs := data.MetricIDs
+	indices := randomAccessPattern(data)
+
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for b.Loop() {
+			var total int64
+			for i, metricID := range metricIDs {
+				ts, ok := numericBlob.TimestampAt(metricID, indices[i])
+				if !ok {
+					b.Fatalf("TimestampAt failed for metric %d index %d", metricID, indices[i])
+				}
+				total += ts
+			}
+
+			// Prevent compiler from optimizing away
+			if total == -1 {
 				b.Fatal("unreachable")
 			}
 		}

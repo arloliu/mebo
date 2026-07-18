@@ -273,10 +273,12 @@ func (b NumericBlob) AllTagsByName(metricName string) iter.Seq[string] {
 // Returns (timestamp, true) if successful, or (0, false) if:
 //   - The metric doesn't exist in this blob
 //   - The index is out of bounds
-//   - The encoding doesn't support random access (currently only raw encoding is supported)
+//   - The timestamp encoding isn't Raw, Delta, or DeltaPacked
 //
-// Performance: O(1) for raw encoding with same byte order, O(1) for raw encoding with different byte order.
-// Delta encoding is not supported for random access and will return false.
+// Performance: O(1) for Raw. Delta and DeltaPacked must sequentially decode every
+// preceding value in the metric to reconstruct the running sum, so both are O(index)
+// (worst case O(n)) — prefer Raw timestamps when random access matters, or
+// materialize the blob for O(1) access regardless of encoding.
 func (b NumericBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {
@@ -292,9 +294,9 @@ func (b NumericBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
 // Returns (timestamp, true) if successful, or (0, false) if:
 //   - The metric name doesn't exist in this blob
 //   - The index is out of bounds
-//   - The encoding doesn't support random access (currently only raw encoding is supported)
+//   - The timestamp encoding isn't Raw, Delta, or DeltaPacked
 //
-// Performance: O(1) for raw encoding.
+// Performance: see TimestampAt — same dispatch, same complexity per encoding.
 func (b NumericBlob) TimestampAtByName(metricName string, index int) (int64, bool) {
 	entry, ok := b.lookupMetricEntry(metricName)
 	if !ok {
@@ -310,10 +312,18 @@ func (b NumericBlob) TimestampAtByName(metricName string, index int) (int64, boo
 // Returns (value, true) if successful, or (0, false) if:
 //   - The metric doesn't exist in this blob
 //   - The index is out of bounds
-//   - The encoding doesn't support random access (currently only raw encoding is supported)
+//   - The value encoding isn't Raw, Gorilla, Chimp, or ALP
 //
-// Performance: O(1) for raw encoding with same byte order, O(1) for raw encoding with different byte order.
-// Delta encoding is not supported for random access and will return false.
+// Performance varies sharply by value encoding:
+//   - Raw: O(1), a direct offset into a fixed-width array.
+//   - ALP: O(1) windowed bit read plus O(log k) binary search over that column's
+//     exception sidecar, where k is the number of exceptions in the column (not
+//     the column length) — much closer to O(1) than to Gorilla/Chimp in practice.
+//   - Gorilla, Chimp: O(index) (worst case O(n)) — both must sequentially decode
+//     the XOR chain from the start of the column to reconstruct the value at index.
+//
+// Prefer Raw or ALP values when random access matters, or materialize the blob
+// for O(1) access regardless of encoding.
 func (b NumericBlob) ValueAt(metricID uint64, index int) (float64, bool) {
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {
@@ -329,9 +339,9 @@ func (b NumericBlob) ValueAt(metricID uint64, index int) (float64, bool) {
 // Returns (value, true) if successful, or (0, false) if:
 //   - The metric name doesn't exist in this blob
 //   - The index is out of bounds
-//   - The encoding doesn't support random access (currently only raw encoding is supported)
+//   - The value encoding isn't Raw, Gorilla, Chimp, or ALP
 //
-// Performance: O(1) for raw encoding.
+// Performance: see ValueAt — same dispatch, same complexity per encoding.
 func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool) {
 	entry, ok := b.lookupMetricEntry(metricName)
 	if !ok {

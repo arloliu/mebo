@@ -15,6 +15,7 @@ This document provides encoding benchmark results, scaling analysis, and best pr
 - [Encode Performance](#encode-performance)
 - [Decode Performance](#decode-performance)
 - [Iteration Performance](#iteration-performance)
+- [Random Access Performance](#random-access-performance)
 - [Scaling Analysis](#scaling-analysis)
 - [Choosing an Encoding Strategy](#choosing-an-encoding-strategy)
 
@@ -84,6 +85,24 @@ Sequential iteration speed (iterating all data points via `blob.All(metricID)`):
 {{ITERATION_PERFORMANCE}}
 
 **Note:** Compressed encodings can iterate faster than raw due to reduced memory bandwidth — smaller data fits better in CPU cache.
+
+## Random Access Performance
+
+`ValueAt`/`TimestampAt` at a uniformly random index per metric (not a fixed first/last probe —
+see `randomAccessPattern` in `tests/measurev2/bench.go`). This matters because the encodings
+have fundamentally different random-access complexity, not just different constants:
+
+| Encoding | `At()` complexity | Why |
+|---|---|---|
+| Raw (timestamp or value) | O(1) | Direct offset into a fixed-width array |
+| ALP (value) | O(1) + O(log k) | O(1) windowed bit read, plus binary search over that column's exception sidecar (k = exceptions in that column, not n) |
+| Delta / DeltaPacked (timestamp) | O(index) | Must sequentially decode every delta from the start — each value depends on the accumulated sum before it |
+| Gorilla / Chimp (value) | O(index) | Must sequentially decode the XOR chain from the start of the column |
+
+A uniformly random index makes the O(index) encodings pay their realistic *average* cost across
+a column, not a cherry-picked best (index 0) or worst (last index) case.
+
+{{RANDOM_ACCESS_PERFORMANCE}}
 
 ## Scaling Analysis
 

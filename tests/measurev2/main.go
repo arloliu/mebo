@@ -207,23 +207,39 @@ func runMatrixBench(combos []EncodingCombo, data *TestData, rawRawSize, totalPoi
 		}
 
 		if verbose {
+			logf(" random-access...")
+		}
+
+		randValMetrics, err := benchRandomAccessValue(combo, data)
+		if err != nil {
+			return nil, fmt.Errorf("random ValueAt %s: %w", combo.Label, err)
+		}
+
+		randTSMetrics, err := benchRandomAccessTimestamp(combo, data)
+		if err != nil {
+			return nil, fmt.Errorf("random TimestampAt %s: %w", combo.Label, err)
+		}
+
+		if verbose {
 			logf(" done (%.1f bytes/point)\n", bpp)
 		}
 
 		results = append(results, MatrixResult{
-			Label:           combo.Label,
-			TSEncoding:      combo.TSEncoding.String(),
-			ValEncoding:     combo.ValEncoding.String(),
-			NumMetrics:      data.Config.NumMetrics,
-			PointsPerMetric: data.Config.PointsPerMetric,
-			TotalPoints:     totalPoints,
-			EncodedBytes:    encodedSize,
-			BytesPerPoint:   bpp,
-			VsRawRatio:      vsRaw,
-			SpaceSavingsPct: savings,
-			Encode:          encMetrics,
-			Decode:          decMetrics,
-			IterSeq:         iterMetrics,
+			Label:             combo.Label,
+			TSEncoding:        combo.TSEncoding.String(),
+			ValEncoding:       combo.ValEncoding.String(),
+			NumMetrics:        data.Config.NumMetrics,
+			PointsPerMetric:   data.Config.PointsPerMetric,
+			TotalPoints:       totalPoints,
+			EncodedBytes:      encodedSize,
+			BytesPerPoint:     bpp,
+			VsRawRatio:        vsRaw,
+			SpaceSavingsPct:   savings,
+			Encode:            encMetrics,
+			Decode:            decMetrics,
+			IterSeq:           iterMetrics,
+			RandomValueAt:     randValMetrics,
+			RandomTimestampAt: randTSMetrics,
 		})
 	}
 

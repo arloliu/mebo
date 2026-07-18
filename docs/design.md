@@ -583,13 +583,19 @@ The time-series data is organized into two separate, columnar payloads to maximi
 
 #### Access Patterns
 
-| Payload Type | Encoding | Random Access | Sequential Access | Decode Overhead |
-|--------------|----------|---------------|-------------------|-----------------|
-| Timestamps   | Raw      | O(1)          | O(N)              | None            |
-| Timestamps   | Delta    | O(N)          | O(N)              | Low             |
-| Values       | Raw      | O(1)          | O(N)              | None            |
-| Values       | Gorilla  | O(N)          | O(N)              | Medium          |
-| Values       | Chimp    | O(N)          | O(N)              | Medium          |
+| Payload Type | Encoding    | Random Access      | Sequential Access | Decode Overhead |
+|--------------|-------------|---------------------|-------------------|-----------------|
+| Timestamps   | Raw         | O(1)                | O(N)              | None            |
+| Timestamps   | Delta       | O(index)            | O(N)              | Low             |
+| Timestamps   | DeltaPacked | O(index)            | O(N)              | Low             |
+| Values       | Raw         | O(1)                | O(N)              | None            |
+| Values       | Gorilla     | O(index)            | O(N)              | Medium          |
+| Values       | Chimp       | O(index)            | O(N)              | Medium          |
+| Values       | ALP         | O(1) + O(log k)*    | O(N)              | Medium          |
+
+\* k = exceptions in that column (not N); see `internal/encoding/numeric_alp.go`'s
+`At`/`atMain`/`atRD`. Measured ns/op for every combination:
+[Performance Guide § Random Access Performance](performance.md#random-access-performance).
 
 #### Implementation Notes
 
@@ -673,8 +679,9 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
 ### Other Design Constraints
 -   **Payload Alignment:** All major payloads are aligned to an 8-byte memory boundary by adding padding where necessary. This prevents potential unaligned memory access penalties on certain CPU architectures.
 -   **Random Access Trade-offs:**
-    -   **Values (`Raw`):** True **O(1)** random access.
-    -   **Values (`Gorilla` / `Chimp`) / Timestamps (`Delta`):** Require an O(N) scan from the start of the metric's data. For fast random access with these encodings, the data would need to be further broken into smaller, indexed sub-chunks.
+    -   **Values (`Raw`), Timestamps (`Raw`):** True **O(1)** random access — a direct offset into a fixed-width array.
+    -   **Values (`ALP`):** **O(1) + O(log k)** — an O(1) windowed bit read plus a binary search over that column's exception sidecar (k = exceptions in the column, not its length). ALP achieves this without the sub-chunking `Gorilla`/`Chimp` would need, via its exception-sidecar design.
+    -   **Values (`Gorilla` / `Chimp`) / Timestamps (`Delta` / `DeltaPacked`):** Require sequentially decoding from the start of the metric's data up to the target index — O(index), worst case O(N). For fast random access with these encodings, the data would need to be further broken into smaller, indexed sub-chunks (or use ALP/Raw for the axis that needs it, or materialize the blob for O(1) access regardless of encoding).
 
 ## Example: 150 Metrics × 10 Points
 
