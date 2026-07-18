@@ -31,6 +31,8 @@ type addDataPointValuePattern struct {
 }
 
 func BenchmarkNumericEncoder_AddDataPointPrimary(b *testing.B) {
+	// The primary locks the exact 100x50 shape and uses the deterministic synthetic
+	// full-precision sine distribution.
 	pattern := addDataPointValuePatterns()[2]
 	metricIDs, timestamps, values := buildAddDataPointFixture(100, 50, pattern)
 	options := []NumericEncoderOption{
@@ -41,6 +43,8 @@ func BenchmarkNumericEncoder_AddDataPointPrimary(b *testing.B) {
 	b.Run("PerPoint", func(b *testing.B) {
 		benchmarkAddDataPointCase(b, metricIDs, timestamps, values, nil, options, false)
 	})
+	// BulkFloor is the bulk-API comparison within the same full encoder lifecycle,
+	// not an isolated unaffected control or floor.
 	b.Run("BulkFloor", func(b *testing.B) {
 		benchmarkAddDataPointCase(b, metricIDs, timestamps, values, nil, options, true)
 	})
@@ -70,6 +74,8 @@ func BenchmarkNumericEncoder_AddDataPointMatrix(b *testing.B) {
 		bulk bool
 	}{
 		{name: "PerPoint", bulk: false},
+		// BulkFloor compares the bulk API within the same full encoder lifecycle;
+		// it is not an isolated unaffected control or floor.
 		{name: "BulkFloor", bulk: true},
 	}
 

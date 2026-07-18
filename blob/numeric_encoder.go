@@ -1101,8 +1101,9 @@ func (e *NumericEncoder) buildDedupTsPayload(allTsBytes []byte, groups []tsGroup
 
 // AddDataPoint adds a single data point to the current started metric being encoded.
 //
-// This method is exclusive with AddDataPoints. Use AddDataPoints for bulk additions
-// for better performance.
+// Calls to AddDataPoint and AddDataPoints may be mixed for one metric. Data points
+// are encoded in call order and, within AddDataPoints, slice order. When callers
+// already have data in slices, using AddDataPoints consistently is fastest.
 //
 // Parameters:
 //   - timestamp: Caller-defined timestamp value (e.g. microseconds since Unix epoch).
@@ -1137,8 +1138,10 @@ func (e *NumericEncoder) AddDataPoint(timestamp int64, value float64, tag string
 
 // AddDataPoints adds multiple data points to the current started metric being encoded.
 //
-// This method is more efficient than calling AddDataPoint multiple times. The tags parameter
-// is optional, but if provided its length must match timestamps and values.
+// Calls to AddDataPoints and AddDataPoint may be mixed for one metric. Data points
+// are encoded in call order and, within AddDataPoints, slice order. When callers
+// already have data in slices, using AddDataPoints consistently is fastest. The tags
+// parameter is optional, but if provided its length must match timestamps and values.
 //
 // Parameters:
 //   - timestamps: Slice of caller-defined timestamp values. The unit must be consistent
