@@ -2,12 +2,23 @@ package gorilla
 
 import (
 	"math"
+	"math/bits"
 	"math/rand"
 	"testing"
 
 	"github.com/arloliu/mebo/internal/encoding/internal/bitstream"
 	"github.com/stretchr/testify/require"
 )
+
+type gorillaReferenceEncoder struct {
+	data          []byte
+	bitOffset     int
+	prevValue     uint64
+	count         int
+	prevLeading   int
+	prevTrailing  int
+	prevBlockSize int
+}
 
 func TestNumericGorillaEncoder_SingleValue(t *testing.T) {
 	encoder := NewNumericGorillaEncoder()
@@ -1013,4 +1024,173 @@ func TestGorillaCodecContract(t *testing.T) {
 	require.Equal(t, values, cursorValues)
 	_, ok = NewGorillaCursor([]byte{0})
 	require.False(t, ok)
+}
+
+func TestNumericGorillaEncoder_ReferenceParity(t *testing.T) {
+	type writeOperation struct {
+		values []float64
+		bulk   bool
+	}
+
+	unchanged := make([]float64, 65)
+	for i := range unchanged {
+		unchanged[i] = 100.0
+	}
+
+	rng := rand.New(rand.NewSource(0x5eed))
+	randomValues := make([]float64, 257)
+	for i := range randomValues {
+		randomValues[i] = math.Float64frombits(rng.Uint64())
+	}
+
+	windowValues := []float64{
+		math.Float64frombits(0x3ff0000000000000),
+		math.Float64frombits(0x3fff000000000000),
+		math.Float64frombits(0x3ffe000000000000),
+		math.Float64frombits(0xbffe000000000001),
+		math.Float64frombits(0xbffe000000000001),
+	}
+	specialValues := []float64{
+		0,
+		math.Copysign(0, -1),
+		math.Inf(1),
+		math.Inf(-1),
+		math.Float64frombits(0x7ff8000000000001),
+		math.Float64frombits(0xfff8000000000042),
+		math.MaxFloat64,
+		math.SmallestNonzeroFloat64,
+	}
+
+	tests := []struct {
+		name       string
+		operations []writeOperation
+	}{
+		{name: "unchanged count 63", operations: []writeOperation{{values: unchanged[:63], bulk: true}}},
+		{name: "unchanged count 64", operations: []writeOperation{{values: unchanged[:64], bulk: true}}},
+		{name: "unchanged count 65", operations: []writeOperation{{values: unchanged, bulk: true}}},
+		{
+			name: "new reused and unchanged windows",
+			operations: []writeOperation{
+				{values: windowValues[:2], bulk: true},
+				{values: windowValues[2:4]},
+				{values: windowValues[4:], bulk: true},
+			},
+		},
+		{
+			name: "mixed scalar and bulk writes",
+			operations: []writeOperation{
+				{values: []float64{1.25}},
+				{values: []float64{1.25, 1.5, 1.75}, bulk: true},
+				{values: []float64{-4.5}},
+				{values: nil, bulk: true},
+				{values: []float64{-4.5, 1024.125}, bulk: true},
+			},
+		},
+		{name: "special float bit patterns", operations: []writeOperation{{values: specialValues, bulk: true}}},
+		{name: "single value", operations: []writeOperation{{values: randomValues[:1]}}},
+		{name: "two values", operations: []writeOperation{{values: randomValues[:2], bulk: true}}},
+		{name: "deterministic random sequence", operations: []writeOperation{{values: randomValues, bulk: true}}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			encoder := NewNumericGorillaEncoder()
+			t.Cleanup(encoder.Finish)
+			reference := gorillaReferenceEncoder{}
+			valueCount := 0
+			for _, operation := range tc.operations {
+				valueCount += len(operation.values)
+			}
+			expectedValues := make([]float64, 0, valueCount)
+
+			for _, operation := range tc.operations {
+				expectedValues = append(expectedValues, operation.values...)
+				if operation.bulk {
+					encoder.WriteSlice(operation.values)
+					reference.writeSlice(operation.values)
+					continue
+				}
+
+				for _, value := range operation.values {
+					encoder.Write(value)
+					reference.write(value)
+				}
+			}
+
+			got := append([]byte(nil), encoder.Bytes()...)
+			require.Equal(t, reference.bytes(), got)
+			require.Equal(t, len(expectedValues), encoder.Len())
+
+			decoded := make([]float64, len(expectedValues))
+			decoder := NewNumericGorillaDecoder()
+			require.Equal(t, len(expectedValues), decoder.DecodeAll(got, len(expectedValues), decoded))
+			for i := range expectedValues {
+				require.Equal(t, math.Float64bits(expectedValues[i]), math.Float64bits(decoded[i]), "value %d", i)
+			}
+		})
+	}
+}
+
+func (e *gorillaReferenceEncoder) writeSlice(values []float64) {
+	for _, value := range values {
+		e.write(value)
+	}
+}
+
+func (e *gorillaReferenceEncoder) write(value float64) {
+	e.count++
+	valueBits := math.Float64bits(value)
+	if e.count == 1 {
+		e.prevValue = valueBits
+		e.appendBits(valueBits, 64)
+
+		return
+	}
+
+	xor := valueBits ^ e.prevValue
+	e.prevValue = valueBits
+	if xor == 0 {
+		e.appendBits(0, 1)
+
+		return
+	}
+
+	leading := bits.LeadingZeros64(xor)
+	trailing := bits.TrailingZeros64(xor)
+	if leading > 31 {
+		trailing -= leading - 31
+		leading = 31
+		trailing = max(trailing, 0)
+	}
+
+	if e.count > 2 && e.prevBlockSize > 0 && leading >= e.prevLeading && trailing >= e.prevTrailing {
+		e.appendBits(0b10, 2)
+		e.appendBits(xor>>uint(e.prevTrailing), e.prevBlockSize)
+
+		return
+	}
+
+	blockSize := 64 - leading - trailing
+	header := uint64(0b11)<<11 | uint64(leading)<<6 | uint64(blockSize-1)
+	e.appendBits(header, 13)
+	e.appendBits(xor>>uint(trailing), blockSize)
+	e.prevLeading = leading
+	e.prevTrailing = trailing
+	e.prevBlockSize = blockSize
+}
+
+func (e *gorillaReferenceEncoder) appendBits(value uint64, numBits int) {
+	for bitIndex := numBits - 1; bitIndex >= 0; bitIndex-- {
+		if e.bitOffset == 0 {
+			e.data = append(e.data, 0)
+		}
+
+		bit := byte(value>>uint(bitIndex)) & 1
+		e.data[len(e.data)-1] |= bit << uint(7-e.bitOffset)
+		e.bitOffset = (e.bitOffset + 1) & 7
+	}
+}
+
+func (e *gorillaReferenceEncoder) bytes() []byte {
+	return append([]byte(nil), e.data...)
 }

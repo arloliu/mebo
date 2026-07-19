@@ -6,6 +6,7 @@ package blob
 // changes can be profiled in-repo with -cpuprofile without the external harness.
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -24,7 +25,6 @@ type e2eBenchData struct {
 	start      time.Time
 }
 
-//nolint:unparam // dimensions kept parametric for ad-hoc profiling runs
 func genE2EBenchData(numMetrics, ppm int) *e2eBenchData {
 	rng := rand.New(rand.NewSource(42))
 	start := time.Unix(1700000000, 0).UTC()
@@ -206,6 +206,44 @@ func BenchmarkE2EForEach_DeltaGorilla(b *testing.B) {
 		if sink == 0 && vsink == 0 {
 			b.Fatal("no data")
 		}
+	}
+}
+
+// BenchmarkNumericBlob_ForEach_DeltaPackedRaw measures full metric sweeps
+// across the point-count boundaries relevant to DeltaPacked timestamps.
+func BenchmarkNumericBlob_ForEach_DeltaPackedRaw(b *testing.B) {
+	pointCounts := []int{1, 2, 3, 4, 10, 30, 48, 50, 56, 60, 63, 64, 65, 80, 100, 200}
+
+	for _, pointCount := range pointCounts {
+		data := genE2EBenchData(100, pointCount)
+		encoded := e2eBenchEncode(b, data, format.TypeDeltaPacked, format.TypeRaw)
+		numericBlob := decodeE2EBlob(b, encoded)
+
+		b.Run(fmt.Sprintf("Points/%d", pointCount), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for b.Loop() {
+				var timestampSink int64
+				var valueSink float64
+				yield := func(_ int, point NumericDataPoint) bool {
+					timestampSink += point.Ts
+					valueSink += point.Val
+
+					return true
+				}
+
+				for _, metricID := range data.metricIDs {
+					if !numericBlob.ForEach(metricID, yield) {
+						b.Fatal("metric not found")
+					}
+				}
+
+				if timestampSink == 0 && valueSink == 0 {
+					b.Fatal("no data")
+				}
+			}
+		})
 	}
 }
 

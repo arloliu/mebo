@@ -1,6 +1,7 @@
 package alp
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"strconv"
@@ -167,6 +168,37 @@ func BenchmarkALPEncode_MixedExceptions(b *testing.B) {
 	benchALPEncodeColumns(b, cols)
 }
 
+// BenchmarkALPEncodeMatrix measures 100-column encode workloads across point
+// counts and decimal, full-precision, and mixed-exception distributions.
+func BenchmarkALPEncodeMatrix(b *testing.B) {
+	precisions := []struct {
+		name     string
+		decimals int
+		mixed    bool
+	}{
+		{name: "0", decimals: 0},
+		{name: "2", decimals: 2},
+		{name: "4", decimals: 4},
+		{name: "6", decimals: 6},
+		{name: "full", decimals: -1},
+		{name: "mixed", decimals: 2, mixed: true},
+	}
+
+	for _, precision := range precisions {
+		for _, pointCount := range []int{10, 50, 100, 200, 1000} {
+			columns := genALPColumns(100, pointCount, precision.decimals, 42)
+			if precision.mixed {
+				addALPMixedExceptions(columns)
+			}
+
+			name := fmt.Sprintf("Precision/%s/Points/%d", precision.name, pointCount)
+			b.Run(name, func(b *testing.B) {
+				benchALPEncodeColumns(b, columns)
+			})
+		}
+	}
+}
+
 // BenchmarkALPAt measures single-index random access on a 10k-point 2dp
 // column (ALP main, width >= 7): an O(1) windowed bit read (alpReadBitsFast)
 // plus an O(log k) binary search over the exception sidecar (k = exceptions
@@ -193,4 +225,18 @@ func BenchmarkALPAt(b *testing.B) {
 	}
 	_ = s
 	_ = ok
+}
+
+func addALPMixedExceptions(columns [][]float64) {
+	flatIndex := 0
+	for _, column := range columns {
+		for i := range column {
+			flatIndex++
+			// Preserve about 1% exceptions across the flattened workload; for
+			// short columns, only some columns therefore contain an exception.
+			if flatIndex%97 == 0 {
+				column[i] = math.Pi * 1e17
+			}
+		}
+	}
 }

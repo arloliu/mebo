@@ -1927,6 +1927,109 @@ func TestAlpBestEF_Differential(t *testing.T) {
 	}
 }
 
+func TestAlpBestEF_DifferentialBoundaries(t *testing.T) {
+	const two51 = float64(int64(1) << 51)
+	const two52 = float64(int64(1) << 52)
+	const conversionGuard = float64(9.2e18)
+	repeated := func(value float64) []float64 {
+		return []float64{value, value, value, value, value, value}
+	}
+
+	cases := []struct {
+		name   string
+		values []float64
+	}{
+		{
+			name: "rounding_boundaries",
+			values: []float64{
+				math.Nextafter(0.5, 0), 0.5, math.Nextafter(0.5, 1),
+				math.Nextafter(-0.5, -1), -0.5, math.Nextafter(-0.5, 0),
+				1.005, 2.675, -1.005, -2.675,
+			},
+		},
+		{
+			name: "specials_and_signed_zero",
+			values: []float64{
+				0, math.Copysign(0, -1), math.NaN(), math.Inf(1), math.Inf(-1),
+				math.SmallestNonzeroFloat64, -math.SmallestNonzeroFloat64,
+			},
+		},
+		{
+			name: "integer_magnitude_boundaries",
+			values: []float64{
+				math.Nextafter(two51, 0), two51, math.Nextafter(two51, math.Inf(1)),
+				math.Nextafter(two52, 0), two52, math.Nextafter(two52, math.Inf(1)),
+				float64(math.MaxInt64), math.Nextafter(float64(math.MaxInt64), 0),
+				-float64(math.MaxInt64), math.MaxFloat64, -math.MaxFloat64,
+			},
+		},
+		{
+			name:   "conversion_guard_positive_below",
+			values: repeated(math.Nextafter(conversionGuard, 0)),
+		},
+		{
+			name:   "conversion_guard_positive_exact",
+			values: repeated(conversionGuard),
+		},
+		{
+			name:   "conversion_guard_positive_above",
+			values: repeated(math.Nextafter(conversionGuard, math.Inf(1))),
+		},
+		{
+			name:   "conversion_guard_negative_below",
+			values: repeated(math.Nextafter(-conversionGuard, 0)),
+		},
+		{
+			name:   "conversion_guard_negative_exact",
+			values: repeated(-conversionGuard),
+		},
+		{
+			name:   "conversion_guard_negative_above",
+			values: repeated(math.Nextafter(-conversionGuard, math.Inf(-1))),
+		},
+		{
+			name:   "negative_decimals",
+			values: []float64{-100.25, -100.24, -1.01, -1, -0.01, -0.001},
+		},
+		{
+			name: "tiny_values",
+			values: []float64{
+				1e-18, -1e-18, math.Nextafter(1e-18, 0),
+				math.Nextafter(1e-18, math.Inf(1)), 1e-100, -1e-100,
+			},
+		},
+		{name: "constant_tie", values: []float64{42, 42, 42, 42}},
+		{
+			name: "mixed_exceptions",
+			values: []float64{
+				100.01, 100.02, math.Pi * 1e17, 100.03, math.NaN(),
+				100.04, math.Copysign(0, -1), 100.05, math.Inf(1),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, stride := range []int{1, 2, 3} {
+				if stride > len(tc.values) {
+					continue
+				}
+
+				gotE, gotF := alpBestEF(tc.values, stride)
+				wantE, wantF := alpBestEFRef(tc.values, stride)
+				require.Equalf(t, [2]int{wantE, wantF}, [2]int{gotE, gotF},
+					"stride=%d", stride)
+			}
+		})
+	}
+
+	// Integer constants tie at the zero-bit estimate for many candidates. The
+	// exhaustive oracle's strict less-than update keeps the first lexicographic
+	// winner, and an optimized order must keep that same winner explicitly.
+	gotE, gotF := alpBestEF([]float64{1, 1, 1, 1}, 1)
+	require.Equal(t, [2]int{0, 0}, [2]int{gotE, gotF})
+}
+
 // ---- encode benchmarks (regression guards for the optimization) ----
 
 // genALPColumns mimics measurev2's gauge generator: ±0.5% random walk from 100,
