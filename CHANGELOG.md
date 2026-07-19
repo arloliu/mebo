@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-19
+
+### Added
+- Exported `errs.ErrInvalidALPScheme` and `errs.ErrInvalidALPColumn` sentinels so callers can
+  identify malformed ALP blobs with `errors.Is`.
+
+### Fixed
+- ALP blob opening now rejects unknown scheme bytes, truncated column bodies, invalid
+  dictionary sizes, and unsafe packed-code widths instead of silently returning incorrect
+  values or panicking during later access.
+
 ### Changed
 - ALP encoder (`TypeALP`): two encode-only performance changes (decode paths untouched),
   byte-identical to v1.8 output (verified against golden hashes and a 19-column cross-version
@@ -24,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (2dp) / ~12% (full-precision) of that. In isolation, the AVX-512 kernel is ~11.8× faster
     than the scalar verify pass it replaces on 2dp data (an isolated-pass figure, not
     end-to-end).
+- Reorganized codec implementations into focused `internal/encoding` subpackages while
+  preserving stable APIs, encoded bytes, and decoding behavior.
 
 ## [1.8.0] - 2026-06-22
 
@@ -312,7 +325,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/arloliu/mebo/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/arloliu/mebo/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/arloliu/mebo/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/arloliu/mebo/compare/v1.6.0...v1.7.0
