@@ -8,7 +8,6 @@ package deltapacked
 // totalBytesTable must point to deltaPackedDecodeTotalBytes[0].
 // Returns (consumed bytes, produced values, lastTS, lastDelta).
 //
-//nolint:revive // assembly ABI returns progress as a tuple for low overhead
 //go:noescape
 func decodeDeltaPackedASMAVX2BulkGroups(
 	dst []int64,
@@ -59,7 +58,6 @@ func decodeDeltaPackedASMAVX2(
 // table must point to deltaPackedDecodeTotalBytes[0] and validMasks to
 // deltaPackedDecodeValidMasks[0].
 //
-//nolint:revive // assembly ABI returns progress as a tuple for low overhead
 //go:noescape
 func decodeDeltaPackedASMAVX512BulkPairs(
 	dst []int64,

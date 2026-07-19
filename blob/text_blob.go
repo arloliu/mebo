@@ -802,7 +802,7 @@ func decodeVarint(data []byte) (int64, int) {
 	}
 
 	// Zigzag decoding: converts unsigned back to signed
-	val := int64(uval>>1) ^ -int64(uval&1) //nolint:gosec
+	val := int64(uval>>1) ^ -int64(uval&1)
 
 	return val, n
 }

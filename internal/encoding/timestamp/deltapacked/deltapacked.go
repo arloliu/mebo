@@ -354,7 +354,7 @@ func (e *TimestampDeltaPackedEncoder) flushGroup(n int) {
 	// Build control byte and calculate total data size
 	for i := range n {
 		tag := encodeTag(e.pending[i])
-		controlByte |= tag << (uint(i) * 2) //nolint:gosec // i is bounded by groupSize (0-3)
+		controlByte |= tag << (uint(i) * 2)
 		totalDataBytes += groupVarintLengths[tag]
 	}
 
@@ -371,7 +371,7 @@ func (e *TimestampDeltaPackedEncoder) flushGroup(n int) {
 	// Branchless write: always PutUint64, advance by actual byte length per tag.
 	offset := startLen + 1
 	for i := range n {
-		tag := (controlByte >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+		tag := (controlByte >> (uint(i) * 2)) & 0x03
 		binary.LittleEndian.PutUint64(e.buf.B[offset:offset+8], e.pending[i])
 		offset += groupVarintLengths[tag]
 	}
@@ -475,7 +475,7 @@ func (s *DeltaPackedTsState) Next(remaining int) bool {
 		s.groupLen = min(groupSize, remaining)
 	}
 
-	tag := (s.control >> (uint(s.groupIdx) * 2)) & 0x03 //nolint:gosec
+	tag := (s.control >> (uint(s.groupIdx) * 2)) & 0x03
 	byteLen := groupVarintLengths[tag]
 	if s.offset+byteLen > len(s.data) {
 		return false
@@ -620,7 +620,7 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 			offset++
 
 			for i := range remaining {
-				tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+				tag := (cb >> (uint(i) * 2)) & 0x03
 				byteLen := groupVarintLengths[tag]
 
 				if offset+byteLen > len(data) {
@@ -740,7 +740,7 @@ func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int
 		offset++
 
 		for i := range remaining {
-			tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+			tag := (cb >> (uint(i) * 2)) & 0x03
 			byteLen := groupVarintLengths[tag]
 
 			if offset+byteLen > len(data) {
@@ -785,7 +785,7 @@ func decodePackedGroupScalar(data []byte, offset int, zz *[groupSize]uint64, byt
 	pos := offset + 1
 
 	for i := range groupSize {
-		tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+		tag := (cb >> (uint(i) * 2)) & 0x03
 		bl := groupVarintLengths[tag]
 		byteLen[i] = bl
 
@@ -861,7 +861,7 @@ func (d TimestampDeltaPackedDecoder) At(data []byte, index int, count int) (int6
 		offset++
 
 		for i := range groupSize {
-			tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+			tag := (cb >> (uint(i) * 2)) & 0x03
 			byteLen := groupVarintLengths[tag]
 			if offset+byteLen > len(data) {
 				return 0, false
@@ -897,7 +897,7 @@ func (d TimestampDeltaPackedDecoder) At(data []byte, index int, count int) (int6
 
 		need := target - produced
 		for i := range need {
-			tag := (cb >> (uint(i) * 2)) & 0x03 //nolint:gosec // i is bounded by groupSize (0-3)
+			tag := (cb >> (uint(i) * 2)) & 0x03
 			byteLen := groupVarintLengths[tag]
 			if offset+byteLen > len(data) {
 				return 0, false

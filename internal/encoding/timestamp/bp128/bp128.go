@@ -32,7 +32,7 @@ const (
 
 func bp128ZigZag(value int64) uint64 { return uint64((value << 1) ^ (value >> 63)) } //nolint:gosec
 
-func bp128UnZigZag(value uint64) int64 { return int64(value>>1) ^ -int64(value&1) } //nolint:gosec
+func bp128UnZigZag(value uint64) int64 { return int64(value>>1) ^ -int64(value&1) }
 
 // bp128WordsPerBlock returns the number of packed 64-bit words a block of the
 // given width occupies (0 when w == 0).
@@ -51,7 +51,7 @@ func bp128PackBlockScalar(out []uint64, block []uint64, w int) []uint64 {
 		return out
 	}
 
-	wU := uint(w) //nolint:gosec // w is in [1,64] here
+	wU := uint(w)
 	var acc [bp128Lanes]uint64
 	var bitpos uint
 	for p := range bp128PerLane {
@@ -93,7 +93,7 @@ func bp128UnpackBlockScalar(dst []uint64, packed []uint64, w int) int {
 		return 0
 	}
 
-	wU := uint(w) //nolint:gosec // w is in [1,64] here
+	wU := uint(w)
 	var mask uint64
 	if w >= 64 {
 		mask = ^uint64(0)
@@ -230,13 +230,13 @@ func (c *bp128Codec) encode(dst []byte, ts []int64, eng endian.EndianEngine) []b
 			hist[bits.Len64(v)]++
 		}
 		w, nExc := bp128ChooseWidth(&hist)
-		dst = append(dst, byte(w), byte(nExc))
+		dst = append(dst, byte(w), byte(nExc)) //nolint:gosec // Width and exception count are bounded by a 128-value block.
 
 		var mask uint64
 		if w >= 64 {
 			mask = ^uint64(0)
 		} else {
-			mask = (uint64(1) << uint(w)) - 1 //nolint:gosec // w<64 here
+			mask = (uint64(1) << uint(w)) - 1
 		}
 		var mblk [bp128Block]uint64
 		for i, v := range block {

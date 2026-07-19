@@ -14,13 +14,13 @@ Runs golangci-lint to check code quality and style.
 
 - **Runs on:** `ubuntu-latest`
 - **Go version:** 1.25 (latest stable)
-- **Action:** `golangci/golangci-lint-action@v6`
-- **golangci-lint version:** v2.5.0
+- **Action:** `golangci/golangci-lint-action@v9`
+- **golangci-lint version:** v2.12.2
 - **Timeout:** 5 minutes
 
 **Features:**
 - Uses official golangci-lint GitHub Action
-- Version pinned to v2.5.0 (matches local development)
+- Version pinned to v2.12.2 (matches local development)
 - Automatically caches Go modules and build artifacts
 - Automatically caches golangci-lint analysis
 - Fast feedback on code quality issues
@@ -100,7 +100,7 @@ The workflows use caching to speed up builds:
 
 ### golangci-lint-action Caching
 
-The `golangci/golangci-lint-action@v6` automatically caches:
+The `golangci/golangci-lint-action@v9` automatically caches:
 - Go modules (`~/go/pkg/mod`)
 - Build cache (`~/.cache/go-build`)
 - golangci-lint analysis cache (`~/.cache/golangci-lint`)
@@ -117,7 +117,7 @@ The `actions/setup-go@v5` with `check-latest: true` automatically caches:
 
 ### golangci-lint Version
 
-The golangci-lint version is pinned to `v2.5.0` in the workflow to ensure:
+The golangci-lint version is pinned to `v2.12.2` in the workflow to ensure:
 - Consistent linting results across CI and local development
 - No surprise failures from linter upgrades
 - Controlled upgrade process

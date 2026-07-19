@@ -281,14 +281,14 @@ func (e *NumericGorillaEncoder) writeValue(valBits uint64) {
 	if e.count > 2 && e.prevBlockSize > 0 && leading >= e.prevLeading && trailing >= e.prevTrailing {
 		// Same block: control bit 1, reuse bit 0, then meaningful bits
 		e.appendBits(0b10, 2)
-		e.appendBits(xor>>uint(e.prevTrailing), e.prevBlockSize) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		e.appendBits(xor>>uint(e.prevTrailing), e.prevBlockSize)
 	} else {
 		// Different block: control bit 1, new-block bit 1, 5-bit leading,
 		// 6-bit (blockSize-1), then meaningful bits
 		blockSize := 64 - leading - trailing
-		header := uint64(0b11)<<11 | uint64(leading)<<6 | uint64(blockSize-1) //nolint:gosec // G115: leading is 0-31, blockSize-1 is 0-63
+		header := uint64(0b11)<<11 | uint64(leading)<<6 | uint64(blockSize-1)
 		e.appendBits(header, 13)
-		e.appendBits(xor>>uint(trailing), blockSize) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		e.appendBits(xor>>uint(trailing), blockSize)
 
 		e.prevLeading = leading
 		e.prevTrailing = trailing
@@ -307,14 +307,14 @@ func (e *NumericGorillaEncoder) writeValue(valBits uint64) {
 //   - value: the bits to write (only the least significant numBits are used)
 //   - numBits: number of bits to write (1-64)
 func (e *NumericGorillaEncoder) appendBits(value uint64, numBits int) {
-	m := value << (64 - uint(numBits)) //nolint:gosec // G115: numBits bounded to 1..64; MSB-align (numBits==64 → shift 0)
-	e.bitBuf |= m >> uint(e.bitCount)  //nolint:gosec // G115: bit widths/counts bounded to 0..64
+	m := value << (64 - uint(numBits))
+	e.bitBuf |= m >> uint(e.bitCount)
 
 	total := e.bitCount + numBits
 	if total >= 64 {
 		e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
 		spill := 64 - e.bitCount
-		e.bitBuf = m << uint(spill) //nolint:gosec // G115: spill bounded to 1..64; spill==64 → 0 (Go defines shift ≥ width as 0)
+		e.bitBuf = m << uint(spill)
 		e.bitCount = total - 64
 	} else {
 		e.bitCount = total
@@ -336,7 +336,7 @@ func (e *NumericGorillaEncoder) flushBits() {
 	bs := e.buf.Slice(startLen, startLen+numBytes)
 
 	for i := range numBytes {
-		bs[i] = byte(e.bitBuf >> (56 - i*8)) // top numBytes bytes of the accumulator
+		bs[i] = byte(e.bitBuf >> (56 - i*8)) //nolint:gosec // top numBytes bytes of the accumulator
 	}
 
 	// Clear bit buffer
@@ -489,8 +489,8 @@ func (d NumericGorillaDecoder) All(data []byte, count int) iter.Seq[float64] {
 				}
 				consumed = 2
 			} else {
-				leading := int(w>>57) & 0x1F    //nolint:gosec // G115: bit widths/counts bounded to 0..64
-				blockSize = int(w>>51)&0x3F + 1 //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				leading := int(w>>57) & 0x1F
+				blockSize = int(w>>51)&0x3F + 1
 				trailing = 64 - leading - blockSize
 				if trailing < 0 || trailing > 64 {
 					return
@@ -505,13 +505,13 @@ func (d NumericGorillaDecoder) All(data []byte, count int) iter.Seq[float64] {
 
 			var meaningful uint64
 			if blockSize <= 64-consumed {
-				meaningful = (w << uint(consumed)) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				meaningful = (w << uint(consumed)) >> (64 - uint(blockSize))
 			} else {
-				meaningful = bitstream.PeekBits64(data, bitPos+consumed) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				meaningful = bitstream.PeekBits64(data, bitPos+consumed) >> (64 - uint(blockSize))
 			}
 			bitPos += consumed + blockSize
 
-			prevValue ^= meaningful << uint(trailing) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			prevValue ^= meaningful << uint(trailing)
 			prevFloat = math.Float64frombits(prevValue)
 			if !yield(prevFloat) {
 				return
@@ -655,8 +655,8 @@ func (d NumericGorillaDecoder) DecodeAll(data []byte, count int, dst []float64) 
 			}
 			consumed = 2
 		} else {
-			leading := int(w>>57) & 0x1F    //nolint:gosec // G115: bit widths/counts bounded to 0..64
-			blockSize = int(w>>51)&0x3F + 1 //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			leading := int(w>>57) & 0x1F
+			blockSize = int(w>>51)&0x3F + 1
 			trailing = 64 - leading - blockSize
 			if trailing < 0 || trailing > 64 {
 				return produced
@@ -671,13 +671,13 @@ func (d NumericGorillaDecoder) DecodeAll(data []byte, count int, dst []float64) 
 
 		var meaningful uint64
 		if blockSize <= 64-consumed {
-			meaningful = (w << uint(consumed)) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			meaningful = (w << uint(consumed)) >> (64 - uint(blockSize))
 		} else {
-			meaningful = bitstream.PeekBits64(data, bitPos+consumed) >> (64 - uint(blockSize)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			meaningful = bitstream.PeekBits64(data, bitPos+consumed) >> (64 - uint(blockSize))
 		}
 		bitPos += consumed + blockSize
 
-		prevValue ^= meaningful << uint(trailing) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		prevValue ^= meaningful << uint(trailing)
 		prevFloat = math.Float64frombits(prevValue)
 		dst[produced] = prevFloat
 		produced++
@@ -889,8 +889,8 @@ func decodeGorillaValue(state *gorillaState) bool {
 			return false
 		}
 	} else {
-		leading := int(window>>57) & 0x1F          //nolint:gosec
-		state.blockSize = int(window>>51)&0x3F + 1 //nolint:gosec
+		leading := int(window>>57) & 0x1F
+		state.blockSize = int(window>>51)&0x3F + 1
 		state.trailing = 64 - leading - state.blockSize
 		if state.trailing < 0 || state.trailing > 64 {
 			return false
@@ -905,9 +905,9 @@ func decodeGorillaValue(state *gorillaState) bool {
 
 	var meaningful uint64
 	if state.blockSize <= 64-consumed {
-		meaningful = (window << uint(consumed)) >> (64 - uint(state.blockSize)) //nolint:gosec
+		meaningful = (window << uint(consumed)) >> (64 - uint(state.blockSize))
 	} else {
-		meaningful = bitstream.PeekBits64(state.data, state.bitPos+consumed) >> (64 - uint(state.blockSize)) //nolint:gosec
+		meaningful = bitstream.PeekBits64(state.data, state.bitPos+consumed) >> (64 - uint(state.blockSize))
 	}
 	state.bitPos += consumed + state.blockSize
 	state.prevValue ^= meaningful << uint(state.trailing)

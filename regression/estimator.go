@@ -377,7 +377,7 @@ func NewEstimator(name string, coeffs []float64) (Estimator, error) {
 	modelType := ModelTypeFromString(name)
 	if modelType == ModelType(-1) {
 		// Build list of supported types for error message using modelTypeNames map
-		var supportedTypes []string
+		supportedTypes := make([]string, 0, len(modelTypeNames))
 		for _, modelTypeName := range modelTypeNames {
 			supportedTypes = append(supportedTypes, modelTypeName)
 		}

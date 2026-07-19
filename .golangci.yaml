@@ -17,7 +17,7 @@ linters:
     - gocritic
     - gocyclo
     - gomoddirectives
-    - gomodguard
+    - gomodguard_v2
     - goprintffuncname
     - gosec
     - loggercheck
@@ -82,21 +82,20 @@ linters:
       # Allow local filesystem replacements (used by the tests/measurev2 and
       # tests/compat sub-modules to point at the in-tree mebo source).
       replace-local: true
-    gomodguard:
+    gomodguard_v2:
       blocked:
-        modules:
-          - github.com/golang/protobuf:
-              recommendations:
-                - google.golang.org/protobuf
-              reason: see https://developers.google.com/protocol-buffers/docs/reference/go/faq#modules
-          - github.com/satori/go.uuid:
-              recommendations:
-                - github.com/google/uuid
-              reason: satori's package is not maintained
-          - github.com/gofrs/uuid:
-              recommendations:
-                - github.com/google/uuid
-              reason: gofrs' package is not go module
+        - module: github.com/golang/protobuf
+          recommendations:
+            - google.golang.org/protobuf
+          reason: see https://developers.google.com/protocol-buffers/docs/reference/go/faq#modules
+        - module: github.com/satori/go.uuid
+          recommendations:
+            - github.com/google/uuid
+          reason: satori's package is not maintained
+        - module: github.com/gofrs/uuid
+          recommendations:
+            - github.com/google/uuid
+          reason: gofrs' package is not go module
     govet:
       disable:
         - fieldalignment
@@ -197,6 +196,14 @@ linters:
             - - skipPackageNameChecks: true
           severity: warning
           disabled: false
+        # Test fixtures intentionally use concise timestamp names.
+        - name: epoch-naming
+          exclude:
+            - '**/*_test.go'
+        # Compatibility experiments retain sort APIs used by older Go toolchains.
+        - name: use-slices-sort
+          exclude:
+            - '**/*_test.go'
     rowserrcheck:
       packages:
         - github.com/jmoiron/sqlx
@@ -218,12 +225,18 @@ linters:
       - linters:
           - gocritic
         source: //noinspection
+      # Assembly entry points return four values to preserve their low-overhead ABI.
+      - linters:
+          - revive
+        path: internal/encoding/timestamp/deltapacked/deltapacked_simd_asm_amd64\.go
+        text: function-result-limit
       - linters:
           - bodyclose
           - dupl
           - goconst
           - gosec
           - noctx
+          - prealloc
           - wrapcheck
         path: _test\.go
     paths:

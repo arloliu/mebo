@@ -315,9 +315,9 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 
 	// Write all length bytes together
 	e.buf.Reset()
-	e.buf.MustWrite([]byte{byte(len(value))})
+	e.buf.MustWrite([]byte{byte(len(value))}) //nolint:gosec // MaxTextLength bounds the value length to one byte.
 	if e.header.Flag.HasTag() {
-		e.buf.MustWrite([]byte{byte(len(tag))})
+		e.buf.MustWrite([]byte{byte(len(tag))}) //nolint:gosec // MaxTextLength bounds the tag length to one byte.
 	}
 	e.dataEncoder.WriteRaw(e.buf.Bytes())
 

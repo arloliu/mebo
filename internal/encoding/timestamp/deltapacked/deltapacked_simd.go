@@ -78,8 +78,8 @@ func initDeltaPackedDecodeTable() {
 		// Compute per-lane widths and offsets from the 2-bit tags in the control byte.
 		var cur uint8
 		for lane := range groupSize {
-			tag := (uint8(cb) >> (uint(lane) * 2)) & 0x03 //nolint:gosec // lane is 0-3
-			width := uint8(groupVarintLengths[tag])       //nolint:gosec // tag is 0-3, values are 1,2,4,8
+			tag := (uint8(cb) >> (uint(lane) * 2)) & 0x03
+			width := uint8(groupVarintLengths[tag]) //nolint:gosec // tag is 0-3, values are 1,2,4,8
 			meta.lengths[lane] = width
 			meta.offsets[lane] = cur
 			cur += width
@@ -114,7 +114,7 @@ func initDeltaPackedDecodeTable() {
 		var valid uint32
 		for i := range 32 {
 			if meta.shuffle[i] != 0x80 {
-				valid |= 1 << uint(i) //nolint:gosec // i is 0..31
+				valid |= 1 << uint(i)
 			}
 		}
 		deltaPackedDecodeValidMasks[cb] = valid
