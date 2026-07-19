@@ -46,6 +46,10 @@ var zstdEncoderPool = sync.Pool{
 // Compress compresses the input data using Zstandard compression.
 // Uses a pooled encoder for better performance (eliminates allocation overhead).
 func (c ZstdCompressor) Compress(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
 	// Get encoder from pool (reuses "warmed up" encoder)
 	encoder, _ := zstdEncoderPool.Get().(*zstd.Encoder)
 	defer zstdEncoderPool.Put(encoder)

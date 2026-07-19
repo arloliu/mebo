@@ -50,7 +50,7 @@ func (m *MockCompressor) CompressTo(data []byte, writer io.Writer) (int, error) 
 }
 
 func (m *MockCompressor) EstimateCompressedSize(inputSize int) int {
-	switch m.compressionType { //nolint: revive
+	switch m.compressionType { //nolint:revive // None and default intentionally use the uncompressed-size estimate.
 	case format.CompressionNone:
 		return inputSize
 	case format.CompressionLZ4, format.CompressionS2:
@@ -107,7 +107,7 @@ func (m *MockDecompressor) DecompressTo(data []byte, writer io.Writer) (int, err
 
 func (m *MockDecompressor) EstimateDecompressedSize(compressedData []byte) int {
 	// Mock implementation: assume 2x expansion ratio for compressed data
-	switch m.compressionType { //nolint: revive
+	switch m.compressionType { //nolint:revive // Supported codecs and fallback intentionally share the conservative estimate.
 	case format.CompressionNone:
 		return len(compressedData)
 	case format.CompressionLZ4, format.CompressionS2, format.CompressionZstd:
