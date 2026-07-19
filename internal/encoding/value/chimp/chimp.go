@@ -264,11 +264,11 @@ func (e *NumericChimpEncoder) writeValue(valBits uint64) {
 			significantBits = 1
 		}
 
-		significantBitsField := uint64(significantBits) //nolint:gosec // significantBits is clamped to 1..64 and masked below
+		significantBitsField := uint64(significantBits)
 
 		// Write: 01 flag + 3-bit leading bucket + 6-bit significant bits count + significant bits
 		e.appendBits((1<<9)|(chimpLeadingRepresentation[leadingZeros]<<6)|(significantBitsField&0x3F), 11) // flag 01 + 3-bit leading + 6-bit sigBits
-		e.appendBits(xor>>uint(trailingZeros), significantBits)                                            //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		e.appendBits(xor>>uint(trailingZeros), significantBits)
 
 		// Reset stored leading to force new-leading on next change
 		e.storedLeadingZeros = 65
@@ -297,14 +297,14 @@ func (e *NumericChimpEncoder) writeValue(valBits uint64) {
 //   - value: the bits to write (only the least significant numBits are used)
 //   - numBits: number of bits to write (1-64)
 func (e *NumericChimpEncoder) appendBits(value uint64, numBits int) {
-	m := value << (64 - uint(numBits)) //nolint:gosec // G115: numBits bounded to 1..64; MSB-align (numBits==64 → shift 0)
-	e.bitBuf |= m >> uint(e.bitCount)  //nolint:gosec // G115: bit widths/counts bounded to 0..64
+	m := value << (64 - uint(numBits))
+	e.bitBuf |= m >> uint(e.bitCount)
 
 	total := e.bitCount + numBits
 	if total >= 64 {
 		e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
 		spill := 64 - e.bitCount
-		e.bitBuf = m << uint(spill) //nolint:gosec // G115: spill bounded to 1..64; spill==64 → 0 (Go defines shift ≥ width as 0)
+		e.bitBuf = m << uint(spill)
 		e.bitCount = total - 64
 	} else {
 		e.bitCount = total
@@ -326,7 +326,7 @@ func (e *NumericChimpEncoder) flushBits() {
 	bs := e.buf.Slice(startLen, startLen+numBytes)
 
 	for i := range numBytes {
-		bs[i] = byte(e.bitBuf >> (56 - i*8)) // top numBytes bytes of the accumulator
+		bs[i] = byte(e.bitBuf >> (56 - i*8)) //nolint:gosec // top numBytes bytes of the accumulator
 	}
 
 	e.bitBuf = 0
@@ -404,7 +404,7 @@ func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] { //n
 			case 1: // Trailing-zero optimized
 				leading := chimpLeadingDecode[(w>>59)&0x07]
 
-				sigBits := int(w>>53) & 0x3F //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				sigBits := int(w>>53) & 0x3F
 				if sigBits == 0 {
 					sigBits = 64
 				}
@@ -416,7 +416,7 @@ func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] { //n
 
 				var meaningful uint64
 				if sigBits <= 53 {
-					meaningful = (w << 11) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+					meaningful = (w << 11) >> (64 - uint(sigBits))
 				} else {
 					meaningful = bitstream.PeekBits64(data, bitPos+11) >> (64 - uint(sigBits))
 				}
@@ -442,7 +442,7 @@ func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] { //n
 
 				var meaningful uint64
 				if sigBits <= 62 {
-					meaningful = (w << 2) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+					meaningful = (w << 2) >> (64 - uint(sigBits))
 				} else {
 					meaningful = bitstream.PeekBits64(data, bitPos+2) >> (64 - uint(sigBits))
 				}
@@ -466,7 +466,7 @@ func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] { //n
 
 				var meaningful uint64
 				if sigBits <= 59 {
-					meaningful = (w << 5) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+					meaningful = (w << 5) >> (64 - uint(sigBits))
 				} else {
 					meaningful = bitstream.PeekBits64(data, bitPos+5) >> (64 - uint(sigBits))
 				}
@@ -535,7 +535,7 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 		case 1: // Trailing-zero optimized
 			leading := chimpLeadingDecode[(w>>59)&0x07]
 
-			sigBits := int(w>>53) & 0x3F //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			sigBits := int(w>>53) & 0x3F
 			if sigBits == 0 {
 				sigBits = 64
 			}
@@ -547,7 +547,7 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 			var meaningful uint64
 			if sigBits <= 53 {
-				meaningful = (w << 11) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				meaningful = (w << 11) >> (64 - uint(sigBits))
 			} else {
 				meaningful = bitstream.PeekBits64(data, bitPos+11) >> (64 - uint(sigBits))
 			}
@@ -555,7 +555,7 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 			prevValue ^= meaningful << uint(trailingZeros)
 			prevFloat = math.Float64frombits(prevValue)
-			dst[produced] = prevFloat
+			dst[produced] = prevFloat //nolint:gosec // produced advances only while it remains within dst.
 			produced++
 			storedLeading = 65
 
@@ -571,7 +571,7 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 			var meaningful uint64
 			if sigBits <= 62 {
-				meaningful = (w << 2) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				meaningful = (w << 2) >> (64 - uint(sigBits))
 			} else {
 				meaningful = bitstream.PeekBits64(data, bitPos+2) >> (64 - uint(sigBits))
 			}
@@ -579,7 +579,7 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 			prevValue ^= meaningful
 			prevFloat = math.Float64frombits(prevValue)
-			dst[produced] = prevFloat
+			dst[produced] = prevFloat //nolint:gosec // produced advances only while it remains within dst.
 			produced++
 
 		default: // case 3: New leading
@@ -593,7 +593,7 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 			var meaningful uint64
 			if sigBits <= 59 {
-				meaningful = (w << 5) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+				meaningful = (w << 5) >> (64 - uint(sigBits))
 			} else {
 				meaningful = bitstream.PeekBits64(data, bitPos+5) >> (64 - uint(sigBits))
 			}
@@ -601,7 +601,7 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 			prevValue ^= meaningful
 			prevFloat = math.Float64frombits(prevValue)
-			dst[produced] = prevFloat
+			dst[produced] = prevFloat //nolint:gosec // produced advances only while it remains within dst.
 			produced++
 		}
 	}
@@ -695,7 +695,7 @@ func (d NumericChimpDecoder) ByteLength(data []byte, count int) int {
 
 			leading := chimpLeadingDecode[header>>6]
 
-			sigBits := int(header & 0x3F) //nolint:gosec // header is masked to 6 bits, so the conversion is bounded to 0..63
+			sigBits := int(header & 0x3F)
 			if sigBits == 0 {
 				sigBits = 64
 			}
@@ -787,7 +787,7 @@ func decodeChimpValue(cs *chimpState) bool {
 		cs.storedLeading = 65
 	case 1:
 		leading := chimpLeadingDecode[(w>>59)&0x07]
-		sigBits := int(w>>53) & 0x3F //nolint:gosec // G115: bit widths/counts bounded to 0..64
+		sigBits := int(w>>53) & 0x3F
 		if sigBits == 0 {
 			sigBits = 64
 		}
@@ -798,7 +798,7 @@ func decodeChimpValue(cs *chimpState) bool {
 
 		var meaningful uint64
 		if sigBits <= 53 {
-			meaningful = (w << 11) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			meaningful = (w << 11) >> (64 - uint(sigBits))
 		} else {
 			meaningful = bitstream.PeekBits64(cs.data, cs.bitPos+11) >> (64 - uint(sigBits))
 		}
@@ -817,7 +817,7 @@ func decodeChimpValue(cs *chimpState) bool {
 
 		var meaningful uint64
 		if sigBits <= 62 {
-			meaningful = (w << 2) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			meaningful = (w << 2) >> (64 - uint(sigBits))
 		} else {
 			meaningful = bitstream.PeekBits64(cs.data, cs.bitPos+2) >> (64 - uint(sigBits))
 		}
@@ -834,7 +834,7 @@ func decodeChimpValue(cs *chimpState) bool {
 
 		var meaningful uint64
 		if sigBits <= 59 {
-			meaningful = (w << 5) >> (64 - uint(sigBits)) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+			meaningful = (w << 5) >> (64 - uint(sigBits))
 		} else {
 			meaningful = bitstream.PeekBits64(cs.data, cs.bitPos+5) >> (64 - uint(sigBits))
 		}
@@ -936,7 +936,7 @@ func chimpDecodeNext(reader *bitstream.Reader, prevValue *uint64, storedLeading 
 
 		leading := chimpLeadingDecode[header>>6]
 
-		sigBits := int(header & 0x3F) //nolint:gosec // header is masked to 6 bits, so the conversion is bounded to 0..63
+		sigBits := int(header & 0x3F)
 		if sigBits == 0 {
 			sigBits = 64
 		}

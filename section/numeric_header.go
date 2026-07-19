@@ -95,7 +95,7 @@ func (h *NumericHeader) Bytes() []byte {
 	engine := h.Flag.GetEndianEngine()
 
 	// Options field is always little-endian to enable parsing the endianness flag itself
-	b[0] = byte(h.Flag.Options)
+	b[0] = byte(h.Flag.Options) //nolint:gosec // The binary format stores the low byte first.
 	b[1] = byte(h.Flag.Options >> 8)
 	b[2] = h.Flag.EncodingType
 	b[3] = h.Flag.CompressionType

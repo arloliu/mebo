@@ -20,7 +20,7 @@ func NewReader(data []byte) *Reader {
 // MSB-aligned. Bits beyond the end of data read as zero.
 func PeekBits64(data []byte, bitPos int) uint64 {
 	i := bitPos >> 3
-	s := uint(bitPos & 7) //nolint:gosec // G115: bit widths/counts bounded to 0..64
+	s := uint(bitPos & 7)
 
 	if i+9 <= len(data) {
 		return binary.BigEndian.Uint64(data[i:])<<s | uint64(data[i+8])>>(8-s)
@@ -79,7 +79,7 @@ func (reader *Reader) Read3Bits() (uint64, bool) {
 func (reader *Reader) Read5Bits() (int, bool) {
 	if reader.bitCount >= 5 {
 		reader.bitCount -= 5
-		value := int((reader.bitBuf >> 59) & 0x1F) //nolint:gosec // bit width is bounded to 5
+		value := int((reader.bitBuf >> 59) & 0x1F)
 		reader.bitBuf <<= 5
 
 		return value, true
@@ -94,7 +94,7 @@ func (reader *Reader) Read5Bits() (int, bool) {
 func (reader *Reader) Read6Bits() (int, bool) {
 	if reader.bitCount >= 6 {
 		reader.bitCount -= 6
-		value := int((reader.bitBuf >> 58) & 0x3F) //nolint:gosec // bit width is bounded to 6
+		value := int((reader.bitBuf >> 58) & 0x3F)
 		reader.bitBuf <<= 6
 
 		return value, true

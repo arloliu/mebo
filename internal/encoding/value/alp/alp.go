@@ -136,7 +136,7 @@ func alpCodeBits(n int) int {
 		return 1
 	}
 
-	return bits.Len64(uint64(n - 1)) //nolint:gosec
+	return bits.Len64(uint64(n - 1))
 }
 
 // ---- encoder ----
@@ -388,7 +388,7 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 				// the rest. Catches zero-exception non-winners the nExc prune misses.
 				// est uses fullCnt at loop end when not pruned, so selection is exact.
 				if upd {
-					wcur := bits.Len64(uint64(mx - mn)) //nolint:gosec
+					wcur := bits.Len64(uint64(mx - mn))
 					if float64(fullCnt*wcur)+float64(nExc)*96 >= best {
 						pruned = true
 
@@ -406,7 +406,7 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 			// average.
 			width := 0
 			if nExc < ns && mx >= mn {
-				width = bits.Len64(uint64(mx - mn)) //nolint:gosec
+				width = bits.Len64(uint64(mx - mn))
 			}
 			est := float64(ns*width + nExc*96)
 			if est < best {
@@ -460,7 +460,7 @@ func alpMainStatsScalar(values []float64, ee, ff int, dst []uint64, excPos []uin
 	for i, v := range values {
 		d, good := alpEncodeDigit(v, ee, ff)
 		if !good {
-			excPos = append(excPos, uint32(i)) //nolint:gosec
+			excPos = append(excPos, uint32(i))
 			continue
 		}
 		dst[i] = uint64(d) //nolint:gosec
@@ -477,7 +477,7 @@ func alpMainStatsScalar(values []float64, ee, ff int, dst []uint64, excPos []uin
 	}
 	width := 0
 	if mx >= mn {
-		width = bits.Len64(uint64(mx - mn)) //nolint:gosec
+		width = bits.Len64(uint64(mx - mn))
 	}
 
 	return alpMainCand{mn: mn, width: width, nExc: nExc, ok: true}, excPos
@@ -520,9 +520,9 @@ func (e *NumericALPEncoder) encodeMain(values []float64, ee, ff int, mn int64, w
 	}
 
 	eng := e.engine
-	e.buf.B = append(e.buf.B, byte(ee), byte(ff), byte(width))
-	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos))) //nolint:gosec
-	e.buf.B = eng.AppendUint64(e.buf.B, uint64(mn))          //nolint:gosec
+	e.buf.B = append(e.buf.B, byte(ee), byte(ff), byte(width)) //nolint:gosec // ALP scheme validation bounds all three header fields.
+	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos)))   //nolint:gosec
+	e.buf.B = eng.AppendUint64(e.buf.B, uint64(mn))            //nolint:gosec
 	e.buf.B = alpPackBits(e.buf.B, digits, width)
 	for _, p := range excPos {
 		e.buf.B = eng.AppendUint32(e.buf.B, p)
@@ -608,7 +608,7 @@ func alpRDLookup(dict *[alpRDMaxDictSize]uint64, nDict int, left uint64) (code i
 // dictionary covers (len(patterns) - covered = the exception count), returned
 // so alpRDPlan needs no separate exception-counting pass.
 func alpRDBuildDict(patterns []uint64, rbw int, leftScratch *[]uint64, cntScratch *[]int32, dict *[alpRDMaxDictSize]uint64) (nDict, covered int) {
-	r := uint(rbw) //nolint:gosec
+	r := uint(rbw)
 	// Always request the max table size (constant) so the pooled slice is reused
 	// across columns instead of being reallocated when a wider cut needs a bigger
 	// table; only indices below 1<<(64-rbw) are ever touched.
@@ -669,7 +669,7 @@ func alpRDBestCut(patterns []uint64) (rbw, totalBits int) {
 		// never observed.
 		m := 0
 		for _, p := range patterns {
-			l := p >> uint(r) //nolint:gosec
+			l := p >> uint(r)
 			k := 0
 			for ; k < m; k++ {
 				if lefts[k] == l {
@@ -745,7 +745,7 @@ func (e *NumericALPEncoder) alpRDPlan(values []float64, stride int) alpRDCand {
 func (e *NumericALPEncoder) encodeRD(values []float64, rbw int, dict *[alpRDMaxDictSize]uint64, nDict int) {
 	n := len(values)
 	codeBits := alpCodeBits(nDict)
-	rightMask := (uint64(1) << uint(rbw)) - 1 //nolint:gosec
+	rightMask := (uint64(1) << uint(rbw)) - 1
 
 	if cap(e.codeScratch) < 2*n {
 		e.codeScratch = make([]uint64, 2*n)
@@ -755,7 +755,7 @@ func (e *NumericALPEncoder) encodeRD(values []float64, rbw int, dict *[alpRDMaxD
 	rights := scratch[n : 2*n]
 	excPos := e.rdExcPos[:0]
 	excLeft := e.rdExcLeft[:0]
-	r := uint(rbw) //nolint:gosec
+	r := uint(rbw)
 	for i, v := range values {
 		p := math.Float64bits(v)
 		left := p >> r
@@ -764,7 +764,7 @@ func (e *NumericALPEncoder) encodeRD(values []float64, rbw int, dict *[alpRDMaxD
 			leftCodes[i] = uint64(c) //nolint:gosec
 		} else {
 			leftCodes[i] = 0
-			excPos = append(excPos, uint32(i))      //nolint:gosec
+			excPos = append(excPos, uint32(i))
 			excLeft = append(excLeft, uint16(left)) //nolint:gosec
 		}
 	}
@@ -772,8 +772,8 @@ func (e *NumericALPEncoder) encodeRD(values []float64, rbw int, dict *[alpRDMaxD
 	e.rdExcLeft = excLeft
 
 	eng := e.engine
-	e.buf.B = append(e.buf.B, byte(rbw), byte(codeBits), byte(nDict))
-	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos))) //nolint:gosec
+	e.buf.B = append(e.buf.B, byte(rbw), byte(codeBits), byte(nDict)) //nolint:gosec // RD header fields are bounded by their bit widths and dictionary limit.
+	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos)))          //nolint:gosec
 	for k := 0; k < nDict; k++ {
 		e.buf.B = eng.AppendUint16(e.buf.B, uint16(dict[k])) //nolint:gosec
 	}
@@ -913,8 +913,8 @@ func alpReadBitsAt(src []byte, bitpos, width int) uint64 {
 	var c uint64
 	for b := range width {
 		bp := bitpos + b
-		if src[bp>>3]&(1<<uint(bp&7)) != 0 { //nolint:gosec
-			c |= uint64(1) << uint(b) //nolint:gosec
+		if src[bp>>3]&(1<<uint(bp&7)) != 0 {
+			c |= uint64(1) << uint(b)
 		}
 	}
 

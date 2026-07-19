@@ -481,11 +481,11 @@ func fitPolynomial(x, y []float64) *Model {
 	//          [Σx²  Σx³  Σx⁴] [c]   [Σx²y]
 	var sumX, sumX2, sumX3, sumX4, sumY, sumXY, sumX2Y float64
 	for i := range n {
-		xi := x[i]
+		xi := x[i] //nolint:gosec // n is the validated common length of x and y.
 		xi2 := xi * xi
 		xi3 := xi2 * xi
 		xi4 := xi3 * xi
-		yi := y[i]
+		yi := y[i] //nolint:gosec // n is the validated common length of x and y.
 
 		sumX += xi
 		sumX2 += xi2

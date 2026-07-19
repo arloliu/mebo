@@ -219,7 +219,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 
 	// Handle second timestamp (first delta) if we have it.
 	if startIdx < tsLen && currentSeqCount == 1 {
-		ts := timestampsUs[startIdx]
+		ts := timestampsUs[startIdx] //nolint:gosec // startIdx is guarded by startIdx < tsLen.
 		delta := ts - prevTS
 		zigzag := (delta << 1) ^ (delta >> 63)
 		e.appendUnsigned(uint64(zigzag)) //nolint:gosec
@@ -259,9 +259,9 @@ func (e *TimestampDeltaEncoder) writeVarintBatch(dods []int64) {
 		case zigzag < 1<<7:
 			e.buf.B = append(e.buf.B, byte(zigzag))
 		case zigzag < 1<<14:
-			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7))
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)) //nolint:gosec // Range check above bounds this LEB128 fast path.
 		case zigzag < 1<<21:
-			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)|0x80, byte(zigzag>>14))
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)|0x80, byte(zigzag>>14)) //nolint:gosec // Range check above bounds this LEB128 fast path.
 		default:
 			e.buf.B = binary.AppendUvarint(e.buf.B, zigzag)
 		}
@@ -288,9 +288,9 @@ func (e *TimestampDeltaEncoder) writeVarintDirect(
 		case zigzag < 1<<7:
 			e.buf.B = append(e.buf.B, byte(zigzag))
 		case zigzag < 1<<14:
-			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7))
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)) //nolint:gosec // Range check above bounds this LEB128 fast path.
 		case zigzag < 1<<21:
-			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)|0x80, byte(zigzag>>14))
+			e.buf.B = append(e.buf.B, byte(zigzag)|0x80, byte(zigzag>>7)|0x80, byte(zigzag>>14)) //nolint:gosec // Range check above bounds this LEB128 fast path.
 		default:
 			e.buf.B = binary.AppendUvarint(e.buf.B, zigzag)
 		}
@@ -308,9 +308,9 @@ func (e *TimestampDeltaEncoder) appendUnsigned(value uint64) {
 	case value < 1<<7:
 		e.buf.B = append(e.buf.B, byte(value))
 	case value < 1<<14:
-		e.buf.B = append(e.buf.B, byte(value)|0x80, byte(value>>7))
+		e.buf.B = append(e.buf.B, byte(value)|0x80, byte(value>>7)) //nolint:gosec // Range check above bounds this LEB128 fast path.
 	case value < 1<<21:
-		e.buf.B = append(e.buf.B, byte(value)|0x80, byte(value>>7)|0x80, byte(value>>14))
+		e.buf.B = append(e.buf.B, byte(value)|0x80, byte(value>>7)|0x80, byte(value>>14)) //nolint:gosec // Range check above bounds this LEB128 fast path.
 	default:
 		e.buf.Grow(binary.MaxVarintLen64)
 		e.buf.B = binary.AppendUvarint(e.buf.B, value)
@@ -707,7 +707,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 			v := uint64(b)
 			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
 			curTS += prevDelta
-			dst[produced] = curTS
+			dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 
 			continue
 		}
@@ -726,7 +726,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		if b < 0x80 {
 			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
 			curTS += prevDelta
-			dst[produced] = curTS
+			dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 
 			continue
 		}
@@ -743,7 +743,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		if b < 0x80 {
 			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
 			curTS += prevDelta
-			dst[produced] = curTS
+			dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 
 			continue
 		}
@@ -772,7 +772,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 
 		prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
 		curTS += prevDelta
-		dst[produced] = curTS
+		dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 	}
 
 	return count

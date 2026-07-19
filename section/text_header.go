@@ -45,7 +45,7 @@ func NewTextHeader(startTime time.Time, metricCount int) (*TextHeader, error) {
 		StartTime:   startTime.UnixMicro(),
 		Flag:        NewTextFlag(),
 		IndexOffset: IndexOffsetOffset,
-		DataOffset:  uint32(IndexOffsetOffset + metricCount*TextIndexEntrySize), //nolint:gosec
+		DataOffset:  uint32(IndexOffsetOffset + metricCount*TextIndexEntrySize),
 		MetricCount: uint32(metricCount),
 	}, nil
 }
@@ -98,7 +98,7 @@ func (h *TextHeader) Bytes() []byte {
 	engine := h.GetEndianEngine()
 
 	// Options field is always little-endian to enable parsing the endianness flag itself
-	b[0] = byte(h.Flag.Options)
+	b[0] = byte(h.Flag.Options) //nolint:gosec // The binary format stores the low byte first.
 	b[1] = byte(h.Flag.Options >> 8)
 	b[2] = h.Flag.TimestampEncoding
 	b[3] = h.Flag.DataCompression

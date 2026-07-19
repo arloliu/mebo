@@ -21,7 +21,7 @@ LATEST_GIT_TAG  := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v
 
 # Linter configuration
 LINTER_GOMOD          := -modfile=linter.go.mod
-GOLANGCI_LINT_VERSION := 2.5.0
+GOLANGCI_LINT_VERSION := 2.12.2
 
 # Go version detection for feature gating
 GO_MINOR        := $(shell go version | sed 's/.*go[0-9][0-9]*\.\([0-9][0-9]*\).*/\1/')

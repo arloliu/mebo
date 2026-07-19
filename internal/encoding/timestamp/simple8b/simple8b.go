@@ -43,7 +43,7 @@ var s8bSelBits = [16]int{0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 30, 60}
 const s8bMaxBits = 60
 
 func s8bZigZag(v int64) uint64   { return uint64((v << 1) ^ (v >> 63)) } //nolint:gosec
-func s8bUnZigZag(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }    //nolint:gosec
+func s8bUnZigZag(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }
 
 type TimestampSimple8bEncoder struct {
 	buf       *pool.ByteBuffer
@@ -176,12 +176,12 @@ func (e *TimestampSimple8bEncoder) flush() {
 				excCount++
 			}
 		}
-		e.buf.B = eng.AppendUint16(e.buf.B, uint16(excCount)) //nolint:gosec
+		e.buf.B = eng.AppendUint16(e.buf.B, uint16(excCount))
 		work := make([]uint64, len(vals))
 		copy(work, vals)
 		for i, v := range vals {
 			if bits.Len64(v) > s8bMaxBits {
-				e.buf.B = eng.AppendUint32(e.buf.B, uint32(i)) //nolint:gosec
+				e.buf.B = eng.AppendUint32(e.buf.B, uint32(i))
 				e.buf.B = eng.AppendUint64(e.buf.B, v)
 				work[i] = 0
 			}
@@ -202,7 +202,7 @@ func (e *TimestampSimple8bEncoder) flush() {
 		word := uint64(sel) << 60 //nolint:gosec
 		if bitw := s8bSelBits[sel]; bitw > 0 {
 			for j := range cnt {
-				word |= vals[i+j] << uint(j*bitw) //nolint:gosec
+				word |= vals[i+j] << uint(j*bitw)
 			}
 		}
 		eng.PutUint64(e.buf.B[off:off+8], word)
@@ -370,7 +370,7 @@ func (d TimestampSimple8bDecoder) All(data []byte, count int) iter.Seq[int64] {
 			}
 			word := d.engine.Uint64(data[off : off+8])
 			off += 8
-			sel := int(word >> 60) //nolint:gosec
+			sel := int(word >> 60)
 			cnt := s8bSelNum[sel]
 			bitw := s8bSelBits[sel]
 
@@ -382,9 +382,9 @@ func (d TimestampSimple8bDecoder) All(data []byte, count int) iter.Seq[int64] {
 			for j := 0; j < cnt && produced < need; j++ {
 				var zz uint64
 				if bitw > 0 {
-					zz = (word >> uint(j*bitw)) & mask //nolint:gosec
+					zz = (word >> uint(j*bitw)) & mask
 				}
-				if excIdx < nExc && uint32(produced) == excPos[excIdx] { //nolint:gosec
+				if excIdx < nExc && uint32(produced) == excPos[excIdx] {
 					zz = excVal[excIdx]
 					excIdx++
 				}

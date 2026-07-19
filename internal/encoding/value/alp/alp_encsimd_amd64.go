@@ -115,7 +115,7 @@ func alpMainStatsSIMD(values []float64, ee, ff int, dst []uint64, excPos []uint3
 					i := base + j
 					d, good := alpEncodeDigit(values[i], ee, ff)
 					if !good {
-						excPos = append(excPos, uint32(i)) //nolint:gosec
+						excPos = append(excPos, uint32(i))
 						continue
 					}
 					dst[i] = uint64(d) //nolint:gosec
@@ -133,7 +133,7 @@ func alpMainStatsSIMD(values []float64, ee, ff int, dst []uint64, excPos []uint3
 			// already stored/min-maxed the good lanes, so only the exception
 			// positions remain to append (ascending lane order).
 			exc := byte(m & 0xFF)
-			b := uint32(base) //nolint:gosec
+			b := uint32(base)
 			if exc == 0xFF {
 				// All-exception block (the full-precision column shape): one
 				// bulk append instead of eight, avoiding per-element grow checks.
@@ -170,7 +170,7 @@ func alpMainStatsSIMD(values []float64, ee, ff int, dst []uint64, excPos []uint3
 	}
 	width := 0
 	if mx >= mn {
-		width = bits.Len64(uint64(mx - mn)) //nolint:gosec
+		width = bits.Len64(uint64(mx - mn))
 	}
 
 	return alpMainCand{mn: mn, width: width, nExc: nExc, ok: true}, excPos
