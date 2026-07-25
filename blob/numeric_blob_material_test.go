@@ -410,6 +410,57 @@ func TestMaterializedNumericMetric_ByName(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestMaterializedNumericBlob_ByName_NoNamesPayload pins Materialize()'s
+// ByName accessors (HasMetricName, ValueAtByName, DataPointCountByName, ...)
+// against a Name-mode blob with NO names payload at all — no WithMetricNames()
+// and no collision, so the wire bytes carry only hashed MetricIDs. The raw
+// blob's HasMetricName documents a hash-only fallback for exactly this case
+// (indexMaps[T].HasMetricName's third branch); Materialize()'s ordinalByName
+// must mirror it instead of unconditionally reporting not-found once no
+// names payload is present.
+func TestMaterializedNumericBlob_ByName_NoNamesPayload(t *testing.T) {
+	startTime := time.Now()
+	encoder, err := NewNumericEncoder(startTime)
+	require.NoError(t, err)
+
+	metricName := "test.metric.no.names"
+	expectedValues := []float64{10, 20, 30}
+
+	err = encoder.StartMetricName(metricName, len(expectedValues))
+	require.NoError(t, err)
+	for i, val := range expectedValues {
+		require.NoError(t, encoder.AddDataPoint(int64(i), val, ""))
+	}
+	require.NoError(t, encoder.EndMetric())
+
+	blobBytes, err := encoder.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewNumericDecoder(blobBytes)
+	require.NoError(t, err)
+	nb, err := decoder.Decode()
+	require.NoError(t, err)
+	require.False(t, nb.HasMetricNames(), "no WithMetricNames() and no collision: blob must carry no names payload")
+
+	mat := nb.Materialize()
+
+	require.True(t, mat.HasMetricName(metricName))
+	require.Equal(t, len(expectedValues), mat.DataPointCountByName(metricName))
+	for i, want := range expectedValues {
+		val, ok := mat.ValueAtByName(metricName, i)
+		require.True(t, ok)
+		require.Equal(t, want, val)
+
+		ts, ok := mat.TimestampAtByName(metricName, i)
+		require.True(t, ok)
+		require.Equal(t, int64(i), ts)
+	}
+
+	require.False(t, mat.HasMetricName("no.such.metric"))
+	_, ok := mat.ValueAtByName("no.such.metric", 0)
+	require.False(t, ok)
+}
+
 func TestMaterializedNumericMetric_OutOfBounds(t *testing.T) {
 	metricID := uint64(100)
 	blob := createTestBlobForMaterialization(t, format.TypeRaw, format.TypeRaw, false, map[uint64]int{

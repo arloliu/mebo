@@ -375,6 +375,55 @@ func TestMaterializedTextMetric_ByName(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestMaterializedTextBlob_ByName_NoNamesPayload pins Materialize()'s ByName
+// accessors against a Name-mode blob with NO names payload at all
+// (WithoutMetricNames(), no collision). Mirrors
+// TestMaterializedNumericBlob_ByName_NoNamesPayload — see its comment for
+// why the raw blob's hash-only fallback (indexMaps[T].HasMetricName's third
+// branch) must also apply after Materialize().
+func TestMaterializedTextBlob_ByName_NoNamesPayload(t *testing.T) {
+	startTime := time.Now()
+	encoder, err := NewTextEncoder(startTime, WithoutMetricNames())
+	require.NoError(t, err)
+
+	metricName := "test.metric.no.names"
+	expectedValues := []string{"a", "b", "c"}
+
+	err = encoder.StartMetricName(metricName, len(expectedValues))
+	require.NoError(t, err)
+	for i, val := range expectedValues {
+		require.NoError(t, encoder.AddDataPoint(int64(i), val, ""))
+	}
+	require.NoError(t, encoder.EndMetric())
+
+	blobBytes, err := encoder.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewTextDecoder(blobBytes)
+	require.NoError(t, err)
+	tb, err := decoder.Decode()
+	require.NoError(t, err)
+	require.False(t, tb.HasMetricNames(), "WithoutMetricNames() and no collision: blob must carry no names payload")
+
+	mat := tb.Materialize()
+
+	require.True(t, mat.HasMetricName(metricName))
+	require.Equal(t, len(expectedValues), mat.DataPointCountByName(metricName))
+	for i, want := range expectedValues {
+		val, ok := mat.ValueAtByName(metricName, i)
+		require.True(t, ok)
+		require.Equal(t, want, val)
+
+		ts, ok := mat.TimestampAtByName(metricName, i)
+		require.True(t, ok)
+		require.Equal(t, int64(i), ts)
+	}
+
+	require.False(t, mat.HasMetricName("no.such.metric"))
+	_, ok := mat.ValueAtByName("no.such.metric", 0)
+	require.False(t, ok)
+}
+
 func TestMaterializedTextMetric_OutOfBounds(t *testing.T) {
 	metricID := uint64(100)
 	blob := createTestTextBlobForMaterialization(t, false, map[uint64][]string{

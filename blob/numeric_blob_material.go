@@ -53,9 +53,12 @@ func (m MaterializedNumericBlob) ordinalByID(metricID uint64) (int, bool) {
 	return ord, ok
 }
 
-// ordinalByName resolves a metric name to its ordinal: it uses the byName lookup
-// table when one has been built (i.e. a collision was observed), otherwise it
-// hashes the name and compares against the retained name string for exact membership.
+// ordinalByName resolves a metric name to its ordinal, mirroring
+// indexMaps[T].HasMetricName's three cases: byName present (collision) is a
+// direct lookup; names retained with no collision hashes the query and
+// string-compares against the retained name for exact membership; with no
+// names payload at all, membership can only be decided by hash, so it falls
+// back to byID.
 func (m MaterializedNumericBlob) ordinalByName(metricName string) (int, bool) {
 	if m.byName != nil {
 		ord, ok := m.byName[metricName]
@@ -68,9 +71,11 @@ func (m MaterializedNumericBlob) ordinalByName(metricName string) (int, bool) {
 		if ok && m.names[ord] == metricName {
 			return ord, true
 		}
+
+		return -1, false
 	}
 
-	return -1, false
+	return m.ordinalByID(hash.ID(metricName))
 }
 
 // Materialize decodes all metrics in the blob and returns a MaterializedNumericBlob
@@ -324,7 +329,11 @@ func (m MaterializedNumericBlob) HasMetricID(metricID uint64) bool {
 }
 
 // HasMetricName checks if the materialized blob contains the given metric name.
-// Returns false if metric names are not available in the blob.
+// Mirrors the raw blob's three-case resolution (see indexMaps[T].HasMetricName):
+// a built byName map (collision) is a direct lookup; retained names with no
+// collision hash the query and string-compare against the retained name for
+// exact membership; with no names payload at all, membership is decided by
+// hash alone.
 func (m MaterializedNumericBlob) HasMetricName(metricName string) bool {
 	_, ok := m.ordinalByName(metricName)
 	return ok
