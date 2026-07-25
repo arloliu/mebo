@@ -177,9 +177,44 @@ The names payload is the only section Mebo never compresses, so the overhead is 
 metric count and name length, and shrinks (as a percentage) as points-per-metric grows — more
 payload amortizes the fixed names cost.
 
-### Decode cost: owning vs borrowed
+### Encode cost
 
-200 metrics × 10 points:
+Turning names on (`WithMetricNames()` / text's names-on-by-default vs `WithoutMetricNames()`)
+costs close to nothing at encode time — within noise across three repeated runs at both shapes:
+
+| Shape                | No names   | With names | Delta       |
+|-----------------------|-----------:|-----------:|------------:|
+| Numeric, 10m × 100p   | 112 005 ns | 113 617 ns | +1.4%       |
+| Numeric, 200m × 10p   | 308 175 ns | 317 942 ns | +3.2%       |
+| Text, 10m × 100p      | 151 077 ns | 151 829 ns | +0.5%       |
+| Text, 200m × 10p      | 341 208 ns | 350 134 ns | +2.6%       |
+
+Name-mode encoding already computes `hash.ID(name)` for every metric whether or not names are
+stored; `WithMetricNames()` only adds appending the name to an entry-parallel slice, so the
+marginal encode cost is negligible regardless of shape.
+
+### Decode cost: names vs no names, and owning vs borrowed
+
+The overhead below is strictly tied to whether the decoded bytes actually contain a names
+section — not to whether Name-mode was used to identify metrics, or whether the metric-names
+feature exists in the codebase. A numeric blob with no `WithMetricNames()` and no collision
+carries zero names bytes and decodes exactly as fast as a plain ID-mode blob (verified directly:
+`StartMetricID` vs `StartMetricName`-without-`WithMetricNames()` decode within noise of each
+other, same allocation count) — the cost only appears once names are actually on the wire, and
+it then scales with **metric count**, not point count, since it's one string allocation per name:
+
+| Shape               | No names  | With names | Delta  |
+|----------------------|----------:|-----------:|-------:|
+| Numeric, 10m × 100p  |  4 877 ns |   5 094 ns | +4.4%  |
+| Numeric, 200m × 10p  | 14 989 ns |  21 352 ns | +42.5% |
+| Text, 10m × 100p     |  8 315 ns |   8 917 ns | +7.2%  |
+| Text, 200m × 10p     | 14 405 ns |  20 111 ns | +39.6% |
+
+Text stores names **by default** (opt-out via `WithoutMetricNames()`), so an unmodified
+`NewTextEncoder` pays this cost unless you opt out; numeric is opt-in only
+(`WithMetricNames()`), so it costs nothing unless you ask for it or a collision forces it on.
+
+At 200 metrics × 10 points, owning vs borrowed decode of that names-bearing blob:
 
 | Decoder            | ns/op  | B/op   | allocs/op |
 |---------------------|-------:|-------:|----------:|
@@ -189,9 +224,43 @@ payload amortizes the fixed names cost.
 | Text, borrowed       | 14 543 | 41 215 | 10        |
 
 Roughly 200 of the owning path's allocations are the per-name string copies; the borrowed
-constructors eliminate essentially all of them. `HasMetricName` / `GetByName` on a names-bearing,
-no-collision blob cost ~16-19 ns/op with zero allocations either way — the string-compare added by
-[exact membership](#enumeration-and-membership) is negligible.
+constructors eliminate essentially all of them — use them whenever the input buffer's lifetime
+outlives the decoded blob and you have many metrics. `HasMetricName` / `GetByName` on a
+names-bearing, no-collision blob cost ~16-19 ns/op with zero allocations either way — the
+string-compare added by [exact membership](#enumeration-and-membership) is negligible.
+
+### Accessing a decoded blob: by ID vs by name
+
+Once decoded, `All(id)`/`ValueAt(id, ...)` and their `AllByName`/`ValueAtByName` equivalents
+resolve to the same index entry and share identical per-point decode work afterward — only
+entry resolution differs, and `ByName`'s extra hash + string-compare (see the prior section) is
+a **fixed cost per call**, not per point:
+
+| Access                        | By ID    | By name  | Delta       |
+|--------------------------------|---------:|---------:|------------:|
+| `ValueAt`, 10m × 100p metric   |  22.3 ns |  29.2 ns | +6.9 ns     |
+| `ValueAt`, 200m × 10p metric   |  21.2 ns |  31.4 ns | +10.2 ns    |
+| `All`, 10m × 100p metric       | 762.8 ns | 767.5 ns | within noise |
+| `All`, 200m × 10p metric       | 173.4 ns | 171.6 ns | within noise |
+
+The single-point-access delta (~7-10 ns) is the clean signal — it doesn't scale with point
+count or metric count, since it's the same one-time hash+compare regardless of blob size. Full
+iteration (`All`) pays that same fixed cost once before iterating every point, so as a
+percentage it shrinks with more points per metric and is within measurement noise here; prefer
+`ByName` freely unless you're calling it in a tight per-point loop instead of once per metric.
+
+### Materialize cost
+
+`Materialize()` clones the whole names slice once, rather than per name, so its overhead vs a
+names-free blob is within noise at both shapes — unlike decode, it does not scale with metric
+count:
+
+| Shape               | No names  | With names |
+|----------------------|----------:|-----------:|
+| Numeric, 10m × 100p  |  3 433 ns |   3 138 ns |
+| Numeric, 200m × 10p  | 16 115 ns |  17 116 ns |
+| Text, 10m × 100p     | 27 620 ns |  27 008 ns |
+| Text, 200m × 10p     | 74 610 ns |  75 658 ns |
 
 ### Strip cost
 

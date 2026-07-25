@@ -189,6 +189,69 @@ func BenchmarkMetricNames_Query(b *testing.B) {
 	})
 }
 
+// BenchmarkMetricNames_AccessByIDVsByName measures All()/ValueAt() by
+// MetricID vs the ByName equivalents on a names-bearing NO-collision blob.
+// The two paths resolve to the same index entry and share the identical
+// per-point decode work afterward (allFromEntry) — only entry resolution
+// differs (GetByID vs GetByName's extra hash + string-compare) — so the
+// delta here is a fixed per-call cost, not something that scales with point
+// count or iteration length.
+func BenchmarkMetricNames_AccessByIDVsByName(b *testing.B) {
+	logBenchEnv(b)
+
+	for _, shape := range benchBlobShapes {
+		data := benchNamesNumericBlob(b, shape.metrics, shape.points)
+		dec, err := NewNumericDecoder(data)
+		require.NoError(b, err)
+		blob, err := dec.Decode()
+		require.NoError(b, err)
+		require.Nil(b, blob.index.byName, "fixture must be a no-collision retained-names blob")
+
+		names := benchNameCorpus(shape.metrics)
+		name := names[shape.metrics/2]
+		entry, ok := blob.index.GetByName(name)
+		require.True(b, ok)
+		metricID := entry.MetricID
+
+		b.Run(shape.name+"/All/byID", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				var sum float64
+				for _, dp := range blob.All(metricID) {
+					sum += dp.Val
+				}
+				_ = sum
+			}
+		})
+		b.Run(shape.name+"/All/byName", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				var sum float64
+				for _, dp := range blob.AllByName(name) {
+					sum += dp.Val
+				}
+				_ = sum
+			}
+		})
+		b.Run(shape.name+"/ValueAt/byID", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_, _ = blob.ValueAt(metricID, shape.points/2)
+			}
+		})
+		b.Run(shape.name+"/ValueAt/byName", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_, _ = blob.ValueAtByName(name, shape.points/2)
+			}
+		})
+	}
+}
+
 // TestMetricNames_Query_ZeroAlloc converts the "negligible" allocation claim
 // BenchmarkMetricNames_Query only reports into an enforced assertion:
 // GetByName and HasMetricName (hit and miss) on a names-bearing NO-collision
@@ -345,4 +408,224 @@ func TestSetAccessors_ZeroAlloc(t *testing.T) {
 		_ = set.MetricLen(id)
 	})
 	require.Zero(t, lenAllocs, "MetricLen on a no-collision set must be zero-alloc")
+}
+
+// ==============================================================================
+// Encode/decode/materialize overhead of turning names on, isolated from the
+// owning-vs-borrowed and size numbers above. Three further claims:
+//   (d) encode cost of WithMetricNames() (numeric) / the text default vs
+//       WithoutMetricNames() — the marginal cost on top of Name-mode encoding,
+//       which already computes hash.ID(name) either way.
+//   (e) decode cost of a names-bearing blob vs a names-free one, same (owning)
+//       decoder — isolates "the cost of names" from the owning/borrowed choice
+//       BenchmarkMetricNames_Decode measures.
+//   (f) Materialize() cost, names-bearing vs names-free.
+// ==============================================================================
+
+// encodeNumericNamed encodes n metrics of points points each, either storing
+// names (WithMetricNames()) or not (plain Name-mode default), same shape as
+// benchNamesNumericBlob.
+func encodeNumericNamed(tb testing.TB, names []string, points int, withNames bool) []byte {
+	tb.Helper()
+	opts := []NumericEncoderOption{WithBlobLayoutV2()}
+	if withNames {
+		opts = append(opts, WithMetricNames())
+	}
+	specs := make([]numericMetricSpec, len(names))
+	for i, name := range names {
+		specs[i] = numericMetricSpec{name: name, points: points, value: float64(i)}
+	}
+
+	return encodeNumericAt(tb, opts, specs)
+}
+
+// encodeTextNamed encodes len(names) text metrics of points points each,
+// either storing names (the text default) or not (WithoutMetricNames()).
+func encodeTextNamed(tb testing.TB, names []string, points int, withNames bool) []byte {
+	tb.Helper()
+	var opts []TextEncoderOption
+	if !withNames {
+		opts = append(opts, WithoutMetricNames())
+	}
+	specs := make([]textMetricSpec, len(names))
+	for i, name := range names {
+		vals := make([]string, points)
+		for j := range vals {
+			vals[j] = fmt.Sprintf("v%d", j)
+		}
+		specs[i] = textMetricSpec{name: name, values: vals}
+	}
+
+	return encodeTextAt(tb, opts, specs)
+}
+
+// BenchmarkMetricNames_EncodeOverhead measures the encode-side marginal cost
+// of WithMetricNames() (numeric) / the text default vs WithoutMetricNames().
+func BenchmarkMetricNames_EncodeOverhead(b *testing.B) {
+	logBenchEnv(b)
+
+	for _, shape := range benchBlobShapes {
+		names := benchNameCorpus(shape.metrics)
+
+		b.Run("numeric/"+shape.name+"/no_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = encodeNumericNamed(b, names, shape.points, false)
+			}
+		})
+		b.Run("numeric/"+shape.name+"/with_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = encodeNumericNamed(b, names, shape.points, true)
+			}
+		})
+		b.Run("text/"+shape.name+"/no_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = encodeTextNamed(b, names, shape.points, false)
+			}
+		})
+		b.Run("text/"+shape.name+"/with_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = encodeTextNamed(b, names, shape.points, true)
+			}
+		})
+	}
+}
+
+// BenchmarkMetricNames_DecodeVsNoNames measures the decode-time cost of
+// carrying names, same (owning) decoder, names-bearing vs names-free —
+// isolating the names cost from BenchmarkMetricNames_Decode's owning-vs-
+// borrowed comparison.
+func BenchmarkMetricNames_DecodeVsNoNames(b *testing.B) {
+	logBenchEnv(b)
+
+	for _, shape := range benchBlobShapes {
+		names := benchNameCorpus(shape.metrics)
+		numNoNames := encodeNumericNamed(b, names, shape.points, false)
+		numWithNames := encodeNumericNamed(b, names, shape.points, true)
+		txtNoNames := encodeTextNamed(b, names, shape.points, false)
+		txtWithNames := encodeTextNamed(b, names, shape.points, true)
+
+		b.Run("numeric/"+shape.name+"/no_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewNumericDecoder(numNoNames)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("numeric/"+shape.name+"/with_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewNumericDecoder(numWithNames)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("text/"+shape.name+"/no_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewTextDecoder(txtNoNames)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("text/"+shape.name+"/with_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewTextDecoder(txtWithNames)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkMetricNames_Materialize measures Materialize() cost, names-bearing
+// vs names-free, for both blob types.
+func BenchmarkMetricNames_Materialize(b *testing.B) {
+	logBenchEnv(b)
+
+	for _, shape := range benchBlobShapes {
+		names := benchNameCorpus(shape.metrics)
+
+		numNoNamesData := encodeNumericNamed(b, names, shape.points, false)
+		numDec, err := NewNumericDecoder(numNoNamesData)
+		require.NoError(b, err)
+		numNoNames, err := numDec.Decode()
+		require.NoError(b, err)
+
+		numWithNamesData := encodeNumericNamed(b, names, shape.points, true)
+		numDec2, err := NewNumericDecoder(numWithNamesData)
+		require.NoError(b, err)
+		numWithNames, err := numDec2.Decode()
+		require.NoError(b, err)
+
+		txtNoNamesData := encodeTextNamed(b, names, shape.points, false)
+		txtDec, err := NewTextDecoder(txtNoNamesData)
+		require.NoError(b, err)
+		txtNoNames, err := txtDec.Decode()
+		require.NoError(b, err)
+
+		txtWithNamesData := encodeTextNamed(b, names, shape.points, true)
+		txtDec2, err := NewTextDecoder(txtWithNamesData)
+		require.NoError(b, err)
+		txtWithNames, err := txtDec2.Decode()
+		require.NoError(b, err)
+
+		b.Run("numeric/"+shape.name+"/no_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = numNoNames.Materialize()
+			}
+		})
+		b.Run("numeric/"+shape.name+"/with_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = numWithNames.Materialize()
+			}
+		})
+		b.Run("text/"+shape.name+"/no_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = txtNoNames.Materialize()
+			}
+		})
+		b.Run("text/"+shape.name+"/with_names", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_ = txtWithNames.Materialize()
+			}
+		})
+	}
 }
