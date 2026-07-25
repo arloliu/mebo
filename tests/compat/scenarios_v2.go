@@ -29,17 +29,23 @@ func v2NumericScenarios() []Scenario {
 		expectedFormat FormatVersion
 	}
 
+	// sharedTS: true selects WithSharedTimestamps(), which produces V2Ext
+	// bytes (mirroring scenarios_metricnames.go's mn-num-v2ext-names, which
+	// uses the same option and labels it FormatV2Ext). Format is purely
+	// reported metadata here — it never drives which decode path a scenario
+	// takes (all decoding goes through blob.NewNumericDecoder regardless) —
+	// but it should still describe what was actually encoded.
 	cases := []v2Case{
 		{id: "num-v2-compact", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: false, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2},
 		{id: "num-v2-chimp", tsEnc: format.TypeDelta, valEnc: format.TypeChimp, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: false, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2},
 		{id: "num-v2-packed-delta", tsEnc: format.TypeDeltaPacked, valEnc: format.TypeGorilla, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: false, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2},
-		{id: "num-v2-shared-ts", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2},
-		{id: "num-v2-shared-chimp", tsEnc: format.TypeDelta, valEnc: format.TypeChimp, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2},
+		{id: "num-v2-shared-ts", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2Ext},
+		{id: "num-v2-shared-chimp", tsEnc: format.TypeDelta, valEnc: format.TypeChimp, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2Ext},
 		{id: "num-v2-tagged", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: true, sharedTS: false, numMetrics: 3, numPoints: 5, expectedFormat: FormatV2},
 		{id: "num-v2-zstd", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: format.CompressionZstd, valComp: format.CompressionZstd, tagsEnabled: false, sharedTS: false, numMetrics: 5, numPoints: 10, expectedFormat: FormatV2},
-		{id: "num-v2-packed-shared", tsEnc: format.TypeDeltaPacked, valEnc: format.TypeChimp, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 8, numPoints: 12, expectedFormat: FormatV2},
+		{id: "num-v2-packed-shared", tsEnc: format.TypeDeltaPacked, valEnc: format.TypeChimp, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 8, numPoints: 12, expectedFormat: FormatV2Ext},
 		{id: "num-v2-raw-raw", tsEnc: format.TypeRaw, valEnc: format.TypeRaw, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: false, numMetrics: 3, numPoints: 5, expectedFormat: FormatV2},
-		{id: "num-v2-jitter-shared", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 5, numPoints: 15, jitter: true, expectedFormat: FormatV2},
+		{id: "num-v2-jitter-shared", tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: format.CompressionNone, valComp: format.CompressionNone, tagsEnabled: false, sharedTS: true, numMetrics: 5, numPoints: 15, jitter: true, expectedFormat: FormatV2Ext},
 	}
 
 	scenarios := make([]Scenario, 0, len(cases))

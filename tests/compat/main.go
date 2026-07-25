@@ -14,6 +14,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -21,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/arloliu/mebo/errs"
 )
 
 func main() {
@@ -50,6 +53,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "corrupt: %v\n", err)
 			os.Exit(1)
 		}
+	case "mncorrupt":
+		if err := mnCorruptImpl(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "mncorrupt: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		usage()
@@ -59,11 +67,44 @@ func main() {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `Usage:
-  compat encode  --outdir <dir>           Encode all scenarios to <dir>/
-  compat decode  --indir  <dir>           Decode & verify all scenarios in <dir>/
-  compat reject  --indir  <dir>           Assert that blobs in <dir>/ fail to decode (no panic)
-  compat corrupt --indir  <dir> --outdir  <outdir>  Generate corrupted blobs from <indir>/
+  compat encode    --outdir <dir>           Encode all scenarios to <dir>/
+  compat decode    --indir  <dir>           Decode & verify all scenarios in <dir>/
+  compat reject    --indir  <dir>           Assert that blobs in <dir>/ fail to decode (no panic)
+  compat corrupt   --indir  <dir> --outdir  <outdir>  Generate corrupted blobs from <indir>/
+  compat mncorrupt --outdir <dir>           Generate metric-names adversarial fixtures
+                                             (requires -tags metricnames; see mncorrupt_metricnames.go)
 `)
+}
+
+// mnCorruptImpl is set by exactly one of mncorrupt_metricnames.go (build tag
+// "metricnames") or mncorrupt_stub.go (build tag "!metricnames") via init().
+// This indirection lets main.go dispatch the "mncorrupt" subcommand without
+// itself depending on which variant was compiled in.
+var mnCorruptImpl func(args []string) error
+
+// namedSentinels maps a Manifest.ExpectErrIs key to the concrete sentinel
+// error a "must reject" fixture's decode is required to satisfy via
+// errors.Is.
+//
+// Entries that exist identically in every supported module version (e.g.
+// errs.ErrInvalidIndexEntrySize, a generic structural-decode error present
+// since well before v1.9.0) are registered directly below — main.go is
+// unconditionally compiled, so referencing such a symbol is safe against
+// every version this harness builds against.
+//
+// Entries that only exist in a v1.10.0+ module (e.g. ErrDuplicateMetricName,
+// ErrUnsortedIndex) CANNOT be registered here: main.go itself must stay
+// buildable against v1.9.0 (see mnCorruptImpl above for why the same
+// indirection is needed there), so those are instead populated by
+// mncorrupt_metricnames.go's init() (build tag "metricnames"), which never
+// compiles into a v1.9.0 build. Building without the metricnames tag (e.g.
+// against v1.9.0) leaves those specific keys unregistered; a manifest that
+// declares an ExpectErrIs key with no registered sentinel is a hard FAIL
+// (see runDecode) rather than a silently-skipped check, since v1.9.0
+// binaries never process fixtures that set such an ExpectErrIs in the first
+// place.
+var namedSentinels = map[string]error{
+	"ErrInvalidIndexEntrySize": errs.ErrInvalidIndexEntrySize,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,32 +176,102 @@ func runDecode(args []string, expectError bool) error {
 
 	var failed []string
 	for _, s := range scenarios {
-		if expectError {
+		switch {
+		case expectError && s.graceful:
+			fmt.Printf("  graceful %-38s ", s.id)
+		case expectError:
 			fmt.Printf("  reject %-40s ", s.id)
-		} else {
+		default:
 			fmt.Printf("  verify %-40s ", s.id)
 		}
 
 		result, decodeErr := decodeAndVerify(*indir, s.id, s.blobType)
-		if expectError {
-			// We want the decode to fail gracefully — result is nil iff decode
-			// panicked (recoverable), or result.OK() is true (unexpectedly passed).
-			if decodeErr == nil && result != nil && result.OK() {
-				fmt.Printf("FAIL (expected decode error, but decoding succeeded)\n")
+		switch {
+		case expectError && s.graceful:
+			// Graceful-handling row (see Manifest.Graceful in testdata.go):
+			// decode may succeed OR fail — both are acceptable outcomes for
+			// corrupted payload bytes with no checksum backing them. The
+			// only thing this row rejects is a panic, which
+			// decodeAndVerify's recover already converts into decodeErr
+			// (it never surfaces via result.DecodeErr). An operational
+			// error (missing/unreadable fixture) also fails the row here —
+			// it means the harness never got to run the decoder, so it
+			// proves nothing about graceful handling.
+			if decodeErr != nil {
+				var pe *panicError
+				if errors.As(decodeErr, &pe) {
+					fmt.Printf("FAIL (decoder panicked): %v\n", decodeErr)
+				} else {
+					fmt.Printf("FAIL (harness error — fixture could not be read): %v\n", decodeErr)
+				}
 				failed = append(failed, s.id)
 			} else {
-				fmt.Printf("OK (decode returned error as expected)\n")
+				outcome := "decoded without error"
+				if result != nil && result.DecodeErr != nil {
+					outcome = fmt.Sprintf("decode returned error: %v", result.DecodeErr)
+				}
+				fmt.Printf("OK (no panic; %s)\n", outcome)
 			}
-		} else {
+		case expectError:
+			// A row only counts as "rejected" when the *decoder itself*
+			// returned an error — i.e. result.DecodeErr, populated by
+			// VerifyNumericBlob/VerifyTextBlob/VerifyBlobSet only from
+			// NewXDecoder/dec.Decode()/unpackMultiBlob/DecodeBlobSet.
+			// decodeErr (the outer return from decodeAndVerify) must NEVER
+			// satisfy rejection on its own, because it conflates two failure
+			// shapes that are not genuine rejections:
+			//
+			//   - a recovered decoder panic: the robustness matrix's
+			//     contract is "must reject OR must not panic", never "a
+			//     panic counts as rejection" — a panic must always FAIL
+			//     this row (see run_compat.sh's robustness section);
+			//   - an operational error (missing/unreadable manifest or blob
+			//     file): it means the harness never got to invoke the
+			//     decoder at all, not that the blob was rejected.
+			//
+			// A merely-non-OK VerifyResult (e.g. a manifest with no
+			// verifiable metrics, which every corruption fixture here uses)
+			// also must NOT count as rejection on its own: that would pass
+			// vacuously even when decoding fully succeeded.
+			switch {
+			case decodeErr != nil:
+				var pe *panicError
+				if errors.As(decodeErr, &pe) {
+					fmt.Printf("FAIL (decoder panicked — violates the no-panic contract): %v\n", decodeErr)
+				} else {
+					fmt.Printf("FAIL (harness error, not a genuine rejection — fixture/manifest unreadable): %v\n", decodeErr)
+				}
+				failed = append(failed, s.id)
+			case result == nil || result.DecodeErr == nil:
+				fmt.Printf("FAIL (expected decode error, but decoding succeeded)\n")
+				failed = append(failed, s.id)
+			case s.expectErrIs == "":
+				// No specific sentinel required for this fixture — any
+				// genuine decoder-returned error satisfies it.
+				fmt.Printf("OK (decode returned error as expected: %v)\n", result.DecodeErr)
+			default:
+				sentinel, ok := namedSentinels[s.expectErrIs]
+				switch {
+				case !ok:
+					fmt.Printf("FAIL (manifest expects sentinel %q, but this binary has no such sentinel registered — built without the required capability tag?)\n", s.expectErrIs)
+					failed = append(failed, s.id)
+				case !errors.Is(result.DecodeErr, sentinel):
+					fmt.Printf("FAIL (expected error %s, got: %v)\n", s.expectErrIs, result.DecodeErr)
+					failed = append(failed, s.id)
+				default:
+					fmt.Printf("OK (decode returned %s as expected)\n", s.expectErrIs)
+				}
+			}
+		default:
 			if decodeErr != nil {
 				fmt.Printf("FAIL (decode error): %v\n", decodeErr)
 				failed = append(failed, s.id)
 			} else if result == nil || !result.OK() {
-				errs := "nil result"
+				errMsgs := "nil result"
 				if result != nil {
-					errs = strings.Join(result.Errors, "; ")
+					errMsgs = strings.Join(result.Errors, "; ")
 				}
-				fmt.Printf("FAIL: %s\n", errs)
+				fmt.Printf("FAIL: %s\n", errMsgs)
 				failed = append(failed, s.id)
 			} else {
 				fmt.Printf("OK\n")
@@ -182,6 +293,16 @@ func runDecode(args []string, expectError bool) error {
 type scenarioMeta struct {
 	id       string
 	blobType BlobType
+	// expectErrIs is copied from the manifest's ExpectErrIs field (see
+	// testdata.go). Empty for most scenarios; set for "must reject"
+	// fixtures whose corruption is known to trip one specific,
+	// deterministic validation path.
+	expectErrIs string
+	// graceful is copied from the manifest's Graceful field (see
+	// testdata.go). True only for "must not crash" fixtures where neither
+	// decode success nor decode failure is asserted — only the absence of
+	// a panic.
+	graceful bool
 }
 
 // scenariosToRun returns the list of scenarios to process.
@@ -196,7 +317,7 @@ func scenariosToRun(indir, filter string) ([]scenarioMeta, error) {
 			if err != nil {
 				return nil, fmt.Errorf("read manifest for %s: %w", id, err)
 			}
-			result = append(result, scenarioMeta{id: id, blobType: m.BlobType})
+			result = append(result, scenarioMeta{id: id, blobType: m.BlobType, expectErrIs: m.ExpectErrIs, graceful: m.Graceful})
 		}
 		return result, nil
 	}
@@ -216,31 +337,52 @@ func scenariosToRun(indir, filter string) ([]scenarioMeta, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read manifest %s: %w", e.Name(), err)
 		}
-		result = append(result, scenarioMeta{id: id, blobType: m.BlobType})
+		result = append(result, scenarioMeta{id: id, blobType: m.BlobType, expectErrIs: m.ExpectErrIs, graceful: m.Graceful})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].id < result[j].id })
 	return result, nil
 }
 
+// panicError wraps a value recovered from a decoder panic inside
+// decodeAndVerify. It is a distinct type — rather than a plain
+// fmt.Errorf-wrapped error — specifically so runDecode's generic rejection
+// branch can tell "the decoder panicked" apart from every other error that
+// also flows through decodeAndVerify's err return (in particular, an
+// operational error from a missing/unreadable manifest or blob file). Both
+// are failures, but only a genuine decoder-returned error may satisfy a
+// rejection row; a panic must always FAIL it outright, never count as a
+// successful "reject".
+type panicError struct {
+	val any
+}
+
+func (e *panicError) Error() string {
+	return fmt.Sprintf("PANIC in decoder: %v", e.val)
+}
+
 // decodeAndVerify is wrapped in a recover to catch any panic from the decoder
-// (which would be a regression).  It returns (nil, nil) on panic so the caller
-// can distinguish panic from expected-error.
+// (which would be a regression). On panic it returns (nil, non-nil
+// *panicError) wrapping the recovered value, so the caller can distinguish
+// "decoder panicked" (err is a *panicError) from "harness could not even run
+// the decoder" (err is a plain wrapped error from readManifest/readBlobFile)
+// from both "decoded and verified cleanly" (nil, nil) and "decoded but
+// VerifyResult carries errors" (non-nil result, nil error).
 func decodeAndVerify(indir, scenarioID string, blobType BlobType) (res *VerifyResult, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("PANIC in decoder: %v", r)
+			err = &panicError{val: r}
 			res = nil
 		}
 	}()
 
 	m, err := readManifest(indir, scenarioID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("harness error (manifest unreadable): %w", err)
 	}
 
 	data, err := readBlobFile(indir, scenarioID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("harness error (blob unreadable): %w", err)
 	}
 
 	switch blobType {

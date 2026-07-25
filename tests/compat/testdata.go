@@ -40,6 +40,18 @@ type ManifestMetric struct {
 	MetricID   uint64              `json:"metric_id"`
 	MetricName string              `json:"metric_name"` // empty when not used
 	DataPoints []ManifestDataPoint `json:"data_points"`
+	// IsCrossMemberCollision marks this metric as one half of a genuine
+	// cross-member hash collision within a BlobTypeSet scenario (the other
+	// half is a different ManifestMetric, in a different member blob,
+	// sharing this one's MetricID). Unlike Manifest.HasRealCollision/
+	// WantNamesPayload, which apply uniformly to every metric in a
+	// scenario, this is per-metric: a blobset scenario can mix genuinely
+	// colliding names with ordinary, unaffected ones (as
+	// blobset-v1-mn-collision does), and only the colliding pair should
+	// have BlobSet-level materialize checks tolerated on a pre-v1.10.0
+	// binary — see verifyBlobSetMetricByNameAtSetLevel in verify.go, the
+	// only place this is read.
+	IsCrossMemberCollision bool `json:"is_cross_member_collision,omitempty"`
 }
 
 // Manifest is the golden record that the encode phase writes alongside each
@@ -53,6 +65,64 @@ type Manifest struct {
 	Metrics     []ManifestMetric `json:"metrics"`
 	// For blobset scenarios: multiple blob files that together form the set.
 	BlobFiles []string `json:"blob_files,omitempty"`
+	// ExpectErrIs names the specific sentinel error (a key into main.go's
+	// namedSentinels registry, e.g. "ErrDuplicateMetricName") that a "must
+	// reject" fixture's decode is required to fail with, checked via
+	// errors.Is. Empty for most "must reject" fixtures (corruption/robustness),
+	// which only require that decode fail at all with no specific sentinel
+	// asserted, but a fixture may opt in when its corruption is known to
+	// trip one specific, deterministic validation path (e.g.
+	// corrupt-oversized-metric-count → ErrInvalidIndexEntrySize, or the
+	// adversarial metric-names fixtures built by compat mncorrupt). Only
+	// meaningful when the "reject" subcommand is used and Graceful is
+	// false; ignored by "decode".
+	ExpectErrIs string `json:"expect_err_is,omitempty"`
+	// Graceful marks a fixture whose real contract is "the decoder must not
+	// panic, hang, or read out of bounds" rather than "the decoder must
+	// reject this blob". It exists for corruption fixtures that flip bits
+	// in a codec's payload region (timestamps/values/tags): those bytes
+	// carry no length-prefix or checksum, so a decoder may legitimately
+	// either decode them as structurally valid-but-wrong values or fail
+	// with a genuine decode error — both are acceptable outcomes for such a
+	// fixture, and asserting "must reject" would be dishonest (see
+	// corrupt-flipped-bits in robustness.go for the empirical evidence).
+	// Only meaningful when the "reject" subcommand is used, and mutually
+	// exclusive with ExpectErrIs in practice — a Graceful fixture has no
+	// single expected sentinel to assert since it may not error at all.
+	// Ignored by "decode".
+	Graceful bool `json:"graceful,omitempty"`
+	// VerifyBorrowed additionally decodes this scenario via
+	// NewNumericDecoderBorrowed/NewTextDecoderBorrowed (the zero-copy,
+	// alias-the-input decode path) and verifies it identically to the
+	// default owning decode. These constructors don't exist before
+	// v1.10.0, so the check is a no-op (not a failure) on a binary built
+	// without the "metricnames" tag — see verify.go's
+	// verifyNumericBorrowedImpl/verifyTextBorrowedImpl. Only meaningful for
+	// BlobTypeNumeric/BlobTypeText scenarios used with "decode" (not
+	// "reject").
+	VerifyBorrowed bool `json:"verify_borrowed,omitempty"`
+	// HasRealCollision marks a scenario whose blob genuinely contains two
+	// distinct metrics sharing one hashed MetricID (as opposed to a
+	// mncorrupt_metricnames.go adversarial fixture, which is hostile and
+	// must be rejected). Materialize() collapsed such metrics into one
+	// until the fix that shipped alongside v1.10.0, so a binary built
+	// against an older module still has that gap — see
+	// verify.go's materializeCollisionSafe, which this flag gates.
+	HasRealCollision bool `json:"has_real_collision,omitempty"`
+	// WantNamesPayload asserts nb.HasMetricNames()/tb.HasMetricNames() is
+	// true, unconditionally on every version — independent of, and stricter
+	// than, the OLD-tolerance branches gated by materializeByNameFallbackFixed
+	// and materializeCollisionSafe. Those tolerances exist specifically to
+	// accept a name resolving via hash-only fallback on a blob that
+	// legitimately has no names payload; without this separate assertion,
+	// the same tolerance could just as easily mask a REAL regression that
+	// silently drops the names payload from a scenario that is supposed to
+	// have one (e.g. an encoder bug under WithMetricNames()), since a
+	// dropped-payload blob and an intentionally-names-free blob look
+	// identical to that tolerance check. Set true only on scenarios that
+	// explicitly force names on (WithMetricNames(), a real collision, or
+	// text's names-on-by-default); left false (no assertion) elsewhere.
+	WantNamesPayload bool `json:"want_names_payload,omitempty"`
 }
 
 // bitsToFloat64 converts stored bit pattern back to float64.
