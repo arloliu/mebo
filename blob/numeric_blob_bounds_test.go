@@ -24,9 +24,7 @@ func TestNumericBlob_CorruptIndexEntryNoPanic(t *testing.T) {
 				tsEncType: format.TypeRaw,
 				flags:     section.FlagTagEnabled, // exercise the tag suffix guard too
 			},
-			index: indexMaps[section.NumericIndexEntry]{
-				byID: map[uint64]section.NumericIndexEntry{metricID: entry},
-			},
+			index:      newNumericTestIndex(entry),
 			tsPayload:  make([]byte, 32),
 			valPayload: make([]byte, 32),
 			tagPayload: make([]byte, 32),

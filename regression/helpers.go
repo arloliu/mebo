@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/arloliu/mebo/blob"
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 )
 
@@ -16,6 +17,18 @@ type measureResult struct {
 }
 
 func chunkAndMeasureWithConfig(blobs []blob.NumericBlob, cfg AnalyzeConfig) (measureResult, error) {
+	// This helper unions metrics through a map[uint64] and re-encodes via
+	// StartMetricID, which silently collapses a hash collision (two distinct
+	// names sharing one ID) into a single series — data loss, since a hash
+	// collision can't be represented by an ID-keyed map. Reject collided
+	// input here, at the shared seam. Because Analyze/AnalyzeWithOptions pass the
+	// whole blob slice while AnalyzeEach* pass one blob at a time, this single
+	// guard rejects within-blob collisions on all four entry points and
+	// cross-member collisions only on the aggregating (whole-slice) callers.
+	if err := checkNoCollision(blobs); err != nil {
+		return measureResult{}, err
+	}
+
 	// Build set
 	set, err := blob.NewNumericBlobSet(blobs)
 	if err != nil {
@@ -93,6 +106,50 @@ func chunkAndMeasureWithConfig(blobs []blob.NumericBlob, cfg AnalyzeConfig) (mea
 	res := measureResult{PPM: ppmValues, BPP: bppValues, PPMInt: ppmsInt}
 
 	return res, nil
+}
+
+// checkNoCollision returns errs.ErrCollisionNotSupported when the given blobs
+// carry a hash collision this ID-keyed aggregator cannot represent:
+//   - a within-blob collision (the same MetricID appears on two entries of one
+//     blob — necessarily two distinct names), or
+//   - a cross-member collision (the same MetricID bound to DIFFERENT names in
+//     different member blobs).
+//
+// Ordinary repetition of the same metric (same name → same ID) across members
+// is the intended cross-window merge and is accepted. Names-free collisions are
+// intrinsically indistinguishable and are not detected here.
+func checkNoCollision(blobs []blob.NumericBlob) error {
+	idToName := make(map[uint64]string)
+
+	for i := range blobs {
+		b := &blobs[i]
+		ids := b.MetricIDs()
+		names := b.MetricNames()
+		hasNames := len(names) == len(ids)
+
+		localSeen := make(map[uint64]struct{}, len(ids))
+		for j, id := range ids {
+			// Within-blob duplicate ID == collision (a valid ID-mode blob cannot
+			// repeat an ID; only a name-mode collision produces two entries).
+			if _, dup := localSeen[id]; dup {
+				return errs.ErrCollisionNotSupported
+			}
+			localSeen[id] = struct{}{}
+
+			// Cross-member: same ID, different name.
+			if hasNames {
+				if prev, ok := idToName[id]; ok {
+					if prev != names[j] {
+						return errs.ErrCollisionNotSupported
+					}
+				} else {
+					idToName[id] = names[j]
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // collectMetricIDs returns the union of metric IDs across all blobs in the set.

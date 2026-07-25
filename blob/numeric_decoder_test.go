@@ -373,21 +373,21 @@ func TestNumericDecoder_PayloadLengths(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify payload lengths for all entries
-	entry1, ok := blob.index.byID[1001]
+	entry1, ok := blob.index.GetByID(1001)
 	require.True(t, ok, "Entry 1 should exist")
 	require.Equal(t, 5*8, entry1.TimestampLength, "Entry 1 timestamp length should be 40 bytes (5 timestamps × 8)")
 	require.Equal(t, 5*8, entry1.ValueLength, "Entry 1 value length should be 40 bytes (5 values × 8)")
 	require.Equal(t, 0, entry1.TimestampOffset, "Entry 1 should start at offset 0")
 	require.Equal(t, 0, entry1.ValueOffset, "Entry 1 should start at offset 0")
 
-	entry2, ok := blob.index.byID[1002]
+	entry2, ok := blob.index.GetByID(1002)
 	require.True(t, ok, "Entry 2 should exist")
 	require.Equal(t, 3*8, entry2.TimestampLength, "Entry 2 timestamp length should be 24 bytes (3 timestamps × 8)")
 	require.Equal(t, 3*8, entry2.ValueLength, "Entry 2 value length should be 24 bytes (3 values × 8)")
 	require.Equal(t, 40, entry2.TimestampOffset, "Entry 2 should start at offset 40")
 	require.Equal(t, 40, entry2.ValueOffset, "Entry 2 should start at offset 40")
 
-	entry3, ok := blob.index.byID[1003]
+	entry3, ok := blob.index.GetByID(1003)
 	require.True(t, ok, "Entry 3 should exist")
 	require.Equal(t, 7*8, entry3.TimestampLength, "Entry 3 timestamp length should be 56 bytes (7 timestamps × 8)")
 	require.Equal(t, 7*8, entry3.ValueLength, "Entry 3 value length should be 56 bytes (7 values × 8)")
@@ -436,7 +436,7 @@ func TestNumericDecoder_PayloadLengths_Gorilla(t *testing.T) {
 
 	// Verify all entries have positive lengths
 	for metricID := uint64(2001); metricID <= 2003; metricID++ {
-		entry, ok := blob.index.byID[metricID]
+		entry, ok := blob.index.GetByID(metricID)
 		require.True(t, ok, "Metric %d should exist", metricID)
 
 		require.Greater(t, entry.TimestampLength, 0, "Metric %d: TimestampLength must be > 0", metricID)
@@ -449,7 +449,7 @@ func TestNumericDecoder_PayloadLengths_Gorilla(t *testing.T) {
 
 	// Verify we can actually read the data using the lengths
 	for metricID := uint64(2001); metricID <= 2003; metricID++ {
-		entry := blob.index.byID[metricID]
+		entry, _ := blob.index.GetByID(metricID)
 
 		// Verify we can slice the payload using offset + length
 		tsEnd := entry.TimestampOffset + entry.TimestampLength

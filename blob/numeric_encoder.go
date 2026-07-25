@@ -273,14 +273,27 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 //
 // In ID mode, the encoder uses optimized duplicate detection (no collision tracker overhead).
 //
+// If WithMetricNames() was set on this encoder, ID mode is unavailable — this
+// method always returns ErrMetricNamesUnavailable, checked before any other
+// validation, since ID mode never tracks metric names and there would be
+// nothing for that option to apply to.
+//
 // Parameters:
 //   - metricID: Unique 64-bit metric identifier (must be non-zero)
 //   - numOfDataPoints: Expected number of data points (1 to MaxDataPoints())
 //
 // Returns:
-//   - error: ErrMetricAlreadyStarted, ErrMixedIdentifierMode, ErrInvalidMetricID,
-//     ErrInvalidNumOfDataPoints, ErrMetricCountExceeded, or ErrHashCollision on duplicate ID
+//   - error: ErrMetricNamesUnavailable, ErrMetricAlreadyStarted, ErrMixedIdentifierMode,
+//     ErrInvalidMetricID, ErrInvalidNumOfDataPoints, ErrMetricCountExceeded, or
+//     ErrHashCollision on duplicate ID
 func (e *NumericEncoder) StartMetricID(metricID uint64, numOfDataPoints int) error {
+	// WithMetricNames() is a name-mode-only option — ID mode never tracks
+	// names, so reject immediately, before any other check, mode lock, or
+	// tracker mutation. This takes precedence over every other rejection.
+	if e.storeMetricNames {
+		return errs.ErrMetricNamesUnavailable
+	}
+
 	if e.curMetricID != 0 {
 		return fmt.Errorf("%w: metric ID %d is already started", errs.ErrMetricAlreadyStarted, e.curMetricID)
 	}
@@ -368,35 +381,71 @@ func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int)
 		return fmt.Errorf("%w: cannot use StartMetricName after StartMetricID", errs.ErrMixedIdentifierMode)
 	}
 
-	// Set mode on first use and create collision tracker (LAZY)
+	// ---------------------------------------------------------------------
+	// PREFLIGHT: validate and probe WITHOUT mutating any state, so a
+	// rejection here leaves the encoder fully unchanged and recoverable.
+	// ---------------------------------------------------------------------
+	if numOfDataPoints <= 0 || numOfDataPoints > e.MaxDataPoints() {
+		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, e.MaxDataPoints())
+	}
+
+	// Validate name length before hashing or probing, and regardless of
+	// whether names will actually be written to the payload (WithMetricNames
+	// only controls whether names are STORED, not whether they must be
+	// well-formed). Checking here — before any state mutation — keeps
+	// rejection atomic: without this, an oversized name would only surface
+	// from metadata.EncodeMetricNames inside Finish, after the rest of the
+	// blob has already been encoded.
+	if len(metricName) > MaxMetricNameLength {
+		return fmt.Errorf("%w: metric name length %d exceeds maximum %d bytes", errs.ErrInvalidMetricName, len(metricName), MaxMetricNameLength)
+	}
+
+	metricID := hash.ID(metricName)
+
+	// Read-only duplicate-name and prospective-collision detection.
+	var prospectiveCollision bool
+	if e.collisionTracker != nil {
+		dupName, prospective, err := e.collisionTracker.Probe(metricName, metricID)
+		if err != nil {
+			return err // ErrInvalidMetricName (empty name)
+		}
+		if dupName {
+			return fmt.Errorf("%w: metric name %q already added", errs.ErrMetricAlreadyStarted, metricName)
+		}
+		prospectiveCollision = prospective
+	} else if metricName == "" {
+		return errs.ErrInvalidMetricName
+	}
+
+	// Whether the names payload will be required once this metric is added:
+	// numeric WithMetricNames, a prior collision, or a prospective collision
+	// from this very name. (Text default mode is handled in the text encoder.)
+	namesRequired := e.storeMetricNames || e.hasCollision || prospectiveCollision
+
+	// Overall metric-count ceiling (names not required → 65536 allowed).
+	if len(e.indexEntries) >= MaxMetricCount {
+		return fmt.Errorf("%w: metric count exceeded: max %d", errs.ErrMetricCountExceeded, MaxMetricCount)
+	}
+	// Names-payload ceiling: the metric/names count is encoded as a uint16, so it
+	// caps at 65535, tighter than MaxMetricCount. Reject the 65536th entry BEFORE
+	// any mutation when names are required.
+	if namesRequired && len(e.indexEntries) >= MaxMetricNamesCount {
+		return fmt.Errorf("%w: max %d when metric names are stored", errs.ErrTooManyMetricNames, MaxMetricNamesCount)
+	}
+
+	// ---------------------------------------------------------------------
+	// COMMIT: all validation passed — now mutate.
+	// ---------------------------------------------------------------------
 	if e.identifierMode == modeUndefined {
 		e.identifierMode = modeNameManaged
 		e.collisionTracker = collision.NewTracker()
 	}
 
-	if numOfDataPoints <= 0 || numOfDataPoints > e.MaxDataPoints() {
-		return fmt.Errorf("%w: max %d for current encoding", errs.ErrInvalidNumOfDataPoints, e.MaxDataPoints())
-	}
-
-	if len(e.indexEntries) >= MaxMetricCount {
-		return fmt.Errorf("%w: metric count exceeded: max %d", errs.ErrMetricCountExceeded, MaxMetricCount)
-	}
-
-	metricID := hash.ID(metricName)
-
-	// Track metric and detect collisions using collision tracker
-	err := e.collisionTracker.TrackMetric(metricName, metricID)
-	if err != nil {
-		// Only return error for duplicates and invalid names
-		// Collisions are handled automatically
-		return err
-	}
-
-	// If collision was detected, mark flag for later application in Finish()
-	// This keeps the original header immutable
+	e.collisionTracker.Commit(metricName, metricID)
 	if e.collisionTracker.HasCollision() {
 		e.hasCollision = true
 	}
+	e.curMetricName = metricName
 
 	return e.startMetric(metricID, numOfDataPoints)
 }
@@ -473,6 +522,15 @@ func (e *NumericEncoder) EndMetric() error {
 		entry.TagOffset = tagOffsetDelta
 	}
 	e.addEntryIndex(entry)
+
+	// Record the metric name in lockstep with the index entry so the names
+	// payload can be permuted together with entries in sortEntriesByMetricID —
+	// this keeps names from desyncing from their index entries after a sort.
+	// Only in name mode (collisionTracker allocated).
+	if e.collisionTracker != nil {
+		e.metricNames = append(e.metricNames, e.curMetricName)
+		e.curMetricName = ""
+	}
 
 	// Update last offsets for next metric - uses encoderState.updateLast()
 	e.ts.updateLast()
@@ -632,6 +690,40 @@ func appendBlobRegion(dst []byte, blobSize int) (full, blob []byte) {
 	return full, full[start:]
 }
 
+// namesPayloadRequired reports whether the finished blob must carry the
+// metric names payload: either a hash collision was detected, or the caller
+// forced names on via WithMetricNames().
+func (e *NumericEncoder) namesPayloadRequired() bool {
+	return e.hasCollision || e.storeMetricNames
+}
+
+// encodeMetricNamesPayload builds the metric names payload from e.metricNames
+// (index order, permuted with the entries by sortEntriesByMetricID), NOT from
+// the collision tracker's insertion-order list — using the tracker's list would
+// desync names from their index entries after a sort.
+//
+// Callers must only invoke this when the names payload is required
+// (namesPayloadRequired) and the encoder is in name mode.
+func (e *NumericEncoder) encodeMetricNamesPayload() ([]byte, error) {
+	// Defensive invariant check: in name mode, EndMetric appends to metricNames
+	// and indexEntries together (and sortEntriesByMetricID permutes both in
+	// lockstep), so the two must always be the same length here. A mismatch
+	// would otherwise silently encode a names payload whose count disagrees
+	// with the index, surfacing only as a decode-time hash mismatch rather
+	// than here, at the point the desync actually occurs.
+	if len(e.metricNames) != len(e.indexEntries) {
+		return nil, fmt.Errorf("%w: internal state error: %d metric names but %d index entries",
+			errs.ErrInvalidMetricNamesCount, len(e.metricNames), len(e.indexEntries))
+	}
+
+	payload, err := ienc.EncodeMetricNames(e.metricNames, e.engine)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode metric names: %w", err)
+	}
+
+	return payload, nil
+}
+
 func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	// Return cached slices to pool before any returns (including error paths)
 	defer e.releasePooledSlices()
@@ -654,8 +746,10 @@ func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	// All computed fields will be set on the clone
 	finalHeader := e.cloneHeader()
 
-	// Apply pending collision flag if set
-	if e.hasCollision {
+	// Emit the metric names payload when a collision was detected OR the caller
+	// forced names on via WithMetricNames(). Collision handling is unconditional
+	// and always wins regardless of the option.
+	if e.namesPayloadRequired() {
 		finalHeader.Flag.SetHasMetricNames(true)
 	}
 
@@ -734,9 +828,9 @@ func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	// In ID mode, collisionTracker is nil, so we skip this entirely
 	var metricNamesPayload []byte
 	if e.collisionTracker != nil && finalHeader.Flag.HasMetricNames() {
-		metricNamesPayload, err = ienc.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
+		metricNamesPayload, err = e.encodeMetricNamesPayload()
 		if err != nil {
-			return dst, fmt.Errorf("failed to encode metric names: %w", err)
+			return dst, err
 		}
 		// Update IndexOffset to account for metric names payload (positioned after header)
 		finalHeader.IndexOffset = uint32(section.HeaderSize + len(metricNamesPayload)) //nolint: gosec
@@ -876,7 +970,12 @@ func (e *NumericEncoder) sortEntriesByMetricID(rawTs, rawVal, rawTag []byte) (so
 	for i := range n {
 		perm[i] = i
 	}
-	slices.SortFunc(perm, func(a, b int) int {
+	// Stable sort so that for a colliding pair (equal MetricID) the "first
+	// entry" — the one lookups resolve to — is deterministically insertion
+	// order, stable across Go toolchains. perm is initialised in ascending
+	// original index, so a stable sort keyed on MetricID alone preserves
+	// insertion order within equal-ID runs.
+	slices.SortStableFunc(perm, func(a, b int) int {
 		return cmp.Compare(e.indexEntries[a].MetricID, e.indexEntries[b].MetricID)
 	})
 
@@ -886,6 +985,25 @@ func (e *NumericEncoder) sortEntriesByMetricID(rawTs, rawVal, rawTag []byte) (so
 	for i, orig := range perm {
 		sortedEntries[i] = e.indexEntries[orig]
 		sortedAbs[i] = abs[orig]
+	}
+
+	// Permute the metric-names payload with the same permutation so names
+	// stay aligned with their index entries after the sort.
+	//
+	// ID mode (StartMetricID) never tracks names, so e.metricNames is
+	// legitimately empty here even though n > 0 — that is the normal ID-mode
+	// case, not a desync, and there is nothing to permute. Name mode is the
+	// only mode that populates e.metricNames, and it does so in lockstep with
+	// e.indexEntries (see EndMetric), so len(e.metricNames) == n is
+	// invariant there; finishAppend's encodeMetricNamesPayload hard-errors
+	// before encoding if that invariant is ever violated, so a genuine desync
+	// cannot silently ship as corrupt output.
+	if len(e.metricNames) > 0 {
+		sortedNames := make([]string, n)
+		for i, orig := range perm {
+			sortedNames[i] = e.metricNames[orig]
+		}
+		copy(e.metricNames, sortedNames)
 	}
 
 	// Step 3: Reassemble payload bytes in sorted order

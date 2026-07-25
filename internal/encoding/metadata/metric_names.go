@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/errs"
@@ -104,6 +105,60 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 
 		// Convert bytes to string (creates a copy)
 		names[i] = string(data[offset : offset+int(nameLen)])
+		offset += int(nameLen)
+	}
+
+	return names, offset, nil
+}
+
+// DecodeMetricNamesBorrowed decodes a length-prefixed metric names payload WITHOUT
+// copying the name bytes: each returned string aliases the corresponding slice of
+// data via unsafe.String (zero-copy). This is the decode-cost win behind the
+// blob.New*DecoderBorrowed constructors.
+//
+// The returned strings share their backing storage with data. The caller MUST NOT
+// mutate or reuse data while any returned string (or a blob built from them) is
+// still live. Use DecodeMetricNames for the owning (copying) behaviour.
+//
+// Format and validation are identical to DecodeMetricNames.
+func DecodeMetricNamesBorrowed(data []byte, engine endian.EndianEngine) ([]string, int, error) {
+	offset := 0
+
+	// Read count
+	if len(data) < offset+2 {
+		return nil, 0, fmt.Errorf("%w: cannot read metric names count (need 2 bytes, have %d)", errs.ErrInvalidMetricNamesPayload, len(data))
+	}
+
+	count := engine.Uint16(data[offset:])
+	offset += 2
+
+	// Pre-allocate slice for names
+	names := make([]string, count)
+
+	// Read each name
+	for i := 0; i < int(count); i++ {
+		// Read name length
+		if len(data) < offset+2 {
+			return nil, 0, fmt.Errorf("%w: cannot read length for metric name %d (need 2 bytes at offset %d, have %d total)",
+				errs.ErrInvalidMetricNamesPayload, i, offset, len(data))
+		}
+
+		nameLen := engine.Uint16(data[offset:])
+		offset += 2
+
+		// Read name bytes
+		if len(data) < offset+int(nameLen) {
+			return nil, 0, fmt.Errorf("%w: cannot read metric name %d (need %d bytes at offset %d, have %d total)",
+				errs.ErrInvalidMetricNamesPayload, i, nameLen, offset, len(data))
+		}
+
+		// Alias the bytes as a string WITHOUT copying (zero-copy borrow). A
+		// zero-length name maps to "" (unsafe.String with a nil-safe path).
+		if nameLen == 0 {
+			names[i] = ""
+		} else {
+			names[i] = unsafe.String(&data[offset], int(nameLen))
+		}
 		offset += int(nameLen)
 	}
 

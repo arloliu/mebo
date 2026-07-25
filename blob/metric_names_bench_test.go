@@ -1,0 +1,348 @@
+package blob
+
+import (
+	"fmt"
+	"runtime"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+// ==============================================================================
+// Permanent metric-names benchmark suite.
+//
+// Pins three benchmark claims:
+//   (a) default vs *Borrowed decode side by side — the borrowed path drops the
+//       ~N name-string copies per decode, so it wins big while the default path
+//       only wins modestly.
+//   (b) GetByName / HasMetricName query cost on a names-bearing NO-collision blob:
+//       the hash + binary-search/map + strcmp name-lookup path — reported with
+//       ns/op and allocs to pin the "negligible" claim.
+//   (c) blob-set construction + raw-set ID-keyed accessors (ValueAt / MetricLen /
+//       All*) with names present but NO collision — asserting the lazily-built
+//       identity table is not built and the accessors stay zero-alloc.
+//
+// Fixed corpora / shapes / metadata below make the numbers reproducible.
+// ==============================================================================
+
+// benchNameCorpus returns n deterministic, realistically-shaped metric names.
+func benchNameCorpus(n int) []string {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("service.subsystem.metric.name.instance.%05d", i)
+	}
+
+	return names
+}
+
+// benchNamesNumericBlob builds an n-metric names-bearing V2 numeric blob (no
+// collision), the reference decode shape. points is the per-metric point count.
+func benchNamesNumericBlob(tb testing.TB, n, points int) []byte {
+	tb.Helper()
+	specs := make([]numericMetricSpec, n)
+	for i, name := range benchNameCorpus(n) {
+		specs[i] = numericMetricSpec{name: name, points: points, value: float64(i)}
+	}
+
+	return encodeNumericAt(tb, []NumericEncoderOption{WithBlobLayoutV2(), WithMetricNames()}, specs)
+}
+
+// benchNamesTextBlob builds an n-metric names-bearing text blob (no collision).
+func benchNamesTextBlob(tb testing.TB, n, points int) []byte {
+	tb.Helper()
+	specs := make([]textMetricSpec, n)
+	for i, name := range benchNameCorpus(n) {
+		vals := make([]string, points)
+		for j := range vals {
+			vals[j] = fmt.Sprintf("v%d", j)
+		}
+		specs[i] = textMetricSpec{name: name, values: vals}
+	}
+
+	return encodeTextAt(tb, nil, specs)
+}
+
+// benchBlobShapes is the fixed set of (metric-count, points) shapes benchmarked.
+var benchBlobShapes = []struct {
+	name    string
+	metrics int
+	points  int
+}{
+	{name: "10m_100p", metrics: 10, points: 100},
+	{name: "200m_10p", metrics: 200, points: 10},
+}
+
+// logBenchEnv records toolchain/CPU metadata (visible with `go test -v`) so the
+// committed numbers are attributable to an environment.
+func logBenchEnv(b *testing.B) {
+	b.Helper()
+	b.Logf("toolchain=%s GOOS=%s GOARCH=%s NumCPU=%d GOMAXPROCS=%d",
+		runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.GOMAXPROCS(0))
+}
+
+// BenchmarkMetricNames_Decode measures default (owning) vs borrowed decode,
+// side by side, for both numeric and text blobs across the fixed shapes. The
+// gap is the name-copy cost the borrowed path eliminates.
+func BenchmarkMetricNames_Decode(b *testing.B) {
+	logBenchEnv(b)
+
+	for _, shape := range benchBlobShapes {
+		numData := benchNamesNumericBlob(b, shape.metrics, shape.points)
+		txtData := benchNamesTextBlob(b, shape.metrics, shape.points)
+
+		b.Run("numeric/"+shape.name+"/owning", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewNumericDecoder(numData)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("numeric/"+shape.name+"/borrowed", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewNumericDecoderBorrowed(numData)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("text/"+shape.name+"/owning", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewTextDecoder(txtData)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("text/"+shape.name+"/borrowed", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				dec, err := NewTextDecoderBorrowed(txtData)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := dec.Decode(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkMetricNames_Query measures GetByName / HasMetricName query cost on a
+// names-bearing NO-collision blob (the hash + binary-search + strcmp name-lookup
+// path). Reports ns/op and allocs to pin the "negligible" claim.
+func BenchmarkMetricNames_Query(b *testing.B) {
+	data := benchNamesNumericBlob(b, 200, 10)
+	dec, err := NewNumericDecoder(data)
+	require.NoError(b, err)
+	blob, err := dec.Decode()
+	require.NoError(b, err)
+	require.Nil(b, blob.index.byName, "fixture must be a no-collision retained-names blob")
+
+	names := benchNameCorpus(200)
+	hit := names[123] // a stored name (found path)
+	miss := "no.such.metric.name.absent"
+
+	b.Run("HasMetricName/hit", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			if !blob.HasMetricName(hit) {
+				b.Fatal("expected hit")
+			}
+		}
+	})
+	b.Run("HasMetricName/miss", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			if blob.HasMetricName(miss) {
+				b.Fatal("expected miss")
+			}
+		}
+	})
+	b.Run("GetByName/hit", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			if _, ok := blob.index.GetByName(hit); !ok {
+				b.Fatal("expected hit")
+			}
+		}
+	})
+}
+
+// TestMetricNames_Query_ZeroAlloc converts the "negligible" allocation claim
+// BenchmarkMetricNames_Query only reports into an enforced assertion:
+// GetByName and HasMetricName (hit and miss) on a names-bearing NO-collision
+// blob must not allocate. A benchmark can regress this without failing CI;
+// this test cannot. Skipped under -race (sync.Pool bookkeeping perturbs
+// allocs, mirroring the other alloc assertions in this package).
+func TestMetricNames_Query_ZeroAlloc(t *testing.T) {
+	if raceEnabled {
+		t.Skip("alloc assertions are unstable under -race")
+	}
+
+	data := benchNamesNumericBlob(t, 200, 10)
+	dec, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+	blob, err := dec.Decode()
+	require.NoError(t, err)
+	require.Nil(t, blob.index.byName, "fixture must be a no-collision retained-names blob")
+
+	names := benchNameCorpus(200)
+	hit := names[123] // a stored name (found path)
+	miss := "no.such.metric.name.absent"
+
+	hitAllocs := testing.AllocsPerRun(200, func() {
+		if !blob.HasMetricName(hit) {
+			t.Fatal("expected hit")
+		}
+	})
+	require.Zero(t, hitAllocs, "HasMetricName hit on a no-collision blob must be zero-alloc")
+
+	missAllocs := testing.AllocsPerRun(200, func() {
+		if blob.HasMetricName(miss) {
+			t.Fatal("expected miss")
+		}
+	})
+	require.Zero(t, missAllocs, "HasMetricName miss on a no-collision blob must be zero-alloc")
+
+	getByNameAllocs := testing.AllocsPerRun(200, func() {
+		if _, ok := blob.index.GetByName(hit); !ok {
+			t.Fatal("expected hit")
+		}
+	})
+	require.Zero(t, getByNameAllocs, "GetByName hit on a no-collision blob must be zero-alloc")
+}
+
+// benchNoCollisionNumericSet builds a 3-member names-bearing set sharing the same
+// metric names across members (a cross-window merge, NOT a collision), so the
+// lazy identity-table build is probed but no identity table is built.
+func benchNoCollisionNumericSet(tb testing.TB, n int) NumericBlobSet {
+	tb.Helper()
+	names := benchNameCorpus(n)
+	blobs := make([]NumericBlob, 3)
+	for m := range blobs {
+		specs := make([]numericMetricSpec, n)
+		for i, name := range names {
+			specs[i] = numericMetricSpec{name: name, points: 10, value: float64(i + m)}
+		}
+		data := encodeNumericAt(tb, []NumericEncoderOption{WithBlobLayoutV2(), WithMetricNames()}, specs)
+		dec, err := NewNumericDecoder(data)
+		require.NoError(tb, err)
+		blob, err := dec.Decode()
+		require.NoError(tb, err)
+		blobs[m] = blob
+	}
+	set, err := NewNumericBlobSet(blobs)
+	require.NoError(tb, err)
+
+	return set
+}
+
+// BenchmarkMetricNames_SetConstruction measures blob-set construction with
+// names present but no collision. Construction must not build an identity table.
+func BenchmarkMetricNames_SetConstruction(b *testing.B) {
+	names := benchNameCorpus(200)
+	blobs := make([]NumericBlob, 3)
+	for m := range blobs {
+		specs := make([]numericMetricSpec, 200)
+		for i, name := range names {
+			specs[i] = numericMetricSpec{name: name, points: 10, value: float64(i + m)}
+		}
+		data := encodeNumericAt(b, []NumericEncoderOption{WithBlobLayoutV2(), WithMetricNames()}, specs)
+		dec, err := NewNumericDecoder(data)
+		require.NoError(b, err)
+		blob, err := dec.Decode()
+		require.NoError(b, err)
+		blobs[m] = blob
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		set, err := NewNumericBlobSet(blobs)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if set.identity != nil {
+			b.Fatal("no-collision set must not build an identity table")
+		}
+	}
+}
+
+// BenchmarkMetricNames_SetAccessors measures raw-set ID-keyed accessors on a
+// no-collision names-bearing set (direct per-member path, no identity table).
+func BenchmarkMetricNames_SetAccessors(b *testing.B) {
+	set := benchNoCollisionNumericSet(b, 200)
+	require.Nil(b, set.identity, "fixture set must have no identity table")
+	ids := set.MetricIDs()
+	id := ids[100]
+
+	b.Run("ValueAt", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			_, _ = set.ValueAt(id, 5)
+		}
+	})
+	b.Run("MetricLen", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			_ = set.MetricLen(id)
+		}
+	})
+	b.Run("AllValues", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			var sum float64
+			for v := range set.AllValues(id) {
+				sum += v
+			}
+			_ = sum
+		}
+	})
+}
+
+// TestSetAccessors_ZeroAlloc pins the claim that on a no-collision
+// names-bearing set the identity table is nil and the raw ID-keyed accessors add
+// no allocations. Skipped under -race (sync.Pool bookkeeping perturbs allocs).
+func TestSetAccessors_ZeroAlloc(t *testing.T) {
+	if raceEnabled {
+		t.Skip("alloc assertions are unstable under -race")
+	}
+
+	set := benchNoCollisionNumericSet(t, 100)
+	require.Nil(t, set.identity, "no-collision set must not build an identity table")
+	id := set.MetricIDs()[50]
+
+	valAllocs := testing.AllocsPerRun(200, func() {
+		_, _ = set.ValueAt(id, 3)
+	})
+	require.Zero(t, valAllocs, "ValueAt on a no-collision set must be zero-alloc")
+
+	lenAllocs := testing.AllocsPerRun(200, func() {
+		_ = set.MetricLen(id)
+	})
+	require.Zero(t, lenAllocs, "MetricLen on a no-collision set must be zero-alloc")
+}

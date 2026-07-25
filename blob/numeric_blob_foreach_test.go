@@ -2,7 +2,7 @@ package blob
 
 import (
 	"fmt"
-	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -307,8 +307,9 @@ func collectForEachDataPoints(blob NumericBlob, metricID uint64, stopAfter int) 
 }
 
 func truncateForEachBlobPayload(blob NumericBlob, metricID uint64, timestamp bool, keepBytes int) NumericBlob {
-	entry, _ := blob.index.GetByID(metricID)
-	blob.index.byID = maps.Clone(blob.index.byID)
+	ord, _ := blob.index.getOrdinal(metricID)
+	entry := blob.index.sorted[ord]
+	blob.index.sorted = slices.Clone(blob.index.sorted)
 	if timestamp {
 		blob.tsPayload = blob.tsPayload[:entry.TimestampOffset+keepBytes]
 		entry.TimestampLength = keepBytes
@@ -316,7 +317,7 @@ func truncateForEachBlobPayload(blob NumericBlob, metricID uint64, timestamp boo
 		blob.valPayload = blob.valPayload[:entry.ValueOffset+keepBytes]
 		entry.ValueLength = keepBytes
 	}
-	blob.index.byID[metricID] = entry
+	blob.index.sorted[ord] = entry
 
 	return blob
 }

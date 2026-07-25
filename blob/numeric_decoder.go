@@ -22,7 +22,20 @@ type NumericDecoder struct {
 	metricCount int
 	engine      endian.EndianEngine
 	header      *section.NumericHeader
+	// borrowNames selects the zero-copy metric-names decode. When true the
+	// decoded blob's names alias `data`; the default (false) copies them.
+	borrowNames bool
 }
+
+// Compile-time assertions that pin the existing constructor function types.
+// Code stores these constructors in typed function variables (mebo.go:191-220),
+// which API_STABILITY.md forbids breaking; adding options to the existing
+// signatures would change the function type. If a future change alters either
+// signature, these fail to compile and force an explicit, documented decision.
+var (
+	_ func([]byte) (*NumericDecoder, error) = NewNumericDecoder
+	_ func([]byte) (*NumericDecoder, error) = NewNumericDecoderBorrowed
+)
 
 // NewNumericDecoder creates a new NumericDecoder for the given encoded data.
 //
@@ -38,6 +51,48 @@ type NumericDecoder struct {
 func NewNumericDecoder(data []byte) (*NumericDecoder, error) {
 	decoder := &NumericDecoder{
 		data: data,
+	}
+
+	if err := decoder.parseHeader(); err != nil {
+		return nil, err
+	}
+
+	if err := decoder.parsePayloads(); err != nil {
+		return nil, err
+	}
+
+	return decoder, nil
+}
+
+// NewNumericDecoderBorrowed creates a NumericDecoder that decodes metric names
+// with ZERO COPY: the resulting blob's names alias the input `data` buffer
+// instead of owning independent copies. This removes the ~200 name-string
+// allocations per decode that otherwise dominate the names-bearing decode cost.
+//
+// Lifetime rule: the backing array of `data` MUST NOT be mutated or reused while
+// the decoded blob (or anything derived directly from its names) is live. Doing
+// so corrupts the blob's metric names. Use NewNumericDecoder for the owning
+// (copying) behaviour when the caller cannot guarantee that.
+//
+// Materialising a blob decoded this way CLONES the names (Materialize /
+// MaterializeMetric* and set materialization), so materialized objects are always
+// owning and the borrowed-lifetime rule never propagates past the blob itself.
+//
+// Everything else is identical to NewNumericDecoder.
+//
+// Parameters:
+//   - data: Encoded blob byte slice (must contain valid header). Its backing
+//     array is borrowed by the returned decoder's metric names — see the
+//     lifetime rule above.
+//
+// Returns:
+//   - *NumericDecoder: New decoder instance whose metric names alias data,
+//     ready for decoding
+//   - error: Header parsing error or invalid data format
+func NewNumericDecoderBorrowed(data []byte) (*NumericDecoder, error) {
+	decoder := &NumericDecoder{
+		data:        data,
+		borrowNames: true,
 	}
 
 	if err := decoder.parseHeader(); err != nil {
@@ -177,20 +232,20 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		d.buildSharedTsCache(&blob, indexEntries)
 	}
 
-	// Step 4: Build index — V2 uses sorted slice, V1 uses map
+	// Step 4: Build index — V2 uses sorted slice, V1 uses first-wins ordinal map
 	d.buildIndex(&blob, indexEntries, metricIDs)
 
-	// Step 5: Verify and populate metric name map (if metric names present)
+	// Step 5: Verify names, reject a blob that stores the same name twice, and
+	// finalize the index name representation (retain ordered names; build
+	// byName only on collision).
 	if len(metricNames) > 0 {
 		if err := ienc.VerifyMetricNamesHashes(metricNames, metricIDs, hash.ID); err != nil {
 			return blob, fmt.Errorf("metric name verification failed: %w", err)
 		}
 
-		// Populate metric name map for ByName lookups
-		// metricNames[i] corresponds to indexEntries[i] (consistent ordering)
-		blob.index.byName = make(map[string]section.NumericIndexEntry, d.metricCount)
-		for i, name := range metricNames {
-			blob.index.byName[name] = indexEntries[i]
+		// metricNames[i] corresponds to indexEntries[i] (consistent ordering).
+		if err := blob.index.finalizeNames(metricNames, d.borrowNames); err != nil {
+			return blob, err
 		}
 	}
 
@@ -198,13 +253,12 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 }
 
 // buildIndex populates the blob's index from parsed index entries.
-// V2 uses sorted slice with parallel sortedIDs; V1 uses map.
+// V2 uses the sorted slice with parallel sortedIDs; V1 uses a first-wins
+// MetricID→ordinal map. `sorted` (index order) is always populated.
 func (d *NumericDecoder) buildIndex(blob *NumericBlob, indexEntries []section.NumericIndexEntry, metricIDs []uint64) {
-	if d.header.Flag.IsV2() {
-		// V2: entries are already sorted by MetricID from the encoder.
-		// Assign directly — no copy needed since parseIndexEntries returns a dedicated slice.
-		blob.index.sorted = indexEntries
+	blob.index.sorted = indexEntries
 
+	if d.header.Flag.IsV2() {
 		if metricIDs != nil {
 			// Reuse metricIDs from parseIndexEntries as sortedIDs (same data, same order)
 			blob.index.sortedIDs = metricIDs
@@ -219,11 +273,16 @@ func (d *NumericDecoder) buildIndex(blob *NumericBlob, indexEntries []section.Nu
 		return
 	}
 
-	// V1: map-based index for O(1) amortized lookups
-	blob.index.byID = make(map[uint64]section.NumericIndexEntry, d.metricCount)
-	for _, entry := range indexEntries {
-		blob.index.byID[entry.MetricID] = entry
+	// V1: first-wins MetricID→ordinal map so a collided ID resolves to its
+	// first entry in index order.
+	byID := make(map[uint64]int, d.metricCount)
+	for i := range indexEntries {
+		id := indexEntries[i].MetricID
+		if _, exists := byID[id]; !exists {
+			byID[id] = i
+		}
 	}
+	blob.index.byID = byID
 }
 
 // parseHeader parses the header section of the encoded data.
@@ -257,7 +316,12 @@ func (d *NumericDecoder) parseMetricNames() ([]string, int, error) {
 		return nil, section.HeaderSize, nil
 	}
 
-	metricNames, bytesRead, err := ienc.DecodeMetricNames(d.data[section.HeaderSize:], d.engine)
+	decodeNames := ienc.DecodeMetricNames
+	if d.borrowNames {
+		decodeNames = ienc.DecodeMetricNamesBorrowed
+	}
+
+	metricNames, bytesRead, err := decodeNames(d.data[section.HeaderSize:], d.engine)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to decode metric names: %w", err)
 	}
@@ -308,6 +372,12 @@ func (d *NumericDecoder) parseIndexEntries(
 		parseEntry = section.ParseNumericIndexEntryExt
 	}
 
+	// V2/V2Ext lookup relies on MetricIDs being non-descending. Validate that at
+	// decode open (before buildIndex selects a lookup representation).
+	// Strictly-decreasing (id < prev) is rejected; equal adjacent IDs (id == prev)
+	// are a legitimate collision and accepted.
+	validateV2Order := d.header.Flag.IsV2()
+
 	var err error
 	for i := 0; i < d.metricCount; i++ {
 		start := i * entrySize
@@ -337,6 +407,12 @@ func (d *NumericDecoder) parseIndexEntries(
 		// Calculate entry lengths for validation later
 		if i > 0 {
 			prevEntry := &indexEntries[i-1]
+
+			// Reject strictly-decreasing MetricID order on V2/V2Ext: an unsorted
+			// index would make the binary-search lookup silently miss entries.
+			if validateV2Order && curEntry.MetricID < prevEntry.MetricID {
+				return nil, nil, errs.ErrUnsortedIndex
+			}
 
 			// Validate offsets are non-decreasing
 			if lastTsOffset < prevEntry.TimestampOffset ||

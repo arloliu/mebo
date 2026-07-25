@@ -766,17 +766,17 @@ func TestNumericEncoder_TimestampOffsetDelta(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify decoded entries have absolute offsets for both timestamps and values
-	decodedEntry1, ok := blob.index.byID[metric1ID]
+	decodedEntry1, ok := blob.index.GetByID(metric1ID)
 	require.True(t, ok)
 	require.Equal(t, 0, decodedEntry1.TimestampOffset, "Decoded metric1 should have absolute TimestampOffset 0")
 	require.Equal(t, 0, decodedEntry1.ValueOffset, "Decoded metric1 should have absolute ValueOffset 0")
 
-	decodedEntry2, ok := blob.index.byID[metric2ID]
+	decodedEntry2, ok := blob.index.GetByID(metric2ID)
 	require.True(t, ok)
 	require.Equal(t, 40, decodedEntry2.TimestampOffset, "Decoded metric2 should have absolute TimestampOffset 40")
 	require.Equal(t, 40, decodedEntry2.ValueOffset, "Decoded metric2 should have absolute ValueOffset 40")
 
-	decodedEntry3, ok := blob.index.byID[metric3ID]
+	decodedEntry3, ok := blob.index.GetByID(metric3ID)
 	require.True(t, ok)
 	require.Equal(t, 64, decodedEntry3.TimestampOffset, "Decoded metric3 should have absolute TimestampOffset 64 (40+24)")
 	require.Equal(t, 64, decodedEntry3.ValueOffset, "Decoded metric3 should have absolute ValueOffset 64 (40+24)")
@@ -834,7 +834,7 @@ func TestNumericEncoder_TimestampOffsetDelta_SingleMetric(t *testing.T) {
 	blob, err := decoder.Decode()
 	require.NoError(t, err)
 
-	decodedEntry, ok := blob.index.byID[metricID]
+	decodedEntry, ok := blob.index.GetByID(metricID)
 	require.True(t, ok)
 	require.Equal(t, 0, decodedEntry.TimestampOffset)
 	require.Equal(t, 0, decodedEntry.ValueOffset)
@@ -912,7 +912,7 @@ func TestNumericEncoder_TimestampOffsetDelta_VaryingDataPoints(t *testing.T) {
 	require.NoError(t, err)
 
 	for i, metricID := range metricIDs {
-		decodedEntry, ok := blob.index.byID[metricID]
+		decodedEntry, ok := blob.index.GetByID(metricID)
 		require.True(t, ok, "Metric %d should exist in decoded blob", i)
 		require.Equal(t, expectedAbsoluteTsOffsets[i], decodedEntry.TimestampOffset,
 			"Decoded metric %d should have absolute TimestampOffset %d", i, expectedAbsoluteTsOffsets[i])
@@ -990,17 +990,17 @@ func TestNumericEncoder_TimestampOffsetDelta_WithDeltaEncoding(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify reconstructed absolute offsets
-	decodedEntry1, ok := blob.index.byID[metricIDs[0]]
+	decodedEntry1, ok := blob.index.GetByID(metricIDs[0])
 	require.True(t, ok)
 	require.Equal(t, offset1, decodedEntry1.TimestampOffset, "First metric absolute offset should be 0")
 
-	decodedEntry2, ok := blob.index.byID[metricIDs[1]]
+	decodedEntry2, ok := blob.index.GetByID(metricIDs[1])
 	require.True(t, ok)
 	expectedAbsOffset2 := offset1 + delta2
 	require.Equal(t, expectedAbsOffset2, decodedEntry2.TimestampOffset,
 		"Second metric absolute offset should be sum of deltas")
 
-	decodedEntry3, ok := blob.index.byID[metricIDs[2]]
+	decodedEntry3, ok := blob.index.GetByID(metricIDs[2])
 	require.True(t, ok)
 	expectedAbsOffset3 := expectedAbsOffset2 + delta3
 	require.Equal(t, expectedAbsOffset3, decodedEntry3.TimestampOffset,

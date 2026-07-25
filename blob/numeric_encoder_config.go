@@ -2,6 +2,7 @@ package blob
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/arloliu/mebo/compress"
@@ -13,6 +14,23 @@ import (
 
 // MaxMetricCount is the maximum number of metrics allowed in a single numeric blob.
 const MaxMetricCount = 65536
+
+// MaxMetricNamesCount is the maximum number of metrics allowed when a metric
+// names payload is required. The names count is encoded as a uint16, so at
+// most 65535 names can be stored. When names are not required, up to
+// MaxMetricCount (65536) metrics are permitted.
+const MaxMetricNamesCount = 65535
+
+// MaxMetricNameLength is the maximum length, in bytes, of a single metric
+// name. The names payload encodes each name with a uint16 length prefix
+// (see internal/encoding/metadata.EncodeMetricNames), so a name longer than
+// this can never be represented on the wire. Both NumericEncoder and
+// TextEncoder validate this in StartMetricName's preflight, before any
+// state mutation, so an oversized name is rejected atomically rather than
+// after the rest of the blob has already been encoded. The identical check
+// inside metadata.EncodeMetricNames (reached from Finish) remains in place
+// as a backstop.
+const MaxMetricNameLength = math.MaxUint16
 
 // Index entry capacity growth strategy constants for performance optimization.
 const (
@@ -41,6 +59,15 @@ type NumericEncoderConfig struct {
 	sharedTimestamps bool   // opt-in for shared timestamp detection (implies v2)
 	sortedByMetricID bool   // tracks whether metrics were inserted in ascending MetricID order
 	lastMetricID     uint64 // last MetricID added (for sorted tracking)
+
+	// Metric-name/index alignment. In name mode, metricNames grows in lockstep
+	// with indexEntries (one name appended per completed metric), so
+	// sortEntriesByMetricID can permute names and entries together — avoiding
+	// a payload/index desync under the V2 sort. curMetricName holds the name of
+	// the in-progress metric, recorded at EndMetric. Both are nil/"" in ID mode.
+	metricNames      []string // ordered names parallel to indexEntries (name mode only)
+	curMetricName    string   // name of the current in-progress metric (name mode only)
+	storeMetricNames bool     // force names payload even without a collision (name mode only)
 }
 
 // NewNumericEncoderConfig creates a new NumericEncoderConfig with the given start time.
@@ -374,6 +401,25 @@ func WithTagsEnabled(enabled bool) NumericEncoderOption {
 func WithBlobLayoutV2() NumericEncoderOption {
 	return options.NoError(func(cfg *NumericEncoderConfig) {
 		cfg.layoutVersion = 2
+	})
+}
+
+// WithMetricNames forces the encoder to always store the metric names payload,
+// even when no hash collision occurs.
+//
+// Name mode only: this option is incompatible with StartMetricID. Once
+// set, calling StartMetricID returns ErrMetricNamesUnavailable — ID mode never
+// tracks names, so there is nothing for this option to force on.
+//
+// Without this option, the encoder still stores names automatically whenever a
+// hash collision is detected (the collision-handling path is unconditional and
+// unaffected by this option).
+//
+// Returns:
+//   - NumericEncoderOption: An option that forces the metric names payload on.
+func WithMetricNames() NumericEncoderOption {
+	return options.NoError(func(cfg *NumericEncoderConfig) {
+		cfg.storeMetricNames = true
 	})
 }
 

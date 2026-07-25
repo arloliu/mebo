@@ -339,6 +339,13 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 	return metadata.DecodeMetricNames(data, engine)
 }
 
+// DecodeMetricNamesBorrowed decodes a length-prefixed metric-names payload with
+// zero-copy borrowed strings that alias data. Callers must keep data alive
+// and unmutated for the lifetime of the returned strings.
+func DecodeMetricNamesBorrowed(data []byte, engine endian.EndianEngine) ([]string, int, error) {
+	return metadata.DecodeMetricNamesBorrowed(data, engine)
+}
+
 // VerifyMetricNamesHashes verifies names hash to the corresponding metric IDs.
 func VerifyMetricNamesHashes(names []string, metricIDs []uint64, hashFunc func(string) uint64) error {
 	return metadata.VerifyMetricNamesHashes(names, metricIDs, hashFunc)

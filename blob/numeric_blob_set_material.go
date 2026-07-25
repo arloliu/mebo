@@ -1,6 +1,10 @@
 package blob
 
-import "github.com/arloliu/mebo/section"
+import (
+	"slices"
+
+	"github.com/arloliu/mebo/section"
+)
 
 // MaterializedNumericBlobSet provides O(1) random access to all data points across all blobs.
 // Created by calling NumericBlobSet.Materialize().
@@ -21,9 +25,18 @@ import "github.com/arloliu/mebo/section"
 //	material := blobSet.Materialize()
 //	val, ok := material.ValueAt(metricID, 1500)  // O(1), ~5ns (could be in any blob)
 //	ts, ok := material.TimestampAt(metricID, 2500)
+//
+// MaterializedNumericBlobSet keys its logical metrics by the set's logical identity: by
+// name when the set is names-bearing, by MetricID otherwise. metrics holds one entry
+// per logical metric in canonical order; ids/names are parallel (names[k] is
+// "" for an id-only metric). byName resolves a name exactly; byID resolves an ID to its
+// FIRST logical metric (a collided ID → the first colliding name's series).
 type MaterializedNumericBlobSet struct {
-	data  map[uint64]materializedNumericMetricSet
-	names map[string]uint64 // metricName → metricID (if available)
+	metrics []materializedNumericMetricSet
+	ids     []uint64
+	names   []string
+	byName  map[string]int
+	byID    map[uint64]int
 }
 
 type materializedNumericMetricSet struct {
@@ -55,51 +68,68 @@ type materializedNumericMetricSet struct {
 func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 	if len(s.blobs) == 0 {
 		return MaterializedNumericBlobSet{
-			data:  make(map[uint64]materializedNumericMetricSet),
-			names: make(map[string]uint64),
+			byName: make(map[string]int),
+			byID:   make(map[uint64]int),
 		}
 	}
 
-	// Step 1+2: Identify all unique metric IDs and calculate total capacity in a single pass.
-	// Walk each blob's own index (ForEach visits only metrics present in that blob),
-	// eliminating O(metrics × blobs) cross-product lookups.
-	capacities := make(map[uint64]int)
+	// Step 1: Build the logical-identity plan (canonical order, name/id keyed), which
+	// groups member blobs' entries by logical metric name/id. The materialized path
+	// decodes everything, so it builds the plan unconditionally rather than lazily
+	// deferring it until a collision is observed. slotOf routes a member entry to its
+	// logical metric.
+	plan := buildLogicalPlan(func(i int) *indexMaps[section.NumericIndexEntry] { return &s.blobs[i].index }, len(s.blobs))
+	slotOf := func(blob *NumericBlob, ord int) int {
+		if blob.index.names != nil {
+			return plan.byName[blob.index.names[ord]]
+		}
+
+		return plan.byID[blob.index.sorted[ord].MetricID]
+	}
+
+	// Step 2: Per-slot capacity + tag detection.
+	capacities := make([]int, len(plan.ids))
 	hasTags := false
 	for i := range s.blobs {
 		blob := &s.blobs[i]
 		if !hasTags && blob.HasTag() {
 			hasTags = true
 		}
-		blob.index.ForEach(func(entry section.NumericIndexEntry) bool {
-			capacities[entry.MetricID] += entry.Count
-			return true
-		})
+		for ord := range blob.index.sorted {
+			capacities[slotOf(blob, ord)] += blob.index.sorted[ord].Count
+		}
 	}
 
-	// Step 3: Pre-allocate slices for each metric with exact capacity
+	// Step 3: Pre-allocate per-slot slices with exact capacity. Deep-clone names
+	// off any borrowed member backing so the materialized set is fully owning and
+	// never aliases a member blob's borrowed string data.
+	ownNames, ownByName := ownSetNames(plan.names, plan.byName,
+		func(i int) *indexMaps[section.NumericIndexEntry] { return &s.blobs[i].index }, len(s.blobs))
 	material := MaterializedNumericBlobSet{
-		data:  make(map[uint64]materializedNumericMetricSet, len(capacities)),
-		names: make(map[string]uint64),
+		metrics: make([]materializedNumericMetricSet, len(plan.ids)),
+		ids:     plan.ids,
+		names:   ownNames,
+		byName:  ownByName,
+		byID:    plan.byID,
 	}
-
-	for metricID, capacity := range capacities {
-		metricSet := materializedNumericMetricSet{
-			timestamps: make([]int64, 0, capacity),
-			values:     make([]float64, 0, capacity),
+	for slot := range material.metrics {
+		material.metrics[slot] = materializedNumericMetricSet{
+			timestamps: make([]int64, 0, capacities[slot]),
+			values:     make([]float64, 0, capacities[slot]),
 		}
 		if hasTags {
-			metricSet.tags = make([]string, 0, capacity)
+			material.metrics[slot].tags = make([]string, 0, capacities[slot])
 		}
-		material.data[metricID] = metricSet
 	}
 
-	// Step 4: Iterate through blobs in chronological order, appending data.
-	// ForEach walks only metrics present in each blob — no wasted lookups.
+	// Step 4: Iterate through blobs in chronological order, appending data per slot.
 	for i := range s.blobs {
 		blob := &s.blobs[i]
 
-		blob.index.ForEach(func(entry section.NumericIndexEntry) bool {
-			metricSet := material.data[entry.MetricID]
+		for ord := range blob.index.sorted {
+			entry := blob.index.sorted[ord]
+			slot := slotOf(blob, ord)
+			metricSet := material.metrics[slot]
 			count := entry.Count
 
 			// Decode timestamps: extend slice and decode directly into tail
@@ -138,19 +168,7 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 				}
 			}
 
-			material.data[entry.MetricID] = metricSet
-
-			return true
-		})
-	}
-
-	// Step 5: Build metric name mapping if available
-	for i := range s.blobs {
-		blob := &s.blobs[i]
-		if blob.index.byName != nil {
-			for name, entry := range blob.index.byName {
-				material.names[name] = entry.MetricID
-			}
+			material.metrics[slot] = metricSet
 		}
 	}
 
@@ -184,11 +202,25 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 //	    ts, _ := metric.TimestampAt(250)   // O(1) access
 //	}
 func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumericMetric, bool) {
+	// A collided ID resolves to the first colliding name's logical metric:
+	// gate members so a cross-member A/H + B/H pair never concatenates into A+B.
+	targetName, collided := s.identity.resolveID(metricID)
+	resolve := func(blob *NumericBlob) (section.NumericIndexEntry, bool) {
+		return blob.index.resolveEntry(metricID, targetName, collided)
+	}
+
+	return s.materializeMetricCore(metricID, resolve)
+}
+
+// materializeMetricCore decodes and concatenates a single logical metric across all
+// members, selecting each member's contributing entry via resolve. resolve returns the
+// member's index entry and whether the member contributes to this logical metric.
+func (s *NumericBlobSet) materializeMetricCore(metricID uint64, resolve func(blob *NumericBlob) (section.NumericIndexEntry, bool)) (MaterializedNumericMetric, bool) {
 	// Step 1: Check if metric exists in any blob and calculate total capacity
 	capacity := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		if entry, ok := blob.index.GetByID(metricID); ok {
+		if entry, ok := resolve(blob); ok {
 			capacity += entry.Count
 		}
 	}
@@ -218,9 +250,9 @@ func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumeric
 	// Step 4: Iterate through blobs in chronological order, appending data
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		entry, ok := blob.index.GetByID(metricID)
+		entry, ok := resolve(blob)
 		if !ok {
-			continue // This metric doesn't exist in this blob
+			continue // This metric doesn't contribute to this logical metric
 		}
 
 		count := entry.Count
@@ -297,7 +329,7 @@ func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumeric
 //	    ts, _ := metric.TimestampAt(250)   // O(1) access
 //	}
 func (s *NumericBlobSet) MaterializeMetricByName(metricName string) (MaterializedNumericMetric, bool) {
-	// Step 1: Find the metric ID from the first blob that has this name
+	// Step 1: Find the metric ID from the first blob that has this name.
 	var metricID uint64
 	found := false
 	for i := range s.blobs {
@@ -313,16 +345,42 @@ func (s *NumericBlobSet) MaterializeMetricByName(metricName string) (Materialize
 		return MaterializedNumericMetric{}, false
 	}
 
-	// Step 2: Delegate to MaterializeMetric
-	return s.MaterializeMetric(metricID)
+	// Step 2: Gather THIS name's logical set metric — never re-resolving by ID,
+	// which would collapse a collided name onto the first colliding name's series. Named
+	// members match the name exactly; a stripped member attaches only when the name is
+	// the first colliding name for this id.
+	skipStripped := s.identity.excludesStripped(metricName)
+	resolve := func(blob *NumericBlob) (section.NumericIndexEntry, bool) {
+		return blob.index.resolveEntryByName(metricName, skipStripped)
+	}
+
+	return s.materializeMetricCore(metricID, resolve)
 }
 
 // ValueAt returns the value at the specified global index for the given metric ID.
 // Returns (0, false) if the metric ID is not found or index is out of bounds.
 //
 // This is an O(1) operation (~5ns).
+func (m MaterializedNumericBlobSet) metricByID(metricID uint64) (materializedNumericMetricSet, bool) {
+	slot, ok := m.byID[metricID]
+	if !ok {
+		return materializedNumericMetricSet{}, false
+	}
+
+	return m.metrics[slot], true
+}
+
+func (m MaterializedNumericBlobSet) metricByName(metricName string) (materializedNumericMetricSet, bool) {
+	slot, ok := m.byName[metricName]
+	if !ok {
+		return materializedNumericMetricSet{}, false
+	}
+
+	return m.metrics[slot], true
+}
+
 func (m MaterializedNumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
-	metric, ok := m.data[metricID]
+	metric, ok := m.metricByID(metricID)
 	if !ok {
 		return 0, false
 	}
@@ -339,7 +397,7 @@ func (m MaterializedNumericBlobSet) ValueAt(metricID uint64, index int) (float64
 //
 // This is an O(1) operation (~5ns).
 func (m MaterializedNumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
-	metric, ok := m.data[metricID]
+	metric, ok := m.metricByID(metricID)
 	if !ok {
 		return 0, false
 	}
@@ -357,7 +415,7 @@ func (m MaterializedNumericBlobSet) TimestampAt(metricID uint64, index int) (int
 //
 // This is an O(1) operation (~5ns).
 func (m MaterializedNumericBlobSet) TagAt(metricID uint64, index int) (string, bool) {
-	metric, ok := m.data[metricID]
+	metric, ok := m.metricByID(metricID)
 	if !ok {
 		return "", false
 	}
@@ -379,12 +437,16 @@ func (m MaterializedNumericBlobSet) TagAt(metricID uint64, index int) (string, b
 //
 // This is an O(1) operation after the name→ID lookup.
 func (m MaterializedNumericBlobSet) ValueAtByName(metricName string, index int) (float64, bool) {
-	metricID, ok := m.names[metricName]
+	metric, ok := m.metricByName(metricName)
 	if !ok {
 		return 0, false
 	}
 
-	return m.ValueAt(metricID, index)
+	if index < 0 || index >= len(metric.values) {
+		return 0, false
+	}
+
+	return metric.values[index], true
 }
 
 // TimestampAtByName returns the timestamp at the specified global index by metric name.
@@ -392,12 +454,16 @@ func (m MaterializedNumericBlobSet) ValueAtByName(metricName string, index int) 
 //
 // This is an O(1) operation after the name→ID lookup.
 func (m MaterializedNumericBlobSet) TimestampAtByName(metricName string, index int) (int64, bool) {
-	metricID, ok := m.names[metricName]
+	metric, ok := m.metricByName(metricName)
 	if !ok {
 		return 0, false
 	}
 
-	return m.TimestampAt(metricID, index)
+	if index < 0 || index >= len(metric.timestamps) {
+		return 0, false
+	}
+
+	return metric.timestamps[index], true
 }
 
 // TagAtByName returns the tag at the specified global index by metric name.
@@ -405,18 +471,27 @@ func (m MaterializedNumericBlobSet) TimestampAtByName(metricName string, index i
 //
 // This is an O(1) operation after the name→ID lookup.
 func (m MaterializedNumericBlobSet) TagAtByName(metricName string, index int) (string, bool) {
-	metricID, ok := m.names[metricName]
+	metric, ok := m.metricByName(metricName)
 	if !ok {
 		return "", false
 	}
 
-	return m.TagAt(metricID, index)
+	if len(metric.tags) == 0 {
+		return "", index >= 0 && index < len(metric.values)
+	}
+
+	if index < 0 || index >= len(metric.tags) {
+		return "", false
+	}
+
+	return metric.tags[index], true
 }
 
 // DataPointCount returns the number of data points for the given metric ID across all blobs.
+// A collided ID resolves to the first colliding name's logical metric.
 // Returns 0 if the metric ID is not found.
 func (m MaterializedNumericBlobSet) DataPointCount(metricID uint64) int {
-	metric, ok := m.data[metricID]
+	metric, ok := m.metricByID(metricID)
 	if !ok {
 		return 0
 	}
@@ -427,53 +502,54 @@ func (m MaterializedNumericBlobSet) DataPointCount(metricID uint64) int {
 // DataPointCountByName returns the number of data points for the given metric name across all blobs.
 // Returns 0 if the metric name is not found.
 func (m MaterializedNumericBlobSet) DataPointCountByName(metricName string) int {
-	metricID, ok := m.names[metricName]
+	metric, ok := m.metricByName(metricName)
 	if !ok {
 		return 0
 	}
 
-	return m.DataPointCount(metricID)
+	return len(metric.values)
 }
 
-// MetricCount returns the number of unique metrics in the materialized blob set.
+// MetricCount returns the number of distinct logical metrics under the set's
+// logical identity (a collided ID with two names counts as two).
 func (m MaterializedNumericBlobSet) MetricCount() int {
-	return len(m.data)
+	return len(m.metrics)
 }
 
 // HasMetricID checks if the materialized blob set contains the given metric ID.
 func (m MaterializedNumericBlobSet) HasMetricID(metricID uint64) bool {
-	_, ok := m.data[metricID]
+	_, ok := m.byID[metricID]
 	return ok
 }
 
 // HasMetricName checks if the materialized blob set contains the given metric name.
 // Returns false if metric names are not available in any blob.
 func (m MaterializedNumericBlobSet) HasMetricName(metricName string) bool {
-	_, ok := m.names[metricName]
+	_, ok := m.byName[metricName]
 	return ok
 }
 
-// MetricIDs returns a slice of all metric IDs in the materialized blob set.
-// The order is not guaranteed.
+// MetricIDs returns the MetricID of each logical metric in canonical order.
+// A collided ID appears once per colliding name.
 func (m MaterializedNumericBlobSet) MetricIDs() []uint64 {
-	ids := make([]uint64, 0, len(m.data))
-	for id := range m.data {
-		ids = append(ids, id)
-	}
-
-	return ids
-}
-
-// MetricNames returns a slice of all metric names in the materialized blob set.
-// Returns empty slice if no metric names are available.
-// The order is not guaranteed.
-func (m MaterializedNumericBlobSet) MetricNames() []string {
-	if len(m.names) == 0 {
+	if len(m.ids) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(m.names))
-	for name := range m.names {
-		names = append(names, name)
+
+	return slices.Clone(m.ids)
+}
+
+// MetricNames returns the distinct logical metric names in canonical order.
+// Returns nil if no metric names are available.
+func (m MaterializedNumericBlobSet) MetricNames() []string {
+	if len(m.byName) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(m.byName))
+	for k := range m.names {
+		if m.names[k] != "" {
+			names = append(names, m.names[k])
+		}
 	}
 
 	return names

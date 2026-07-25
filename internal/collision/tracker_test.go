@@ -7,6 +7,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// trackMetric replays the old one-shot TrackMetric behaviour (probe, then
+// commit unless the probe found a duplicate name) on top of the Probe/Commit
+// split that NumericEncoder/TextEncoder now call directly. It exists purely so
+// these tests can express "track this (name, hash) pair" concisely; production
+// code never calls it — see blob/numeric_encoder.go's AddMetric /
+// blob/text_encoder.go's equivalent for the real call sites.
+func trackMetric(tracker *Tracker, name string, hash uint64) error {
+	dupName, _, err := tracker.Probe(name, hash)
+	if err != nil {
+		return err
+	}
+	if dupName {
+		return errs.ErrMetricAlreadyStarted
+	}
+
+	tracker.Commit(name, hash)
+
+	return nil
+}
+
 func TestNewTracker(t *testing.T) {
 	tracker := NewTracker()
 
@@ -16,87 +36,80 @@ func TestNewTracker(t *testing.T) {
 	require.Empty(t, tracker.GetMetricNames())
 }
 
-func TestTracker_TrackMetric_Success(t *testing.T) {
+func TestTracker_ProbeCommit_Success(t *testing.T) {
 	tracker := NewTracker()
 
 	// Track first metric
-	err := tracker.TrackMetric("cpu.usage", 0x1234567890abcdef)
+	err := trackMetric(tracker, "cpu.usage", 0x1234567890abcdef)
 	require.NoError(t, err)
 	require.Equal(t, 1, tracker.Count())
 	require.False(t, tracker.HasCollision())
 	require.Equal(t, []string{"cpu.usage"}, tracker.GetMetricNames())
 
 	// Track second metric
-	err = tracker.TrackMetric("mem.usage", 0xfedcba0987654321)
+	err = trackMetric(tracker, "mem.usage", 0xfedcba0987654321)
 	require.NoError(t, err)
 	require.Equal(t, 2, tracker.Count())
 	require.False(t, tracker.HasCollision())
 	require.Equal(t, []string{"cpu.usage", "mem.usage"}, tracker.GetMetricNames())
 }
 
-func TestTracker_TrackMetric_EmptyName(t *testing.T) {
+func TestTracker_Probe_EmptyName(t *testing.T) {
 	tracker := NewTracker()
 
-	err := tracker.TrackMetric("", 0x1234567890abcdef)
+	dupName, prospectiveCollision, err := tracker.Probe("", 0x1234567890abcdef)
 
 	require.ErrorIs(t, err, errs.ErrInvalidMetricName)
+	require.False(t, dupName)
+	require.False(t, prospectiveCollision)
 	require.Equal(t, 0, tracker.Count())
 	require.False(t, tracker.HasCollision())
 }
 
-func TestTracker_TrackMetric_Collision(t *testing.T) {
+func TestTracker_ProbeCommit_Collision(t *testing.T) {
 	tracker := NewTracker()
 
 	// Track first metric
-	err := tracker.TrackMetric("cpu.usage", 0x1234567890abcdef)
+	err := trackMetric(tracker, "cpu.usage", 0x1234567890abcdef)
 	require.NoError(t, err)
 	require.False(t, tracker.HasCollision())
 
-	// Track second metric with same hash but different name
-	// This should NOT return error - collision is handled automatically
-	err = tracker.TrackMetric("cpu.idle", 0x1234567890abcdef)
+	// Probe reports the prospective collision before any mutation happens.
+	dupName, prospectiveCollision, err := tracker.Probe("cpu.idle", 0x1234567890abcdef)
+	require.NoError(t, err)
+	require.False(t, dupName)
+	require.True(t, prospectiveCollision)
+	require.False(t, tracker.HasCollision()) // Probe never mutates.
+
+	// Track second metric with same hash but different name.
+	// This should NOT return error - collision is handled automatically.
+	err = trackMetric(tracker, "cpu.idle", 0x1234567890abcdef)
 	require.NoError(t, err)
 	require.True(t, tracker.HasCollision())
 	require.Equal(t, 2, tracker.Count()) // Both metrics tracked
 	require.Equal(t, []string{"cpu.usage", "cpu.idle"}, tracker.GetMetricNames())
 }
 
-func TestTracker_TrackMetric_Duplicate(t *testing.T) {
+func TestTracker_ProbeCommit_Duplicate(t *testing.T) {
 	tracker := NewTracker()
 
 	// Track first metric
-	err := tracker.TrackMetric("cpu.usage", 0x1234567890abcdef)
+	err := trackMetric(tracker, "cpu.usage", 0x1234567890abcdef)
 	require.NoError(t, err)
 
-	// Track same metric again (same name, same hash)
-	err = tracker.TrackMetric("cpu.usage", 0x1234567890abcdef)
+	// Probe the same metric again (same name, same hash) - reported as a
+	// duplicate without mutating the tracker.
+	dupName, prospectiveCollision, err := tracker.Probe("cpu.usage", 0x1234567890abcdef)
+	require.NoError(t, err)
+	require.True(t, dupName)
+	require.False(t, prospectiveCollision)
+
+	// The one-shot helper surfaces that as ErrMetricAlreadyStarted, same as
+	// the production Probe-then-reject call sites.
+	err = trackMetric(tracker, "cpu.usage", 0x1234567890abcdef)
 	require.ErrorIs(t, err, errs.ErrMetricAlreadyStarted)
 	require.False(t, tracker.HasCollision()) // Not a collision, just duplicate
 	require.Equal(t, 1, tracker.Count())     // Only tracked once
-}
-
-func TestTracker_TrackMetricID_Success(t *testing.T) {
-	tracker := NewTracker()
-
-	// Track first metric ID
-	err := tracker.TrackMetricID(0x1111111111111111)
-	require.NoError(t, err)
-
-	// Track second metric ID
-	err = tracker.TrackMetricID(0x2222222222222222)
-	require.NoError(t, err)
-}
-
-func TestTracker_TrackMetricID_Collision(t *testing.T) {
-	tracker := NewTracker()
-
-	// Track first metric ID
-	err := tracker.TrackMetricID(0x1234567890abcdef)
-	require.NoError(t, err)
-
-	// Try to track same metric ID again - should fail
-	err = tracker.TrackMetricID(0x1234567890abcdef)
-	require.ErrorIs(t, err, errs.ErrHashCollision)
 }
 
 func TestTracker_GetMetricNames_PreservesOrder(t *testing.T) {
@@ -113,7 +126,7 @@ func TestTracker_GetMetricNames_PreservesOrder(t *testing.T) {
 	}
 
 	for _, m := range metrics {
-		err := tracker.TrackMetric(m.name, m.hash)
+		err := trackMetric(tracker, m.name, m.hash)
 		require.NoError(t, err)
 	}
 
@@ -129,8 +142,8 @@ func TestTracker_Reset(t *testing.T) {
 	tracker := NewTracker()
 
 	// Track some metrics
-	_ = tracker.TrackMetric("cpu.usage", 0x1234567890abcdef)
-	_ = tracker.TrackMetric("mem.usage", 0xfedcba0987654321)
+	_ = trackMetric(tracker, "cpu.usage", 0x1234567890abcdef)
+	_ = trackMetric(tracker, "mem.usage", 0xfedcba0987654321)
 	require.Equal(t, 2, tracker.Count())
 
 	// Reset
@@ -141,7 +154,7 @@ func TestTracker_Reset(t *testing.T) {
 	require.Empty(t, tracker.GetMetricNames())
 
 	// Should be able to track new metrics after reset
-	err := tracker.TrackMetric("disk.usage", 0x1111111111111111)
+	err := trackMetric(tracker, "disk.usage", 0x1111111111111111)
 	require.NoError(t, err)
 	require.Equal(t, 1, tracker.Count())
 	require.Equal(t, []string{"disk.usage"}, tracker.GetMetricNames())
@@ -152,7 +165,7 @@ func TestTracker_Reset_PreservesCapacity(t *testing.T) {
 
 	// Track many metrics to allocate capacity
 	for i := range 100 {
-		_ = tracker.TrackMetric("metric", uint64(i))
+		_ = trackMetric(tracker, "metric", uint64(i))
 	}
 
 	initialCap := cap(tracker.metricNamesList)
@@ -168,15 +181,15 @@ func TestTracker_HasCollision_AfterCollision(t *testing.T) {
 	tracker := NewTracker()
 
 	// Track first metric
-	_ = tracker.TrackMetric("cpu.usage", 0x1234567890abcdef)
+	_ = trackMetric(tracker, "cpu.usage", 0x1234567890abcdef)
 	require.False(t, tracker.HasCollision())
 
 	// Trigger collision
-	_ = tracker.TrackMetric("cpu.idle", 0x1234567890abcdef)
+	_ = trackMetric(tracker, "cpu.idle", 0x1234567890abcdef)
 	require.True(t, tracker.HasCollision())
 
 	// Collision flag persists
-	_ = tracker.TrackMetric("mem.usage", 0xfedcba0987654321)
+	_ = trackMetric(tracker, "mem.usage", 0xfedcba0987654321)
 	require.True(t, tracker.HasCollision())
 }
 
@@ -184,18 +197,18 @@ func TestTracker_MultipleCollisions(t *testing.T) {
 	tracker := NewTracker()
 
 	// Track first metric
-	err := tracker.TrackMetric("metric1", 0x0001)
+	err := trackMetric(tracker, "metric1", 0x0001)
 	require.NoError(t, err)
 
 	// First collision - should not return error
-	err = tracker.TrackMetric("metric2", 0x0001)
+	err = trackMetric(tracker, "metric2", 0x0001)
 	require.NoError(t, err)
 	require.True(t, tracker.HasCollision())
 
 	// Second collision (different hash) - should not return error
-	err = tracker.TrackMetric("metric3", 0x0002)
+	err = trackMetric(tracker, "metric3", 0x0002)
 	require.NoError(t, err)
-	err = tracker.TrackMetric("metric4", 0x0002)
+	err = trackMetric(tracker, "metric4", 0x0002)
 	require.NoError(t, err)
 	require.True(t, tracker.HasCollision())
 

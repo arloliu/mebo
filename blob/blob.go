@@ -2,10 +2,12 @@ package blob
 
 import (
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/arloliu/mebo/endian"
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
@@ -104,18 +106,114 @@ type indexEntry interface {
 // indexMaps holds metric ID and name mappings for a blob.
 // Generic over the index entry type (NumericIndexEntry or TextIndexEntry).
 //
-// Supports two storage strategies:
-//   - V1 (map): byID map for O(1) amortized lookups (default)
-//   - V2 (sorted): sorted slice for cache-friendly iteration and binary search lookups
+// Ordinal-keyed representation: `sorted` holds EVERY index entry in index order
+// and is the single source of truth for cardinality and enumeration:
+//   - V1/text: `sorted` is insertion order; `byID` maps a MetricID to its FIRST
+//     ordinal (first-wins) so GetByID resolves a collided ID to the first entry.
+//     `sortedIDs` is nil.
+//   - V2: `sorted` is MetricID-sorted (this order is enforced at decode time);
+//     `sortedIDs` is the parallel MetricID slice for binary search (leftmost =
+//     first). `byID` is nil.
 //
-// V2 maintains a parallel sortedIDs []uint64 slice for fast binary search.
-// This avoids the 64-byte cache line stride of []NumericIndexEntry and eliminates
-// interface dispatch overhead from the generic GetMetricID() call.
+// A within-blob collision (two distinct names sharing one MetricID) keeps both
+// entries in `sorted`, so MetricCount/MetricIDs count both entries separately
+// and the collided ID resolves to the first entry in index order.
+//
+// Name lookups:
+//   - `names` (parallel to `sorted`) is retained whenever the blob carries a
+//     names payload; nil otherwise.
+//   - `byName` (name → ordinal) is built ONLY when a collision is present. On a
+//     no-collision names-bearing blob it stays nil, and ByName membership is
+//     answered by hashing the query, locating the candidate entry, and then
+//     string-comparing against the retained stored name to preserve exact
+//     membership (this rejects a query that only hash-collides with a stored
+//     name without actually matching it). This laziness also lets a blob-set
+//     cheaply detect collisions via `byName != nil` instead of rescanning.
 type indexMaps[T indexEntry] struct {
-	byID      map[uint64]T // V1: primary lookup; V2: nil
-	byName    map[string]T // metricName → IndexEntry (nil if no collisions occurred)
-	sorted    []T          // V2: primary lookup (sorted by MetricID); V1: nil
-	sortedIDs []uint64     // V2: parallel MetricID slice for binary search; V1: nil
+	byID      map[uint64]int // V1/text: MetricID → first ordinal into `sorted`; nil for V2
+	byName    map[string]int // metricName → ordinal into `sorted`; built ONLY on collision; nil otherwise
+	sorted    []T            // ALL entries in index order (V1/text insertion; V2 MetricID-sorted)
+	sortedIDs []uint64       // V2: parallel MetricID slice for binary search; nil for V1/text
+	names     []string       // ordered metric names parallel to `sorted`; nil if no names payload
+	// namesBorrowed is true when `names` alias the decoder's input buffer instead
+	// of owning their bytes (a zero-copy borrowed decode). It never affects
+	// raw-blob reads (immutable-while-live is the borrowed contract); it only
+	// tells the materialization paths to DEEP-clone names so derived objects are
+	// always owning and the borrowed-lifetime rule never propagates.
+	namesBorrowed bool
+}
+
+// hasDuplicateID reports whether two entries share a MetricID (a within-blob
+// collision). Zero-alloc on both layouts.
+func (m indexMaps[T]) hasDuplicateID() bool {
+	if m.sortedIDs != nil {
+		for i := 1; i < len(m.sortedIDs); i++ {
+			if m.sortedIDs[i] == m.sortedIDs[i-1] {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	// V1/text: byID is first-wins, so a duplicate exists iff distinct IDs < entries.
+	return len(m.byID) < len(m.sorted)
+}
+
+// finalizeNames attaches the ordered names payload to the index, then — only
+// when a within-blob collision is present — rejects duplicate names and builds
+// the byName ordinal map. On a no-collision blob no string map is allocated, so
+// this adds no allocation to the common decode path.
+//
+// borrowed records whether names alias the decoder input (a zero-copy borrowed
+// decode); it is stored so materialization can deep-clone. Must be called after
+// sorted/byID/sortedIDs are populated. names must be parallel to sorted
+// (names[i] is the name of entry sorted[i]).
+func (m *indexMaps[T]) finalizeNames(names []string, borrowed bool) error {
+	m.names = names
+	m.namesBorrowed = borrowed
+
+	if !m.hasDuplicateID() {
+		// No collision: byName stays nil. A duplicate name is impossible here
+		// because equal names hash to equal IDs, which would be a duplicate ID.
+		return nil
+	}
+
+	// Collision present. Build name → ordinal; a repeated name (necessarily
+	// within a collided ID group, since hash.ID is deterministic) is rejected.
+	byName := make(map[string]int, len(names))
+	for i, name := range names {
+		if _, dup := byName[name]; dup {
+			return errs.ErrDuplicateMetricName
+		}
+		byName[name] = i
+	}
+	m.byName = byName
+
+	return nil
+}
+
+// cloneNamesOwned returns an owning copy of names. When the source names alias a
+// borrowed backing array (a zero-copy borrowed decode), each string is
+// deep-copied via strings.Clone so the result never references the borrowed
+// array; otherwise a
+// shallow slices.Clone suffices because the strings already own their bytes and
+// are immutable. Used by the materialization paths so materialized objects are
+// always owning regardless of how the source blob was decoded.
+func cloneNamesOwned(names []string, borrowed bool) []string {
+	if names == nil {
+		return nil
+	}
+	if !borrowed {
+		return slices.Clone(names)
+	}
+
+	out := make([]string, len(names))
+	for i, s := range names {
+		out[i] = strings.Clone(s)
+	}
+
+	return out
 }
 
 // StartTime returns the start time of the blob.
@@ -194,30 +292,33 @@ func (b blobBase) HasMetricNames() bool {
 	return (b.flags & section.FlagMetricNames) != 0
 }
 
-// MetricCount returns the number of unique metrics in the blob.
-// If metric names are available (collision occurred), returns len(byName),
-// otherwise returns len(byID) or len(sorted).
+// getOrdinal returns the ordinal (index into `sorted`) of the FIRST entry with
+// the given MetricID, or (-1, false) if absent. On V2 this is the leftmost
+// binary-search result; on V1/text it is the first-wins byID map.
+func (m indexMaps[T]) getOrdinal(metricID uint64) (int, bool) {
+	if m.sortedIDs != nil {
+		i, found := slices.BinarySearch(m.sortedIDs, metricID)
+		if !found {
+			return -1, false
+		}
+
+		return i, true
+	}
+
+	ord, ok := m.byID[metricID]
+
+	return ord, ok
+}
+
+// MetricCount returns the number of metrics in the blob, counting one per index
+// entry — a within-blob collision (two names, one ID) counts as two.
 func (m indexMaps[T]) MetricCount() int {
-	if m.byName != nil {
-		return len(m.byName)
-	}
-
-	if m.sorted != nil {
-		return len(m.sorted)
-	}
-
-	return len(m.byID)
+	return len(m.sorted)
 }
 
 // HasMetricID checks if the given metric ID exists in the blob.
 func (m indexMaps[T]) HasMetricID(metricID uint64) bool {
-	if m.sortedIDs != nil {
-		_, found := slices.BinarySearch(m.sortedIDs, metricID)
-
-		return found
-	}
-
-	_, ok := m.byID[metricID]
+	_, ok := m.getOrdinal(metricID)
 
 	return ok
 }
@@ -225,12 +326,11 @@ func (m indexMaps[T]) HasMetricID(metricID uint64) bool {
 // HasMetricName checks if the given metric name exists in the blob.
 //
 // Behavior:
-//   - If byName map exists (hash collision detected): performs direct name lookup.
-//   - If byName is nil (normal case): hashes the name to a metric ID and checks
-//     if that ID exists. This works because metric IDs are deterministic xxHash64
-//     hashes of metric names.
-//
-// Returns false if the metric is not found by either lookup path.
+//   - byName present (collision): direct name lookup.
+//   - names retained, no collision: hash the query, locate the candidate entry,
+//     and string-compare against the retained stored name so a query that only
+//     hash-collides with a stored name is correctly rejected.
+//   - no names payload: hash the query to an ID and check existence.
 func (m indexMaps[T]) HasMetricName(metricName string) bool {
 	if m.byName != nil {
 		_, ok := m.byName[metricName]
@@ -238,74 +338,80 @@ func (m indexMaps[T]) HasMetricName(metricName string) bool {
 		return ok
 	}
 
+	if m.names != nil {
+		ord, ok := m.getOrdinal(hash.ID(metricName))
+
+		return ok && m.names[ord] == metricName
+	}
+
 	return m.HasMetricID(hash.ID(metricName))
 }
 
-// MetricIDs returns a slice of all metric IDs in the blob.
+// MetricIDs returns a slice of all metric IDs in the blob, one per index entry
+// in index order. A collided ID appears once per colliding entry.
 // The slice is newly allocated to prevent external modification.
-// V2 sorted index returns IDs in deterministic sorted order.
 func (m indexMaps[T]) MetricIDs() []uint64 {
-	if m.sortedIDs != nil {
-		return slices.Clone(m.sortedIDs)
-	}
-
-	ids := make([]uint64, 0, len(m.byID))
-	for id := range m.byID {
-		ids = append(ids, id)
+	ids := make([]uint64, len(m.sorted))
+	for i := range m.sorted {
+		ids[i] = m.sorted[i].GetMetricID()
 	}
 
 	return ids
 }
 
-// MetricNames returns a slice of all metric names in the blob.
-// Returns an empty slice if the blob doesn't have metric names (byName is nil).
+// MetricNames returns a slice of all metric names in the blob in index order.
+// Returns an empty slice if the blob has no metric names payload.
 // The slice is newly allocated to prevent external modification.
 func (m indexMaps[T]) MetricNames() []string {
-	if m.byName == nil {
+	if m.names == nil {
 		return []string{}
 	}
-	names := make([]string, 0, len(m.byName))
-	for name := range m.byName {
-		names = append(names, name)
-	}
 
-	return names
+	return slices.Clone(m.names)
 }
 
-// GetByID returns the index entry for the given metric ID.
-// Uses binary search on V2 sorted index, map lookup on V1.
+// GetByID returns the index entry for the given metric ID, resolving a collided
+// ID to the FIRST entry in index order.
 // Returns (entry, true) if found, or (zero-value, false) if not found.
 func (m indexMaps[T]) GetByID(metricID uint64) (T, bool) {
-	if m.sortedIDs != nil {
-		i, found := slices.BinarySearch(m.sortedIDs, metricID)
-		if found {
-			return m.sorted[i], true
-		}
-
+	ord, ok := m.getOrdinal(metricID)
+	if !ok {
 		var zero T
 
 		return zero, false
 	}
 
-	entry, ok := m.byID[metricID]
-
-	return entry, ok
+	return m.sorted[ord], true
 }
 
 // GetByName returns the index entry for the given metric name.
 //
-// Behavior:
-//   - If byName map exists (hash collision detected): performs direct name lookup.
-//   - If byName is nil (normal case): hashes the name to a metric ID and looks up
-//     by ID. This works because metric IDs are deterministic xxHash64 hashes of
-//     metric names.
+// Behavior mirrors HasMetricName: byName map on collision; hash + string-compare
+// on a retained-names no-collision blob; hash + ID lookup when the blob carries
+// no names payload.
 //
 // Returns (entry, true) if found, or (zero-value, false) if not found.
 func (m indexMaps[T]) GetByName(metricName string) (T, bool) {
 	if m.byName != nil {
-		entry, ok := m.byName[metricName]
+		ord, ok := m.byName[metricName]
+		if !ok {
+			var zero T
 
-		return entry, ok
+			return zero, false
+		}
+
+		return m.sorted[ord], true
+	}
+
+	if m.names != nil {
+		ord, ok := m.getOrdinal(hash.ID(metricName))
+		if ok && m.names[ord] == metricName {
+			return m.sorted[ord], true
+		}
+
+		var zero T
+
+		return zero, false
 	}
 
 	return m.GetByID(hash.ID(metricName))
@@ -338,34 +444,20 @@ func (m indexMaps[T]) LenByName(metricName string) int {
 // V1 map iterates in arbitrary order.
 // Return false from fn to stop iteration.
 func (m indexMaps[T]) ForEach(fn func(T) bool) {
-	if m.sorted != nil {
-		for _, e := range m.sorted {
-			if !fn(e) {
-				return
-			}
-		}
-
-		return
-	}
-
-	for _, e := range m.byID {
+	for _, e := range m.sorted {
 		if !fn(e) {
 			return
 		}
 	}
 }
 
-// At returns the entry at position i for direct indexed access.
-// Only valid for V2 sorted index. Panics if index is out of range.
+// At returns the entry at position i for direct indexed access (index order).
+// Panics if index is out of range.
 func (m indexMaps[T]) At(i int) T {
 	return m.sorted[i]
 }
 
 // IsEmpty returns whether the index contains no entries.
 func (m indexMaps[T]) IsEmpty() bool {
-	if m.sorted != nil {
-		return len(m.sorted) == 0
-	}
-
-	return len(m.byID) == 0
+	return len(m.sorted) == 0
 }

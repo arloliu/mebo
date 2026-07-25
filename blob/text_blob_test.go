@@ -1180,9 +1180,11 @@ func TestTextBlob_ByName_WithMetricNames(t *testing.T) {
 	blob, err := decoder.Decode()
 	require.NoError(t, err)
 
-	// Verify byName is populated (metric names payload exists)
-	require.NotNil(t, blob.index.byName, "byName should be populated when using StartMetricName")
-	require.Equal(t, 2, len(blob.index.byName), "should have 2 metric names")
+	// The byName lookup map is built only when a collision is actually observed.
+	// With no collision it stays nil and ByName membership is answered via the
+	// retained ordered names + hash + string-compare.
+	require.Nil(t, blob.index.byName, "byName should be nil when there is no collision")
+	require.Equal(t, 2, len(blob.index.names), "should have 2 retained metric names")
 
 	// Test that ByName methods work with direct name lookup
 	t.Run("AllByName with direct lookup", func(t *testing.T) {

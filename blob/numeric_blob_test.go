@@ -298,9 +298,7 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 			blobBase: blobBase{
 				tsEncType: format.TypeRaw,
 			},
-			index: indexMaps[section.NumericIndexEntry]{
-				byID: make(map[uint64]section.NumericIndexEntry),
-			},
+			index:      newNumericTestIndex(),
 			tsPayload:  []byte{},
 			valPayload: []byte{},
 			// valEncType is now packed into flags (optimized)
@@ -326,9 +324,7 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 			blobBase: blobBase{
 				tsEncType: format.TypeRaw,
 			},
-			index: indexMaps[section.NumericIndexEntry]{
-				byID: map[uint64]section.NumericIndexEntry{entry.MetricID: entry},
-			},
+			index:      newNumericTestIndex(entry),
 			tsPayload:  []byte{0, 0, 0, 0, 0, 0, 0, 0}, // Some data
 			valPayload: []byte{},
 			// valEncType is now packed into flags (optimized)
@@ -354,9 +350,7 @@ func TestNumericBlob_AllTimestamps(t *testing.T) {
 			blobBase: blobBase{
 				tsEncType: format.TypeRaw,
 			},
-			index: indexMaps[section.NumericIndexEntry]{
-				byID: map[uint64]section.NumericIndexEntry{entry.MetricID: entry},
-			},
+			index:      newNumericTestIndex(entry),
 			tsPayload:  []byte{0, 0, 0, 0}, // Only 4 bytes
 			valPayload: []byte{},
 			// valEncType is now packed into flags (optimized)
@@ -499,9 +493,7 @@ func TestNumericBlob_AllValues(t *testing.T) {
 			blobBase: blobBase{
 				tsEncType: format.TypeRaw,
 			},
-			index: indexMaps[section.NumericIndexEntry]{
-				byID: make(map[uint64]section.NumericIndexEntry),
-			},
+			index:      newNumericTestIndex(),
 			tsPayload:  []byte{},
 			valPayload: []byte{},
 		}
@@ -526,9 +518,7 @@ func TestNumericBlob_AllValues(t *testing.T) {
 			blobBase: blobBase{
 				tsEncType: format.TypeRaw,
 			},
-			index: indexMaps[section.NumericIndexEntry]{
-				byID: map[uint64]section.NumericIndexEntry{entry.MetricID: entry},
-			},
+			index:      newNumericTestIndex(entry),
 			tsPayload:  []byte{0, 0, 0, 0, 0, 0, 0, 0}, // Some data
 			valPayload: []byte{},
 		}
@@ -553,9 +543,7 @@ func TestNumericBlob_AllValues(t *testing.T) {
 			blobBase: blobBase{
 				tsEncType: format.TypeRaw,
 			},
-			index: indexMaps[section.NumericIndexEntry]{
-				byID: map[uint64]section.NumericIndexEntry{entry.MetricID: entry},
-			},
+			index:      newNumericTestIndex(entry),
 			tsPayload:  []byte{},
 			valPayload: []byte{0, 0, 0, 0}, // Only 4 bytes
 		}
@@ -2155,9 +2143,9 @@ func TestNumericBlobCollisionHandling(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify both metrics exist in indexEntryMap (by hash)
-	_, ok1 := blob.index.byID[hash1]
+	_, ok1 := blob.index.GetByID(hash1)
 	require.True(t, ok1)
-	_, ok2 := blob.index.byID[hash2]
+	_, ok2 := blob.index.GetByID(hash2)
 	require.True(t, ok2)
 
 	// Test that ByName methods return correct data for each metric

@@ -86,7 +86,7 @@ func (b TextBlob) MetricNames() []string {
 //	    fmt.Printf("Point %d: ts=%d, val=%s, tag=%s\n", i, dp.Ts, dp.Val, dp.Tag)
 //	}
 func (b TextBlob) All(metricID uint64) iter.Seq2[int, TextDataPoint] {
-	entry, ok := b.index.byID[metricID]
+	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return func(yield func(int, TextDataPoint) bool) {}
 	}
@@ -114,7 +114,7 @@ func (b TextBlob) AllByName(metricName string) iter.Seq2[int, TextDataPoint] {
 // AllTimestamps returns an iterator over all timestamps for the given metric ID.
 // Returns an empty iterator if the metric ID doesn't exist.
 func (b TextBlob) AllTimestamps(metricID uint64) iter.Seq[int64] {
-	entry, ok := b.index.byID[metricID]
+	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return func(yield func(int64) bool) {}
 	}
@@ -136,7 +136,7 @@ func (b TextBlob) AllTimestampsByName(metricName string) iter.Seq[int64] {
 // AllValues returns an iterator over all text values for the given metric ID.
 // Returns an empty iterator if the metric ID doesn't exist.
 func (b TextBlob) AllValues(metricID uint64) iter.Seq[string] {
-	entry, ok := b.index.byID[metricID]
+	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return func(yield func(string) bool) {}
 	}
@@ -162,7 +162,7 @@ func (b TextBlob) AllTags(metricID uint64) iter.Seq[string] {
 		return func(yield func(string) bool) {}
 	}
 
-	entry, ok := b.index.byID[metricID]
+	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return func(yield func(string) bool) {}
 	}
@@ -208,7 +208,7 @@ func (b TextBlob) LenByName(metricName string) int {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) ValueAt(metricID uint64, index int) (string, bool) {
-	entry, ok := b.index.byID[metricID]
+	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return "", false
 	}
@@ -244,7 +244,7 @@ func (b TextBlob) ValueAtByName(metricName string, index int) (string, bool) {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
-	entry, ok := b.index.byID[metricID]
+	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return 0, false
 	}
@@ -282,7 +282,7 @@ func (b TextBlob) TimestampAtByName(metricName string, index int) (int64, bool) 
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TagAt(metricID uint64, index int) (string, bool) {
-	entry, ok := b.index.byID[metricID]
+	entry, ok := b.index.GetByID(metricID)
 	if !ok {
 		return "", false
 	}

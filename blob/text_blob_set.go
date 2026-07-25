@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/arloliu/mebo/errs"
+	"github.com/arloliu/mebo/section"
 )
 
 // TextBlobSet represents an immutable collection of TextBlob instances that
@@ -25,6 +26,11 @@ import (
 // where each blob contains metrics with data points for that hour.
 type TextBlobSet struct {
 	blobs []TextBlob
+	// identity is the lazily-built logical-identity table that groups member blob
+	// entries by their logical metric name/id across the set. It is nil unless a
+	// collision was observed at construction; a nil identity keeps every
+	// ID-keyed accessor on today's zero-alloc direct per-member iteration.
+	identity *setLogicalIdentity
 }
 
 // NewTextBlobSet creates a new TextBlobSet from the provided blobs.
@@ -58,13 +64,17 @@ func NewTextBlobSet(blobs []TextBlob) (TextBlobSet, error) {
 	sortedBlobs := make([]TextBlob, len(blobs))
 	copy(sortedBlobs, blobs)
 
-	// Sort blobs by start time in ascending order (optimized: compare microseconds directly)
-	slices.SortFunc(sortedBlobs, func(a, b TextBlob) int {
+	// Sort blobs by start time in ascending order. A STABLE sort keeps the caller's
+	// slice order for equal-StartTime members, which the canonical logical-metric
+	// ordering (grouping entries by logical metric name/id across blobs) relies on
+	// to break equal-StartTime ties deterministically.
+	slices.SortStableFunc(sortedBlobs, func(a, b TextBlob) int {
 		return cmp.Compare(a.startTimeMicros, b.startTimeMicros)
 	})
 
 	return TextBlobSet{
-		blobs: sortedBlobs,
+		blobs:    sortedBlobs,
+		identity: newSetLogicalIdentity(func(i int) *indexMaps[section.TextIndexEntry] { return &sortedBlobs[i].index }, len(sortedBlobs)),
 	}, nil
 }
 
@@ -80,12 +90,18 @@ func NewTextBlobSet(blobs []TextBlob) (TextBlobSet, error) {
 //
 // Performance: Single iteration through all blobs with minimal overhead.
 func (s TextBlobSet) All(metricID uint64) iter.Seq2[int, TextDataPoint] {
+	targetName, collided := s.identity.resolveID(metricID)
+
 	return func(yield func(int, TextDataPoint) bool) {
 		globalIndex := 0
 		for i := range s.blobs {
 			blob := &s.blobs[i]
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
 			// Iterate through all data points in this blob for the metric
-			for _, dp := range blob.All(metricID) {
+			for _, dp := range blob.allFromEntry(entry) {
 				if !yield(globalIndex, dp) {
 					return
 				}
@@ -103,12 +119,18 @@ func (s TextBlobSet) All(metricID uint64) iter.Seq2[int, TextDataPoint] {
 //
 // The index is 0-based and continuous across all blobs.
 func (s TextBlobSet) AllByName(metricName string) iter.Seq2[int, TextDataPoint] {
+	skipStripped := s.identity.excludesStripped(metricName)
+
 	return func(yield func(int, TextDataPoint) bool) {
 		globalIndex := 0
 		for i := range s.blobs {
 			blob := &s.blobs[i]
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
 			// Iterate through all data points in this blob for the metric
-			for _, dp := range blob.AllByName(metricName) {
+			for _, dp := range blob.allFromEntry(entry) {
 				if !yield(globalIndex, dp) {
 					return
 				}
@@ -125,10 +147,16 @@ func (s TextBlobSet) AllByName(metricName string) iter.Seq2[int, TextDataPoint] 
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped.
 func (s TextBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
+	targetName, collided := s.identity.resolveID(metricID)
+
 	return func(yield func(int64) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			for ts := range blob.AllTimestamps(metricID) {
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
+			for ts := range blob.allTimestampsFromEntry(entry) {
 				if !yield(ts) {
 					return
 				}
@@ -143,10 +171,16 @@ func (s TextBlobSet) AllTimestamps(metricID uint64) iter.Seq[int64] {
 // Returns an empty iterator if any blob doesn't support metric names or the metric
 // name doesn't exist.
 func (s TextBlobSet) AllTimestampsByName(metricName string) iter.Seq[int64] {
+	skipStripped := s.identity.excludesStripped(metricName)
+
 	return func(yield func(int64) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			for ts := range blob.AllTimestampsByName(metricName) {
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
+			for ts := range blob.allTimestampsFromEntry(entry) {
 				if !yield(ts) {
 					return
 				}
@@ -162,10 +196,16 @@ func (s TextBlobSet) AllTimestampsByName(metricName string) iter.Seq[int64] {
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped.
 func (s TextBlobSet) AllValues(metricID uint64) iter.Seq[string] {
+	targetName, collided := s.identity.resolveID(metricID)
+
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			for val := range blob.AllValues(metricID) {
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
+			for val := range blob.allValuesFromEntry(entry) {
 				if !yield(val) {
 					return
 				}
@@ -180,10 +220,16 @@ func (s TextBlobSet) AllValues(metricID uint64) iter.Seq[string] {
 // Returns an empty iterator if any blob doesn't support metric names or the metric
 // name doesn't exist.
 func (s TextBlobSet) AllValuesByName(metricName string) iter.Seq[string] {
+	skipStripped := s.identity.excludesStripped(metricName)
+
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			for val := range blob.AllValuesByName(metricName) {
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
+			for val := range blob.allValuesFromEntry(entry) {
 				if !yield(val) {
 					return
 				}
@@ -199,10 +245,20 @@ func (s TextBlobSet) AllValuesByName(metricName string) iter.Seq[string] {
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped. Tags can be empty strings.
 func (s TextBlobSet) AllTags(metricID uint64) iter.Seq[string] {
+	targetName, collided := s.identity.resolveID(metricID)
+
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			for tag := range blob.AllTags(metricID) {
+			if !blob.HasTag() {
+				// Tags disabled or optimized away: this member yields nothing.
+				continue
+			}
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
+			for tag := range blob.allTagsFromEntry(entry) {
 				if !yield(tag) {
 					return
 				}
@@ -217,10 +273,20 @@ func (s TextBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 // Returns an empty iterator if any blob doesn't support metric names or the metric
 // name doesn't exist.
 func (s TextBlobSet) AllTagsByName(metricName string) iter.Seq[string] {
+	skipStripped := s.identity.excludesStripped(metricName)
+
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			for tag := range blob.AllTagsByName(metricName) {
+			if !blob.HasTag() {
+				// Tags disabled or optimized away: this member yields nothing.
+				continue
+			}
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
+			for tag := range blob.allTagsFromEntry(entry) {
 				if !yield(tag) {
 					return
 				}
@@ -294,11 +360,17 @@ func (s TextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
 		return "", false
 	}
 
+	targetName, collided := s.identity.resolveID(metricID)
+
 	// Find which blob contains this index by accumulating counts
 	currentOffset := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		blobLen := blob.Len(metricID)
+		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+		if !ok {
+			continue
+		}
+		blobLen := int(entry.Count)
 
 		// Check if index falls within this blob
 		if index < currentOffset+blobLen {
@@ -306,7 +378,7 @@ func (s TextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
 			localIndex := index - currentOffset
 
 			// Get value at local index
-			return blob.ValueAt(metricID, localIndex)
+			return blob.valueAtFromEntry(entry, localIndex)
 		}
 
 		currentOffset += blobLen
@@ -334,11 +406,17 @@ func (s TextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 		return 0, false
 	}
 
+	targetName, collided := s.identity.resolveID(metricID)
+
 	// Find which blob contains this index by accumulating counts
 	currentOffset := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		blobLen := blob.Len(metricID)
+		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+		if !ok {
+			continue
+		}
+		blobLen := int(entry.Count)
 
 		// Check if index falls within this blob
 		if index < currentOffset+blobLen {
@@ -346,7 +424,7 @@ func (s TextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 			localIndex := index - currentOffset
 
 			// Get timestamp at local index
-			return blob.TimestampAt(metricID, localIndex)
+			return blob.timestampAtFromEntry(entry, localIndex)
 		}
 
 		currentOffset += blobLen
@@ -374,19 +452,30 @@ func (s TextBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 		return "", false
 	}
 
+	targetName, collided := s.identity.resolveID(metricID)
+
 	// Find which blob contains this index by accumulating counts
 	currentOffset := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		blobLen := blob.Len(metricID)
+		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+		if !ok {
+			continue
+		}
+		blobLen := int(entry.Count)
 
 		// Check if index falls within this blob
 		if index < currentOffset+blobLen {
 			// Calculate local index within this blob
 			localIndex := index - currentOffset
 
+			// Tags disabled or optimized away: the point exists but carries no tag
+			if !blob.HasTag() {
+				return "", true
+			}
+
 			// Get tag at local index
-			return blob.TagAt(metricID, localIndex)
+			return blob.tagAtFromEntry(entry, localIndex)
 		}
 
 		currentOffset += blobLen
@@ -412,10 +501,12 @@ func (s TextBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 //	totalPoints := blobSet.MetricLen(metricID)
 //	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
 func (s TextBlobSet) MetricLen(metricID uint64) int {
+	targetName, collided := s.identity.resolveID(metricID)
+
 	totalLen := 0
 	for i := range s.blobs {
-		if s.blobs[i].HasMetricID(metricID) {
-			totalLen += s.blobs[i].Len(metricID)
+		if entry, ok := s.blobs[i].index.resolveEntry(metricID, targetName, collided); ok {
+			totalLen += int(entry.Count)
 		}
 	}
 
@@ -438,10 +529,12 @@ func (s TextBlobSet) MetricLen(metricID uint64) int {
 //	totalPoints := blobSet.MetricLenByName("log.message")
 //	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
 func (s TextBlobSet) MetricLenByName(metricName string) int {
+	skipStripped := s.identity.excludesStripped(metricName)
+
 	totalLen := 0
 	for i := range s.blobs {
-		if s.blobs[i].HasMetricName(metricName) {
-			totalLen += s.blobs[i].LenByName(metricName)
+		if entry, ok := s.blobs[i].index.resolveEntryByName(metricName, skipStripped); ok {
+			totalLen += int(entry.Count)
 		}
 	}
 
@@ -466,7 +559,52 @@ func (s TextBlobSet) MetricLenByName(metricName string) int {
 //	duration := blobSet.MetricDuration(metricID)
 //	fmt.Printf("Metric spans %d timestamp units\n", duration)
 func (s TextBlobSet) MetricDuration(metricID uint64) int64 {
+	// A collided ID resolves to the first colliding name's logical metric; name-keyed
+	// duration walks exactly that metric's members. targetName IS the first colliding
+	// name, so a stripped member correctly contributes and needs no filter.
+	if targetName, collided := s.identity.resolveID(metricID); collided {
+		return calculateDurationByName(s.blobs, targetName, nil)
+	}
+
 	return calculateDuration(s.blobs, metricID)
+}
+
+// MetricCount returns the number of distinct logical set metrics, grouped by
+// identity: the metric name when the set is names-bearing, else the MetricID. A
+// collided ID that carries two distinct names counts as two logical metrics; the same
+// name across members counts once (the merge is preserved).
+func (s TextBlobSet) MetricCount() int {
+	plan := buildLogicalPlan(func(i int) *indexMaps[section.TextIndexEntry] { return &s.blobs[i].index }, len(s.blobs))
+
+	return len(plan.ids)
+}
+
+// MetricIDs returns the MetricID of each logical set metric in canonical order.
+// A collided ID appears once per colliding name; the returned slice is newly
+// allocated.
+func (s TextBlobSet) MetricIDs() []uint64 {
+	plan := buildLogicalPlan(func(i int) *indexMaps[section.TextIndexEntry] { return &s.blobs[i].index }, len(s.blobs))
+
+	return plan.ids
+}
+
+// MetricNames returns the distinct logical metric names in canonical order,
+// deduplicated. Returns nil when the set carries no metric names.
+func (s TextBlobSet) MetricNames() []string {
+	plan := buildLogicalPlan(func(i int) *indexMaps[section.TextIndexEntry] { return &s.blobs[i].index }, len(s.blobs))
+
+	return plan.metricNames()
+}
+
+// HasMetricID reports whether the given metric ID is present in any member blob.
+func (s TextBlobSet) HasMetricID(metricID uint64) bool {
+	for i := range s.blobs {
+		if s.blobs[i].HasMetricID(metricID) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // MetricDurationByName calculates the time span for the given metric name across all blobs.
@@ -487,5 +625,13 @@ func (s TextBlobSet) MetricDuration(metricID uint64) int64 {
 //	duration := blobSet.MetricDurationByName("log.message")
 //	fmt.Printf("Metric spans %d timestamp units\n", duration)
 func (s TextBlobSet) MetricDurationByName(metricName string) int64 {
-	return calculateDurationByName(s.blobs, metricName)
+	if s.identity.excludesStripped(metricName) {
+		// metricName is not the first colliding name for its ID, so the stripped members
+		// that merely hash-match it belong to the other logical metric.
+		return calculateDurationByName(s.blobs, metricName, func(i int) bool {
+			return s.blobs[i].index.names != nil
+		})
+	}
+
+	return calculateDurationByName(s.blobs, metricName, nil)
 }

@@ -126,6 +126,12 @@ type BlobSetIndexer interface {
 type BlobSet struct {
 	numericBlobs []NumericBlob // Sorted by StartTime
 	textBlobs    []TextBlob    // Sorted by StartTime
+	// numericIdentity/textIdentity are the lazily-built logical-identity tables that
+	// group this set's metrics by logical name/id, resolved PER concrete type (a
+	// numeric H and a text H are independent). nil unless a collision was observed
+	// for that type.
+	numericIdentity *setLogicalIdentity
+	textIdentity    *setLogicalIdentity
 }
 
 var (
@@ -143,23 +149,27 @@ var (
 // Returns:
 //   - BlobSet: Constructed BlobSet with parsed blobs
 func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
-	// Sort numeric blobs by start time (optimized: compare microseconds directly)
+	// Sort numeric blobs by start time. A STABLE sort keeps caller order for
+	// equal-StartTime members, honouring the canonical tie-break for logical
+	// identity ordering.
 	sortedNumeric := make([]NumericBlob, len(numericBlobs))
 	copy(sortedNumeric, numericBlobs)
-	slices.SortFunc(sortedNumeric, func(a, b NumericBlob) int {
+	slices.SortStableFunc(sortedNumeric, func(a, b NumericBlob) int {
 		return cmp.Compare(a.startTimeMicros, b.startTimeMicros)
 	})
 
-	// Sort text blobs by start time (optimized: compare microseconds directly)
+	// Sort text blobs by start time (stable, same rationale).
 	sortedText := make([]TextBlob, len(textBlobs))
 	copy(sortedText, textBlobs)
-	slices.SortFunc(sortedText, func(a, b TextBlob) int {
+	slices.SortStableFunc(sortedText, func(a, b TextBlob) int {
 		return cmp.Compare(a.startTimeMicros, b.startTimeMicros)
 	})
 
 	return BlobSet{
-		numericBlobs: sortedNumeric,
-		textBlobs:    sortedText,
+		numericBlobs:    sortedNumeric,
+		textBlobs:       sortedText,
+		numericIdentity: newSetLogicalIdentity(func(i int) *indexMaps[section.NumericIndexEntry] { return &sortedNumeric[i].index }, len(sortedNumeric)),
+		textIdentity:    newSetLogicalIdentity(func(i int) *indexMaps[section.TextIndexEntry] { return &sortedText[i].index }, len(sortedText)),
 	}
 }
 
@@ -207,147 +217,184 @@ func DecodeBlobSet(blobs ...[]byte) (BlobSet, error) {
 }
 
 func (bs BlobSet) AllNumerics(metricID uint64) iter.Seq2[int, NumericDataPoint] {
+	targetName, collided := bs.numericIdentity.resolveID(metricID)
+
 	return func(yield func(int, NumericDataPoint) bool) {
 		index := 0
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricID(metricID) {
-				for _, dp := range blob.All(metricID) {
-					if !yield(index, dp) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
+			for _, dp := range blob.allFromEntry(entry) {
+				if !yield(index, dp) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllNumericsByName(metricName string) iter.Seq2[int, NumericDataPoint] {
+	skipStripped := bs.numericIdentity.excludesStripped(metricName)
+
 	return func(yield func(int, NumericDataPoint) bool) {
 		index := 0
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricName(metricName) {
-				for _, dp := range blob.AllByName(metricName) {
-					if !yield(index, dp) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
+			for _, dp := range blob.allFromEntry(entry) {
+				if !yield(index, dp) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTexts(metricID uint64) iter.Seq2[int, TextDataPoint] {
+	targetName, collided := bs.textIdentity.resolveID(metricID)
+
 	return func(yield func(int, TextDataPoint) bool) {
 		index := 0
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricID(metricID) {
-				for _, dp := range blob.All(metricID) {
-					if !yield(index, dp) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
+			for _, dp := range blob.allFromEntry(entry) {
+				if !yield(index, dp) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTextsByName(metricName string) iter.Seq2[int, TextDataPoint] {
+	skipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	return func(yield func(int, TextDataPoint) bool) {
 		index := 0
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricName(metricName) {
-				for _, dp := range blob.AllByName(metricName) {
-					if !yield(index, dp) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
+			for _, dp := range blob.allFromEntry(entry) {
+				if !yield(index, dp) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllNumericValues(metricID uint64) iter.Seq2[int, float64] {
+	targetName, collided := bs.numericIdentity.resolveID(metricID)
+
 	return func(yield func(int, float64) bool) {
 		index := 0
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricID(metricID) {
-				for val := range blob.AllValues(metricID) {
-					if !yield(index, val) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
+			for val := range blob.allValuesFromEntry(entry) {
+				if !yield(index, val) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllNumericValuesByName(metricName string) iter.Seq2[int, float64] {
+	skipStripped := bs.numericIdentity.excludesStripped(metricName)
+
 	return func(yield func(int, float64) bool) {
 		index := 0
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricName(metricName) {
-				for val := range blob.AllValuesByName(metricName) {
-					if !yield(index, val) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
+			for val := range blob.allValuesFromEntry(entry) {
+				if !yield(index, val) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTextValues(metricID uint64) iter.Seq2[int, string] {
+	targetName, collided := bs.textIdentity.resolveID(metricID)
+
 	return func(yield func(int, string) bool) {
 		index := 0
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricID(metricID) {
-				for val := range blob.AllValues(metricID) {
-					if !yield(index, val) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+			if !ok {
+				continue
+			}
+			for val := range blob.allValuesFromEntry(entry) {
+				if !yield(index, val) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTextValuesByName(metricName string) iter.Seq2[int, string] {
+	skipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	return func(yield func(int, string) bool) {
 		index := 0
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricName(metricName) {
-				for val := range blob.AllValuesByName(metricName) {
-					if !yield(index, val) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+			if !ok {
+				continue
+			}
+			for val := range blob.allValuesFromEntry(entry) {
+				if !yield(index, val) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTimestamps(metricID uint64) iter.Seq2[int, int64] {
+	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
+	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
+
 	return func(yield func(int, int64) bool) {
 		index := 0
 		foundInNumeric := false
 
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricID(metricID) {
-				foundInNumeric = true
-				for ts := range blob.AllTimestamps(metricID) {
-					if !yield(index, ts) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, numTarget, numCollided)
+			if !ok {
+				continue
+			}
+			foundInNumeric = true
+			for ts := range blob.allTimestampsFromEntry(entry) {
+				if !yield(index, ts) {
+					return
 				}
+				index++
 			}
 		}
 
@@ -356,32 +403,39 @@ func (bs BlobSet) AllTimestamps(metricID uint64) iter.Seq2[int, int64] {
 		}
 
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricID(metricID) {
-				for ts := range blob.AllTimestamps(metricID) {
-					if !yield(index, ts) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
+			if !ok {
+				continue
+			}
+			for ts := range blob.allTimestampsFromEntry(entry) {
+				if !yield(index, ts) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTimestampsByName(metricName string) iter.Seq2[int, int64] {
+	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
+	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	return func(yield func(int, int64) bool) {
 		index := 0
 		foundInNumeric := false
 
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricName(metricName) {
-				foundInNumeric = true
-				for ts := range blob.AllTimestampsByName(metricName) {
-					if !yield(index, ts) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, numSkipStripped)
+			if !ok {
+				continue
+			}
+			foundInNumeric = true
+			for ts := range blob.allTimestampsFromEntry(entry) {
+				if !yield(index, ts) {
+					return
 				}
+				index++
 			}
 		}
 
@@ -390,32 +444,43 @@ func (bs BlobSet) AllTimestampsByName(metricName string) iter.Seq2[int, int64] {
 		}
 
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricName(metricName) {
-				for ts := range blob.AllTimestampsByName(metricName) {
-					if !yield(index, ts) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
+			if !ok {
+				continue
+			}
+			for ts := range blob.allTimestampsFromEntry(entry) {
+				if !yield(index, ts) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
+	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
+	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
+
 	return func(yield func(int, string) bool) {
 		index := 0
 		foundInNumeric := false
 
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricID(metricID) {
-				foundInNumeric = true
-				for tag := range blob.AllTags(metricID) {
-					if !yield(index, tag) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, numTarget, numCollided)
+			if !ok {
+				continue
+			}
+			foundInNumeric = true
+			if !blob.HasTag() {
+				// Tags disabled or optimized away: this member yields nothing.
+				continue
+			}
+			for tag := range blob.allTagsFromEntry(entry) {
+				if !yield(index, tag) {
+					return
 				}
+				index++
 			}
 		}
 
@@ -424,32 +489,43 @@ func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
 		}
 
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricID(metricID) {
-				for tag := range blob.AllTags(metricID) {
-					if !yield(index, tag) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
+			if !ok || !blob.HasTag() {
+				continue
+			}
+			for tag := range blob.allTagsFromEntry(entry) {
+				if !yield(index, tag) {
+					return
 				}
+				index++
 			}
 		}
 	}
 }
 
 func (bs BlobSet) AllTagsByName(metricName string) iter.Seq2[int, string] {
+	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
+	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	return func(yield func(int, string) bool) {
 		index := 0
 		foundInNumeric := false
 
 		for _, blob := range bs.numericBlobs {
-			if blob.HasMetricName(metricName) {
-				foundInNumeric = true
-				for tag := range blob.AllTagsByName(metricName) {
-					if !yield(index, tag) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, numSkipStripped)
+			if !ok {
+				continue
+			}
+			foundInNumeric = true
+			if !blob.HasTag() {
+				// Tags disabled or optimized away: this member yields nothing.
+				continue
+			}
+			for tag := range blob.allTagsFromEntry(entry) {
+				if !yield(index, tag) {
+					return
 				}
+				index++
 			}
 		}
 
@@ -458,13 +534,15 @@ func (bs BlobSet) AllTagsByName(metricName string) iter.Seq2[int, string] {
 		}
 
 		for _, blob := range bs.textBlobs {
-			if blob.HasMetricName(metricName) {
-				for tag := range blob.AllTagsByName(metricName) {
-					if !yield(index, tag) {
-						return
-					}
-					index++
+			entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
+			if !ok || !blob.HasTag() {
+				continue
+			}
+			for tag := range blob.allTagsFromEntry(entry) {
+				if !yield(index, tag) {
+					return
 				}
+				index++
 			}
 		}
 	}
@@ -475,27 +553,32 @@ func (bs BlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 		return 0, false
 	}
 
+	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
+	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
+
 	curIdx := 0
 
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, numTarget, numCollided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := entry.Count
 		if curIdx+length > index {
-			return blob.TimestampAt(metricID, index-curIdx)
+			return blob.timestampAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
 
 	curIdx = 0 // Reset for text blobs
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			return blob.TimestampAt(metricID, index-curIdx)
+			return blob.timestampAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -508,27 +591,32 @@ func (bs BlobSet) TimestampAtByName(metricName string, index int) (int64, bool) 
 		return 0, false
 	}
 
+	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
+	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	curIdx := 0
 
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, numSkipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := entry.Count
 		if curIdx+length > index {
-			return blob.TimestampAtByName(metricName, index-curIdx)
+			return blob.timestampAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
 
 	curIdx = 0 // Reset for text blobs
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			return blob.TimestampAtByName(metricName, index-curIdx)
+			return blob.timestampAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -541,28 +629,41 @@ func (bs BlobSet) TagAt(metricID uint64, index int) (string, bool) {
 		return "", false
 	}
 
+	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
+	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
+
 	curIdx := 0
 
 	// Try numeric blobs first (95% case)
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, numTarget, numCollided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := entry.Count
 		if curIdx+length > index {
-			return blob.TagAt(metricID, index-curIdx)
+			if !blob.HasTag() {
+				return "", true
+			}
+
+			return blob.tagAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
 
 	curIdx = 0 // Reset for text blobs
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			return blob.TagAt(metricID, index-curIdx)
+			if !blob.HasTag() {
+				return "", true
+			}
+
+			return blob.tagAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -575,28 +676,41 @@ func (bs BlobSet) TagAtByName(metricName string, index int) (string, bool) {
 		return "", false
 	}
 
+	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
+	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	curIdx := 0
 
 	// Try numeric blobs first (95% case)
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, numSkipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := entry.Count
 		if curIdx+length > index {
-			return blob.TagAtByName(metricName, index-curIdx)
+			if !blob.HasTag() {
+				return "", true
+			}
+
+			return blob.tagAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
 
 	curIdx = 0 // Reset for text blobs
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			return blob.TagAtByName(metricName, index-curIdx)
+			if !blob.HasTag() {
+				return "", true
+			}
+
+			return blob.tagAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -609,14 +723,17 @@ func (bs BlobSet) NumericValueAt(metricID uint64, index int) (float64, bool) {
 		return 0, false
 	}
 
+	targetName, collided := bs.numericIdentity.resolveID(metricID)
+
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := entry.Count
 		if curIdx+length > index {
-			return blob.ValueAt(metricID, index-curIdx)
+			return blob.valueAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -629,14 +746,17 @@ func (bs BlobSet) NumericValueAtByName(metricName string, index int) (float64, b
 		return 0, false
 	}
 
+	skipStripped := bs.numericIdentity.excludesStripped(metricName)
+
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := entry.Count
 		if curIdx+length > index {
-			return blob.ValueAtByName(metricName, index-curIdx)
+			return blob.valueAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -649,14 +769,17 @@ func (bs BlobSet) TextValueAt(metricID uint64, index int) (string, bool) {
 		return "", false
 	}
 
+	targetName, collided := bs.textIdentity.resolveID(metricID)
+
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			return blob.ValueAt(metricID, index-curIdx)
+			return blob.valueAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -669,14 +792,17 @@ func (bs BlobSet) TextValueAtByName(metricName string, index int) (string, bool)
 		return "", false
 	}
 
+	skipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			return blob.ValueAtByName(metricName, index-curIdx)
+			return blob.valueAtFromEntry(entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -689,22 +815,17 @@ func (bs BlobSet) NumericAt(metricID uint64, index int) (NumericDataPoint, bool)
 		return NumericDataPoint{}, false
 	}
 
+	targetName, collided := bs.numericIdentity.resolveID(metricID)
+
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := entry.Count
 		if curIdx+length > index {
-			localIndex := index - curIdx
-			ts, tsOk := blob.TimestampAt(metricID, localIndex)
-			val, valOk := blob.ValueAt(metricID, localIndex)
-			tag, tagOk := blob.TagAt(metricID, localIndex)
-			if tsOk && valOk && tagOk {
-				return NumericDataPoint{Ts: ts, Val: val, Tag: tag}, true
-			}
-
-			return NumericDataPoint{}, false
+			return numericPointFromEntry(blob, entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -717,22 +838,17 @@ func (bs BlobSet) NumericAtByName(metricName string, index int) (NumericDataPoin
 		return NumericDataPoint{}, false
 	}
 
+	skipStripped := bs.numericIdentity.excludesStripped(metricName)
+
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := entry.Count
 		if curIdx+length > index {
-			localIndex := index - curIdx
-			ts, tsOk := blob.TimestampAtByName(metricName, localIndex)
-			val, valOk := blob.ValueAtByName(metricName, localIndex)
-			tag, tagOk := blob.TagAtByName(metricName, localIndex)
-			if tsOk && valOk && tagOk {
-				return NumericDataPoint{Ts: ts, Val: val, Tag: tag}, true
-			}
-
-			return NumericDataPoint{}, false
+			return numericPointFromEntry(blob, entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -745,22 +861,17 @@ func (bs BlobSet) TextAt(metricID uint64, index int) (TextDataPoint, bool) {
 		return TextDataPoint{}, false
 	}
 
+	targetName, collided := bs.textIdentity.resolveID(metricID)
+
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricID(metricID) {
+		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
+		if !ok {
 			continue
 		}
-		length := blob.Len(metricID)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			localIndex := index - curIdx
-			ts, tsOk := blob.TimestampAt(metricID, localIndex)
-			val, valOk := blob.ValueAt(metricID, localIndex)
-			tag, tagOk := blob.TagAt(metricID, localIndex)
-			if tsOk && valOk && tagOk {
-				return TextDataPoint{Ts: ts, Val: val, Tag: tag}, true
-			}
-
-			return TextDataPoint{}, false
+			return textPointFromEntry(blob, entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -773,22 +884,17 @@ func (bs BlobSet) TextAtByName(metricName string, index int) (TextDataPoint, boo
 		return TextDataPoint{}, false
 	}
 
+	skipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		if !blob.HasMetricName(metricName) {
+		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
+		if !ok {
 			continue
 		}
-		length := blob.LenByName(metricName)
+		length := int(entry.Count)
 		if curIdx+length > index {
-			localIndex := index - curIdx
-			ts, tsOk := blob.TimestampAtByName(metricName, localIndex)
-			val, valOk := blob.ValueAtByName(metricName, localIndex)
-			tag, tagOk := blob.TagAtByName(metricName, localIndex)
-			if tsOk && valOk && tagOk {
-				return TextDataPoint{Ts: ts, Val: val, Tag: tag}, true
-			}
-
-			return TextDataPoint{}, false
+			return textPointFromEntry(blob, entry, index-curIdx)
 		}
 		curIdx += length
 	}
@@ -820,13 +926,13 @@ func (bs BlobSet) TextAtByName(metricName string, index int) (TextDataPoint, boo
 func (bs BlobSet) MaterializeNumeric() MaterializedNumericBlobSet {
 	if len(bs.numericBlobs) == 0 {
 		return MaterializedNumericBlobSet{
-			data:  make(map[uint64]materializedNumericMetricSet),
-			names: make(map[string]uint64),
+			byName: make(map[string]int),
+			byID:   make(map[uint64]int),
 		}
 	}
 
 	// Create NumericBlobSet and delegate to its Materialize()
-	numericSet := &NumericBlobSet{blobs: bs.numericBlobs}
+	numericSet := &NumericBlobSet{blobs: bs.numericBlobs, identity: bs.numericIdentity}
 
 	return numericSet.Materialize()
 }
@@ -855,13 +961,13 @@ func (bs BlobSet) MaterializeNumeric() MaterializedNumericBlobSet {
 func (bs BlobSet) MaterializeText() MaterializedTextBlobSet {
 	if len(bs.textBlobs) == 0 {
 		return MaterializedTextBlobSet{
-			data:  make(map[uint64]materializedTextMetricSet),
-			names: make(map[string]uint64),
+			byName: make(map[string]int),
+			byID:   make(map[uint64]int),
 		}
 	}
 
 	// Create TextBlobSet and delegate to its Materialize()
-	textSet := &TextBlobSet{blobs: bs.textBlobs}
+	textSet := &TextBlobSet{blobs: bs.textBlobs, identity: bs.textIdentity}
 
 	return textSet.Materialize()
 }
@@ -896,7 +1002,7 @@ func (bs BlobSet) MaterializeNumericMetric(metricID uint64) (MaterializedNumeric
 	}
 
 	// Create NumericBlobSet and delegate to its MaterializeMetric()
-	numericSet := &NumericBlobSet{blobs: bs.numericBlobs}
+	numericSet := &NumericBlobSet{blobs: bs.numericBlobs, identity: bs.numericIdentity}
 
 	return numericSet.MaterializeMetric(metricID)
 }
@@ -931,7 +1037,7 @@ func (bs BlobSet) MaterializeNumericMetricByName(metricName string) (Materialize
 	}
 
 	// Create NumericBlobSet and delegate to its MaterializeMetricByName()
-	numericSet := &NumericBlobSet{blobs: bs.numericBlobs}
+	numericSet := &NumericBlobSet{blobs: bs.numericBlobs, identity: bs.numericIdentity}
 
 	return numericSet.MaterializeMetricByName(metricName)
 }
@@ -966,7 +1072,7 @@ func (bs BlobSet) MaterializeTextMetric(metricID uint64) (MaterializedTextMetric
 	}
 
 	// Create TextBlobSet and delegate to its MaterializeMetric()
-	textSet := &TextBlobSet{blobs: bs.textBlobs}
+	textSet := &TextBlobSet{blobs: bs.textBlobs, identity: bs.textIdentity}
 
 	return textSet.MaterializeMetric(metricID)
 }
@@ -1001,7 +1107,7 @@ func (bs BlobSet) MaterializeTextMetricByName(metricName string) (MaterializedTe
 	}
 
 	// Create TextBlobSet and delegate to its MaterializeMetricByName()
-	textSet := &TextBlobSet{blobs: bs.textBlobs}
+	textSet := &TextBlobSet{blobs: bs.textBlobs, identity: bs.textIdentity}
 
 	return textSet.MaterializeMetricByName(metricName)
 }
@@ -1035,11 +1141,14 @@ func (bs BlobSet) TextBlobs() []TextBlob {
 //	totalPoints := blobSet.MetricLen(metricID)
 //	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
 func (bs BlobSet) MetricLen(metricID uint64) int {
+	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
+	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
+
 	totalLen := 0
 
 	for i := range bs.numericBlobs {
-		if bs.numericBlobs[i].HasMetricID(metricID) {
-			totalLen += bs.numericBlobs[i].Len(metricID)
+		if entry, ok := bs.numericBlobs[i].index.resolveEntry(metricID, numTarget, numCollided); ok {
+			totalLen += entry.Count
 		}
 	}
 
@@ -1048,8 +1157,8 @@ func (bs BlobSet) MetricLen(metricID uint64) int {
 	}
 
 	for i := range bs.textBlobs {
-		if bs.textBlobs[i].HasMetricID(metricID) {
-			totalLen += bs.textBlobs[i].Len(metricID)
+		if entry, ok := bs.textBlobs[i].index.resolveEntry(metricID, txtTarget, txtCollided); ok {
+			totalLen += int(entry.Count)
 		}
 	}
 
@@ -1073,11 +1182,14 @@ func (bs BlobSet) MetricLen(metricID uint64) int {
 //	totalPoints := blobSet.MetricLenByName("cpu.usage")
 //	fmt.Printf("Metric has %d data points across all blobs\n", totalPoints)
 func (bs BlobSet) MetricLenByName(metricName string) int {
+	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
+	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
+
 	totalLen := 0
 
 	for i := range bs.numericBlobs {
-		if bs.numericBlobs[i].HasMetricName(metricName) {
-			totalLen += bs.numericBlobs[i].LenByName(metricName)
+		if entry, ok := bs.numericBlobs[i].index.resolveEntryByName(metricName, numSkipStripped); ok {
+			totalLen += entry.Count
 		}
 	}
 
@@ -1086,8 +1198,8 @@ func (bs BlobSet) MetricLenByName(metricName string) int {
 	}
 
 	for i := range bs.textBlobs {
-		if bs.textBlobs[i].HasMetricName(metricName) {
-			totalLen += bs.textBlobs[i].LenByName(metricName)
+		if entry, ok := bs.textBlobs[i].index.resolveEntryByName(metricName, txtSkipStripped); ok {
+			totalLen += int(entry.Count)
 		}
 	}
 
@@ -1204,9 +1316,22 @@ func (bs BlobSet) IsTextMetricByName(metricName string) bool {
 //	duration := blobSet.MetricDuration(metricID)
 //	fmt.Printf("Metric spans %d timestamp units\n", duration)
 func (bs BlobSet) MetricDuration(metricID uint64) int64 {
-	duration := calculateDuration(bs.numericBlobs, metricID)
+	// A collided ID resolves per concrete type to the first colliding name's logical
+	// metric; name-keyed duration walks exactly that metric's members.
+	// targetName IS the first colliding name, so a stripped member correctly
+	// contributes and needs no filter.
+	var duration int64
+	if numTarget, numCollided := bs.numericIdentity.resolveID(metricID); numCollided {
+		duration = calculateDurationByName(bs.numericBlobs, numTarget, nil)
+	} else {
+		duration = calculateDuration(bs.numericBlobs, metricID)
+	}
 	if duration > 0 {
 		return duration
+	}
+
+	if txtTarget, txtCollided := bs.textIdentity.resolveID(metricID); txtCollided {
+		return calculateDurationByName(bs.textBlobs, txtTarget, nil)
 	}
 
 	return calculateDuration(bs.textBlobs, metricID)
@@ -1230,12 +1355,56 @@ func (bs BlobSet) MetricDuration(metricID uint64) int64 {
 //	duration := blobSet.MetricDurationByName("cpu.usage")
 //	fmt.Printf("Metric spans %d timestamp units\n", duration)
 func (bs BlobSet) MetricDurationByName(metricName string) int64 {
-	duration := calculateDurationByName(bs.numericBlobs, metricName)
+	// A stripped member's ID hash-matches every colliding name; when metricName is not
+	// the first colliding name, those members belong to the other logical metric.
+	var numFilter func(i int) bool
+	if bs.numericIdentity.excludesStripped(metricName) {
+		numFilter = func(i int) bool { return bs.numericBlobs[i].index.names != nil }
+	}
+
+	duration := calculateDurationByName(bs.numericBlobs, metricName, numFilter)
 	if duration > 0 {
 		return duration
 	}
 
-	return calculateDurationByName(bs.textBlobs, metricName)
+	var txtFilter func(i int) bool
+	if bs.textIdentity.excludesStripped(metricName) {
+		txtFilter = func(i int) bool { return bs.textBlobs[i].index.names != nil }
+	}
+
+	return calculateDurationByName(bs.textBlobs, metricName, txtFilter)
+}
+
+// numericPointFromEntry / textPointFromEntry assemble a full data point from a member's
+// resolved index entry. They mirror the ByID/ByName point accessors they replaced,
+// including TagAt's contract that a tagless blob still reports a valid empty tag for an
+// in-range index.
+func numericPointFromEntry(blob NumericBlob, entry section.NumericIndexEntry, index int) (NumericDataPoint, bool) {
+	ts, tsOk := blob.timestampAtFromEntry(entry, index)
+	val, valOk := blob.valueAtFromEntry(entry, index)
+	tag, tagOk := "", index >= 0 && index < entry.Count
+	if tagOk && blob.HasTag() {
+		tag, tagOk = blob.tagAtFromEntry(entry, index)
+	}
+	if tsOk && valOk && tagOk {
+		return NumericDataPoint{Ts: ts, Val: val, Tag: tag}, true
+	}
+
+	return NumericDataPoint{}, false
+}
+
+func textPointFromEntry(blob TextBlob, entry section.TextIndexEntry, index int) (TextDataPoint, bool) {
+	ts, tsOk := blob.timestampAtFromEntry(entry, index)
+	val, valOk := blob.valueAtFromEntry(entry, index)
+	tag, tagOk := "", index >= 0 && index < int(entry.Count)
+	if tagOk && blob.HasTag() {
+		tag, tagOk = blob.tagAtFromEntry(entry, index)
+	}
+	if tsOk && valOk && tagOk {
+		return TextDataPoint{Ts: ts, Val: val, Tag: tag}, true
+	}
+
+	return TextDataPoint{}, false
 }
 
 // blobAccessor defines the interface for accessing blob metadata and timestamps.
@@ -1310,7 +1479,7 @@ func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) int64 {
 //
 // Performance: Optimized bi-directional search - finds first from start, last from end.
 // Average case: O(n/2) when metric is in middle blobs. Best case: O(2) when in first and last.
-func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string) int64 {
+func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, contributes func(i int) bool) int64 {
 	if len(blobs) == 0 {
 		return 0
 	}
@@ -1318,6 +1487,9 @@ func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string) in
 	// Find first blob containing the metric (forward search)
 	firstIdx := -1
 	for i := range blobs {
+		if contributes != nil && !contributes(i) {
+			continue
+		}
 		if blobs[i].HasMetricName(metricName) {
 			firstIdx = i
 			break // Stop as soon as we find the first
@@ -1331,6 +1503,9 @@ func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string) in
 	// Find last blob containing the metric (reverse search)
 	lastIdx := firstIdx // Default to first if it's the only one
 	for i := len(blobs) - 1; i > firstIdx; i-- {
+		if contributes != nil && !contributes(i) {
+			continue
+		}
 		if blobs[i].HasMetricName(metricName) {
 			lastIdx = i
 			break // Stop as soon as we find the last

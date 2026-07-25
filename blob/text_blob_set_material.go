@@ -1,6 +1,10 @@
 package blob
 
-import "github.com/arloliu/mebo/section"
+import (
+	"slices"
+
+	"github.com/arloliu/mebo/section"
+)
 
 // materializedTextMetricSet holds the materialized data for a single metric across all blobs.
 type materializedTextMetricSet struct {
@@ -55,56 +59,62 @@ type materializedTextMetricSet struct {
 func (s *TextBlobSet) Materialize() MaterializedTextBlobSet {
 	if len(s.blobs) == 0 {
 		return MaterializedTextBlobSet{
-			data:  make(map[uint64]materializedTextMetricSet),
-			names: make(map[string]uint64),
+			byName: make(map[string]int),
+			byID:   make(map[uint64]int),
 		}
 	}
 
-	material := MaterializedTextBlobSet{
-		data:  make(map[uint64]materializedTextMetricSet),
-		names: make(map[string]uint64),
+	// Step 1: Build the logical-identity plan (canonical order, name/id keyed,
+	// grouping entries by logical metric across blobs). The materialized path
+	// decodes everything, so it builds the plan unconditionally, unlike the lazy
+	// on-collision-only build used elsewhere. slotOf routes a member entry to its
+	// logical metric.
+	plan := buildLogicalPlan(func(i int) *indexMaps[section.TextIndexEntry] { return &s.blobs[i].index }, len(s.blobs))
+	slotOf := func(blob *TextBlob, ord int) int {
+		if blob.index.names != nil {
+			return plan.byName[blob.index.names[ord]]
+		}
+
+		return plan.byID[blob.index.sorted[ord].MetricID]
 	}
 
-	// Step 1+2: Identify all unique metric IDs and calculate total capacity in a single pass.
-	// Walk each blob's own index (ForEach visits only metrics present in that blob),
-	// eliminating O(metrics × blobs) cross-product lookups.
-	capacities := make(map[uint64]int)
+	// Step 2: Per-slot capacity + tag detection.
+	capacities := make([]int, len(plan.ids))
 	hasTags := false
 	for i := range s.blobs {
-		if !hasTags && s.blobs[i].HasTag() {
+		blob := &s.blobs[i]
+		if !hasTags && blob.HasTag() {
 			hasTags = true
 		}
-		s.blobs[i].index.ForEach(func(entry section.TextIndexEntry) bool {
-			capacities[entry.MetricID] += int(entry.Count)
-			return true
-		})
+		for ord := range blob.index.sorted {
+			capacities[slotOf(blob, ord)] += int(blob.index.sorted[ord].Count)
+		}
 	}
 
-	// Step 3: Pre-allocate slices for each metric
-	for metricID, capacity := range capacities {
-		metricSet := materializedTextMetricSet{
-			timestamps: make([]int64, 0, capacity),
-			values:     make([]string, 0, capacity),
+	// Step 3: Pre-allocate per-slot slices with exact capacity. Deep-clone names
+	// off any borrowed member backing so the materialized set is fully owning and
+	// never aliases a borrowed decode buffer.
+	ownNames, ownByName := ownSetNames(plan.names, plan.byName,
+		func(i int) *indexMaps[section.TextIndexEntry] { return &s.blobs[i].index }, len(s.blobs))
+	material := MaterializedTextBlobSet{
+		metrics: make([]materializedTextMetricSet, len(plan.ids)),
+		ids:     plan.ids,
+		names:   ownNames,
+		byName:  ownByName,
+		byID:    plan.byID,
+	}
+	for slot := range material.metrics {
+		material.metrics[slot] = materializedTextMetricSet{
+			timestamps: make([]int64, 0, capacities[slot]),
+			values:     make([]string, 0, capacities[slot]),
 		}
 		if hasTags {
-			metricSet.tags = make([]string, 0, capacity)
-		}
-		material.data[metricID] = metricSet
-	}
-
-	// Step 4: Iterate through blobs in chronological order, appending data.
-	// ForEach walks only metrics present in each blob — no wasted lookups.
-	s.materializeBlobData(&material, hasTags)
-
-	// Step 5: Build metric name mapping if available
-	for i := range s.blobs {
-		blob := &s.blobs[i]
-		if blob.index.byName != nil {
-			for name, entry := range blob.index.byName {
-				material.names[name] = entry.MetricID
-			}
+			material.metrics[slot].tags = make([]string, 0, capacities[slot])
 		}
 	}
+
+	// Step 4: Iterate through blobs in chronological order, appending data per slot.
+	s.materializeBlobData(&material, slotOf, hasTags)
 
 	return material
 }
@@ -136,11 +146,24 @@ func (s *TextBlobSet) Materialize() MaterializedTextBlobSet {
 //	    ts, _ := metric.TimestampAt(250)   // O(1) access
 //	}
 func (s *TextBlobSet) MaterializeMetric(metricID uint64) (MaterializedTextMetric, bool) {
+	// A collided ID resolves to the first colliding name's logical metric: gate
+	// members so a cross-member A/H + B/H pair never concatenates into A+B.
+	targetName, collided := s.identity.resolveID(metricID)
+	resolve := func(blob *TextBlob) (section.TextIndexEntry, bool) {
+		return blob.index.resolveEntry(metricID, targetName, collided)
+	}
+
+	return s.materializeMetricCore(metricID, resolve)
+}
+
+// materializeMetricCore decodes and concatenates a single logical metric across all
+// members, selecting each member's contributing entry via resolve.
+func (s *TextBlobSet) materializeMetricCore(metricID uint64, resolve func(blob *TextBlob) (section.TextIndexEntry, bool)) (MaterializedTextMetric, bool) {
 	// Step 1: Check if metric exists in any blob and calculate total capacity
 	capacity := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		if entry, ok := blob.index.GetByID(metricID); ok {
+		if entry, ok := resolve(blob); ok {
 			capacity += int(entry.Count)
 		}
 	}
@@ -170,9 +193,9 @@ func (s *TextBlobSet) MaterializeMetric(metricID uint64) (MaterializedTextMetric
 	// Step 4: Iterate through blobs in chronological order, appending data
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		entry, ok := blob.index.GetByID(metricID)
+		entry, ok := resolve(blob)
 		if !ok {
-			continue // This metric doesn't exist in this blob
+			continue // This metric doesn't contribute to this logical metric
 		}
 
 		// Decode and append timestamps
@@ -236,7 +259,7 @@ func (s *TextBlobSet) MaterializeMetric(metricID uint64) (MaterializedTextMetric
 //	    ts, _ := metric.TimestampAt(250)   // O(1) access
 //	}
 func (s *TextBlobSet) MaterializeMetricByName(metricName string) (MaterializedTextMetric, bool) {
-	// Step 1: Find the metric ID from the first blob that has this name
+	// Step 1: Find the metric ID from the first blob that has this name.
 	var metricID uint64
 	found := false
 	for i := range s.blobs {
@@ -252,18 +275,28 @@ func (s *TextBlobSet) MaterializeMetricByName(metricName string) (MaterializedTe
 		return MaterializedTextMetric{}, false
 	}
 
-	// Step 2: Delegate to MaterializeMetric
-	return s.MaterializeMetric(metricID)
+	// Step 2: Gather THIS name's logical set metric — never re-resolving by ID,
+	// which would collapse a collided name onto the first colliding name's series. Named
+	// members match the name exactly; a stripped member attaches only when the name is
+	// the first colliding name for this id.
+	skipStripped := s.identity.excludesStripped(metricName)
+	resolve := func(blob *TextBlob) (section.TextIndexEntry, bool) {
+		return blob.index.resolveEntryByName(metricName, skipStripped)
+	}
+
+	return s.materializeMetricCore(metricID, resolve)
 }
 
-// materializeBlobData appends data from all blobs to the materialized metric sets.
-// This helper method is extracted to reduce cyclomatic complexity of Materialize.
-func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, hasTags bool) {
+// materializeBlobData appends data from all blobs to the per-slot materialized metric
+// sets, routing each member entry to its logical metric via slotOf.
+func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, slotOf func(blob *TextBlob, ord int) int, hasTags bool) {
 	for i := range s.blobs {
 		blob := &s.blobs[i]
 
-		blob.index.ForEach(func(entry section.TextIndexEntry) bool {
-			metricSet := material.data[entry.MetricID]
+		for ord := range blob.index.sorted {
+			entry := blob.index.sorted[ord]
+			slot := slotOf(blob, ord)
+			metricSet := material.metrics[slot]
 
 			// Decode and append timestamps
 			for ts := range blob.allTimestampsFromEntry(entry) {
@@ -290,25 +323,49 @@ func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, has
 				}
 			}
 
-			material.data[entry.MetricID] = metricSet
-
-			return true
-		})
+			material.metrics[slot] = metricSet
+		}
 	}
 }
 
-// MaterializedTextBlobSet provides O(1) random access to text metrics across multiple blobs.
+// MaterializedTextBlobSet provides O(1) random access to text metrics across multiple
+// blobs. It keys its logical metrics by set identity: by name when the set
+// is names-bearing, by MetricID otherwise. metrics holds one entry per logical metric
+// in canonical order; ids/names are parallel (names[k] is "" for an id-only metric).
+// byName resolves a name exactly; byID resolves an ID to its FIRST logical metric (a
+// collided ID → the first colliding name's series).
 type MaterializedTextBlobSet struct {
-	data  map[uint64]materializedTextMetricSet // metricID → metric data
-	names map[string]uint64                    // metricName → metricID (if names available)
+	metrics []materializedTextMetricSet
+	ids     []uint64
+	names   []string
+	byName  map[string]int
+	byID    map[uint64]int
 }
 
 // ValueAt returns the text value at the specified index for the given metric ID.
 // Index is 0-based and spans all blobs chronologically.
 //
 // Returns ("", false) if the metric ID doesn't exist or index is out of bounds.
+func (m MaterializedTextBlobSet) metricByID(metricID uint64) (materializedTextMetricSet, bool) {
+	slot, ok := m.byID[metricID]
+	if !ok {
+		return materializedTextMetricSet{}, false
+	}
+
+	return m.metrics[slot], true
+}
+
+func (m MaterializedTextBlobSet) metricByName(metricName string) (materializedTextMetricSet, bool) {
+	slot, ok := m.byName[metricName]
+	if !ok {
+		return materializedTextMetricSet{}, false
+	}
+
+	return m.metrics[slot], true
+}
+
 func (m MaterializedTextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
-	metricSet, ok := m.data[metricID]
+	metricSet, ok := m.metricByID(metricID)
 	if !ok {
 		return "", false
 	}
@@ -325,7 +382,7 @@ func (m MaterializedTextBlobSet) ValueAt(metricID uint64, index int) (string, bo
 //
 // Returns (0, false) if the metric ID doesn't exist or index is out of bounds.
 func (m MaterializedTextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
-	metricSet, ok := m.data[metricID]
+	metricSet, ok := m.metricByID(metricID)
 	if !ok {
 		return 0, false
 	}
@@ -343,7 +400,7 @@ func (m MaterializedTextBlobSet) TimestampAt(metricID uint64, index int) (int64,
 // Returns ("", true) if tags are not enabled but the metric and index are valid.
 // Returns ("", false) if the metric ID doesn't exist or index is out of bounds.
 func (m MaterializedTextBlobSet) TagAt(metricID uint64, index int) (string, bool) {
-	metricSet, ok := m.data[metricID]
+	metricSet, ok := m.metricByID(metricID)
 	if !ok {
 		return "", false
 	}
@@ -364,12 +421,16 @@ func (m MaterializedTextBlobSet) TagAt(metricID uint64, index int) (string, bool
 //
 // Returns ("", false) if the metric name doesn't exist or index is out of bounds.
 func (m MaterializedTextBlobSet) ValueAtByName(metricName string, index int) (string, bool) {
-	metricID, ok := m.names[metricName]
+	metricSet, ok := m.metricByName(metricName)
 	if !ok {
 		return "", false
 	}
 
-	return m.ValueAt(metricID, index)
+	if index < 0 || index >= len(metricSet.values) {
+		return "", false
+	}
+
+	return metricSet.values[index], true
 }
 
 // TimestampAtByName returns the timestamp at the specified index for the given metric name.
@@ -377,12 +438,16 @@ func (m MaterializedTextBlobSet) ValueAtByName(metricName string, index int) (st
 //
 // Returns (0, false) if the metric name doesn't exist or index is out of bounds.
 func (m MaterializedTextBlobSet) TimestampAtByName(metricName string, index int) (int64, bool) {
-	metricID, ok := m.names[metricName]
+	metricSet, ok := m.metricByName(metricName)
 	if !ok {
 		return 0, false
 	}
 
-	return m.TimestampAt(metricID, index)
+	if index < 0 || index >= len(metricSet.timestamps) {
+		return 0, false
+	}
+
+	return metricSet.timestamps[index], true
 }
 
 // TagAtByName returns the tag at the specified index for the given metric name.
@@ -390,25 +455,46 @@ func (m MaterializedTextBlobSet) TimestampAtByName(metricName string, index int)
 //
 // Returns ("", false) if the metric name doesn't exist or index is out of bounds.
 func (m MaterializedTextBlobSet) TagAtByName(metricName string, index int) (string, bool) {
-	metricID, ok := m.names[metricName]
+	metricSet, ok := m.metricByName(metricName)
 	if !ok {
 		return "", false
 	}
 
-	return m.TagAt(metricID, index)
+	if len(metricSet.tags) == 0 {
+		return "", index >= 0 && index < len(metricSet.timestamps)
+	}
+
+	if index < 0 || index >= len(metricSet.tags) {
+		return "", false
+	}
+
+	return metricSet.tags[index], true
 }
 
-// MetricCount returns the total number of unique metrics across all blobs.
+// MetricCount returns the number of distinct logical metrics under the set
+// identity (a collided ID with two names counts as two).
 func (m MaterializedTextBlobSet) MetricCount() int {
-	return len(m.data)
+	return len(m.metrics)
 }
 
 // DataPointCount returns the total number of data points for the given metric ID
-// across all blobs.
+// across all blobs. A collided ID resolves to the first colliding name's logical
+// metric.
 //
 // Returns 0 if the metric ID doesn't exist.
 func (m MaterializedTextBlobSet) DataPointCount(metricID uint64) int {
-	metricSet, ok := m.data[metricID]
+	metricSet, ok := m.metricByID(metricID)
+	if !ok {
+		return 0
+	}
+
+	return len(metricSet.values)
+}
+
+// DataPointCountByName returns the total number of data points for the given metric
+// name across all blobs. Returns 0 if the metric name doesn't exist.
+func (m MaterializedTextBlobSet) DataPointCountByName(metricName string) int {
+	metricSet, ok := m.metricByName(metricName)
 	if !ok {
 		return 0
 	}
@@ -418,34 +504,37 @@ func (m MaterializedTextBlobSet) DataPointCount(metricID uint64) int {
 
 // HasMetricID returns true if the given metric ID exists in the materialized data.
 func (m MaterializedTextBlobSet) HasMetricID(metricID uint64) bool {
-	_, ok := m.data[metricID]
+	_, ok := m.byID[metricID]
 	return ok
 }
 
-// MetricIDs returns a slice of all metric IDs in the materialized data.
-// The order is non-deterministic (map iteration order).
-func (m MaterializedTextBlobSet) MetricIDs() []uint64 {
-	if len(m.data) == 0 {
-		return nil
-	}
-	ids := make([]uint64, 0, len(m.data))
-	for id := range m.data {
-		ids = append(ids, id)
-	}
-
-	return ids
+// HasMetricName returns true if the given metric name exists in the materialized data.
+func (m MaterializedTextBlobSet) HasMetricName(metricName string) bool {
+	_, ok := m.byName[metricName]
+	return ok
 }
 
-// MetricNames returns a slice of all metric names in the materialized data.
-// Returns nil if no metric names are available (blobs were created with StartMetricID).
-// The order is non-deterministic (map iteration order).
-func (m MaterializedTextBlobSet) MetricNames() []string {
-	if len(m.names) == 0 {
+// MetricIDs returns the MetricID of each logical metric in canonical order.
+// A collided ID appears once per colliding name.
+func (m MaterializedTextBlobSet) MetricIDs() []uint64 {
+	if len(m.ids) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(m.names))
-	for name := range m.names {
-		names = append(names, name)
+
+	return slices.Clone(m.ids)
+}
+
+// MetricNames returns the distinct logical metric names in canonical order.
+// Returns nil if no metric names are available (blobs were created with StartMetricID).
+func (m MaterializedTextBlobSet) MetricNames() []string {
+	if len(m.byName) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(m.byName))
+	for k := range m.names {
+		if m.names[k] != "" {
+			names = append(names, m.names[k])
+		}
 	}
 
 	return names

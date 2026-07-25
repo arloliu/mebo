@@ -189,7 +189,7 @@ func (e *TextEncoder) startMetric(metricID uint64, numOfDataPoints int) error {
 //
 // Returns:
 //   - error: ErrMetricAlreadyStarted, ErrMixedIdentifierMode, ErrInvalidMetricName,
-//     ErrInvalidNumOfDataPoints, or ErrMetricCountExceeded
+//     ErrInvalidNumOfDataPoints, ErrMetricCountExceeded, or ErrTooManyMetricNames
 func (e *TextEncoder) StartMetricName(metricName string, numOfDataPoints int) error {
 	if e.curMetricID != 0 {
 		return fmt.Errorf("%w: metric ID %d is already started", errs.ErrMetricAlreadyStarted, e.curMetricID)
@@ -200,34 +200,73 @@ func (e *TextEncoder) StartMetricName(metricName string, numOfDataPoints int) er
 		return fmt.Errorf("%w: cannot use StartMetricName after StartMetricID", errs.ErrMixedIdentifierMode)
 	}
 
-	// Set mode on first use and create collision tracker (LAZY)
+	// ---------------------------------------------------------------------
+	// PREFLIGHT: validate and probe WITHOUT mutating any state, so a
+	// rejection here leaves the encoder fully unchanged and recoverable.
+	// ---------------------------------------------------------------------
+	if numOfDataPoints <= 0 || numOfDataPoints > math.MaxUint16 {
+		return errs.ErrInvalidNumOfDataPoints
+	}
+
+	// Validate name length before hashing or probing, and regardless of
+	// WithoutMetricNames() — that option only controls whether names are
+	// STORED, not whether they must be well-formed, so identical input must
+	// not succeed or fail depending on it. Checking here — before any state
+	// mutation — keeps rejection atomic: without this, an oversized name
+	// would only surface from metadata.EncodeMetricNames inside Finish,
+	// after the rest of the blob has already been encoded (and, with the
+	// default names-on behavior, would never surface at all when opted out).
+	if len(metricName) > MaxMetricNameLength {
+		return fmt.Errorf("%w: metric name length %d exceeds maximum %d bytes", errs.ErrInvalidMetricName, len(metricName), MaxMetricNameLength)
+	}
+
+	metricID := hash.ID(metricName)
+
+	// Read-only duplicate-name and prospective-collision detection.
+	var prospectiveCollision bool
+	if e.collisionTracker != nil {
+		dupName, prospective, err := e.collisionTracker.Probe(metricName, metricID)
+		if err != nil {
+			return err // ErrInvalidMetricName (empty name)
+		}
+		if dupName {
+			return fmt.Errorf("%w: metric name %q already added", errs.ErrMetricAlreadyStarted, metricName)
+		}
+		prospectiveCollision = prospective
+	} else if metricName == "" {
+		return errs.ErrInvalidMetricName
+	}
+
+	// Whether the names payload will be required once this metric is added:
+	// text blobs default to always storing names unless WithoutMetricNames()
+	// was set; a prior collision or a prospective collision from this very
+	// name forces names on regardless of the opt-out.
+	namesRequired := !e.omitMetricNames || e.hasCollision || prospectiveCollision
+
+	// Overall metric-count ceiling (names not required -> MaxMetricCount allowed).
+	if len(e.indexEntries) >= MaxMetricCount {
+		return fmt.Errorf("%w: metric count exceeded: max %d", errs.ErrMetricCountExceeded, MaxMetricCount)
+	}
+	// Names-payload ceiling: the metric/names count is encoded as a uint16, so
+	// it caps at 65535. Reject the 65536th entry BEFORE any mutation when
+	// names are required.
+	if namesRequired && len(e.indexEntries) >= MaxMetricNamesCount {
+		return fmt.Errorf("%w: max %d when metric names are stored", errs.ErrTooManyMetricNames, MaxMetricNamesCount)
+	}
+
+	// ---------------------------------------------------------------------
+	// COMMIT: all validation passed — now mutate.
+	// ---------------------------------------------------------------------
 	if e.identifierMode == modeUndefined {
 		e.identifierMode = modeNameManaged
 		e.collisionTracker = collision.NewTracker()
 	}
 
-	if numOfDataPoints <= 0 || numOfDataPoints > math.MaxUint16 {
-		return errs.ErrInvalidNumOfDataPoints
-	}
-
-	if len(e.indexEntries) >= MaxMetricCount {
-		return fmt.Errorf("%w: metric count exceeded: max %d", errs.ErrMetricCountExceeded, MaxMetricCount)
-	}
-
-	metricID := hash.ID(metricName)
-
-	// Track metric and detect collisions using collision tracker
-	err := e.collisionTracker.TrackMetric(metricName, metricID)
-	if err != nil {
-		// Only return error for duplicates and invalid names
-		// Collisions are handled automatically
-		return err
-	}
-
-	// If collision was detected, mark flag for later application in Finish()
+	e.collisionTracker.Commit(metricName, metricID)
 	if e.collisionTracker.HasCollision() {
 		e.hasCollision = true
 	}
+	e.curMetricName = metricName
 
 	return e.startMetric(metricID, numOfDataPoints)
 }
@@ -362,6 +401,14 @@ func (e *TextEncoder) EndMetric() error {
 	// Add entry to index
 	e.addEntryIndex(entry)
 
+	// Record the metric name in lockstep with the index entry so the names
+	// payload stays entry-parallel, mirroring NumericEncoder.EndMetric.
+	// Only in name mode (collisionTracker allocated).
+	if e.collisionTracker != nil {
+		e.metricNames = append(e.metricNames, e.curMetricName)
+		e.curMetricName = ""
+	}
+
 	// Update state for next metric
 	e.dataState.updateLast()
 
@@ -440,12 +487,32 @@ func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 		compressedData = dataBytes
 	}
 
-	// Encode metric names payload if in Name mode (before calculating offsets)
-	// This allows ByName() lookups and handles hash collisions
+	// Encode metric names payload if in Name mode (before calculating offsets).
+	// Text stores names unconditionally by default; WithoutMetricNames()
+	// opts out, but a detected collision always forces names on regardless of
+	// the opt-out — the decoder needs them to disambiguate.
+	//
+	// Source names from e.metricNames (index order), NOT from the tracker's
+	// insertion-order list — mirrors NumericEncoder.finishAppend. Text never
+	// reorders entries today, so the two lists happen to agree, but sourcing
+	// from e.metricNames keeps the payload's ordering source consistent with
+	// numeric and avoids re-introducing the tracker-owns-ordering coupling
+	// that was previously removed from the numeric encoder.
 	var namesPayload []byte
-	if e.identifierMode == modeNameManaged && e.collisionTracker != nil {
+	if e.identifierMode == modeNameManaged && e.collisionTracker != nil && (!e.omitMetricNames || e.hasCollision) {
+		// Defensive invariant check: in name mode, EndMetric appends to
+		// metricNames and indexEntries together, so the two must always be
+		// the same length here. A mismatch would otherwise silently encode
+		// a names payload whose count disagrees with the index, surfacing
+		// only as a decode-time hash mismatch rather than here, at the
+		// point the desync actually occurs.
+		if len(e.metricNames) != len(e.indexEntries) {
+			return dst, fmt.Errorf("%w: internal state error: %d metric names but %d index entries",
+				errs.ErrInvalidMetricNamesCount, len(e.metricNames), len(e.indexEntries))
+		}
+
 		var err error
-		namesPayload, err = ienc.EncodeMetricNames(e.collisionTracker.GetMetricNames(), e.engine)
+		namesPayload, err = ienc.EncodeMetricNames(e.metricNames, e.engine)
 		if err != nil {
 			return dst, fmt.Errorf("failed to encode metric names: %w", err)
 		}

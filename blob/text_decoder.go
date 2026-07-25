@@ -29,7 +29,19 @@ type TextDecoder struct {
 	metricCount int
 	engine      endian.EndianEngine
 	header      *section.TextHeader
+	// borrowNames selects the zero-copy metric-names decode. When true the
+	// decoded blob's names alias `data`; the default (false) copies them.
+	borrowNames bool
 }
+
+// Compile-time assertions that pin the existing constructor function types.
+// Code stores these constructors in typed function variables (mebo.go), which
+// API_STABILITY.md forbids breaking. If a future change alters either signature,
+// these fail to compile and force an explicit, documented decision.
+var (
+	_ func([]byte) (*TextDecoder, error) = NewTextDecoder
+	_ func([]byte) (*TextDecoder, error) = NewTextDecoderBorrowed
+)
 
 // NewTextDecoder creates a new TextDecoder for the given encoded data.
 //
@@ -45,6 +57,44 @@ type TextDecoder struct {
 func NewTextDecoder(data []byte) (*TextDecoder, error) {
 	decoder := &TextDecoder{
 		data: data,
+	}
+
+	if err := decoder.parseHeader(); err != nil {
+		return nil, err
+	}
+
+	return decoder, nil
+}
+
+// NewTextDecoderBorrowed creates a TextDecoder that decodes metric names with
+// ZERO COPY: the resulting blob's names alias the input `data` buffer instead of
+// owning independent copies. This removes the per-name string allocations
+// that otherwise dominate the names-bearing decode cost.
+//
+// Lifetime rule: the backing array of `data` MUST NOT be mutated or reused while
+// the decoded blob (or anything derived directly from its names) is live. Doing so
+// corrupts the blob's metric names. Use NewTextDecoder for the owning (copying)
+// behaviour when the caller cannot guarantee that.
+//
+// Materialising a blob decoded this way CLONES the names, so materialized objects
+// are always owning and the borrowed-lifetime rule never propagates past the blob
+// itself.
+//
+// Everything else is identical to NewTextDecoder.
+//
+// Parameters:
+//   - data: Encoded blob byte slice (must contain valid header). Its backing
+//     array is borrowed by the returned decoder's metric names — see the
+//     lifetime rule above.
+//
+// Returns:
+//   - *TextDecoder: New decoder instance whose metric names alias data, ready
+//     for decoding
+//   - error: Header parsing error or invalid data format
+func NewTextDecoderBorrowed(data []byte) (*TextDecoder, error) {
+	decoder := &TextDecoder{
+		data:        data,
+		borrowNames: true,
 	}
 
 	if err := decoder.parseHeader(); err != nil {
@@ -114,23 +164,30 @@ func (d *TextDecoder) Decode() (TextBlob, error) {
 		return blob, err
 	}
 
-	// Step 3: Build index entry map
-	blob.index.byID = make(map[uint64]section.TextIndexEntry, d.metricCount)
-	for _, entry := range indexEntries {
-		blob.index.byID[entry.MetricID] = entry
+	// Step 3: Build index entry representation. Text is always V1-style (wire
+	// order is NOT MetricID-sorted), so use a first-wins MetricID→ordinal map
+	// over the ordered entries.
+	blob.index.sorted = indexEntries
+	byID := make(map[uint64]int, d.metricCount)
+	for i := range indexEntries {
+		id := indexEntries[i].MetricID
+		if _, exists := byID[id]; !exists {
+			byID[id] = i
+		}
 	}
+	blob.index.byID = byID
 
-	// Step 4: Verify and populate metric name map (if metric names present)
+	// Step 4: Verify names, reject a blob that stores the same name twice, and
+	// finalize the name representation (retain ordered names; build byName
+	// only on collision).
 	if len(metricNames) > 0 {
 		if err := ienc.VerifyMetricNamesHashes(metricNames, metricIDs, hash.ID); err != nil {
 			return blob, fmt.Errorf("metric name verification failed: %w", err)
 		}
 
-		// Populate metric name map for ByName lookups
-		// metricNames[i] corresponds to indexEntries[i] (consistent ordering)
-		blob.index.byName = make(map[string]section.TextIndexEntry, d.metricCount)
-		for i, name := range metricNames {
-			blob.index.byName[name] = indexEntries[i]
+		// metricNames[i] corresponds to indexEntries[i] (consistent ordering).
+		if err := blob.index.finalizeNames(metricNames, d.borrowNames); err != nil {
+			return blob, err
 		}
 	}
 
@@ -170,7 +227,12 @@ func (d *TextDecoder) parseMetricNames() ([]string, int, error) {
 		return nil, section.HeaderSize, nil
 	}
 
-	metricNames, bytesRead, err := ienc.DecodeMetricNames(d.data[section.HeaderSize:], d.engine)
+	decodeNames := ienc.DecodeMetricNames
+	if d.borrowNames {
+		decodeNames = ienc.DecodeMetricNamesBorrowed
+	}
+
+	metricNames, bytesRead, err := decodeNames(d.data[section.HeaderSize:], d.engine)
 	if err != nil {
 		return nil, 0, err
 	}

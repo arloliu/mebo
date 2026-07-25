@@ -21,6 +21,23 @@ type TextEncoderConfig struct {
 	indexEntries []section.TextIndexEntry
 	dataCodec    compress.Codec
 	engine       endian.EndianEngine
+
+	// omitMetricNames opts out of the default unconditional metric names
+	// payload. A hash collision still forces names on regardless of this
+	// flag — collision handling is unconditional.
+	omitMetricNames bool
+
+	// Metric-name/index alignment. In name mode, metricNames grows in
+	// lockstep with indexEntries (one name appended per completed metric),
+	// mirroring NumericEncoderConfig. The text encoder never reorders
+	// entries, so this is a straightforward parallel list today, but it
+	// keeps the payload sourced from an entry-parallel slice rather than
+	// the collision tracker's insertion-order list — the same ordering
+	// source numeric uses — so text does not regress if it ever gains entry
+	// reordering. curMetricName holds the name of the in-progress metric,
+	// recorded at EndMetric. Both are nil/"" in ID mode.
+	metricNames   []string // ordered names parallel to indexEntries (name mode only)
+	curMetricName string   // name of the current in-progress metric (name mode only)
 }
 
 // NewTextEncoderConfig creates a new TextEncoderConfig with the given start time.
@@ -191,5 +208,21 @@ func WithTextLittleEndian() TextEncoderOption {
 func WithTextBigEndian() TextEncoderOption {
 	return options.NoError(func(c *TextEncoderConfig) {
 		c.setEndianess(bigEndianOpt)
+	})
+}
+
+// WithoutMetricNames opts the text encoder out of its default behavior of
+// always storing the metric names payload.
+//
+// This option only applies in Name mode (StartMetricName). If a hash
+// collision is detected, the names payload is stored regardless of this
+// option — collision handling is unconditional because the decoder needs
+// the names to disambiguate a collided ID.
+//
+// Returns:
+//   - TextEncoderOption: An option that opts out of the default names payload.
+func WithoutMetricNames() TextEncoderOption {
+	return options.NoError(func(cfg *TextEncoderConfig) {
+		cfg.omitMetricNames = true
 	})
 }

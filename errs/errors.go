@@ -45,4 +45,27 @@ var (
 	// ErrInvalidALPColumn indicates an ALP column whose body is shorter than
 	// its header-declared layout, or whose header fields are out of range.
 	ErrInvalidALPColumn = errors.New("invalid ALP column")
+
+	// ErrMetricNamesUnavailable indicates WithMetricNames() was combined with
+	// StartMetricID — names cannot be stored when metrics are identified by raw ID.
+	ErrMetricNamesUnavailable = errors.New("metric names unavailable in ID mode")
+	// ErrMetricNamesExtentMismatch indicates the header's IndexOffset disagrees
+	// with the encoded metric-names extent (strip / decode validation).
+	ErrMetricNamesExtentMismatch = errors.New("metric names extent mismatch")
+	// ErrDuplicateMetricName indicates the same metric name appears twice in one
+	// blob — rejected at decode/open after hash verification.
+	ErrDuplicateMetricName = errors.New("duplicate metric name in blob")
+	// ErrUnsortedIndex indicates a V2/V2Ext index whose MetricIDs are not in
+	// non-descending order — strictly-decreasing pairs are rejected, since
+	// lookups depend on sortedness, while equal adjacent IDs (a legitimate
+	// collision) are accepted.
+	ErrUnsortedIndex = errors.New("index entries not in non-descending MetricID order")
+	// ErrTooManyMetricNames indicates more than 65535 metrics when a names
+	// payload is required — the names count is stored as a uint16, which caps
+	// the metric count at 65535 whenever the payload is present.
+	ErrTooManyMetricNames = errors.New("too many metric names, exceeds 65535 when names payload required")
+	// ErrCollisionNotSupported indicates an ID-keyed consumer was given collided
+	// input it cannot represent — two different names would collapse onto the
+	// same key in an ID-keyed map, so the operation cannot proceed.
+	ErrCollisionNotSupported = errors.New("hash collision not supported by this operation")
 )
