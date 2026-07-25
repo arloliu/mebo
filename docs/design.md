@@ -7,7 +7,7 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 ## Core Principles
 
 - **Hash-Based Identification:** Metrics are identified by 64-bit xxHash64 hashes for fast lookups
-- **Collision Detection:** Optional metric names payload for collision detection and verification (enabled when collisions occur)
+- **Collision Detection:** Optional metric names payload for collision detection and verification — always stored when a hash collision occurs; otherwise on by encoder default/option (see [metric_names.md](metric_names.md) for the full lifecycle, opt-in/opt-out, and strip)
 - **Columnar Storage:** Timestamps and values are stored separately for optimal compression and access patterns
 - **Flexible Encoding:** Per-blob configurable encoding strategies for both timestamps and values (Raw, Delta, Gorilla, Chimp)
 - **Memory Efficiency:** Fixed-size structures enable single-pass encoding and efficient lookups
@@ -222,6 +222,10 @@ Size = 0 bytes (zero overhead)
 
 **See Also:**
 - Implementation: `encoding/metric_names.go`
+- [metric_names.md](metric_names.md): when names are stored (encoder defaults/options, not just
+  the collision case above), enumeration/membership semantics, and what `StripMetricNames` /
+  `StripMetricNamesInPlace` remove — this binary-format section is unchanged by that; only the
+  encoder logic that decides *whether* to emit it changed.
 
 ### Metric Index
 

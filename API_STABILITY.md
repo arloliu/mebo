@@ -173,6 +173,69 @@ func LegacyEncoder() *Encoder {
 - Don't rely on implementation details
 - Test against public APIs only
 
+## Standardised Behaviour (v1.10.0)
+
+v1.10.0 defines behaviour on inputs that were previously undefined or inconsistent across
+surfaces. These are documented standardisations of undefined behaviour, not breaking changes to
+any documented contract:
+
+- **Collided metric ID (two distinct names hashing to one 64-bit ID).** Every ID-keyed surface
+  (`GetByID`, `Len`, `MaterializeMetric(id)`, materialized `*At`) now deterministically resolves
+  a collided ID to the **first entry in index order**. Name-keyed surfaces resolve each name to
+  its own entry.
+- **`MetricCount` / `MetricIDs()`** count/enumerate **one per index entry** (a collided ID
+  appears twice), consistently across raw and materialized blobs. `MetricNames()` is index-order
+  deterministic.
+- **Blob-set identity is the metric name, not the ID** (when the set carries names; names-free
+  sets fall back to ID identity). A set merges the same metric across time windows, so identity
+  must survive that merge. Therefore, on a **set**, `MetricCount`/`MetricIDs`/`MetricNames`
+  report one entry per **logical identity** — deliberately different from the per-index-entry
+  counting used on a single **blob**. Two distinct names colliding on one ID are two set metrics;
+  the same name across members is one. Every ID-keyed set surface resolves a collided ID to the
+  **first colliding name in canonical order** (members by `StartTime`, caller slice order
+  breaking ties) and returns that metric merged across windows; a stripped member's data attaches
+  to that first colliding name only. This also repairs a real defect: materialized sets
+  previously unioned members by ID and concatenated two colliding metrics into one interleaved
+  series.
+- **Unsorted V2/V2Ext input** is rejected at decode with `errs.ErrUnsortedIndex`. mebo's own
+  encoder always emits sorted V2, so no output of any mebo version is affected; only foreign or
+  crafted blobs with descending index IDs are rejected (they previously produced silent
+  `GetByID` misses).
+- **Duplicate metric name in a blob** is rejected at decode with `errs.ErrDuplicateMetricName`.
+- **Collided input to `regression.Analyze`/`AnalyzeWithOptions`** is rejected with
+  `errs.ErrCollisionNotSupported` rather than silently collapsed.
+
+## Additive Symbols (v1.10.0)
+
+These new symbols are purely additive; no existing signature changed.
+
+- **`blob.NewNumericDecoderBorrowed(data []byte) (*NumericDecoder, error)`** and
+  **`blob.NewTextDecoderBorrowed(data []byte) (*TextDecoder, error)`** — zero-copy metric-name
+  decode. The decoded blob's metric names alias `data` instead of owning independent copies,
+  removing the per-name allocations that dominate names-bearing decode cost. **Lifetime rule:**
+  the backing array of `data` must not be mutated or reused while the decoded blob (or anything
+  derived directly from its names) is live. Materialising such a blob **clones** its names, so
+  materialized objects are always owning and the borrowed-lifetime rule never propagates past the
+  blob. The existing `NewNumericDecoder` / `NewTextDecoder` constructors are unchanged and keep
+  copying names; their function signatures are pinned by compile-time assertions so they stay
+  storable in typed function variables.
+- **`blob.WithMetricNames()`** (numeric encoder) and **`blob.WithoutMetricNames()`** (text
+  encoder) — opt-in / opt-out of the metric-names payload independent of collision detection.
+- **`blob.StripMetricNames(dst, src []byte) ([]byte, bool, error)`** and
+  **`blob.StripMetricNamesInPlace(buf []byte) ([]byte, bool, error)`** — remove the metric-names
+  payload from an encoded blob without a full decode/re-encode. Stripping drops enumeration and
+  exact negative membership (a hash-colliding absent name may false-positive afterwards); see the
+  doc comments.
+- **`NumericBlobSet.MetricCount/MetricIDs/MetricNames/HasMetricID`** and the same four on
+  **`TextBlobSet`**, plus **`MaterializedTextBlobSet.HasMetricName/DataPointCountByName`** —
+  enumerate a set's **logical** metrics (see Standardised Behaviour above for the identity rule).
+- **`blob.MaxMetricNamesCount`** (65535) — metric/names-count ceiling when a names payload must
+  be written; tighter than the existing `blob.MaxMetricCount` (65536) because the on-wire count
+  is a `uint16`.
+- **`blob.MaxMetricNameLength`** (65535) — maximum byte length of one metric name, validated in
+  `StartMetricName`'s preflight on both encoders so an over-long name is rejected before any
+  state mutation rather than at `Finish`.
+
 ## Go Version Compatibility
 
 ### Minimum Go Version

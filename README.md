@@ -327,6 +327,7 @@ Deprecated features are maintained for at least 2 minor versions before removal.
 - [Best Practices](docs/best_practices.md) — encoding selection, operational guidance
 - [FlatBuffers Comparison](docs/comparison_flatbuffers.md) — head-to-head benchmark
 - [Shared Timestamps Guide](docs/shared_timestamps.md) — V2 format and deployment
+- [Metric Names Guide](docs/metric_names.md) — storage, enumeration/membership semantics, and stripping
 - [Design Document](docs/design.md)
 - [Examples](examples/)
 

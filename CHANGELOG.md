@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New `errs` sentinels for the metric-names collision-correctness work (all reachable via
+  `errors.Is`): `ErrMetricNamesUnavailable`, `ErrMetricNamesExtentMismatch`,
+  `ErrDuplicateMetricName`, `ErrUnsortedIndex`, `ErrTooManyMetricNames`,
+  `ErrCollisionNotSupported`.
+- `blob.WithMetricNames()` — numeric encoder option that forces the metric-names payload on even
+  when no hash collision occurs (Name mode only; `StartMetricID` returns
+  `ErrMetricNamesUnavailable` once set). Previously the numeric encoder stored names only when a
+  collision was detected, with no way to opt in for e.g. offline verification tooling.
+- `blob.WithoutMetricNames()` — text encoder option that opts out of the text encoder's default of
+  always storing metric names. A detected hash collision still forces names on regardless of this
+  option.
+- `blob.StripMetricNames(dst, src []byte) (out []byte, stripped bool, err error)` and
+  `blob.StripMetricNamesInPlace(buf []byte) (out []byte, stripped bool, err error)` — remove an
+  already-encoded blob's metric-names payload without a decode/re-encode round trip, when the
+  names are not load-bearing (no real collision present). Roughly two orders of magnitude cheaper
+  than decode + re-encode; validation is zero-allocation. Dropping the names payload converts
+  `HasMetricName` / `GetByName` / `*ByName` iteration from exact string match to hash membership
+  (a query that hash-collides with a formerly-stored name can false-positive after stripping) and
+  empties `MetricNames()`. See `docs/metric_names.md` for the full lifecycle and cost.
+- `blob.NewNumericDecoderBorrowed` and `blob.NewTextDecoderBorrowed` — zero-copy metric-name
+  decode. The decoded blob's metric names alias the input buffer instead of owning independent
+  copies, removing the per-name allocations that dominate names-bearing decode cost. The caller
+  must keep the input buffer alive and unmutated for the lifetime of the blob; materialising the
+  blob clones its names so materialized objects are always owning. The existing
+  `NewNumericDecoder` / `NewTextDecoder` constructors are unchanged and keep copying names.
+- `docs/metric_names.md` — new doc covering the metric-names lifecycle: when names are stored by
+  default/option, enumeration and membership semantics, what `StripMetricNames` /
+  `StripMetricNamesInPlace` drop (including the exact-negative-membership loss above), and
+  current decode/strip performance numbers.
+- Blob-set metric enumeration: `MetricCount()`, `MetricIDs()`, `MetricNames()` and
+  `HasMetricID()` on `NumericBlobSet` and `TextBlobSet`, plus `HasMetricName()` and
+  `DataPointCountByName()` on `MaterializedTextBlobSet`. These report the set's **logical**
+  metrics (see the set-identity note under Changed).
+- `blob.MaxMetricNamesCount` (65535) — the metric/names-count ceiling that applies when a names
+  payload must be written, tighter than `MaxMetricCount` (65536) because the on-wire count is a
+  `uint16`.
+- `blob.MaxMetricNameLength` (65535) — the maximum length in bytes of a single metric name, now
+  validated in `StartMetricName`'s preflight on both encoders (before any state mutation) rather
+  than only at `Finish`. An over-long name is therefore rejected immediately, instead of after
+  the rest of the blob has already been encoded. The check is applied regardless of
+  `WithMetricNames()` / `WithoutMetricNames()`, so identical input no longer succeeds or fails
+  depending on whether names happen to be stored.
+
+### Fixed
+- Numeric metric-names payload no longer desynchronises from the index under the V2 MetricID
+  sort. Names are now recorded per metric at `EndMetric` and permuted together with their index
+  entries, so a names-bearing V2 blob produced from out-of-ID-order insertion decodes correctly.
+  (This corrected a V2 sort/payload desync only; there was never any "skipped failed metric"
+  behaviour.)
+- The encoder now rejects a repeated metric name even after a hash collision has been recorded
+  for that name's ID (previously the third of `(A,H),(B,H),(A,H)` was silently appended a second
+  time). Decoders now reject a blob that contains the same name twice with
+  `ErrDuplicateMetricName`.
+- Materialized numeric/text blobs no longer collapse two distinct metrics that share a hashed ID
+  (a real collision); `MaterializeMetricByName` materialises the exact entry the name resolved to
+  rather than re-resolving by ID.
+
+### Changed
+- Standardised previously undefined/inconsistent behaviour on a collided metric ID (two distinct
+  names hashing to one ID). This is a deliberate standardisation of undefined behaviour:
+  - Every ID-keyed surface (`GetByID`, `Len`, `MaterializeMetric(id)`, materialized `*At`)
+    resolves a collided ID to the **first entry in index order**.
+  - `MetricCount` counts **one per index entry** — a within-blob collision counts as two — on
+    both raw and materialized blobs.
+  - `MetricIDs()` returns **one ID per entry** in index order (a collided ID therefore appears
+    twice) on both raw and materialized blobs.
+  - `MetricNames()` is deterministic (index order).
+- Decoders now reject a V2/V2Ext blob whose index MetricIDs are not in non-descending order with
+  `ErrUnsortedIndex` at decode; equal adjacent IDs (a legitimate collision) are still accepted.
+  This also repairs a latent `GetByID` binary-search miss on unsorted foreign input. mebo's own
+  encoder always emits sorted V2, so no valid producer is affected.
+- `regression.Analyze`/`AnalyzeWithOptions` now reject collided input (within-blob, or a
+  cross-member collision of distinct names) with `ErrCollisionNotSupported` instead of silently
+  collapsing it; `AnalyzeEach`/`AnalyzeEachWithOptions` reject only within-blob collisions.
+- A names-bearing blob with no collision no longer eagerly builds the internal name→entry map; it
+  answers `GetByName`/`HasMetricName` by hashing the query and string-comparing against the
+  retained stored name, preserving exact membership.
+- **Blob-set logical identity.** A blob set deliberately merges the *same* metric across time
+  windows, so a set's logical identity is now the metric **name** whenever the set carries names,
+  falling back to the MetricID only for names-free sets. Consequences, all previously undefined
+  on collided input:
+  - The same name across members remains **one** set metric (the existing cross-window merge is
+    preserved unchanged). Two *different* names colliding on one ID are **two** set metrics.
+  - `MetricCount`/`MetricIDs`/`MetricNames` on a set count and enumerate per **logical identity**
+    (name-based when available), whereas on a single blob they count per **index entry**. The two
+    scopes intentionally differ.
+  - Every ID-keyed set surface resolves a collided ID to the **first colliding name in canonical
+    order** (members ordered by `StartTime`, caller slice order breaking ties) and returns that
+    logical metric's series merged across windows.
+  - A member whose names were stripped attaches its data to the **first** colliding name only,
+    rather than to every name sharing that ID.
+- Materialized blob **sets** no longer concatenate two distinct colliding metrics into a single
+  series. Previously `MaterializedNumericBlobSet` unioned members by ID, so a cross-member `A/H`
+  plus `B/H` produced one interleaved "frankenseries" containing both metrics' points; each name
+  now materialises its own series. Callers materialising sets that contain a real hash collision
+  will see a different (correct) series shape.
+
 ## [1.9.0] - 2026-07-19
 
 ### Added
