@@ -24,7 +24,7 @@ In addition to rules, this project defines specialized agent skills in the `.age
 
 ## Quick Reference
 
-- **Language**: Go >=1.24.0
+- **Language**: Go >=1.25.0
 - **Module**: `github.com/arloliu/mebo`
 - **Lint**: `make lint`
 - **Test**: `make test`
