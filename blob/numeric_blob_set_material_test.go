@@ -1145,3 +1145,47 @@ func TestMaterializedNumericBlobSet_ByName_NoNamesPayload(t *testing.T) {
 
 	require.False(t, mat.HasMetricName("set.metric.absent"))
 }
+
+// TestNumericBlobSet_MaterializeKeepsColumnsAligned pins that when a member
+// decodes fewer timestamps or values than its Count (a corrupt but Count-valid
+// entry), set materialization trims that member's rows so every later point
+// keeps its own timestamp, value and tag.
+func TestNumericBlobSet_MaterializeKeepsColumnsAligned(t *testing.T) {
+	opts := []NumericEncoderOption{WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeChimp)}
+	first := encodeHardeningBlob(t, opts...)
+	// Five points claimed for three encoded; still within the timestamp bytes.
+	corrupt, err := decodeHardening(t, patchCompactCount(first, 0, 5))
+	require.NoError(t, err)
+
+	enc, err := NewNumericEncoder(time.Unix(1_700_003_600, 0).UTC(), opts...)
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 2))
+	require.NoError(t, enc.AddDataPoint(5000, 50, ""))
+	require.NoError(t, enc.AddDataPoint(5010, 51, ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+	second, err := decodeHardening(t, data)
+	require.NoError(t, err)
+
+	set, err := NewNumericBlobSet([]NumericBlob{corrupt, second})
+	require.NoError(t, err)
+
+	for name, metric := range map[string]MaterializedNumericMetric{
+		"MaterializeMetric": func() MaterializedNumericMetric { m, _ := set.MaterializeMetric(1); return m }(),
+	} {
+		require.Lenf(t, metric.Values, len(metric.Timestamps), "%s column lengths", name)
+		last := len(metric.Timestamps) - 1
+		require.Equalf(t, int64(5010), metric.Timestamps[last], "%s last timestamp", name)
+		require.Equalf(t, 51.0, metric.Values[last], "%s last value", name)
+	}
+
+	mat := set.Materialize()
+	n := mat.DataPointCount(1)
+	ts, ok := mat.TimestampAt(1, n-1)
+	require.True(t, ok)
+	val, ok := mat.ValueAt(1, n-1)
+	require.True(t, ok)
+	require.Equal(t, int64(5010), ts)
+	require.Equal(t, 51.0, val)
+}

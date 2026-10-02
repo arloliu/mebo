@@ -2,12 +2,14 @@ package blob
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
@@ -3192,4 +3194,23 @@ func TestNumericBlob_TimestampEncodingReportsExactType(t *testing.T) {
 			require.Equal(t, tsEnc, blob.TimestampEncodingType())
 		})
 	}
+}
+
+// TestNumericBlob_AllYieldsOnlyCompleteRows pins that the materializing All path
+// stops at the shorter of the decoded timestamp and value columns instead of
+// yielding zero-filled timestamps for a truncated stream.
+func TestNumericBlob_AllYieldsOnlyCompleteRows(t *testing.T) {
+	b := NumericBlob{blobBase: blobBase{tsEncType: format.TypeDelta, valEncType: format.TypeALP}}
+
+	tsBytes := []byte{0x0a, 0x80} // first timestamp 10, then a truncated varint
+	engine := endian.GetLittleEndianEngine()
+	valBytes := []byte{2} // ALP raw scheme: two little-endian float64 values
+	valBytes = engine.AppendUint64(valBytes, math.Float64bits(5))
+	valBytes = engine.AppendUint64(valBytes, math.Float64bits(7))
+
+	var got []NumericDataPoint
+	for _, dp := range b.allDataPointsMaterialized(tsBytes, valBytes, nil, 2) {
+		got = append(got, dp)
+	}
+	require.Equal(t, []NumericDataPoint{{Ts: 10, Val: 5}}, got)
 }
