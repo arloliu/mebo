@@ -226,8 +226,22 @@ func (e *TimestampDeltaPackedEncoder) writeSliceSIMDFused(
 		n := min(len(remaining), deltadelta.ChunkSize)
 		prevTS, prevDelta = deltadelta.IntoActive(deltaBuf[:n], remaining[:n], prevTS, prevDelta)
 
+		// Complete a partial group left pending by an earlier Write/WriteSlice
+		// first: the SIMD kernel appends whole groups straight to the buffer,
+		// so pending values must be flushed ahead of them to keep stream order.
+		head := 0
+		for e.pendingLen > 0 && head < n {
+			e.pending[e.pendingLen] = uint64((deltaBuf[head] << 1) ^ (deltaBuf[head] >> 63)) //nolint:gosec
+			e.pendingLen++
+			head++
+
+			if e.pendingLen == groupSize {
+				e.flushGroup(groupSize)
+			}
+		}
+
 		// SIMD-fused encode for full groups
-		nGroups := n / groupSize
+		nGroups := (n - head) / groupSize
 		if nGroups > 0 {
 			nValues := nGroups * groupSize
 			// Worst case: 1 control byte + 32 payload bytes per group + 8 bytes write slack
@@ -235,12 +249,12 @@ func (e *TimestampDeltaPackedEncoder) writeSliceSIMDFused(
 			startLen := len(e.buf.B)
 			e.buf.Grow(maxBytes)
 			e.buf.B = e.buf.B[:startLen+maxBytes]
-			written := encodeDeltaPackedGroupsSIMD(e.buf.B[startLen:], deltaBuf[:nValues], nGroups)
+			written := encodeDeltaPackedGroupsSIMD(e.buf.B[startLen:], deltaBuf[head:head+nValues], nGroups)
 			e.buf.B = e.buf.B[:startLen+written]
 		}
 
 		// Tail (< groupSize values) via scalar path
-		for i := nGroups * groupSize; i < n; i++ {
+		for i := head + nGroups*groupSize; i < n; i++ {
 			zigzag := uint64((deltaBuf[i] << 1) ^ (deltaBuf[i] >> 63)) //nolint:gosec
 			e.pending[e.pendingLen] = zigzag
 			e.pendingLen++

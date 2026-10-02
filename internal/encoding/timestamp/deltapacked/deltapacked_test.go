@@ -2325,3 +2325,95 @@ func benchmarkPackedDecodeTimestamps(size int) []int64 {
 
 	return timestamps
 }
+
+// TestTimestampDeltaPackedEncoder_MixedWriteAndWriteSlice pins that interleaving
+// Write and WriteSlice produces the same bytes as repeated Write, including when
+// a WriteSlice large enough for the SIMD-fused path follows values still held in
+// the pending group.
+func TestTimestampDeltaPackedEncoder_MixedWriteAndWriteSlice(t *testing.T) {
+	timestamps := makeDeltaBackendParityTimestamps(600)
+
+	splits := [][]int{
+		{5, 70},
+		{1, 1, 1, 72},
+		{3, 33},
+		{4, 64},
+		{6, 300, 2, 40},
+		{2, 257, 1, 300},
+		{7, 31, 1, 32},
+	}
+
+	for _, split := range splits {
+		t.Run(fmt.Sprint(split), func(t *testing.T) {
+			total := 0
+			for _, n := range split {
+				total += n
+			}
+			ts := timestamps[:total]
+
+			scalar := NewTimestampDeltaPackedEncoder()
+			for _, timestamp := range ts {
+				scalar.Write(timestamp)
+			}
+			want := append([]byte(nil), scalar.Bytes()...)
+			scalar.Finish()
+
+			// Alternate Write (odd chunks) and WriteSlice (even chunks).
+			mixed := NewTimestampDeltaPackedEncoder()
+			pos := 0
+			for i, n := range split {
+				chunk := ts[pos : pos+n]
+				if i%2 == 0 {
+					for _, timestamp := range chunk {
+						mixed.Write(timestamp)
+					}
+				} else {
+					mixed.WriteSlice(chunk)
+				}
+				pos += n
+			}
+			got := append([]byte(nil), mixed.Bytes()...)
+			mixed.Finish()
+
+			require.Equal(t, want, got, "mixed Write/WriteSlice output must match repeated Write")
+
+			decoded := make([]int64, total)
+			require.Equal(t, total, NewTimestampDeltaPackedDecoder().DecodeAll(got, total, decoded))
+			require.Equal(t, ts, decoded)
+		})
+	}
+}
+
+// TestTimestampDeltaPackedEncoder_SIMDFusedDrainsPending drives the SIMD-fused
+// slice path directly, so the pending-group drain is covered on every host;
+// without AVX2 the group kernel falls back to its scalar twin.
+func TestTimestampDeltaPackedEncoder_SIMDFusedDrainsPending(t *testing.T) {
+	timestamps := makeDeltaBackendParityTimestamps(600)
+
+	for _, head := range []int{3, 4, 5, 6, 7} {
+		for _, tail := range []int{32, 33, 255, 256, 257, 520} {
+			t.Run(fmt.Sprintf("head=%d/tail=%d", head, tail), func(t *testing.T) {
+				ts := timestamps[:head+tail]
+
+				scalar := NewTimestampDeltaPackedEncoder()
+				for _, timestamp := range ts {
+					scalar.Write(timestamp)
+				}
+				want := append([]byte(nil), scalar.Bytes()...)
+				scalar.Finish()
+
+				enc := NewTimestampDeltaPackedEncoder()
+				for _, timestamp := range ts[:head] {
+					enc.Write(timestamp)
+				}
+				enc.count += tail
+				enc.seqCount += tail
+				enc.prevTS, enc.prevDelta = enc.writeSliceSIMDFused(ts[head:], enc.prevTS, enc.prevDelta)
+				got := append([]byte(nil), enc.Bytes()...)
+				enc.Finish()
+
+				require.Equal(t, want, got)
+			})
+		}
+	}
+}
