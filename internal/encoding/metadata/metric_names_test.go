@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/arloliu/mebo/endian"
@@ -243,4 +244,18 @@ func TestDecodeMetricNames_CountBeyondPayload(t *testing.T) {
 	require.ErrorIs(t, err, errs.ErrInvalidMetricNamesPayload)
 	_, _, err = DecodeMetricNamesBorrowed(data, engine)
 	require.ErrorIs(t, err, errs.ErrInvalidMetricNamesPayload)
+}
+
+// TestEncodeMetricNames_PayloadBeyondBlobLimit pins that a names payload larger
+// than a blob can address is rejected before it is allocated. The names are
+// overlapping views of one backing string, so the test itself stays small.
+func TestEncodeMetricNames_PayloadBeyondBlobLimit(t *testing.T) {
+	backing := strings.Repeat("n", 2*65535)
+	names := make([]string, 65535)
+	for i := range names {
+		names[i] = backing[i : i+65535]
+	}
+
+	_, err := EncodeMetricNames(names, endian.GetLittleEndianEngine())
+	require.ErrorIs(t, err, errs.ErrBlobSizeExceedsLimit)
 }

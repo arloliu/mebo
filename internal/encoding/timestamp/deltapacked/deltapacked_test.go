@@ -2417,3 +2417,41 @@ func TestTimestampDeltaPackedEncoder_SIMDFusedDrainsPending(t *testing.T) {
 		}
 	}
 }
+
+// TestTimestampDeltaPackedDecoder_TruncatedGroupPrefixParity pins that every
+// decode path yields the same prefix when a full group is cut short: the
+// lanes whose bytes are present, and nothing after the missing one.
+func TestTimestampDeltaPackedDecoder_TruncatedGroupPrefixParity(t *testing.T) {
+	timestamps := []int64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	enc := NewTimestampDeltaPackedEncoder()
+	enc.WriteSlice(timestamps)
+	full := append([]byte(nil), enc.Bytes()...)
+	enc.Finish()
+
+	for cut := 1; cut < len(full); cut++ {
+		data := full[:len(full)-cut]
+		count := len(timestamps)
+		dec := NewTimestampDeltaPackedDecoder()
+
+		var viaAll []int64
+		for ts := range dec.All(data, count) {
+			viaAll = append(viaAll, ts)
+		}
+
+		dst := make([]int64, count)
+		viaDecodeAll := dst[:dec.DecodeAll(data, count, dst)]
+
+		var viaAt []int64
+		for i := range count {
+			ts, ok := dec.At(data, i, count)
+			if !ok {
+				break
+			}
+			viaAt = append(viaAt, ts)
+		}
+
+		require.Equalf(t, viaAt, viaAll, "cut=%d All vs At", cut)
+		require.Equalf(t, viaAt, viaDecodeAll, "cut=%d DecodeAll vs At", cut)
+		require.Equalf(t, timestamps[:len(viaAt)], viaAt, "cut=%d prefix", cut)
+	}
+}
