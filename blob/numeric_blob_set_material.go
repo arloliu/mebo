@@ -3,6 +3,7 @@ package blob
 import (
 	"slices"
 
+	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
 )
 
@@ -370,8 +371,26 @@ func (m MaterializedNumericBlobSet) metricByID(metricID uint64) (materializedNum
 	return m.metrics[slot], true
 }
 
+// slotByName resolves a metric name to its logical slot. A named slot matches
+// exactly. Otherwise the name can only refer to data from names-free members,
+// whose slots are keyed by ID alone, so the query is hashed and accepted when it
+// lands on an id-only slot — the same hash fallback the raw set and a
+// single-blob Materialize() use when no names payload exists.
+func (m MaterializedNumericBlobSet) slotByName(metricName string) (int, bool) {
+	if slot, ok := m.byName[metricName]; ok {
+		return slot, true
+	}
+
+	slot, ok := m.byID[hash.ID(metricName)]
+	if !ok || m.names[slot] != "" {
+		return -1, false
+	}
+
+	return slot, true
+}
+
 func (m MaterializedNumericBlobSet) metricByName(metricName string) (materializedNumericMetricSet, bool) {
-	slot, ok := m.byName[metricName]
+	slot, ok := m.slotByName(metricName)
 	if !ok {
 		return materializedNumericMetricSet{}, false
 	}
@@ -523,9 +542,9 @@ func (m MaterializedNumericBlobSet) HasMetricID(metricID uint64) bool {
 }
 
 // HasMetricName checks if the materialized blob set contains the given metric name.
-// Returns false if metric names are not available in any blob.
+// Names-free members are matched by the name's hash, like the raw set.
 func (m MaterializedNumericBlobSet) HasMetricName(metricName string) bool {
-	_, ok := m.byName[metricName]
+	_, ok := m.slotByName(metricName)
 	return ok
 }
 
