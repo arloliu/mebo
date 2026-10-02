@@ -45,6 +45,9 @@ type TextEncoderConfig struct {
 func NewTextEncoderConfig(startTime time.Time) *TextEncoderConfig {
 	// Start with 0 metric count - will grow dynamically
 	header, _ := section.NewTextHeader(startTime, 0)
+	// Encoder default, as documented on WithTextTimestampEncoding: Delta
+	// timestamps (data compression already defaults to zstd).
+	header.Flag.SetTimestampEncoding(format.TypeDelta)
 
 	config := &TextEncoderConfig{
 		header:       header,

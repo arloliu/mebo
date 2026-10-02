@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Encoder defaults now match their documentation.**
+  `blob.NewNumericEncoder` without options now writes Delta timestamps and Gorilla values
+  with no compression, as the `With*` option docs and `mebo.NewDefaultNumericEncoder` state.
+  It previously wrote Raw timestamps and Raw values with zstd-compressed values.
+  `blob.NewTextEncoder` without options now writes Delta timestamps (data compression stays zstd).
+  It previously wrote Raw timestamps.
+  Callers that relied on the old bytes should pass the encodings explicitly;
+  blobs written with either setting decode the same way.
+  Delta timestamps and Gorilla values decode sequentially,
+  so `ValueAt` and `TimestampAt` on such blobs cost O(n) per call instead of Raw's O(1).
+  Pass `WithTimestampEncoding(format.TypeRaw)` and `WithValueEncoding(format.TypeRaw)`
+  when random access matters more than size.
+- `TimestampEncoding()` on blobs now returns the exact encoding stored in the header,
+  including `format.TypeDeltaPacked`.
+  It previously reported DeltaPacked as `format.TypeDelta`.
+
 ### Fixed
 
 - **DeltaPacked timestamps: interleaving `AddDataPoint` and `AddDataPoints` on one metric no longer
@@ -46,8 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Options field's fixed little-endian byte order, the shared-timestamps bit,
   the current encoding values, and the always-zstd tag payload.
   `docs/design.md` no longer claims 8-byte payload alignment.
-- Corrected godoc for `TagAt` (O(index), not O(1)), `TimestampEncoding`
-  (reports DeltaPacked as Delta; use `TimestampEncodingType`),
+- Corrected godoc for `TagAt` (O(index), not O(1)),
   `NumericHeader.MetricCount` (up to 65536) and `NumericIndexEntry.TagLength`.
 
 ## [1.10.0] - 2026-07-26

@@ -10,6 +10,7 @@ import (
 	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
+	"github.com/arloliu/mebo/section"
 )
 
 // ==============================================================================
@@ -932,4 +933,22 @@ func TestTextEncoder_DeltaEncoding_EdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNewTextEncoder_DefaultEncoding pins the documented defaults of a text
+// encoder built without options: Delta timestamps and zstd data compression.
+func TestNewTextEncoder_DefaultEncoding(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(1_700_000_000, 0).UTC())
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 1))
+	require.NoError(t, enc.AddDataPoint(1_700_000_000_000_000, "v", ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	header, err := section.ParseTextHeader(data[:section.HeaderSize])
+	require.NoError(t, err)
+	require.Equal(t, format.TypeDelta, header.Flag.GetTimestampEncoding())
+	require.Equal(t, format.CompressionZstd, header.Flag.GetDataCompression())
+	require.True(t, header.Flag.IsLittleEndian())
 }
