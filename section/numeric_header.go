@@ -12,7 +12,8 @@ import (
 type NumericHeader struct {
 	// StartTime is the start time of the metric. the unix timestamp in microseconds.
 	StartTime int64 // byte offset 4-11
-	// MetricCount is the number of unique metrics stored in the blob, max to 65535.
+	// MetricCount is the number of metrics stored in the blob, at most 65536
+	// (65535 when a metric names payload is present).
 	MetricCount uint32 // byte offset 12-15
 	// IndexOffset is the byte offset to the start of the metric index section.
 	IndexOffset uint32 // byte offset 16-19

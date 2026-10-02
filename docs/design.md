@@ -15,7 +15,7 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 
 ## Physical Layout
 
-The blob is structured as a single contiguous memory block with 8-byte aligned payloads.
+The blob is structured as a single contiguous memory block. Sections are written back to back with no padding between them.
 
 ### V1 Layout (Default)
 
@@ -24,9 +24,7 @@ The blob is structured as a single contiguous memory block with 8-byte aligned p
 | **Blob Header**          | 32 bytes (fixed)    | Metadata including flags, metric count, start time, and section offsets |
 | **Metric Names Payload** | Variable (optional) | Length-prefixed metric name strings (only when bit 2 = 1)               |
 | **Metric Index**         | N × 16 bytes        | Array of IndexEntry structs in insertion order                          |
-| *(Padding)*              | 0-7 bytes           | Padding to 8-byte boundary alignment                                    |
 | **Timestamps Payload**   | Variable size       | All timestamps from all metrics, encoded + compressed                   |
-| *(Padding)*              | 0-7 bytes           | Padding to 8-byte boundary alignment                                    |
 | **Values Payload**       | Variable size       | All values from all metrics, encoded + compressed                       |
 
 ### V2 Layout (`WithBlobLayoutV2()`)
@@ -44,9 +42,7 @@ V2 uses an **adaptive index entry** format. The encoder automatically selects co
 | **Metric Names Payload**   | Variable (optional) | Same as V1                                                                   |
 | **Metric Index**           | N × 16 bytes        | Array of compact IndexEntry structs **sorted by MetricID**                   |
 | **Shared Timestamp Table** | Variable (optional) | Deduplication table (only when bit 3 = 1, requires `WithSharedTimestamps()`) |
-| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
 | **Timestamps Payload**     | Variable size       | All timestamps, with dedup'd sequences if shared timestamps enabled          |
-| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
 | **Values Payload**         | Variable size       | All values from all metrics, encoded + compressed                            |
 
 #### V2 Extended (`0xEA30`)
@@ -57,9 +53,7 @@ V2 uses an **adaptive index entry** format. The encoder automatically selects co
 | **Metric Names Payload**   | Variable (optional) | Same as V1                                                                   |
 | **Metric Index**           | N × 32 bytes        | Array of extended IndexEntry structs **sorted by MetricID**                  |
 | **Shared Timestamp Table** | Variable (optional) | Deduplication table (only when bit 3 = 1, requires `WithSharedTimestamps()`) |
-| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
 | **Timestamps Payload**     | Variable size       | All timestamps, with dedup'd sequences if shared timestamps enabled          |
-| *(Padding)*                | 0-7 bytes           | Padding to 8-byte boundary alignment                                         |
 | **Values Payload**         | Variable size       | All values from all metrics, encoded + compressed                            |
 
 V2 layout controls **container structure** (sorted index, optional shared timestamps). Encoding algorithms (Raw, Delta, Gorilla, Chimp) are **orthogonal** to the layout version and can be freely combined with either V1 or V2.
@@ -67,7 +61,7 @@ V2 layout controls **container structure** (sorted index, optional shared timest
 **Memory Layout Characteristics:**
 -   **Byte Order (Endianness):** All multi-byte numeric values (integers and floating-point) use little-endian byte order by default, which is native to x86/x64 and ARM architectures. The header's `Flag.Options` field (bit 1) allows optional big-endian encoding: when bit 1 = 0 (default), little-endian is used; when bit 1 = 1, big-endian is used. This endianness applies consistently across all blob components: header fields, index entries, timestamps, and values. **Important:** For optimal performance, producers and consumers should use the same endianness to avoid conversion overhead. Mixed-endian environments should standardize on little-endian unless network byte order (big-endian) is specifically required.
 -   **Single Contiguous Block:** The entire blob is designed as one continuous memory region for efficient I/O operations and memory mapping.
--   **8-Byte Alignment:** All major payload sections are aligned to 8-byte boundaries for optimal CPU cache line utilization and preventing unaligned memory access penalties.
+-   **No Padding:** Sections are packed back to back; payload sections are not aligned to any boundary.
 -   **Sequential Layout:** The fixed-size-first, variable-size-last structure enables single-pass encoding without backtracking to update offsets.
 -   **Direct Memory Access:** Fixed-size header and index entries enable O(1) random access via simple offset calculations, supporting zero-copy operations and memory-mapped file usage.
 
@@ -606,7 +600,7 @@ The time-series data is organized into two separate, columnar payloads to maximi
 - **Offset Calculation:** Each metric's data position is calculated as `PayloadStart + IndexEntry.Offset`
 - **Payload Limits (V1/V2 compact):** uint16 delta offsets limit each per-metric delta to 64KB
 - **Payload Limits (V2 extended):** uint32 delta offsets allow per-metric deltas up to ~4GB
-- **Memory Alignment:** Payloads are padded to 8-byte boundaries for optimal CPU access
+- **No Padding:** Payload sections follow each other directly, with no alignment padding
 - **Compression Boundary:** Compression is applied to the complete payload, not per-metric
 
 ## Design Considerations and Limitations
@@ -651,10 +645,10 @@ With 32-byte extended entries using uint32 delta offsets:
 
 **Maximum Blob Size Calculation (V1 / V2 Compact):**
 ```
-Max Blob Size = Header + Index + Timestamps + Values + Padding
-              = 32 bytes + Index Size + 64KB + 64KB + ~24 bytes padding
-              = 32 + Index Size + 131,096 + 24
-              = 131,152 + Index Size
+Max Blob Size = Header + Index + Timestamps + Values
+              = 32 bytes + Index Size + 64KB + 64KB
+              = 32 + Index Size + 131,072
+              = 131,104 + Index Size
 ```
 
 **Index Size by Metric Count:**
@@ -681,7 +675,7 @@ Max Blob Size = Header + Index + Timestamps + Values + Padding
   - Total addressing range extended by 12.5× compared to absolute offsets
 
 ### Other Design Constraints
--   **Payload Alignment:** All major payloads are aligned to an 8-byte memory boundary by adding padding where necessary. This prevents potential unaligned memory access penalties on certain CPU architectures.
+-   **No Payload Padding:** Payload sections are not aligned; each section starts right where the previous one ends.
 -   **Random Access Trade-offs:**
     -   **Values (`Raw`), Timestamps (`Raw`):** True **O(1)** random access — a direct offset into a fixed-width array.
     -   **Values (`ALP`):** **O(1) + O(log k)** — an O(1) windowed bit read plus a binary search over that column's exception sidecar (k = exceptions in the column, not its length). ALP achieves this without the sub-chunking `Gorilla`/`Chimp` would need, via its exception-sidecar design.
@@ -847,10 +841,9 @@ Delta encoding approach:
 - Absolute offsets enable direct payload access without recalculation
 - Delta encoding is transparent to users of the NumericBlob API
 
-### Memory Alignment
-- All payload sections aligned to 8-byte boundaries
-- Prevents unaligned access penalties on modern CPUs
-- Add padding bytes between sections as needed
+### Section Packing
+- Sections are written back to back with no padding bytes
+- Payload offsets in the header are therefore not aligned to any boundary
 
 
 ### Single-Pass Encoding

@@ -78,7 +78,8 @@ type NumericIndexEntry struct {
 
 	// TagLength is the total byte length of the encoded tags for this metric.
 	// This field is not stored on disk and is only used in memory for slicing and dicing.
-	// It can be computed as TagLength = Count * tag_size.
+	// Tags are variable-length, so it is derived from the next entry's TagOffset
+	// (or the end of the tag payload for the last entry).
 	TagLength int
 
 	// Count is the number of data points (timestamps/values) for this metric.

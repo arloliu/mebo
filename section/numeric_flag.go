@@ -11,10 +11,14 @@ type NumericFlag struct {
 	// Options is a packed field for various options.
 	// Bit 0 is tag support flag, 0 means no tag, 1 means tag enabled.
 	// Bit 1 is endianness flag, 0 means little-endian, 1 means big-endian.
-	// Bit 2-3 are reserved for future use, must be set to 0.
+	// Bit 2 is metric names payload flag, 0 means no payload, 1 means names included.
+	// Bit 3 is shared timestamps flag (V2 layouts only), 1 means a shared timestamp table is present.
 	// Bit 4-15 are magic number to identify the blob format:
-	//   - 0xEA10 (0b1110_1010_0001_0000): Float value blob format v1
-	//   - 0xEA20 (0b1110_1010_0010_0000): Text value blob format v1
+	//   - 0xEA10: numeric blob format V1
+	//   - 0xEA20: numeric blob format V2, compact (16-byte) index entries
+	//   - 0xEA30: numeric blob format V2, extended (32-byte) index entries
+	//
+	// Options is always stored little-endian, whatever the endianness bit says.
 	Options uint16
 
 	// EncodingType is an enum indicating the encoding used for this metric blob.
