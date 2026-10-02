@@ -300,6 +300,60 @@ func TestNumericEncoder_MixedPointAPIsPreserveOrder(t *testing.T) {
 	}
 }
 
+// TestNumericEncoder_MixedPointAPIsLargeBatch pins that a few AddDataPoint
+// calls followed by an AddDataPoints batch large enough for the vectorized
+// timestamp paths encode the same bytes as a single AddDataPoints call.
+func TestNumericEncoder_MixedPointAPIsLargeBatch(t *testing.T) {
+	tsEncodings := []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked}
+	singles := []int{1, 3, 5, 6}
+	pointCounts := []int{40, 75, 300}
+
+	for _, tsEnc := range tsEncodings {
+		for _, head := range singles {
+			for _, points := range pointCounts {
+				t.Run(fmt.Sprintf("ts=%v/head=%d/n=%d", tsEnc, head, points), func(t *testing.T) {
+					timestamps := make([]int64, points)
+					values := make([]float64, points)
+					for i := range points {
+						timestamps[i] = 1_700_000_000_000_000 + int64(i)*1_000_000 + int64((i*31)%997)
+						values[i] = float64(i*17) / 100
+					}
+
+					encode := func(head int) []byte {
+						enc, err := NewNumericEncoder(time.Unix(1_700_000_000, 0).UTC(),
+							WithTimestampEncoding(tsEnc), WithValueEncoding(format.TypeGorilla))
+						require.NoError(t, err)
+						require.NoError(t, enc.StartMetricID(1, points))
+						for i := range head {
+							require.NoError(t, enc.AddDataPoint(timestamps[i], values[i], ""))
+						}
+						require.NoError(t, enc.AddDataPoints(timestamps[head:], values[head:], nil))
+						require.NoError(t, enc.EndMetric())
+						data, err := enc.Finish()
+						require.NoError(t, err)
+
+						return data
+					}
+
+					want := encode(0)
+					got := encode(head)
+					require.Equal(t, want, got)
+
+					decoder, err := NewNumericDecoder(got)
+					require.NoError(t, err)
+					blob, err := decoder.Decode()
+					require.NoError(t, err)
+					decoded := make([]int64, 0, points)
+					for ts := range blob.AllTimestamps(1) {
+						decoded = append(decoded, ts)
+					}
+					require.Equal(t, timestamps, decoded)
+				})
+			}
+		}
+	}
+}
+
 func TestNumericEncoder_EndMetric(t *testing.T) {
 	t.Run("NoMetricStarted", func(t *testing.T) {
 		encoder := createTestEncoder(t)
