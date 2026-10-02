@@ -260,7 +260,9 @@ func (s NumericBlobSet) Blobs() []NumericBlob {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(blobs) to find the blob + O(1) to access the value within the blob.
+// Performance: O(blobs) to find the blob, plus the per-blob access cost:
+// O(1) for Raw values, O(1) plus an O(log k) exception search for ALP values,
+// and O(local index) for Gorilla and Chimp values.
 func (s NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
@@ -306,7 +308,9 @@ func (s NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(blobs) to find the blob + O(1) to access the timestamp within the blob.
+// Performance: O(blobs) to find the blob, plus the per-blob access cost:
+// O(1) for Raw timestamps
+// and O(local index) for Delta and DeltaPacked timestamps.
 func (s NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
@@ -352,7 +356,8 @@ func (s NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(blobs) to find the blob + O(1) to access the tag within the blob.
+// Performance: O(blobs) to find the blob, plus the per-blob access cost:
+// O(local index), because tags are decoded sequentially.
 func (s NumericBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return "", false

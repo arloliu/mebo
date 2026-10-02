@@ -60,6 +60,8 @@ V2 layout controls **container structure** (sorted index, optional shared timest
 
 **Memory Layout Characteristics:**
 -   **Byte Order (Endianness):** All multi-byte numeric values (integers and floating-point) use little-endian byte order by default, which is native to x86/x64 and ARM architectures. The header's `Flag.Options` field (bit 1) allows optional big-endian encoding: when bit 1 = 0 (default), little-endian is used; when bit 1 = 1, big-endian is used. This endianness applies consistently across all blob components: header fields, index entries, timestamps, and values. **Important:** For optimal performance, producers and consumers should use the same endianness to avoid conversion overhead. Mixed-endian environments should standardize on little-endian unless network byte order (big-endian) is specifically required.
+    The one exception is the header's `Flag.Options` field, which is always little-endian
+    so that a decoder can read the endianness bit before it knows the byte order.
 -   **Single Contiguous Block:** The entire blob is designed as one continuous memory region for efficient I/O operations and memory mapping.
 -   **No Padding:** Sections are packed back to back; payload sections are not aligned to any boundary.
 -   **Sequential Layout:** The fixed-size-first, variable-size-last structure enables single-pass encoding without backtracking to update offsets.
@@ -71,21 +73,25 @@ V2 layout controls **container structure** (sorted index, optional shared timest
 
 A small, fixed-size 32 bytes header containing critical metadata.
 
--   `Flags` (FlagHeader, 6 bytes): The flags (see the Go struct for details).
--   `MetricCount` (uint16): The number of unique metrics stored in the blob, max to 65535.
+-   `Flags` (FlagHeader, 4 bytes): The flags (see the Go struct for details).
 -   `StartTime` (int64): The earliest timestamps in the blob, unix timestamp in microseconds, allowing for fast sorting of multiple blobs.
--   `IndexOffset` / `TimestampPayloadOffset` / `ValuePayloadOffset` (uint32...): Byte offsets to the start of each major payload section.
+-   `MetricCount` (uint32): The number of metrics stored in the blob.
+    At most 65,536, or 65,535 when a metric names payload is present (the names payload stores its count as a uint16).
+-   `IndexOffset` / `TimestampPayloadOffset` / `ValuePayloadOffset` / `TagPayloadOffset` (uint32):
+    Byte offsets to the start of each major payload section.
 
 ```go
 const (
-	// Timestamp encodings (bits 0-3)
-	TimestampEncodingNone  = 0x1
-	TimestampTypeDelta = 0x2
+	// Timestamp encodings (bits 0-3), the format.EncodingType value
+	TimestampEncodingRaw         = 0x1 // format.TypeRaw
+	TimestampEncodingDelta       = 0x2 // format.TypeDelta
+	TimestampEncodingDeltaPacked = 0x5 // format.TypeDeltaPacked
 
-	// Value encodings (bits 4-7)
-	ValueEncodingNone    = TimestampEncodingNone << 4
-	ValueTypeGorilla = TimestampTypeDelta << 4
-	ValueTypeChimp   = 0x3 << 4
+	// Value encodings (bits 4-7), the format.EncodingType value shifted left by 4
+	ValueEncodingRaw     = 0x1 << 4 // 0x10, format.TypeRaw
+	ValueEncodingGorilla = 0x3 << 4 // 0x30, format.TypeGorilla
+	ValueEncodingChimp   = 0x4 << 4 // 0x40, format.TypeChimp
+	ValueEncodingALP     = 0x6 << 4 // 0x60, format.TypeALP
 
 	// Compression types (bits 0-3 for timestamp, 4-7 for value)
 	CompressionNone   = 0x1
@@ -132,7 +138,10 @@ type Header struct {
 	TimestampPayloadOffset uint32
 	// ValuePayloadOffset is the byte offset to the start of the value payload section.
 	ValuePayloadOffset uint32
-	// MetricCount is the number of unique metrics stored in the blob, max to 65535.
+	// TagPayloadOffset is the byte offset to the start of the tag payload section.
+	TagPayloadOffset uint32
+	// MetricCount is the number of metrics stored in the blob, at most 65536
+	// (65535 when a metric names payload is present).
 	MetricCount uint32
 }
 ```
@@ -143,8 +152,9 @@ type Header struct {
 
 **When Enabled:**
 - `Flag.Options` bit 2 = 1 (MetricNamesMask = 0x0004)
-- Automatically enabled when encoder detects hash collision
-- Can be manually enabled for additional verification
+- Automatically enabled when `StartMetricName()` detects a hash collision
+- Numeric blobs: off by default, enabled by `blob.WithMetricNames()`
+- Text blobs: on by default in name mode, disabled by `blob.WithoutMetricNames()` (a collision still forces it on)
 
 **Binary Format:**
 
@@ -190,7 +200,7 @@ Size = 2 + 150 × (2 + 30) = 4,802 bytes (~4.7 KB)
 Relative increase ≈ 3.1% for typical 150 KB blob
 ```
 
-When disabled (no collision, default):
+When disabled (no collision, and names not requested; the numeric default):
 ```
 Size = 0 bytes (zero overhead)
 ```
@@ -198,8 +208,11 @@ Size = 0 bytes (zero overhead)
 **Encoder Behavior:**
 1. Start tracking metric names in `StartMetricName()`
 2. Detect collision: `hash(name1) == hash(name2) && name1 != name2`
-3. If collision: Set bit 2, prepare metric names payload
-4. In `Finish()`: Encode payload if bit 2 = 1, update `IndexOffset`
+3. If collision: keep both metrics and silently switch the names payload on (no error is returned)
+4. In `Finish()`: Set bit 2 and encode the payload when a collision occurred or names were requested,
+   then update `IndexOffset`
+
+`StartMetricID()` has no names to fall back on, so a duplicate metric ID returns `ErrHashCollision` instead.
 
 **Decoder Behavior:**
 1. Check `Flag.Options` bit 2
@@ -212,10 +225,10 @@ Size = 0 bytes (zero overhead)
 - Truncated payload: `ErrInvalidMetricNamesPayload`
 - Count mismatch: `ErrInvalidMetricNamesCount`
 - Hash mismatch: `ErrHashMismatch` (includes metric name in error)
-- Collision during encoding: `ErrHashCollision` (includes both names)
+- Duplicate ID in `StartMetricID()`: `ErrHashCollision` (includes the ID)
 
 **See Also:**
-- Implementation: `encoding/metric_names.go`
+- Implementation: `internal/encoding/metadata/metric_names.go`
 - [metric_names.md](metric_names.md): when names are stored (encoder defaults/options, not just
   the collision case above), enumeration/membership semantics, and what `StripMetricNames` /
   `StripMetricNamesInPlace` remove — this binary-format section is unchanged by that; only the
@@ -292,7 +305,8 @@ The encoder tracks whether metrics were inserted in ascending MetricID order via
     -   **Subsequent metrics**: Stores delta = (current_offset - previous_offset)
     -   **Benefits**: Smaller delta values allow more efficient use of the uint16 range
     -   **Decoding**: Absolute offsets are reconstructed by accumulating deltas: `absolute_offset[i] = absolute_offset[i-1] + delta[i]`
--   Reserved 2 bytes padding to 16 bytes.
+-   `TagOffset` (uint16, bytes 14-16): **Delta offset** from the previous metric's tag offset, encoded the same way.
+    It is 0 when the blob has no tag payload.
 
 #### Extended Index Entry Structure (32 bytes, V2 extended):
 
@@ -337,8 +351,9 @@ type IndexEntry struct {
 	// Subsequent metrics: delta = (current_offset - previous_offset)
 	// Decoder reconstructs: absolute_offset[i] = absolute_offset[i-1] + delta[i]
 	ValueOffset uint16
-
-	Reserved uint16 // 2 bytes (padding to 16 bytes)
+	// TagOffset stores the delta offset from the previous metric's tag offset,
+	// using the same delta encoding. It is 0 when the blob has no tag payload.
+	TagOffset uint16
 }
 
 // Extended index entry for V2 extended mode (32 bytes)
@@ -379,16 +394,17 @@ func ID(data string) uint64 {
 While xxHash64 provides excellent distribution, hash collisions are theoretically possible with any 64-bit hash function. Mebo handles this through:
 
 1. **Collision Detection (Encoder):**
-   - Tracks all metric names added to a blob
+   - Tracks all metric names added to a blob with `StartMetricName()`
    - Detects when different names hash to the same ID
-   - Automatically enables metric names payload when collision detected
-   - Returns clear error message with both colliding metric names
+   - Automatically enables metric names payload when collision detected; this is not an error
+   - `StartMetricID()` cannot detect name collisions and returns `ErrHashCollision` for a duplicate ID
 
 2. **Metric Names Payload (Optional):**
    - Binary format positioned after header, before index
    - Only included when `Flag.Options` bit 2 = 1
    - Stores original metric name strings for verification
-   - Zero storage overhead when no collisions (99.99%+ of blobs)
+   - Zero storage overhead
+     when there is no collision and names were not requested (`WithMetricNames()` on numeric encoders; text encoders store names by default)
 
 3. **Verification (Decoder):**
    - When metric names payload present, verifies hash(name) == MetricID
@@ -402,7 +418,7 @@ For typical workloads (150 metrics per blob):
 - 1 million blobs: Still negligible
 - 50% collision probability: ~5 billion unique metrics (birthday paradox)
 
--   Built into Go standard library (no dependencies)
+-   Implemented by `github.com/cespare/xxhash/v2` (a module dependency, not the Go standard library)
 -   Simple algorithm ensures cross-language compatibility
 
 ### Shared Timestamp Table (Optional, V2 Only)
@@ -537,6 +553,10 @@ The time-series data is organized into two separate, columnar payloads to maximi
   - **Use Case:** Time-series metrics with regular or semi-regular sampling (recommended for 99% of cases)
   - **Details:** See `docs/design/delta_of_delta_encoding.md` for complete algorithm and analysis
 
+- **DeltaPacked (0x5):** The same delta-of-delta values as Delta, packed with Group Varint (one control byte per group of 4 values)
+  - **Pros:** Faster bulk decode and iteration than Delta, at about the same size
+  - **Worst case:** 33 bytes per group of 4 values (~8.25 bytes per timestamp); Delta's worst case is 10 bytes per timestamp
+
 **Compression:** Applied after encoding using algorithm specified in header (Zstd, S2, LZ4, or None).
 
 #### Values Payload
@@ -545,7 +565,7 @@ The time-series data is organized into two separate, columnar payloads to maximi
 
 **Layout Process:**
 1. Concatenate all values from all metrics sequentially
-2. Apply encoding transformation (Raw, Gorilla, or Chimp)
+2. Apply encoding transformation (Raw, Gorilla, Chimp, or ALP)
 3. Optionally compress the entire payload as a single block
 4. Track individual metric positions via `ValueOffset` in index
 
@@ -555,14 +575,14 @@ The time-series data is organized into two separate, columnar payloads to maximi
   - **Cons:** No space savings, 8 bytes per value
   - **Use Case:** Frequently accessed data, random patterns, maximum performance
 
-- **Gorilla (0x20):** XOR-based compression (Facebook, 2015)
+- **Gorilla (0x30):** XOR-based compression (Facebook, 2015)
   - **Algorithm:** First value stored as raw 64-bit; subsequent values XOR'd with previous. If XOR is zero, emit a single `0` bit. Otherwise, encode the leading/trailing zero counts and significant bits.
   - **Leading zeros:** 5-bit raw count (0-31)
   - **Pros:** Excellent compression for stable/predictable values, ~70% size reduction
   - **Cons:** Sequential-only access, decode overhead
   - **Use Case:** Slowly changing metrics (temperature, voltage, system stats)
 
-- **Chimp (0x30):** Improved XOR-based compression (PVLDB, 2022)
+- **Chimp (0x40):** Improved XOR-based compression (PVLDB, 2022)
   - **Algorithm:** Same XOR-based approach as Gorilla but with two key improvements:
     1. **3-bit leading-zero bucketing:** Instead of storing raw 5-bit leading zero counts, Chimp maps 64 possible values into 8 buckets via a lookup table. This reduces the leading-zero field from 5 bits to 3 bits.
     2. **Trailing-zero optimization:** When trailing zeros exceed 6, Chimp stores a 6-bit significant-bits count and emits only the non-zero middle bits, saving space for values with many trailing zeros.
@@ -576,6 +596,12 @@ The time-series data is organized into two separate, columnar payloads to maximi
   - **Pros:** Better compression than Gorilla for metrics with many trailing zeros; 3-bit bucketed leading zeros are more space-efficient than Gorilla's 5-bit raw encoding
   - **Cons:** Sequential-only access, slightly higher decode complexity than Gorilla
   - **Use Case:** Metrics with stable fractional parts, scientific/sensor data, many repeated or near-equal values
+
+- **ALP (0x60):** Adaptive Lossless floating-Point encoding (SIGMOD, 2024)
+  - **Pros:** Much smaller than Gorilla/Chimp on decimal-quantized data;
+    O(1) + O(log k) random access (k = exceptions in the column)
+  - **Cons:** Higher encode cost; no guaranteed win on full-precision data
+  - **Use Case:** Sensor readings rounded to a fixed number of decimal places
 
 **Compression:** Optional second-stage compression (typically None for performance, or Zstd for cold storage).
 
@@ -637,7 +663,7 @@ With 32-byte extended entries using uint32 delta offsets:
 
 **Component Size Limits:**
 - **Header:** 32 bytes (fixed)
-- **Index (compact):** N × 16 bytes (uint32 MetricCount supports 4.2B metrics, practical limit ~10K)
+- **Index (compact):** N × 16 bytes (MetricCount is a uint32 field, but encoders cap a blob at 65,536 metrics, or 65,535 with a metric names payload)
 - **Index (extended):** N × 32 bytes (same MetricCount, double the per-entry size)
 - **Timestamps Payload (compact):** Effectively unlimited with delta encoding (each metric delta must fit in uint16)
 - **Timestamps Payload (extended):** Up to ~4GB per metric (uint32 delta offsets)
@@ -853,12 +879,16 @@ The fixed-size header and index enable efficient single-pass encoding:
 2. Build fixed-size index (can calculate offsets ahead of time)
 3. Sequentially append encoded payloads
 4. Update header with final offsets
-5. Calculate and write checksum
+
+The format has no checksum or other integrity check.
+Decoders validate structure (magic number, offsets, counts, metric-name hashes) but cannot detect corrupted payload bytes.
 
 ### External Name Management
 
 If application doesn't have metric ID with unsigned 64-bit integer, it needs to pass the metric name string and hash into unsigned 64-bit integer.
-Since only hashes are stored, applications must maintain hash→name mappings:
+When a blob carries no metric names payload, only hashes are stored.
+That is the case in ID mode (`StartMetricID()`) and in numeric name mode without `WithMetricNames()` and without a collision.
+Applications that need to map IDs back to names for such blobs must maintain their own hash→name mappings:
 
 ```go
 type MetricRegistry struct {
@@ -868,7 +898,7 @@ type MetricRegistry struct {
 }
 
 func (r *MetricRegistry) RegisterMetric(name string) uint64 {
-    hash := HashMetricName(name)
+    hash := mebo.MetricID(name)
     r.mu.Lock()
     r.hashToName[hash] = name
     r.nameToHash[name] = hash
@@ -898,7 +928,7 @@ func (r *MetricRegistry) GetName(hash uint64) (string, bool) {
 - **Adaptive index:** V2 automatically selects compact (16B) or extended (32B) entries based on data characteristics, removing per-metric size ceilings without overhead for small blobs
 
 ### Limitations
-- **External names:** Requires application-level hash→name mapping
+- **External names:** Blobs without a metric names payload require application-level hash→name mapping
 - **Sequential access:** Compressed/encoded data (Gorilla, Chimp, Delta) requires sequential decoding
 - **Per-metric size constraint (V1/V2 compact):** Each metric's data delta must fit in uint16 (≤65,535 bytes for both timestamps and values); V2 extended removes this constraint
 - **V2 upgrade coordination:** V2 layout requires all consumers to be upgraded before producers

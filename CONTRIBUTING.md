@@ -37,7 +37,7 @@ Report issues to the project maintainers via GitHub Issues.
 
 ### Prerequisites
 
-- **Go**: Version 1.23 or later ([download](https://go.dev/dl/))
+- **Go**: Version 1.25 or later (matches `go.mod`) ([download](https://go.dev/dl/))
 - **Git**: For version control
 - **golangci-lint**: Version 2.5.0 for code quality checks
 - **Make**: For build automation (optional but recommended)

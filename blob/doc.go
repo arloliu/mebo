@@ -62,33 +62,41 @@
 //	// 7. End the current metric
 //	encoder.EndMetric()
 //
-//	// 8. Finish and get blob
-//	blob, _ := encoder.Finish()
+//	// 8. Finish and get the encoded blob bytes
+//	data, _ := encoder.Finish()
 //
 // # Decoding Workflow
 //
-// Decoding provides both sequential iteration and random access:
+// A decoder turns blob bytes into a NumericBlob or TextBlob,
+// which provides both sequential iteration and random access:
 //
-//	// Create decoder
-//	decoder, err := blob.NewNumericDecoder(blobData)
+//	// Create decoder and decode the blob
+//	decoder, err := blob.NewNumericDecoder(data)
+//	if err != nil {
+//	    return err
+//	}
+//	numBlob, err := decoder.Decode()
+//	if err != nil {
+//	    return err
+//	}
 //
 //	// Sequential iteration (preferred for full scans)
-//	for dp := range decoder.All(metricID) {
+//	for _, dp := range numBlob.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
 //
 //	// Random access — complexity depends on encoding: O(1) for Raw, O(1)+O(log k)
 //	// for ALP, O(index) for Gorilla/Chimp/Delta/DeltaPacked (see ValueAt/TimestampAt)
-//	val, ok := decoder.ValueAt(metricID, 50) // Get 51st point
-//	ts, ok := decoder.TimestampAt(metricID, 50)
+//	val, ok := numBlob.ValueAt(metricID, 50) // Get 51st point
+//	ts, ok := numBlob.TimestampAt(metricID, 50)
 //
 // # Blob Sets
 //
 // Blob sets provide unified access to multiple time-ordered blobs:
 //
 //	// Create type-specific blob sets
-//	numericSet := blob.NewNumericBlobSet([]blob.NumericBlob{blob1, blob2, blob3})
-//	textSet := blob.NewTextBlobSet([]blob.TextBlob{textBlob1, textBlob2})
+//	numericSet, err := blob.NewNumericBlobSet([]blob.NumericBlob{blob1, blob2, blob3})
+//	textSet, err := blob.NewTextBlobSet([]blob.TextBlob{textBlob1, textBlob2})
 //
 //	// Create heterogeneous blob set from decoded blobs
 //	blobSet := blob.NewBlobSet(
@@ -97,11 +105,11 @@
 //	)
 //
 //	// Or decode from raw byte slices
-//	blobSet, err := blob.DecodeBlobSet(rawBlob1, rawBlob2, rawBlob3)
+//	blobSet, err = blob.DecodeBlobSet(rawBlob1, rawBlob2, rawBlob3)
 //	// Automatically detects and separates numeric vs text blobs
 //
 //	// Query across all blobs chronologically
-//	for dp := range blobSet.AllNumerics(metricID) {
+//	for _, dp := range blobSet.AllNumerics(metricID) {
 //	    // Iterates through blob1, then blob2, then blob3
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
@@ -114,7 +122,7 @@
 // For frequent random access, materialize blob sets into memory:
 //
 //	// One-time materialization cost: ~100μs per metric per blob
-//	mat := blobSet.Materialize()
+//	mat := numericSet.Materialize() // or blobSet.MaterializeNumeric() on a BlobSet
 //
 //	// O(1) random access (~5ns per access)
 //	val, ok := mat.ValueAt(metricID, 500)     // Very fast!
@@ -140,19 +148,25 @@
 //   - blob.WithTimestampCompression(format.CompressionNone|Zstd|S2|LZ4) - Timestamp compression
 //   - blob.WithValueCompression(format.CompressionNone|Zstd|S2|LZ4) - Value compression
 //   - blob.WithTagsEnabled(true|false) - Enable/disable tags
+//   - blob.WithMetricNames() - Store metric names (StartMetricName only)
+//   - blob.WithBlobLayoutV2() - Use the V2 layout (sorted index, wider offsets)
+//   - blob.WithSharedTimestamps() - Deduplicate identical timestamp columns (implies V2)
 //
 // Text Encoder Options:
 //   - blob.WithTextLittleEndian() / blob.WithTextBigEndian() - Byte order
 //   - blob.WithTextTimestampEncoding(format.TypeRaw|TypeDelta) - Timestamp encoding
 //   - blob.WithTextDataCompression(format.CompressionNone|Zstd|S2|LZ4) - Data compression
 //   - blob.WithTextTagsEnabled(true|false) - Enable/disable tags
+//   - blob.WithoutMetricNames() - Do not store metric names (stored by default in text blobs)
 //
 // # Performance Characteristics
 //
 // Encoding:
-//   - Numeric (Gorilla+Delta): ~40 ns/point, ~1-4 bytes/point
+//   - Numeric (Gorilla+Delta): ~40 ns/point, ~8.5 bytes/point on the README benchmark data
+//     (fewer for slowly changing or decimal-quantized values)
 //   - Text (Delta+Zstd): ~100 ns/point, varies with string length
-//   - Tag overhead: ~8-16 bytes per tagged point
+//   - Tag overhead: depends on tag content; the tag payload is always zstd-compressed
+//     and omitted entirely when every tag is empty
 //
 // Sequential Decoding:
 //   - Numeric: ~20 ns/point
@@ -178,7 +192,9 @@
 //
 // Encoders: Not thread-safe. Use one encoder per goroutine.
 //
-// Decoders: Safe for concurrent reads from different goroutines.
+// Decoders: Not safe for concurrent use and not reusable.
+// Create one decoder per blob and call Decode once, from a single goroutine.
+// To read a blob from several goroutines, decode it once and share the resulting NumericBlob or TextBlob.
 //
 // Blobs: Immutable and thread-safe once created.
 //
@@ -214,19 +230,30 @@
 //  8. Use blob sets: For multi-blob queries, blob sets are more efficient than manual iteration.
 //  9. Materialize wisely: Only materialize when random access pattern justifies the cost (>100 accesses).
 //  10. Monitor memory: Materialization can use significant memory for large datasets (~16 bytes/point).
-//  11. Use tags judiciously: Tags add 8-16 bytes overhead per point; only enable when needed.
+//  11. Use tags judiciously: Tags add a compressed tag payload whose size depends on tag content;
+//     only enable when needed.
 //  12. Profile your workload: Test different configurations with your actual data to find optimal settings.
 //
 // # Error Handling
 //
-// Common errors:
-//   - ErrInvalidBlobFormat: Blob header is corrupted or has wrong magic number
-//   - ErrChecksumMismatch: Data corruption detected (CRC32 validation failed)
-//   - ErrUnsupportedEncoding: Blob uses an encoding this version doesn't support
-//   - ErrMetricNotFound: Requested metric ID doesn't exist in the blob
-//   - ErrInvalidIndex: Index is out of bounds for the metric
+// Common decoding errors (sentinels in the errs package):
+//   - ErrInvalidHeaderSize: Data is shorter than the 32-byte header
+//   - ErrInvalidMagicNumber: Header has an unknown magic number
+//   - ErrInvalidHeaderFlags: Header flags name an unknown encoding or compression
+//   - ErrUnsupportedCompression: Blob uses a compression this version doesn't support
+//   - ErrInvalidIndexEntrySize, ErrInvalidIndexOffsets, ErrInvalidTimestampPayloadOffset,
+//     ErrInvalidValuePayloadOffset, ErrInvalidTagPayloadOffset: Index or payload offsets
+//     are inconsistent with the data
+//   - ErrInvalidNumOfDataPoints: A metric's data point count does not fit its payload
+//   - ErrHashMismatch, ErrInvalidMetricNamesPayload: Metric names do not match their IDs
+//     or cannot be parsed
 //
-// All errors are wrapped using the errs package for proper error chain handling.
+// The blob format has no checksum,
+// so decoding detects only structural inconsistencies, not arbitrary data corruption.
+// Lookups by metric ID, metric name, or index do not return errors:
+// a missing metric or an out-of-range index yields a zero value and false.
+//
+// Many errors are wrapped with context, so match them with errors.Is rather than ==.
 //
 // # Examples
 //

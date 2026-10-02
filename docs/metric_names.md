@@ -54,8 +54,14 @@ txtEnc, _ := blob.NewTextEncoder(start,
 ## Enumeration and Membership
 
 - **`MetricNames()`** returns every stored name, in index order. If the blob has no names payload
-  (no `WithMetricNames`, no collision, or after a strip), it returns an **empty slice** — there is
-  no way to recover a name from a hash, so enumeration is lost entirely, not degraded.
+  (no `WithMetricNames`, no collision, or after a strip), it returns no names at all —
+  there is no way to recover a name from a hash, so enumeration is lost entirely, not degraded.
+  The empty result is not the same value on every type:
+  - `NumericBlob` and `TextBlob` return an empty, non-nil slice (`[]string{}`).
+  - `MaterializedNumericBlob`, `MaterializedTextBlob`, `NumericBlobSet`, `TextBlobSet`,
+    `MaterializedNumericBlobSet`, and `MaterializedTextBlobSet` return `nil`.
+
+  Test for "no names" with `len(names) == 0`, not `names == nil`.
 - **`HasMetricName` / `GetByName` / `*ByName` iterators** keep working either way (they never
   simply fail on a names-free blob), but their *precision* differs:
   - With names retained: the decoder hashes the query, locates the candidate entry, and
@@ -64,6 +70,8 @@ txtEnc, _ := blob.NewTextEncoder(start,
     [Performance](#performance)) over the collision-only path.
   - With names absent (never stored, or stripped): only the hash comparison happens. A query that
     hash-collides with a stored name will false-positive.
+  - Blob sets and materialized blob sets keep the same hash fallback for names-free members,
+    so a set that mixes names-bearing and stripped blobs still answers `*ByName` queries for metrics that only the stripped blobs carry.
 
 This is why `WithMetricNames()` exists as a first-class *feature*, not just a debugging aid: a
 service that needs `GetByName` to reject an unknown-but-hash-colliding name has to keep the names
@@ -108,9 +116,10 @@ without names in the first place, or was names-bearing and then stripped. There 
 in behavior between the two; strip does not create a degraded blob, it produces exactly the
 ordinary no-names blob the encoder would have produced.
 
-1. **Enumeration.** `MetricNames()` returns an empty slice. A consumer that needs to enumerate
-   metrics by name needs a side dictionary (e.g. keep the original name list wherever it decided
-   to strip).
+1. **Enumeration.** `MetricNames()` returns no names:
+   an empty slice or `nil`, depending on the type (see [Enumeration and Membership](#enumeration-and-membership)).
+   A consumer that needs to enumerate metrics by name needs a side dictionary
+   (e.g. keep the original name list wherever it decided to strip).
 2. **Exact negative membership.** `HasMetricName` / `GetByName` / `*ByName` degrade from exact
    string match to hash membership, per [Enumeration and Membership](#enumeration-and-membership)
    above. Concretely:

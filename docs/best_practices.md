@@ -77,7 +77,7 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 
 | Data pattern | Recommended encoding | Why |
 |---|---|---|
-| Regular 1-second intervals | Delta or DeltaPacked timestamp | 1–5 bytes/ts vs 8 bytes raw |
+| Regular 1-second intervals | Delta or DeltaPacked timestamp | ~1 byte/ts on regular data vs 8 bytes raw (worst case 10 bytes for Delta, ~8.25 for DeltaPacked) |
 | Slowly changing floats (CPU, memory) | Gorilla or Chimp value | XOR compression; ~2–5 bytes/val |
 | Rapidly changing or discontinuous values | Raw value | No decompression overhead |
 | Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; ~20–25% additional savings at 200 metrics |
@@ -122,7 +122,11 @@ The break-even point is roughly 100 random accesses on a dataset: the one-time m
 
 ### Tags add overhead — enable them only when needed
 
-Tags are stored as a length-prefixed string per data point and add ~8–16 bytes of overhead per point. Enabling tags on a 200-metric × 200-point blob adds 320 KB–640 KB of overhead.
+Tags are stored as a length-prefixed string per data point.
+The numeric tag payload is always Zstd-compressed, so the real overhead depends on tag length and repetitiveness:
+repeated tags such as `host=server1` compress to a small fraction of their raw size,
+while long unique tags cost close to their full length.
+If every tag in a blob is empty, the encoder drops the tag payload entirely.
 
 Use `NewDefaultNumericEncoder` (tags disabled by default) and switch to `NewTaggedNumericEncoder` only when per-point metadata is required.
 
@@ -132,11 +136,14 @@ Use `NewDefaultNumericEncoder` (tags disabled by default) and switch to `NewTagg
 |--------|--------------|
 | Encoders (`NumericEncoder`, `TextEncoder`) | Not thread-safe. Use one encoder per goroutine. |
 | Blobs (`NumericBlob`, `TextBlob`) | Immutable and safe for concurrent reads once created. |
-| Decoders (`NumericDecoder`, `TextDecoder`) | Safe for concurrent reads from different goroutines. |
+| Decoders (`NumericDecoder`, `TextDecoder`) | Not thread-safe and single-use. Create one decoder per blob and call `Decode()` once from one goroutine. |
 | BlobSets | Safe for concurrent reads. |
 | MaterializedBlobSets | Safe for concurrent reads. |
 
 Encoders are not safe to share across goroutines. If you need parallel encoding of multiple metrics, create one encoder per goroutine and merge the blobs into a BlobSet afterward.
+
+Decoders follow the same rule.
+Decode each blob once and share the resulting `NumericBlob` or `TextBlob` between goroutines instead of sharing the decoder.
 
 ### Monitor memory for large materializations
 

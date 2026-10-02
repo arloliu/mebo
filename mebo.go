@@ -9,7 +9,9 @@
 //
 //   - Hash-based metric identification (64-bit xxHash64) for O(1) lookups
 //   - Columnar storage with separate timestamp and value encoding
-//   - Flexible per-blob encoding strategies (Raw, Delta, Gorilla)
+//   - Flexible per-blob encoding strategies:
+//     timestamps use Raw, Delta, or DeltaPacked;
+//     values use Raw, Gorilla, Chimp, or ALP
 //   - Optional compression (None, Zstd, S2, LZ4)
 //   - Tag support for additional metadata
 //   - Memory-efficient fixed-size structures
@@ -42,13 +44,14 @@
 //	}
 //	encoder.EndMetric()
 //
-//	// Finish and get blob
-//	blob, _ := encoder.Finish()
+//	// Finish and get the encoded blob bytes
+//	data, _ := encoder.Finish()
 //
 // Decoding numeric metrics:
 //
-//	decoder, _ := mebo.NewNumericDecoder(blob.Bytes())
-//	for dp := range decoder.All(metricID) {
+//	decoder, _ := mebo.NewNumericDecoder(data)
+//	decoded, _ := decoder.Decode()
+//	for _, dp := range decoded.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
 //
@@ -99,11 +102,14 @@ var defaultTextOptions = []blob.TextEncoderOption{
 //
 // Available options:
 //   - blob.WithLittleEndian() / blob.WithBigEndian()
-//   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta)
-//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla)
+//   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta|TypeDeltaPacked)
+//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla|TypeChimp|TypeALP)
 //   - blob.WithTimestampCompression(format.CompressionNone|Zstd|S2|LZ4)
 //   - blob.WithValueCompression(format.CompressionNone|Zstd|S2|LZ4)
 //   - blob.WithTagsEnabled(true|false)
+//   - blob.WithMetricNames()
+//   - blob.WithBlobLayoutV2()
+//   - blob.WithSharedTimestamps()
 //
 // Returns an error if the configuration is invalid.
 //
@@ -155,7 +161,10 @@ func NewDefaultNumericEncoder(startTime time.Time) (*blob.NumericEncoder, error)
 // Use this when your metrics need additional metadata (tags) alongside timestamps
 // and values. Tags are stored as strings and are optional per data point.
 //
-// Tags add memory overhead (~8-16 bytes per point) but enable rich metadata:
+// Tags add storage overhead that depends on the tag content.
+// Each tag is stored as a length-prefixed string in a payload that is always zstd-compressed,
+// and the payload is omitted entirely when every tag is empty.
+// Tags enable rich metadata:
 //   - Host/instance identifiers
 //   - Deployment environments (prod, staging, dev)
 //   - Application versions
@@ -190,19 +199,23 @@ func NewTaggedNumericEncoder(startTime time.Time, opts ...blob.NumericEncoderOpt
 
 // NewNumericDecoder creates a decoder for reading numeric metric blobs.
 //
-// The decoder automatically detects the blob's encoding configuration from the header
-// and provides both sequential iteration and random access to the data.
+// The decoder automatically detects the blob's encoding configuration from the header.
+// Call Decode once to obtain a blob.NumericBlob, which provides sequential iteration and random access.
+// A decoder is single-use and not safe for concurrent use;
+// share the decoded blob instead, which is safe for concurrent reads.
 //
 // Parameters:
-//   - data: The raw blob bytes (from encoder.Finish().Bytes() or storage)
+//   - data: The raw blob bytes (from encoder.Finish() or storage)
 //
 // Returns:
 //   - *blob.NumericDecoder: The created numeric decoder.
-//   - error: An error if the configuration is invalid.
+//   - error: An error if the header is invalid.
 //
-// The decoder provides two access patterns:
-//  1. Sequential iteration: decoder.All(metricID) - O(n), optimized for full scans
-//  2. Random access: decoder.ValueAt(metricID, index) - O(log n) to O(n) depending on encoding
+// The decoded blob provides two access patterns:
+//  1. Sequential iteration: decoded.All(metricID) - O(n), optimized for full scans
+//  2. Random access: decoded.ValueAt(metricID, index) - O(1) for Raw values,
+//     O(1) plus O(log k) exception search for ALP values,
+//     and O(index) for Gorilla and Chimp values
 //
 // Example:
 //
@@ -211,8 +224,13 @@ func NewTaggedNumericEncoder(startTime time.Time, opts ...blob.NumericEncoderOpt
 //	    log.Fatal(err)
 //	}
 //
+//	decoded, err := decoder.Decode()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
 //	// Sequential access (preferred)
-//	for dp := range decoder.All(metricID) {
+//	for _, dp := range decoded.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
 func NewNumericDecoder(data []byte) (*blob.NumericDecoder, error) {
@@ -240,6 +258,7 @@ func NewNumericDecoder(data []byte) (*blob.NumericDecoder, error) {
 //   - blob.WithTextTimestampEncoding(format.TypeRaw|TypeDelta)
 //   - blob.WithTextDataCompression(format.CompressionNone|Zstd|S2|LZ4)
 //   - blob.WithTextTagsEnabled(true|false)
+//   - blob.WithoutMetricNames()
 //
 // Note: Text values are stored as length-prefixed strings. Compression is highly
 // recommended for text data (CompressionZstd or CompressionS2).
@@ -322,15 +341,17 @@ func NewTaggedTextEncoder(startTime time.Time, opts ...blob.TextEncoderOption) (
 
 // NewTextDecoder creates a decoder for reading text metric blobs.
 //
-// Automatically detects encoding configuration from the blob header and provides
-// access to string values.
+// Automatically detects encoding configuration from the blob header.
+// Call Decode once to obtain a blob.TextBlob, which provides access to string values.
+// A decoder is single-use and not safe for concurrent use;
+// share the decoded blob instead, which is safe for concurrent reads.
 //
 // Parameters:
 //   - data: The raw blob bytes
 //
 // Returns:
 //   - *blob.TextDecoder: The created text decoder.
-//   - error: An error if the configuration is invalid.
+//   - error: An error if the header is invalid.
 //
 // Example:
 //
@@ -339,7 +360,12 @@ func NewTaggedTextEncoder(startTime time.Time, opts ...blob.TextEncoderOption) (
 //	    log.Fatal(err)
 //	}
 //
-//	for dp := range decoder.All(metricID) {
+//	decoded, err := decoder.Decode()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	for _, dp := range decoded.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%s\n", dp.Ts, dp.Val)
 //	}
 func NewTextDecoder(data []byte) (*blob.TextDecoder, error) {
@@ -354,24 +380,34 @@ func NewTextDecoder(data []byte) (*blob.TextDecoder, error) {
 //   - Cross-blob metric queries
 //   - Efficient access patterns for time-range queries
 //
-// Blobs are automatically sorted by start time. The set validates that all blobs
-// are properly formatted and compatible.
+// Blobs are automatically sorted by start time.
+// The set only rejects an empty slice;
+// it does not check the blobs against each other.
 //
 // Parameters:
-//   - blobs: Array of NumericBlob instances (typically from encoder.Finish())
+//   - blobs: Decoded NumericBlob instances (from NumericDecoder.Decode)
 //
 // Returns:
 //   - blob.NumericBlobSet: The created numeric blob set (immutable, safe for concurrent reads).
-//   - error: An error if the blobs are invalid.
+//   - error: An error if the blobs slice is empty.
 //
 // Example:
 //
-//	blob1, _ := encoder1.Finish()
-//	blob2, _ := encoder2.Finish()
+//	data1, _ := encoder1.Finish()
+//	data2, _ := encoder2.Finish()
+//
+//	decoder1, _ := mebo.NewNumericDecoder(data1)
+//	blob1, _ := decoder1.Decode()
+//	decoder2, _ := mebo.NewNumericDecoder(data2)
+//	blob2, _ := decoder2.Decode()
+//
 //	blobSet, err := mebo.NewNumericBlobSet([]blob.NumericBlob{blob1, blob2})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	// Query across all blobs
-//	for dp := range blobSet.All(metricID) {
+//	for _, dp := range blobSet.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 //	}
 func NewNumericBlobSet(blobs []blob.NumericBlob) (blob.NumericBlobSet, error) {
@@ -432,12 +468,16 @@ func NewMaterializedNumericBlobSet(blobs []blob.NumericBlob) (blob.MaterializedN
 //
 // Returns:
 //   - blob.TextBlobSet: The created text blob set (immutable, safe for concurrent reads).
-//   - error: An error if the blobs are invalid.
+//   - error: An error if the blobs slice is empty.
 //
 // Example:
 //
 //	blobSet, err := mebo.NewTextBlobSet(textBlobs)
-//	for dp := range blobSet.All(metricID) {
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	for _, dp := range blobSet.All(metricID) {
 //	    fmt.Printf("ts=%d, val=%s\n", dp.Ts, dp.Val)
 //	}
 func NewTextBlobSet(blobs []blob.TextBlob) (blob.TextBlobSet, error) {
@@ -461,6 +501,9 @@ func NewTextBlobSet(blobs []blob.TextBlob) (blob.TextBlobSet, error) {
 // Example:
 //
 //	mat, err := mebo.NewMaterializedTextBlobSet(textBlobs)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //	val, ok := mat.ValueAt(metricID, 100)  // O(1) access
 func NewMaterializedTextBlobSet(blobs []blob.TextBlob) (blob.MaterializedTextBlobSet, error) {
 	blobSet, err := blob.NewTextBlobSet(blobs)
@@ -494,14 +537,19 @@ func NewMaterializedTextBlobSet(blobs []blob.TextBlob) (blob.MaterializedTextBlo
 //
 //	blobSet := mebo.NewBlobSet(numericBlobs, textBlobs)
 //
-//	// Access numeric metrics
-//	for dp := range blobSet.NumericAt(cpuMetricID) {
+//	// Iterate numeric metrics
+//	for _, dp := range blobSet.AllNumerics(cpuMetricID) {
 //	    fmt.Printf("CPU: %f\n", dp.Val)
 //	}
 //
-//	// Access text metrics
-//	for dp := range blobSet.TextAt(statusMetricID) {
+//	// Iterate text metrics
+//	for _, dp := range blobSet.AllTexts(statusMetricID) {
 //	    fmt.Printf("Status: %s\n", dp.Val)
+//	}
+//
+//	// Random access by global index
+//	if dp, ok := blobSet.NumericAt(cpuMetricID, 0); ok {
+//	    fmt.Printf("first CPU value: %f\n", dp.Val)
 //	}
 //
 //	// Materialize for random access
@@ -515,7 +563,7 @@ func NewBlobSet(numericBlobs []blob.NumericBlob, textBlobs []blob.TextBlob) blob
 //
 // Mebo uses xxHash64 to convert metric names to fixed-size IDs for:
 //   - Fast O(1) hash map lookups
-//   - Fixed-size index entries (16 bytes each)
+//   - Fixed-size index entries (16 bytes each, or 32 bytes for V2 extended entries)
 //   - Consistent metric identification across blobs
 //
 // The hash function guarantees:
@@ -524,8 +572,11 @@ func NewBlobSet(numericBlobs []blob.NumericBlob, textBlobs []blob.TextBlob) blob
 //   - Fast: ~1-2 ns per hash on modern CPUs
 //
 // Collision handling:
-//   - When collisions occur, metric names are automatically included in the blob
-//   - The decoder verifies names to detect collisions
+//   - With StartMetricName, a collision makes the encoder store metric names
+//     in the blob's metric-names payload automatically
+//   - With MetricID and StartMetricID, the encoder cannot tell names apart,
+//     so a duplicate ID returns ErrHashCollision
+//   - When names are stored, the decoder verifies them against their hashes
 //   - Collision probability: ~1 in 2^64 (negligible for practical use)
 //
 // When to use:
@@ -547,11 +598,13 @@ func NewBlobSet(numericBlobs []blob.NumericBlob, textBlobs []blob.TextBlob) blob
 //	memID := mebo.MetricID("memory.bytes")
 //
 //	encoder.StartMetricID(cpuID, 100)
-//	// ... append values ...
+//	// ... add 100 data points, then call EndMetric ...
+//	encoder.StartMetricID(memID, 100)
+//	// ... add 100 data points, then call EndMetric ...
 //
-//	// Query with same ID
-//	for dp := range decoder.All(cpuID) {
-//	    // ...
+//	// Query the decoded blob with the same ID
+//	for _, dp := range decoded.All(cpuID) {
+//	    fmt.Println(dp.Ts, dp.Val)
 //	}
 func MetricID(name string) uint64 {
 	return hash.ID(name)

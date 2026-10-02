@@ -125,6 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/design.md` no longer claims 8-byte payload alignment.
 - Corrected godoc for `TagAt` (O(index), not O(1)),
   `NumericHeader.MetricCount` (up to 65536) and `NumericIndexEntry.TagLength`.
+- Every Go example in the godoc, README and `docs/advanced_usage.md` now compiles
+  against the current API (decode via `Decode()`, `Finish()` returns `[]byte`, `range` over `iter.Seq2`).
+- README, API_STABILITY and CONTRIBUTING now state Go 1.25 to match `go.mod`;
+  the README no longer recommends CGO (zstd is pure Go).
+- Docs now state the real decoder concurrency rule, error sentinels, encoding byte costs,
+  tag cost, name-lookup fallback, `MetricNames()` result per type and blob-set access costs,
+  and `encoding`/`compress` package docs describe only APIs that exist.
 
 ## [1.10.0] - 2026-07-26
 
