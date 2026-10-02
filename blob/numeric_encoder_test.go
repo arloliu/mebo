@@ -3021,14 +3021,22 @@ func TestNumericEncoder_V1_DeltaGuardPreserved(t *testing.T) {
 }
 
 func TestValidateBlobSize(t *testing.T) {
-	tests := []struct {
+	type testCase struct {
 		name     string
 		blobSize int
 		wantErr  bool
-	}{
+	}
+
+	tests := []testCase{
 		{name: "below limit", blobSize: maxBlobBytes - 1, wantErr: false},
 		{name: "at limit", blobSize: maxBlobBytes, wantErr: false},
-		{name: "above limit", blobSize: maxBlobBytes + 1, wantErr: true},
+	}
+
+	// On 32-bit platforms maxBlobBytes equals math.MaxInt,
+	// so no int is above the limit.
+	limit := maxBlobBytes
+	if limit < math.MaxInt {
+		tests = append(tests, testCase{name: "above limit", blobSize: limit + 1, wantErr: true})
 	}
 
 	for _, tt := range tests {
