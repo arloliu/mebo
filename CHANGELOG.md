@@ -49,6 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HasMetricName` for names-free members by hashing the name,
   matching the raw set and single-blob `Materialize()`.
   They previously reported every name as missing when no member stored names.
+- `NumericBlobSet.ForEach*` now apply the set's metric identity, like `All*` and `ValueAt`.
+  A collided ID previously yielded every colliding name's points as one series,
+  and a by-name call included stripped members that belong to the other colliding name.
+- `BlobSet.TimestampAt`, `TagAt` (and their `ByName` forms) and `MetricDuration*`
+  now serve a metric found in numeric members from those members only,
+  like `MetricLen`, `AllTimestamps` and `AllTags`.
+  When the same metric also existed in text members,
+  an index past the numeric points used to return a text point,
+  and a single-point numeric metric reported the text members' duration.
 - Numeric decoder: a header whose payload offsets are out of order
   now returns `ErrInvalidValuePayloadOffset` or `ErrInvalidTagPayloadOffset` instead of panicking.
 - ALP decoding: a column header whose exponent or factor exceeds 18,

@@ -557,12 +557,14 @@ func (bs BlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
 
 	curIdx := 0
+	foundInNumeric := false
 
 	for _, blob := range bs.numericBlobs {
 		entry, ok := blob.index.resolveEntry(metricID, numTarget, numCollided)
 		if !ok {
 			continue
 		}
+		foundInNumeric = true
 		length := entry.Count
 		if curIdx+length > index {
 			return blob.timestampAtFromEntry(entry, index-curIdx)
@@ -570,7 +572,12 @@ func (bs BlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 		curIdx += length
 	}
 
-	curIdx = 0 // Reset for text blobs
+	// Like MetricLen and AllTimestamps, a metric found in numeric members is
+	// served by them alone; text members only answer numeric-absent metrics.
+	if foundInNumeric {
+		return 0, false
+	}
+
 	for _, blob := range bs.textBlobs {
 		entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
 		if !ok {
@@ -595,12 +602,14 @@ func (bs BlobSet) TimestampAtByName(metricName string, index int) (int64, bool) 
 	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
 
 	curIdx := 0
+	foundInNumeric := false
 
 	for _, blob := range bs.numericBlobs {
 		entry, ok := blob.index.resolveEntryByName(metricName, numSkipStripped)
 		if !ok {
 			continue
 		}
+		foundInNumeric = true
 		length := entry.Count
 		if curIdx+length > index {
 			return blob.timestampAtFromEntry(entry, index-curIdx)
@@ -608,7 +617,12 @@ func (bs BlobSet) TimestampAtByName(metricName string, index int) (int64, bool) 
 		curIdx += length
 	}
 
-	curIdx = 0 // Reset for text blobs
+	// Like MetricLen and AllTimestamps, a metric found in numeric members is
+	// served by them alone; text members only answer numeric-absent metrics.
+	if foundInNumeric {
+		return 0, false
+	}
+
 	for _, blob := range bs.textBlobs {
 		entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
 		if !ok {
@@ -633,6 +647,7 @@ func (bs BlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
 
 	curIdx := 0
+	foundInNumeric := false
 
 	// Try numeric blobs first (95% case)
 	for _, blob := range bs.numericBlobs {
@@ -640,6 +655,7 @@ func (bs BlobSet) TagAt(metricID uint64, index int) (string, bool) {
 		if !ok {
 			continue
 		}
+		foundInNumeric = true
 		length := entry.Count
 		if curIdx+length > index {
 			if !blob.HasTag() {
@@ -651,7 +667,12 @@ func (bs BlobSet) TagAt(metricID uint64, index int) (string, bool) {
 		curIdx += length
 	}
 
-	curIdx = 0 // Reset for text blobs
+	// Like MetricLen and AllTimestamps, a metric found in numeric members is
+	// served by them alone; text members only answer numeric-absent metrics.
+	if foundInNumeric {
+		return "", false
+	}
+
 	for _, blob := range bs.textBlobs {
 		entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
 		if !ok {
@@ -680,6 +701,7 @@ func (bs BlobSet) TagAtByName(metricName string, index int) (string, bool) {
 	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
 
 	curIdx := 0
+	foundInNumeric := false
 
 	// Try numeric blobs first (95% case)
 	for _, blob := range bs.numericBlobs {
@@ -687,6 +709,7 @@ func (bs BlobSet) TagAtByName(metricName string, index int) (string, bool) {
 		if !ok {
 			continue
 		}
+		foundInNumeric = true
 		length := entry.Count
 		if curIdx+length > index {
 			if !blob.HasTag() {
@@ -698,7 +721,12 @@ func (bs BlobSet) TagAtByName(metricName string, index int) (string, bool) {
 		curIdx += length
 	}
 
-	curIdx = 0 // Reset for text blobs
+	// Like MetricLen and AllTimestamps, a metric found in numeric members is
+	// served by them alone; text members only answer numeric-absent metrics.
+	if foundInNumeric {
+		return "", false
+	}
+
 	for _, blob := range bs.textBlobs {
 		entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
 		if !ok {
@@ -1320,14 +1348,13 @@ func (bs BlobSet) MetricDuration(metricID uint64) int64 {
 	// metric; name-keyed duration walks exactly that metric's members.
 	// targetName IS the first colliding name, so a stripped member correctly
 	// contributes and needs no filter.
-	var duration int64
-	if numTarget, numCollided := bs.numericIdentity.resolveID(metricID); numCollided {
-		duration = calculateDurationByName(bs.numericBlobs, numTarget, nil)
-	} else {
-		duration = calculateDuration(bs.numericBlobs, metricID)
-	}
-	if duration > 0 {
-		return duration
+	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
+	if bs.inNumeric(metricID, numTarget, numCollided) {
+		if numCollided {
+			return calculateDurationByName(bs.numericBlobs, numTarget, nil)
+		}
+
+		return calculateDuration(bs.numericBlobs, metricID)
 	}
 
 	if txtTarget, txtCollided := bs.textIdentity.resolveID(metricID); txtCollided {
@@ -1357,14 +1384,14 @@ func (bs BlobSet) MetricDuration(metricID uint64) int64 {
 func (bs BlobSet) MetricDurationByName(metricName string) int64 {
 	// A stripped member's ID hash-matches every colliding name; when metricName is not
 	// the first colliding name, those members belong to the other logical metric.
-	var numFilter func(i int) bool
-	if bs.numericIdentity.excludesStripped(metricName) {
-		numFilter = func(i int) bool { return bs.numericBlobs[i].index.names != nil }
-	}
+	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
+	if bs.inNumericByName(metricName, numSkipStripped) {
+		var numFilter func(i int) bool
+		if numSkipStripped {
+			numFilter = func(i int) bool { return bs.numericBlobs[i].index.names != nil }
+		}
 
-	duration := calculateDurationByName(bs.numericBlobs, metricName, numFilter)
-	if duration > 0 {
-		return duration
+		return calculateDurationByName(bs.numericBlobs, metricName, numFilter)
 	}
 
 	var txtFilter func(i int) bool
@@ -1373,6 +1400,30 @@ func (bs BlobSet) MetricDurationByName(metricName string) int64 {
 	}
 
 	return calculateDurationByName(bs.textBlobs, metricName, txtFilter)
+}
+
+// inNumeric reports whether the ID-keyed metric resolves to an entry in any
+// numeric member. Accessors that span both types serve such a metric from the
+// numeric members alone.
+func (bs BlobSet) inNumeric(metricID uint64, target string, collided bool) bool {
+	for i := range bs.numericBlobs {
+		if _, ok := bs.numericBlobs[i].index.resolveEntry(metricID, target, collided); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// inNumericByName is the name-keyed counterpart of inNumeric.
+func (bs BlobSet) inNumericByName(metricName string, skipStripped bool) bool {
+	for i := range bs.numericBlobs {
+		if _, ok := bs.numericBlobs[i].index.resolveEntryByName(metricName, skipStripped); ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 // numericPointFromEntry / textPointFromEntry assemble a full data point from a member's
