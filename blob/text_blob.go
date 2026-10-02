@@ -9,6 +9,9 @@ import (
 	"github.com/arloliu/mebo/section"
 )
 
+// errTimestampDeltaVarint reports a truncated or overlong text delta varint.
+var errTimestampDeltaVarint = fmt.Errorf("%w: truncated or overlong delta varint", errs.ErrInvalidTimestampData)
+
 // TextDataPoint represents a single data point with timestamp, text value, and optional tag.
 // The TextBlob methods return iterators of these data points.
 type TextDataPoint struct {
@@ -739,7 +742,7 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 	// Callers advance by the length bytes of the previous point; a corrupt
 	// length can push the offset past the metric's data.
 	if offset < 0 || offset >= len(data) {
-		return 0, 0, fmt.Errorf("%w: data point offset %d outside %d data bytes", errs.ErrInvalidTimestampData, offset, len(data))
+		return 0, 0, errTimestampOffset(offset, len(data))
 	}
 
 	switch b.tsEncType { //nolint: exhaustive
@@ -749,7 +752,7 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 		// encoder uses for a metric's first data point.
 		delta, n := decodeVarint(data[offset:])
 		if n == 0 {
-			return 0, 0, fmt.Errorf("%w: truncated or overlong delta varint", errs.ErrInvalidTimestampData)
+			return 0, 0, errTimestampDeltaVarint
 		}
 		ts := *lastTs + delta
 		*lastTs = ts
@@ -783,20 +786,25 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 	}
 }
 
+// errTimestampOffset reports a data point offset outside the metric's data.
+// It stays out of line so the per-point decode path carries no formatting code.
+//
+//go:noinline
+func errTimestampOffset(offset, size int) error {
+	return fmt.Errorf("%w: data point offset %d outside %d data bytes", errs.ErrInvalidTimestampData, offset, size)
+}
+
 // decodeVarint decodes a varint from the byte slice and returns the value and bytes consumed.
 func decodeVarint(data []byte) (int64, int) {
+	// A varint spans at most binary.MaxVarintLen64 (10) bytes,
+	// so never examine more than that.
+	if len(data) > 10 {
+		data = data[:10]
+	}
+
 	var uval uint64
 	var shift uint
-	var n int
-
-	for {
-		if n >= len(data) {
-			return 0, 0
-		}
-
-		b := data[n]
-		n++
-
+	for n, b := range data {
 		uval |= uint64(b&0x7f) << shift
 		if b < 0x80 {
 			// The tenth byte holds only bit 63; more overflows uint64.
@@ -804,16 +812,11 @@ func decodeVarint(data []byte) (int64, int) {
 				return 0, 0
 			}
 
-			break
+			// Zigzag decoding: converts unsigned back to signed
+			return int64(uval>>1) ^ -int64(uval&1), n + 1
 		}
 		shift += 7
-		if shift > 63 { // at most binary.MaxVarintLen64 (10) bytes
-			return 0, 0
-		}
 	}
 
-	// Zigzag decoding: converts unsigned back to signed
-	val := int64(uval>>1) ^ -int64(uval&1)
-
-	return val, n
+	return 0, 0
 }

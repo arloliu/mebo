@@ -1,17 +1,20 @@
 package blob
 
 import (
+	"bytes"
 	"math"
+	"runtime/debug"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
-	"github.com/stretchr/testify/require"
 )
 
 func TestTextBlob_EmptyBlob(t *testing.T) {
@@ -1290,6 +1293,71 @@ func TestTextBlob_RejectsMalformedTimestampEncoding(t *testing.T) {
 		require.Equal(t, 10, n)
 		require.Equal(t, int64(math.MinInt64), ts)
 	})
+}
+
+// TestDecodeVarint_LengthBounds pins decodeVarint on every varint length:
+// up to ten bytes decode, a tenth byte above 0x01 overflows,
+// and anything longer is rejected from its first ten bytes alone,
+// however long the continuation run.
+func TestDecodeVarint_LengthBounds(t *testing.T) {
+	continuation := func(k int, last byte) []byte {
+		data := bytes.Repeat([]byte{0x80}, k)
+
+		return append(data, last)
+	}
+
+	// k continuation bytes, then 0x02: the value is 2 << 7k, which zigzag-decodes to 1 << 7k.
+	for k := range 9 {
+		val, n := decodeVarint(continuation(k, 0x02))
+		require.Equalf(t, k+1, n, "%d-byte varint", k+1)
+		require.Equalf(t, int64(1)<<(7*k), val, "%d-byte varint", k+1)
+	}
+
+	// A tenth byte of 0x01 sets bit 63, which zigzag-decodes to 1 << 62.
+	val, n := decodeVarint(continuation(9, 0x01))
+	require.Equal(t, 10, n)
+	require.Equal(t, int64(1)<<62, val)
+
+	_, n = decodeVarint(continuation(9, 0x02))
+	require.Zero(t, n, "tenth byte above 0x01 overflows uint64")
+
+	_, n = decodeVarint(continuation(10, 0x00))
+	require.Zero(t, n, "eleven-byte varint")
+
+	_, n = decodeVarint(continuation(1<<16, 0x00))
+	require.Zero(t, n, "long continuation run")
+
+	_, n = decodeVarint(nil)
+	require.Zero(t, n, "empty input")
+
+	_, n = decodeVarint(bytes.Repeat([]byte{0x80}, 5))
+	require.Zero(t, n, "truncated varint")
+}
+
+// TestDecodeVarint_ExaminesAtMostTenBytes pins the ten-byte examination bound
+// directly. Rejecting overlong input is not enough to prove it: an unbounded
+// scan rejects such runs too, after reading all of them. Here every byte past
+// the tenth lies on an inaccessible page, so reading an eleventh byte faults.
+func TestDecodeVarint_ExaminesAtMostTenBytes(t *testing.T) {
+	data, ok := guardedBytes(t, 10)
+	if !ok {
+		t.Skip("guard pages are only set up on linux")
+	}
+	require.Greater(t, len(data), 10, "the slice must extend onto the guard page")
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+
+	for i := range 10 {
+		data[i] = 0x80
+	}
+	var n int
+	require.NotPanics(t, func() { _, n = decodeVarint(data) }, "read past the tenth byte")
+	require.Zero(t, n, "ten continuation bytes")
+
+	data[9] = 0x01
+	var val int64
+	require.NotPanics(t, func() { val, n = decodeVarint(data) }, "read past the tenth byte")
+	require.Equal(t, 10, n)
+	require.Equal(t, int64(1)<<62, val)
 }
 
 // TestTextBlob_LengthByteSkippingPastDataDoesNotPanic pins that a value-length
