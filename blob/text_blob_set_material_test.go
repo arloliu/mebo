@@ -492,3 +492,46 @@ func TestTextBlobSet_MaterializeMetric_SingleBlob(t *testing.T) {
 		require.Equal(t, metric.Values[i], val)
 	}
 }
+
+// TestMaterializedTextBlobSet_ByName_NoNamesPayload is the text counterpart of
+// TestMaterializedNumericBlobSet_ByName_NoNamesPayload.
+func TestMaterializedTextBlobSet_ByName_NoNamesPayload(t *testing.T) {
+	const metricName = "set.metric.no.names"
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	blobs := make([]TextBlob, 0, 2)
+	for b := range 2 {
+		start := base.Add(time.Duration(b) * time.Hour)
+		encoder, err := NewTextEncoder(start, WithoutMetricNames())
+		require.NoError(t, err)
+		require.NoError(t, encoder.StartMetricName(metricName, 2))
+		for i := range 2 {
+			require.NoError(t, encoder.AddDataPoint(start.UnixMicro()+int64(i), string(rune('a'+b*2+i)), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewTextDecoder(data)
+		require.NoError(t, err)
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+		require.False(t, blob.HasMetricNames(), "members must carry no names payload")
+		blobs = append(blobs, blob)
+	}
+
+	set, err := NewTextBlobSet(blobs)
+	require.NoError(t, err)
+	require.Equal(t, 4, set.MetricLenByName(metricName), "raw set resolves the name by hash")
+
+	mat := set.Materialize()
+	require.True(t, mat.HasMetricName(metricName))
+	require.Equal(t, 4, mat.DataPointCountByName(metricName))
+	for i, want := range []string{"a", "b", "c", "d"} {
+		val, ok := mat.ValueAtByName(metricName, i)
+		require.Truef(t, ok, "ValueAtByName(%d)", i)
+		require.Equalf(t, want, val, "ValueAtByName(%d)", i)
+	}
+
+	require.False(t, mat.HasMetricName("set.metric.absent"))
+}

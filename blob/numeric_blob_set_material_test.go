@@ -1098,3 +1098,50 @@ func TestNumericBlobSet_MaterializeMetric_MixedTagBlobs(t *testing.T) {
 		require.Equal(t, "tagY", metric.Tags[i], "index %d should have tagY", i)
 	}
 }
+
+// TestMaterializedNumericBlobSet_ByName_NoNamesPayload pins that a materialized
+// set built from names-free members resolves name lookups by hash, matching the
+// raw set and the single-blob Materialize() result.
+func TestMaterializedNumericBlobSet_ByName_NoNamesPayload(t *testing.T) {
+	const metricName = "set.metric.no.names"
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	blobs := make([]NumericBlob, 0, 2)
+	for b := range 2 {
+		start := base.Add(time.Duration(b) * time.Hour)
+		encoder, err := NewNumericEncoder(start)
+		require.NoError(t, err)
+		require.NoError(t, encoder.StartMetricName(metricName, 3))
+		for i := range 3 {
+			require.NoError(t, encoder.AddDataPoint(start.UnixMicro()+int64(i), float64(b*10+i), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+		data, err := encoder.Finish()
+		require.NoError(t, err)
+
+		decoder, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+		require.False(t, blob.HasMetricNames(), "members must carry no names payload")
+		blobs = append(blobs, blob)
+	}
+
+	set, err := NewNumericBlobSet(blobs)
+	require.NoError(t, err)
+	require.Equal(t, 6, set.MetricLenByName(metricName), "raw set resolves the name by hash")
+
+	mat := set.Materialize()
+	require.True(t, mat.HasMetricName(metricName))
+	require.Equal(t, 6, mat.DataPointCountByName(metricName))
+	for i, want := range []float64{0, 1, 2, 10, 11, 12} {
+		val, ok := mat.ValueAtByName(metricName, i)
+		require.Truef(t, ok, "ValueAtByName(%d)", i)
+		require.Equalf(t, want, val, "ValueAtByName(%d)", i)
+
+		_, ok = mat.TimestampAtByName(metricName, i)
+		require.Truef(t, ok, "TimestampAtByName(%d)", i)
+	}
+
+	require.False(t, mat.HasMetricName("set.metric.absent"))
+}
