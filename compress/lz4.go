@@ -56,12 +56,20 @@ func (c LZ4Compressor) Compress(data []byte) ([]byte, error) {
 	return dst[:n], nil
 }
 
+// lz4MaxExpansion and lz4ExpansionSlack bound how large a decompressed LZ4
+// block can be relative to its input.
+const (
+	lz4MaxExpansion   = 255
+	lz4ExpansionSlack = 64
+)
+
 // Decompress decompresses the input data using LZ4 decompression.
 //
 // This method uses an adaptive buffer sizing strategy to handle cases where
 // the decompressed size is unknown:
 //  1. Start with a buffer 4x the compressed size (common expansion ratio)
-//  2. On ErrInvalidSourceShortBuffer, double the buffer size (up to maxSize)
+//  2. On ErrInvalidSourceShortBuffer, double the buffer size, up to the smaller
+//     of 255x the input (the most an LZ4 block can expand) and 128MB
 //  3. Return error if buffer exceeds reasonable limits (prevents memory exhaustion)
 //
 // Parameters:
@@ -69,29 +77,31 @@ func (c LZ4Compressor) Compress(data []byte) ([]byte, error) {
 //
 // Returns:
 //   - []byte: Decompressed data (nil if input is empty)
-//   - error: ErrInvalidSourceShortBuffer if buffer exceeded 128MB limit, or other decompression errors
+//   - error: ErrInvalidSourceShortBuffer if the output would exceed those limits
+//     or the input is corrupt, or other decompression errors
 func (c LZ4Compressor) Decompress(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
 
-	bufSize := len(data) * 4
+	// LZ4 blocks cannot expand more than ~255x (a match length costs one byte
+	// per 255 output bytes), so cap the retry budget there as well as at the
+	// global limit. lz4 reports corrupt input and a short buffer with the same
+	// error, so without this cap corrupt input doubled the buffer up to the
+	// global limit. Sizes are computed in uint64 so they cannot wrap on 32-bit.
+	limit := min(uint64(maxDecompressSize), uint64(len(data))*lz4MaxExpansion+lz4ExpansionSlack)
+	bufSize := min(uint64(len(data))*4, limit)
 
-	for bufSize <= maxDecompressSize {
+	for {
 		buf := make([]byte, bufSize)
 		n, err := lz4.UncompressBlock(data, buf)
-		if err != nil {
-			if errors.Is(err, lz4.ErrInvalidSourceShortBuffer) && bufSize < maxDecompressSize {
-				bufSize *= 2 // Double buffer size and retry
-				continue
-			}
-
+		if err == nil {
+			return buf[:n], nil
+		}
+		if !errors.Is(err, lz4.ErrInvalidSourceShortBuffer) || bufSize >= limit {
+			// Corrupt data, or output beyond what LZ4 or the global limit allows.
 			return nil, err
 		}
-
-		return buf[:n], nil
+		bufSize = min(bufSize*2, limit) // Double buffer size and retry
 	}
-
-	// Buffer exceeded maxDecompressSize - likely corrupted data or unreasonable compression ratio
-	return nil, lz4.ErrInvalidSourceShortBuffer
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"testing"
 
 	"github.com/arloliu/mebo/format"
@@ -847,4 +848,27 @@ func TestAllCodecs_ProgressiveDataSizes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLZ4Decompress_CorruptInputAllocatesBounded pins that corrupt LZ4 input is
+// rejected without growing the output buffer far beyond what the input could
+// ever expand to (LZ4 cannot exceed ~255x).
+func TestLZ4Decompress_CorruptInputAllocatesBounded(t *testing.T) {
+	codec := NewLZ4Compressor()
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := codec.Decompress([]byte{0xf0})
+	runtime.ReadMemStats(&after)
+
+	require.Error(t, err)
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(1<<20), "corrupt 1-byte input must not allocate megabytes")
+
+	// Highly compressible data still round-trips.
+	src := make([]byte, 1<<20)
+	compressed, err := codec.Compress(src)
+	require.NoError(t, err)
+	out, err := codec.Decompress(compressed)
+	require.NoError(t, err)
+	require.Equal(t, src, out)
 }
