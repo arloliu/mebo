@@ -474,10 +474,14 @@ func (s NumericBlobSet) MetricDuration(metricID uint64) int64 {
 	// duration walks exactly that metric's members. targetName IS the first colliding
 	// name, so a stripped member correctly contributes and needs no filter.
 	if targetName, collided := s.identity.resolveID(metricID); collided {
-		return calculateDurationByName(s.blobs, targetName, nil)
+		duration, _ := calculateDurationByName(s.blobs, targetName, nil)
+
+		return duration
 	}
 
-	return calculateDuration(s.blobs, metricID)
+	duration, _ := calculateDuration(s.blobs, metricID)
+
+	return duration
 }
 
 // MetricCount returns the number of distinct logical set metrics, grouped by the
@@ -539,12 +543,16 @@ func (s NumericBlobSet) MetricDurationByName(metricName string) int64 {
 	if s.identity.excludesStripped(metricName) {
 		// metricName is not the first colliding name for its ID, so the stripped members
 		// that merely hash-match it belong to the other logical metric.
-		return calculateDurationByName(s.blobs, metricName, func(i int) bool {
+		duration, _ := calculateDurationByName(s.blobs, metricName, func(i int) bool {
 			return s.blobs[i].index.names != nil
 		})
+
+		return duration
 	}
 
-	return calculateDurationByName(s.blobs, metricName, nil)
+	duration, _ := calculateDurationByName(s.blobs, metricName, nil)
+
+	return duration
 }
 
 // anyHasTag reports whether any member of a set carries tags. Set-level tag
