@@ -528,7 +528,7 @@ func (s *DeltaTsState) Next(data []byte) bool {
 						break
 					}
 					shift += 7
-					if shift >= 63 {
+					if shift > 63 {
 						return false
 					}
 				}
@@ -765,7 +765,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 			}
 
 			shift += 7
-			if shift >= 63 { // equivalent to binary.MaxVarintLen64 (10 bytes)
+			if shift > 63 { // at most binary.MaxVarintLen64 (10) bytes
 				return produced
 			}
 		}

@@ -1319,3 +1319,42 @@ func TestTimestampDeltaDecoder_DecodeAll_JitterTruncated(t *testing.T) {
 		require.Equal(t, want[:decoded], got[:decoded], "cut=%d: decoded prefix must match", cut)
 	}
 }
+
+// TestTimestampDeltaDecoder_TenByteVarintParity pins that every decode path
+// accepts a 10-byte varint after the first timestamp (|delta-of-delta| >= 2^62),
+// matching what the encoder emits and what All/At already accepted.
+func TestTimestampDeltaDecoder_TenByteVarintParity(t *testing.T) {
+	timestamps := []int64{0, 0, 1 << 62, 1<<62 + 5, -(1 << 62), 7}
+
+	encoder := NewTimestampDeltaEncoder()
+	encoder.WriteSlice(timestamps)
+	encoded := append([]byte(nil), encoder.Bytes()...)
+	encoder.Finish()
+
+	decoder := NewTimestampDeltaDecoder()
+	count := len(timestamps)
+
+	viaAll := make([]int64, 0, count)
+	for ts := range decoder.All(encoded, count) {
+		viaAll = append(viaAll, ts)
+	}
+	require.Equal(t, timestamps, viaAll, "All")
+
+	viaDecodeAll := make([]int64, count)
+	require.Equal(t, count, decoder.DecodeAll(encoded, count, viaDecodeAll), "DecodeAll count")
+	require.Equal(t, timestamps, viaDecodeAll, "DecodeAll")
+
+	state, ok := NewDeltaTsState(encoded)
+	require.True(t, ok)
+	viaState := []int64{state.Ts()}
+	for len(viaState) < count && state.Next(encoded) {
+		viaState = append(viaState, state.Ts())
+	}
+	require.Equal(t, timestamps, viaState, "DeltaTsState")
+
+	for i, want := range timestamps {
+		got, ok := decoder.At(encoded, i, count)
+		require.Truef(t, ok, "At(%d)", i)
+		require.Equalf(t, want, got, "At(%d)", i)
+	}
+}

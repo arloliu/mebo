@@ -3127,3 +3127,45 @@ func testOffsetBoundary(t *testing.T, numMetrics, _ int, encoding format.Encodin
 		require.True(t, ok, "Expected random access to succeed")
 	}
 }
+
+// TestNumericBlob_DeltaTenByteVarintAllPaths pins that the fused iteration and
+// materialize paths decode Delta timestamps whose delta-of-delta needs a 10-byte
+// varint, exactly like AllTimestamps.
+func TestNumericBlob_DeltaTenByteVarintAllPaths(t *testing.T) {
+	timestamps := []int64{0, 0, 1 << 62, 1<<62 + 5}
+	values := []float64{1, 2, 3, 4}
+	const metricID = uint64(99)
+
+	encoder, err := NewNumericEncoder(time.Unix(0, 0).UTC(),
+		WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla))
+	require.NoError(t, err)
+	require.NoError(t, encoder.StartMetricID(metricID, len(timestamps)))
+	require.NoError(t, encoder.AddDataPoints(timestamps, values, nil))
+	require.NoError(t, encoder.EndMetric())
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	viaAllTimestamps := make([]int64, 0, len(timestamps))
+	for ts := range blob.AllTimestamps(metricID) {
+		viaAllTimestamps = append(viaAllTimestamps, ts)
+	}
+	require.Equal(t, timestamps, viaAllTimestamps, "AllTimestamps")
+
+	viaAll := make([]int64, 0, len(timestamps))
+	for _, dp := range blob.All(metricID) {
+		viaAll = append(viaAll, dp.Ts)
+	}
+	require.Equal(t, timestamps, viaAll, "All")
+
+	material := blob.Materialize()
+	for i, want := range timestamps {
+		got, ok := material.TimestampAt(metricID, i)
+		require.Truef(t, ok, "Materialize TimestampAt(%d)", i)
+		require.Equalf(t, want, got, "Materialize TimestampAt(%d)", i)
+	}
+}
