@@ -986,3 +986,47 @@ func TestTextEncoder_RejectedPointLeavesNoBytes(t *testing.T) {
 		})
 	}
 }
+
+// TestTextEncoder_RejectsZeroHashMetricName pins that a metric name hashing to
+// the "no metric open" sentinel ID 0 is rejected up front.
+func TestTextEncoder_RejectsZeroHashMetricName(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC())
+	require.NoError(t, err)
+	require.ErrorIs(t, enc.StartMetricName(zeroHashMetricName, 1), errs.ErrInvalidMetricName)
+	require.NoError(t, enc.StartMetricName("other", 1))
+}
+
+// TestTextEncoder_RejectedStartMetricIDDoesNotLockMode pins that a rejected
+// StartMetricID leaves the encoder free to use StartMetricName.
+func TestTextEncoder_RejectedStartMetricIDDoesNotLockMode(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC())
+	require.NoError(t, err)
+	require.ErrorIs(t, enc.StartMetricID(0, 1), errs.ErrInvalidMetricID)
+	require.NoError(t, enc.StartMetricName("cpu", 1))
+}
+
+// TestTextEncoder_FinishStateErrorIsRecoverable is the text counterpart of
+// TestNumericEncoder_FinishStateErrorIsRecoverable.
+func TestTextEncoder_FinishStateErrorIsRecoverable(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC())
+	require.NoError(t, err)
+
+	_, err = enc.Finish()
+	require.ErrorIs(t, err, errs.ErrNoMetricsAdded)
+
+	require.NoError(t, enc.StartMetricID(1, 2))
+	require.NoError(t, enc.AddDataPoint(1000, "a", ""))
+	_, err = enc.Finish()
+	require.ErrorIs(t, err, errs.ErrMetricNotEnded)
+
+	require.NoError(t, enc.AddDataPoint(2000, "b", ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 2, blob.Len(1))
+}

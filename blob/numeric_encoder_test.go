@@ -3687,3 +3687,112 @@ func TestNumericEncoder_MaxDataPointsFitsWorstCase(t *testing.T) {
 		})
 	}
 }
+
+// TestNumericEncoder_EndMetricCountMismatchIsRetryable pins that EndMetric
+// rejecting a short metric leaves codec state untouched, so adding the missing
+// points and calling EndMetric again encodes the metric correctly.
+func TestNumericEncoder_EndMetricCountMismatchIsRetryable(t *testing.T) {
+	combos := []struct{ ts, val format.EncodingType }{
+		{format.TypeDeltaPacked, format.TypeRaw},
+		{format.TypeDeltaPacked, format.TypeGorilla},
+		{format.TypeDelta, format.TypeALP},
+		{format.TypeRaw, format.TypeALP},
+		{format.TypeDelta, format.TypeGorilla},
+		{format.TypeDelta, format.TypeChimp},
+	}
+
+	for _, c := range combos {
+		t.Run(fmt.Sprintf("%v-%v", c.ts, c.val), func(t *testing.T) {
+			const n = 9
+			timestamps := make([]int64, n)
+			values := make([]float64, n)
+			for i := range n {
+				timestamps[i] = 5000 + int64(i*i)*7
+				values[i] = float64(i)*1.37 + 0.1
+			}
+
+			enc, err := NewNumericEncoder(time.Unix(0, 0).UTC(), WithTimestampEncoding(c.ts), WithValueEncoding(c.val))
+			require.NoError(t, err)
+			require.NoError(t, enc.StartMetricID(1, n))
+			require.NoError(t, enc.AddDataPoints(timestamps[:5], values[:5], nil))
+			require.ErrorIs(t, enc.EndMetric(), errs.ErrDataPointCountMismatch)
+			require.NoError(t, enc.AddDataPoints(timestamps[5:], values[5:], nil))
+			require.NoError(t, enc.EndMetric())
+			data, err := enc.Finish()
+			require.NoError(t, err)
+
+			decoder, err := NewNumericDecoder(data)
+			require.NoError(t, err)
+			blob, err := decoder.Decode()
+			require.NoError(t, err)
+
+			var gotTs []int64
+			var gotVals []float64
+			for _, dp := range blob.All(1) {
+				gotTs = append(gotTs, dp.Ts)
+				gotVals = append(gotVals, dp.Val)
+			}
+			require.Equal(t, timestamps, gotTs)
+			require.Equal(t, values, gotVals)
+		})
+	}
+}
+
+// zeroHashMetricName is an 8-byte name whose xxHash64 metric ID is 0, the
+// encoders' "no metric open" sentinel.
+const zeroHashMetricName = "s\x85\x80}\x8f\vS9"
+
+// TestNumericEncoder_RejectsAtomically pins that rejected StartMetric* and
+// AddDataPoints calls leave the encoder unchanged.
+func TestNumericEncoder_RejectsAtomically(t *testing.T) {
+	require.Equal(t, uint64(0), hash.ID(zeroHashMetricName))
+
+	t.Run("zero-hash metric name is rejected", func(t *testing.T) {
+		enc, err := NewNumericEncoder(time.Unix(0, 0).UTC())
+		require.NoError(t, err)
+		require.ErrorIs(t, enc.StartMetricName(zeroHashMetricName, 1), errs.ErrInvalidMetricName)
+		require.NoError(t, enc.StartMetricName("other", 1))
+	})
+
+	t.Run("rejected StartMetricID does not lock ID mode", func(t *testing.T) {
+		enc, err := NewNumericEncoder(time.Unix(0, 0).UTC())
+		require.NoError(t, err)
+		require.ErrorIs(t, enc.StartMetricID(0, 5), errs.ErrInvalidMetricID)
+		require.NoError(t, enc.StartMetricName("cpu", 1))
+	})
+
+	t.Run("AddDataPoints rejects mismatched empty timestamps", func(t *testing.T) {
+		enc, err := NewNumericEncoder(time.Unix(0, 0).UTC())
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricID(1, 1))
+		require.Error(t, enc.AddDataPoints(nil, []float64{1}, nil))
+		require.NoError(t, enc.AddDataPoints(nil, nil, nil))
+	})
+}
+
+// TestNumericEncoder_FinishStateErrorIsRecoverable pins that Finish rejecting an
+// unended metric or an empty encoder leaves the encoder usable, so following
+// the error (EndMetric, or adding a metric) and calling Finish again works.
+func TestNumericEncoder_FinishStateErrorIsRecoverable(t *testing.T) {
+	enc, err := NewNumericEncoder(time.Unix(0, 0).UTC())
+	require.NoError(t, err)
+
+	_, err = enc.Finish()
+	require.ErrorIs(t, err, errs.ErrNoMetricsAdded)
+
+	require.NoError(t, enc.StartMetricID(1, 2))
+	require.NoError(t, enc.AddDataPoint(1000, 1, ""))
+	_, err = enc.Finish()
+	require.ErrorIs(t, err, errs.ErrMetricNotEnded)
+
+	require.NoError(t, enc.AddDataPoint(2000, 2, ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+	require.Equal(t, 2, blob.Len(1))
+}

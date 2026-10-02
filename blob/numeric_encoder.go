@@ -307,11 +307,6 @@ func (e *NumericEncoder) StartMetricID(metricID uint64, numOfDataPoints int) err
 		return fmt.Errorf("%w: cannot use StartMetricID after StartMetricName", errs.ErrMixedIdentifierMode)
 	}
 
-	// Set mode on first use
-	if e.identifierMode == modeUndefined {
-		e.identifierMode = modeUserID
-	}
-
 	if metricID == 0 {
 		return errs.ErrInvalidMetricID
 	}
@@ -333,6 +328,10 @@ func (e *NumericEncoder) StartMetricID(metricID uint64, numOfDataPoints int) err
 		return fmt.Errorf("%w: metric ID 0x%016x already used", errs.ErrHashCollision, metricID)
 	}
 	e.usedIDs[metricID] = struct{}{}
+
+	// Lock ID mode only once the call is accepted, so a rejected call leaves
+	// the encoder free to use StartMetricName instead.
+	e.identifierMode = modeUserID
 
 	return e.startMetric(metricID, numOfDataPoints)
 }
@@ -405,6 +404,10 @@ func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int)
 	}
 
 	metricID := hash.ID(metricName)
+	// ID 0 marks "no metric open"; a name hashing to it cannot be tracked.
+	if metricID == 0 {
+		return fmt.Errorf("%w: metric name %q hashes to the reserved metric ID 0", errs.ErrInvalidMetricName, metricName)
+	}
 
 	// Read-only duplicate-name and prospective-collision detection.
 	var prospectiveCollision bool
@@ -467,43 +470,46 @@ func (e *NumericEncoder) EndMetric() error {
 		return errs.ErrNoMetricStarted
 	}
 
-	// For bit-packed encodings (Gorilla, Chimp), we need to flush any pending bits
-	// BEFORE calculating lengths. This ensures the length includes all flushed data.
-	// For other encodings, this is a no-op as Bytes() just returns the buffer.
-	valEnc := e.header.Flag.ValueEncoding()
-	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp || valEnc == format.TypeALP {
-		_ = e.valEncoder.Bytes() // Flush pending bits
-	}
-
-	// For Group Varint timestamp encoding (DeltaPacked), we need to flush any pending
-	// partial group BEFORE calculating lengths. Without this, pending values would not
-	// be included in Size() and would be lost on Reset().
-	tsEnc := e.header.Flag.TimestampEncoding()
-	if tsEnc == format.TypeDeltaPacked {
-		_ = e.tsEncoder.Bytes() // Flush pending group
-	}
-
-	// Calculate lengths and byte size of newly added data points since the last metric was ended.
-	// These are used for validation and index entry creation.
+	// Validate the data point counts first. Len() does not depend on flushing,
+	// and a rejected EndMetric must leave codec state untouched so the caller
+	// can add the missing points and retry: flushing a partial DeltaPacked group
+	// or an ALP column here would bake it into the stream mid-metric.
 	tsEncLen := e.tsEncoder.Len()
-	tsEncSize := e.tsEncoder.Size()
 	valEncLen := e.valEncoder.Len()
-	valEncSize := e.valEncoder.Size()
-
-	// Only track tag lengths/offsets if tag support is enabled
-	var tagEncLen, tagEncSize int
+	var tagEncLen int
 	if e.header.Flag.HasTag() {
 		tagEncLen = e.tagEncoder.Len()
-		tagEncSize = e.tagEncoder.Size()
 	}
 
-	// Calculate current metric's data point count
 	curTsLen := tsEncLen - e.ts.length
 	curValLen := valEncLen - e.val.length
 	curTagLen := tagEncLen - e.tag.length
 
 	if err := e.validateMetricData(curTsLen, curValLen, curTagLen); err != nil {
 		return err
+	}
+
+	// For bit-packed encodings (Gorilla, Chimp, ALP), flush any pending bits
+	// BEFORE calculating sizes, so the sizes include all flushed data.
+	// For other encodings, this is a no-op as Bytes() just returns the buffer.
+	valEnc := e.header.Flag.ValueEncoding()
+	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp || valEnc == format.TypeALP {
+		_ = e.valEncoder.Bytes() // Flush pending bits
+	}
+
+	// For Group Varint timestamp encoding (DeltaPacked), flush any pending
+	// partial group BEFORE calculating sizes. Without this, pending values would
+	// not be included in Size() and would be lost on Reset().
+	tsEnc := e.header.Flag.TimestampEncoding()
+	if tsEnc == format.TypeDeltaPacked {
+		_ = e.tsEncoder.Bytes() // Flush pending group
+	}
+
+	tsEncSize := e.tsEncoder.Size()
+	valEncSize := e.valEncoder.Size()
+	var tagEncSize int
+	if e.header.Flag.HasTag() {
+		tagEncSize = e.tagEncoder.Size()
 	}
 
 	// Calculate offset deltas from last metric - uses encoderState.delta()
@@ -729,14 +735,8 @@ func (e *NumericEncoder) encodeMetricNamesPayload() ([]byte, error) {
 }
 
 func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
-	// Return cached slices to pool before any returns (including error paths)
-	defer e.releasePooledSlices()
-
-	// Finish encoders regardless of error to release resources
-	defer e.tsEncoder.Finish()
-	defer e.valEncoder.Finish()
-	defer e.tagEncoder.Finish()
-
+	// State errors are checked before the teardown below so the encoder stays
+	// usable: the caller can end the open metric, or add one, and retry.
 	if e.curMetricID != 0 {
 		return dst, errs.ErrMetricNotEnded
 	}
@@ -745,6 +745,14 @@ func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	if len(e.indexEntries) == 0 {
 		return dst, errs.ErrNoMetricsAdded
 	}
+
+	// Return cached slices to pool before any returns (including error paths)
+	defer e.releasePooledSlices()
+
+	// Finish encoders regardless of error to release resources
+	defer e.tsEncoder.Finish()
+	defer e.valEncoder.Finish()
+	defer e.tagEncoder.Finish()
 
 	// Clone header to keep original immutable (preparation for stateless encoder pattern)
 	// All computed fields will be set on the clone
@@ -1279,14 +1287,14 @@ func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tag
 	valLen := len(values)
 	tagLen := len(tags)
 
-	if tsLen == 0 {
-		return nil // No-op for empty input
-	}
 	if tsLen != valLen {
 		return fmt.Errorf("mismatched lengths: %d timestamps, %d values", tsLen, valLen)
 	}
 	if tagLen > 0 && tagLen != tsLen {
 		return fmt.Errorf("mismatched lengths: %d timestamps, %d tags", tsLen, tagLen)
+	}
+	if tsLen == 0 {
+		return nil // No-op for empty input
 	}
 
 	if e.curPoints+tsLen > e.claimed {
