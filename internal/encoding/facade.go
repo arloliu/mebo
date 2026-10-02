@@ -25,6 +25,15 @@ const (
 
 	// ALPRDMaxDictSize is the maximum ALP-RD dictionary size.
 	ALPRDMaxDictSize = alp.ALPRDMaxDictSize
+
+	// ALPMaxExponent is the largest valid ALP main-scheme exponent or factor.
+	ALPMaxExponent = alp.ALPMaxExponent
+
+	// ALPRDMinRightBits is the smallest valid ALP-RD right-part width.
+	ALPRDMinRightBits = alp.ALPRDMinRightBits
+
+	// ALPRDMaxRightBits is the largest valid ALP-RD right-part width.
+	ALPRDMaxRightBits = alp.ALPRDMaxRightBits
 )
 
 // TagEncoder encodes tag strings in the established length-prefixed format.

@@ -67,6 +67,16 @@ const (
 	// validation, like ALPMaxSchemeByte above).
 	ALPRDMaxDictSize = alpRDMaxDictSize
 
+	// ALPMaxExponent is the largest exponent or factor a main-scheme column
+	// header may declare; both index the 19-entry power-of-ten tables.
+	ALPMaxExponent = alpMaxExponent
+
+	// ALPRDMinRightBits and ALPRDMaxRightBits bound an RD column's right-part
+	// width (rbw). Dictionary entries are 2 bytes, so the left part is 1..16
+	// bits and rbw is 48..63 for every column the encoder can emit.
+	ALPRDMinRightBits = 64 - alpRDCutLimit
+	ALPRDMaxRightBits = 63
+
 	alpMaxExponent   = 18
 	alpRDCutLimit    = 16 // left part is 1..16 bits
 	alpRDMaxDictSize = 8  // ≤8 dictionary entries

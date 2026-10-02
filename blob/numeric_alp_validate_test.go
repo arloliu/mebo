@@ -70,6 +70,36 @@ func TestValidateALPColumns_Main(t *testing.T) {
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
 
+	t.Run("exponent or factor out of range", func(t *testing.T) {
+		width, nExc, count := 4, 0, 8
+		codesLen := (count*width + 7) / 8
+		for _, ef := range [][2]int{{19, 0}, {0, 19}, {255, 255}} {
+			column := buildMain(width, nExc, codesLen, 0)
+			column[1], column[2] = byte(ef[0]), byte(ef[1])
+			entry := alpValidateTestEntry(8, count, len(column))
+			err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+			require.ErrorIsf(t, err, errs.ErrInvalidALPColumn, "e=%d f=%d", ef[0], ef[1])
+		}
+	})
+
+	t.Run("exponent and factor at max boundary (18) are not falsely rejected", func(t *testing.T) {
+		width, nExc, count := 4, 0, 8
+		codesLen := (count*width + 7) / 8
+		column := buildMain(width, nExc, codesLen, 0)
+		column[1], column[2] = 18, 18
+		entry := alpValidateTestEntry(9, count, len(column))
+		require.NoError(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine))
+	})
+
+	t.Run("width exceeds 64", func(t *testing.T) {
+		width, nExc, count := 65, 0, 8
+		codesLen := (count*width + 7) / 8
+		column := buildMain(width, nExc, codesLen, 0)
+		entry := alpValidateTestEntry(10, count, len(column))
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
+	})
+
 	t.Run("exactly minimal valid main column", func(t *testing.T) {
 		width, nExc, count := 4, 1, 8
 		codesLen := (count*width + 7) / 8
@@ -109,7 +139,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 	})
 
 	t.Run("nDict exceeds max", func(t *testing.T) {
-		column := buildRD(4, 2, 9, 0, 0, 0, 0, 0) // nDict = 9 > ALPRDMaxDictSize (8)
+		column := buildRD(48, 2, 9, 0, 0, 0, 0, 0) // nDict = 9 > ALPRDMaxDictSize (8)
 		entry := alpValidateTestEntry(2, 8, len(column))
 		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
 		require.Error(t, err)
@@ -123,7 +153,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		// codeBits bound, not by a truncation check, since decodeRDInto's
 		// dict is a fixed [8]uint64 array indexed by a codeBits-wide
 		// unpacked code and codeBits=4 allows codes up to 15.
-		rbw, codeBits, nDict, count := 4, 4, 2, 8
+		rbw, codeBits, nDict, count := 48, 4, 2, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen, 0)
@@ -140,7 +170,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		// bound (comparing 1<<codeBits against ALPRDMaxDictSize) would wrap
 		// around to 0 for a shift count >= 64 and wrongly accept this
 		// column. The direct `codeBits > 3` comparison must reject it.
-		rbw, codeBits, nDict, count := 4, 255, 2, 8
+		rbw, codeBits, nDict, count := 48, 255, 2, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen, 0)
@@ -151,7 +181,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 	})
 
 	t.Run("dict region truncated", func(t *testing.T) {
-		rbw, codeBits, nDict, count := 4, 2, 2, 8
+		rbw, codeBits, nDict, count := 48, 2, 2, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2-1, leftLen, rightLen, 0) // dict short by 1
@@ -162,7 +192,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 	})
 
 	t.Run("left codes region truncated", func(t *testing.T) {
-		rbw, codeBits, nDict, count := 4, 2, 2, 8
+		rbw, codeBits, nDict, count := 48, 2, 2, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen-1, rightLen, 0) // left short by 1
@@ -173,7 +203,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 	})
 
 	t.Run("right codes region truncated", func(t *testing.T) {
-		rbw, codeBits, nDict, count := 4, 2, 2, 8
+		rbw, codeBits, nDict, count := 48, 2, 2, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen-1, 0) // right short by 1, left intact
@@ -184,7 +214,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 	})
 
 	t.Run("exceptions region truncated", func(t *testing.T) {
-		rbw, codeBits, nDict, nExc, count := 4, 2, 2, 1, 8
+		rbw, codeBits, nDict, nExc, count := 48, 2, 2, 1, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		excLen := nExc*6 - 1 // one byte short
@@ -195,8 +225,22 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
 
+	t.Run("rbw outside the encodable range", func(t *testing.T) {
+		// Dictionary entries are 2 bytes, so the left part is at most 16 bits
+		// and the right part (rbw) is 48..63 bits for every valid column.
+		for _, rbw := range []int{0, 4, 47, 64, 255} {
+			codeBits, nDict, count := 2, 2, 8
+			leftLen := (count*codeBits + 7) / 8
+			rightLen := (count*rbw + 7) / 8
+			column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen, 0)
+			entry := alpValidateTestEntry(11, count, len(column))
+			err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+			require.ErrorIsf(t, err, errs.ErrInvalidALPColumn, "rbw=%d", rbw)
+		}
+	})
+
 	t.Run("exactly minimal valid rd column", func(t *testing.T) {
-		rbw, codeBits, nDict, nExc, count := 4, 2, 2, 1, 8
+		rbw, codeBits, nDict, nExc, count := 48, 2, 2, 1, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		excLen := nExc * 6
@@ -210,7 +254,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		// codeBits=3 is the largest value a valid encoder can ever emit
 		// (alpCodeBits(nDict) for nDict <= ALPRDMaxDictSize tops out at
 		// bits.Len64(7) = 3), so the codeBits bound must accept it.
-		rbw, codeBits, nDict, nExc, count := 4, 3, 2, 1, 8
+		rbw, codeBits, nDict, nExc, count := 48, 3, 2, 1, 8
 		leftLen := (count*codeBits + 7) / 8
 		rightLen := (count*rbw + 7) / 8
 		excLen := nExc * 6
