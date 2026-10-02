@@ -2,6 +2,7 @@ package blob
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -951,4 +952,37 @@ func TestNewTextEncoder_DefaultEncoding(t *testing.T) {
 	require.Equal(t, format.TypeDelta, header.Flag.GetTimestampEncoding())
 	require.Equal(t, format.CompressionZstd, header.Flag.GetDataCompression())
 	require.True(t, header.Flag.IsLittleEndian())
+}
+
+// TestTextEncoder_RejectedPointLeavesNoBytes pins that a data point rejected for
+// an oversized value or tag writes nothing, so later valid points still decode.
+func TestTextEncoder_RejectedPointLeavesNoBytes(t *testing.T) {
+	for _, tsEnc := range []format.EncodingType{format.TypeRaw, format.TypeDelta} {
+		t.Run(tsEnc.String(), func(t *testing.T) {
+			start := time.Unix(1_700_000_000, 0).UTC()
+			enc, err := NewTextEncoder(start, WithTextTimestampEncoding(tsEnc), WithTextTagsEnabled(true))
+			require.NoError(t, err)
+			require.NoError(t, enc.StartMetricID(1, 2))
+
+			ts := start.UnixMicro()
+			require.Error(t, enc.AddDataPoint(ts+5, strings.Repeat("v", 300), ""))
+			require.Error(t, enc.AddDataPoint(ts+6, "v", strings.Repeat("t", 300)))
+			require.NoError(t, enc.AddDataPoint(ts, "a", "x"))
+			require.NoError(t, enc.AddDataPoint(ts+1, "b", "y"))
+			require.NoError(t, enc.EndMetric())
+			data, err := enc.Finish()
+			require.NoError(t, err)
+
+			decoder, err := NewTextDecoder(data)
+			require.NoError(t, err)
+			blob, err := decoder.Decode()
+			require.NoError(t, err)
+
+			var got []TextDataPoint
+			for _, dp := range blob.All(1) {
+				got = append(got, dp)
+			}
+			require.Equal(t, []TextDataPoint{{Ts: ts, Val: "a", Tag: "x"}, {Ts: ts + 1, Val: "b", Tag: "y"}}, got)
+		})
+	}
 }
