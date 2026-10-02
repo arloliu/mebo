@@ -2498,3 +2498,56 @@ func TestNumericDecoder_MaliciousMagicExtendedTruncatedData(t *testing.T) {
 	require.Error(t, err, "decoder must not panic on truncated extended index data")
 	require.ErrorIs(t, err, errs.ErrInvalidIndexEntrySize)
 }
+
+// TestNumericDecoder_PayloadOffsetsOutOfOrder pins that a header whose payload
+// offsets are individually in range but out of order is rejected with an error
+// rather than panicking on an inverted slice.
+func TestNumericDecoder_PayloadOffsetsOutOfOrder(t *testing.T) {
+	encoder, err := NewNumericEncoder(time.Unix(1_700_000_000, 0).UTC(),
+		WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw), WithTagsEnabled(true))
+	require.NoError(t, err)
+	require.NoError(t, encoder.StartMetricID(7, 2))
+	require.NoError(t, encoder.AddDataPoint(1_700_000_000_000_000, 1.5, "a"))
+	require.NoError(t, encoder.AddDataPoint(1_700_000_001_000_000, 2.5, "b"))
+	require.NoError(t, encoder.EndMetric())
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	engine := endian.GetLittleEndianEngine()
+	tsOff := engine.Uint32(data[20:24])
+	valOff := engine.Uint32(data[24:28])
+	tagOff := engine.Uint32(data[28:32])
+	require.Less(t, tsOff, valOff)
+	require.Less(t, valOff, tagOff)
+
+	tests := []struct {
+		name    string
+		patch   func(b []byte)
+		wantErr error
+	}{
+		{
+			name:    "timestamp offset after value offset",
+			patch:   func(b []byte) { engine.PutUint32(b[20:24], valOff+1) },
+			wantErr: errs.ErrInvalidValuePayloadOffset,
+		},
+		{
+			name:    "value offset after tag offset",
+			patch:   func(b []byte) { engine.PutUint32(b[24:28], tagOff+1) },
+			wantErr: errs.ErrInvalidTagPayloadOffset,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			corrupt := append([]byte(nil), data...)
+			tt.patch(corrupt)
+
+			decoder, err := NewNumericDecoder(corrupt)
+			require.NoError(t, err)
+			require.NotPanics(t, func() {
+				_, err = decoder.Decode()
+			})
+			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}

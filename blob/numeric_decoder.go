@@ -155,21 +155,13 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		},
 	}
 
-	// Validate payload offsets
+	if err := d.validatePayloadOffsets(); err != nil {
+		return blob, err
+	}
+
 	tsOffset := int(d.header.TimestampPayloadOffset)
-	if len(d.data) < tsOffset {
-		return blob, errs.ErrInvalidTimestampPayloadOffset
-	}
-
 	valOffset := int(d.header.ValuePayloadOffset)
-	if len(d.data) < valOffset {
-		return blob, errs.ErrInvalidValuePayloadOffset
-	}
-
 	tagOffset := int(d.header.TagPayloadOffset)
-	if len(d.data) < tagOffset {
-		return blob, errs.ErrInvalidTagPayloadOffset
-	}
 
 	// Step 1: Parse metric names (if present)
 	metricNames, indexOffset, err := d.parseMetricNames()
@@ -304,6 +296,28 @@ func (d *NumericDecoder) parsePayloads() error {
 	headerSize := section.HeaderSize
 	if len(d.data) < headerSize {
 		return errs.ErrInvalidHeaderSize
+	}
+
+	return nil
+}
+
+// validatePayloadOffsets checks that the header's timestamp, value and tag
+// payload offsets each lie within the blob and are in layout order; inverted
+// offsets would slice backwards when the sections are cut apart.
+func (d *NumericDecoder) validatePayloadOffsets() error {
+	tsOffset := int(d.header.TimestampPayloadOffset)
+	if len(d.data) < tsOffset {
+		return errs.ErrInvalidTimestampPayloadOffset
+	}
+
+	valOffset := int(d.header.ValuePayloadOffset)
+	if len(d.data) < valOffset || tsOffset > valOffset {
+		return errs.ErrInvalidValuePayloadOffset
+	}
+
+	tagOffset := int(d.header.TagPayloadOffset)
+	if len(d.data) < tagOffset || valOffset > tagOffset {
+		return errs.ErrInvalidTagPayloadOffset
 	}
 
 	return nil
@@ -451,6 +465,10 @@ func (d *NumericDecoder) parseIndexEntries(
 	return indexEntries, metricIDs, nil
 }
 
+// maxALPMainWidth is the widest packed code an ALP main column can hold:
+// codes are FOR-adjusted uint64 values.
+const maxALPMainWidth = 64
+
 // validateALPColumns checks that every ALP-encoded value column begins with
 // a known scheme byte (0=main, 1=RD, 2=raw; see internal/encoding/
 // numeric_alp.go's ALPMaxSchemeByte) and that the column's body is at least
@@ -474,6 +492,11 @@ func (d *NumericDecoder) parseIndexEntries(
 // slice/index in those decode paths provably in-bounds by construction. It
 // uses >= (minimum required length), not ==, since its job is
 // bounds-safety, not pinning the encoder's exact output size.
+//
+// Header fields are range-checked as well.
+// A main column's exponent and factor index the power-of-ten tables,
+// so both must be at most ALPMaxExponent, and its width is at most 64.
+// An RD column's right width must be within ALPRDMinRightBits..ALPRDMaxRightBits.
 func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEntry, engine endian.EndianEngine) error {
 	for i := range indexEntries {
 		entry := &indexEntries[i]
@@ -503,7 +526,20 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 					errs.ErrInvalidALPColumn, entry.MetricID, len(body), mainHeaderSize)
 			}
 
+			// e and f index the 19-entry power-of-ten tables in every
+			// decode path; an out-of-range byte would panic there.
+			exp, factor := int(body[0]), int(body[1])
+			if exp > ienc.ALPMaxExponent || factor > ienc.ALPMaxExponent {
+				return fmt.Errorf("%w: metric ID %d has ALP main column exponent %d / factor %d, want at most %d",
+					errs.ErrInvalidALPColumn, entry.MetricID, exp, factor, ienc.ALPMaxExponent)
+			}
+
 			width := int(body[2])
+			if width > maxALPMainWidth {
+				return fmt.Errorf("%w: metric ID %d has ALP main column width %d, want at most %d",
+					errs.ErrInvalidALPColumn, entry.MetricID, width, maxALPMainWidth)
+			}
+
 			nExc := int(engine.Uint32(body[3:7]))
 			want := mainHeaderSize + (count*width+7)/8 + nExc*12
 			if len(body) < want {
@@ -521,6 +557,11 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 			codeBits := int(body[1])
 			nDict := int(body[2])
 			nExc := int(engine.Uint32(body[3:7]))
+			if rbw < ienc.ALPRDMinRightBits || rbw > ienc.ALPRDMaxRightBits {
+				return fmt.Errorf("%w: metric ID %d has ALP rd column right width %d, want %d..%d",
+					errs.ErrInvalidALPColumn, entry.MetricID, rbw, ienc.ALPRDMinRightBits, ienc.ALPRDMaxRightBits)
+			}
+
 			if nDict > ienc.ALPRDMaxDictSize {
 				return fmt.Errorf("%w: metric ID %d has ALP rd column nDict %d, want at most %d",
 					errs.ErrInvalidALPColumn, entry.MetricID, nDict, ienc.ALPRDMaxDictSize)
