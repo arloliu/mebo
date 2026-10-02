@@ -315,3 +315,16 @@ func makeSharedTimestampBenchmarkEntries(metricCount int) []NumericIndexEntry {
 
 	return entries
 }
+
+// TestSharedTimestampTable_NegativeMetricCount pins that the exported parsers
+// reject a negative metric count instead of panicking on allocation.
+func TestSharedTimestampTable_NegativeMetricCount(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	table := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00}
+
+	require.NotPanics(t, func() {
+		_, err := ParseSharedTimestampTable(table, engine, -1)
+		require.ErrorIs(t, err, errs.ErrInvalidMetricCount)
+		require.ErrorIs(t, ApplySharedTimestampTable(table, engine, -1, nil), errs.ErrInvalidMetricCount)
+	})
+}

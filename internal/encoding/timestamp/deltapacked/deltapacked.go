@@ -611,7 +611,9 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 
 			consumed, ok2 := decodePackedGroupScalar(data, offset, &zz, &byteLen)
 			if !ok2 {
-				return
+				// Truncated group: decode its present lanes in the tail path,
+				// matching At and the fused iterators.
+				break
 			}
 
 			offset += consumed
@@ -628,12 +630,12 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 			}
 		}
 
-		// Scalar tail: partial group (< 4 values)
+		// Scalar tail: partial group (< 4 values), or a truncated full group
 		if remaining > 0 && offset < len(data) {
 			cb := data[offset]
 			offset++
 
-			for i := range remaining {
+			for i := range min(remaining, groupSize) {
 				tag := (cb >> (uint(i) * 2)) & 0x03
 				byteLen := groupVarintLengths[tag]
 
@@ -733,7 +735,9 @@ func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int
 
 		consumed, ok2 := decodePackedGroupScalar(data, offset, &zz, &byteLen)
 		if !ok2 {
-			return produced
+			// Truncated group: decode its present lanes in the tail path,
+			// matching At and the fused iterators.
+			break
 		}
 
 		offset += consumed
@@ -748,12 +752,12 @@ func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int
 		}
 	}
 
-	// Scalar tail: partial group (< 4 values)
+	// Scalar tail: partial group (< 4 values), or a truncated full group
 	if remaining > 0 && offset < len(data) {
 		cb := data[offset]
 		offset++
 
-		for i := range remaining {
+		for i := range min(remaining, groupSize) {
 			tag := (cb >> (uint(i) * 2)) & 0x03
 			byteLen := groupVarintLengths[tag]
 

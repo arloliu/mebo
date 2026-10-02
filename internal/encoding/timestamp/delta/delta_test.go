@@ -1358,3 +1358,35 @@ func TestTimestampDeltaDecoder_TenByteVarintParity(t *testing.T) {
 		require.Equalf(t, want, got, "At(%d)", i)
 	}
 }
+
+// TestTimestampDeltaDecoder_RejectsOverflowingVarint pins that every decode path
+// stops at a delta-of-delta varint whose tenth byte overflows uint64, instead of
+// silently decoding it as a truncated value.
+func TestTimestampDeltaDecoder_RejectsOverflowingVarint(t *testing.T) {
+	data := []byte{0x0a, 0x02}                                                      // ts0 = 10, delta = +1
+	data = append(data, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02) // 2^64: invalid
+	const count = 3
+
+	dec := NewTimestampDeltaDecoder()
+	want := []int64{10, 11}
+
+	var viaAll []int64
+	for ts := range dec.All(data, count) {
+		viaAll = append(viaAll, ts)
+	}
+	require.Equal(t, want, viaAll, "All")
+
+	dst := make([]int64, count)
+	require.Equal(t, want, dst[:dec.DecodeAll(data, count, dst)], "DecodeAll")
+
+	state, ok := NewDeltaTsState(data)
+	require.True(t, ok)
+	viaState := []int64{state.Ts()}
+	for len(viaState) < count && state.Next(data) {
+		viaState = append(viaState, state.Ts())
+	}
+	require.Equal(t, want, viaState, "DeltaTsState")
+
+	_, ok = dec.At(data, 2, count)
+	require.False(t, ok, "At")
+}

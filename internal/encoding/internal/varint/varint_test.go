@@ -1,7 +1,9 @@
 package varint
 
 import (
+	"bytes"
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -106,4 +108,19 @@ func TestDecodeU64DoesNotAllocate(t *testing.T) {
 	})
 
 	require.Zero(t, allocations)
+}
+
+// TestDecodeU64_RejectsOverflowingTenthByte pins that a tenth byte carrying more
+// than the single remaining bit of a uint64 is rejected, while the largest valid
+// ten-byte varint still decodes.
+func TestDecodeU64_RejectsOverflowingTenthByte(t *testing.T) {
+	overflow := append(bytes.Repeat([]byte{0x80}, 9), 0x02)
+	_, _, ok := DecodeU64(overflow, 0)
+	require.False(t, ok)
+
+	maxValue := append(bytes.Repeat([]byte{0xFF}, 9), 0x01)
+	v, next, ok := DecodeU64(maxValue, 0)
+	require.True(t, ok)
+	require.Equal(t, uint64(math.MaxUint64), v)
+	require.Equal(t, 10, next)
 }

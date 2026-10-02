@@ -81,6 +81,9 @@ func (t *SharedTimestampTable) WriteToSlice(data []byte, offset int, engine endi
 //   - SharedTimestampTable: Parsed table
 //   - error: Parse or validation errors
 func ParseSharedTimestampTable(data []byte, engine endian.EndianEngine, metricCount int) (SharedTimestampTable, error) {
+	if metricCount < 0 {
+		return SharedTimestampTable{}, fmt.Errorf("%w: negative metric count %d", errs.ErrInvalidMetricCount, metricCount)
+	}
 	if len(data) < 2 {
 		return SharedTimestampTable{}, fmt.Errorf("%w: shared timestamp table too short", errs.ErrInvalidSharedTimestampTable)
 	}
@@ -170,6 +173,9 @@ func ParseSharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 // Returns:
 //   - error: Parse or validation errors
 func ApplySharedTimestampTable(data []byte, engine endian.EndianEngine, metricCount int, indexEntries []NumericIndexEntry) error {
+	if metricCount < 0 {
+		return fmt.Errorf("%w: negative metric count %d", errs.ErrInvalidMetricCount, metricCount)
+	}
 	if len(indexEntries) < metricCount {
 		return fmt.Errorf("%w: index entries shorter than metric count", errs.ErrInvalidIndexEntrySize)
 	}

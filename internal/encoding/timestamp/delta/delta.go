@@ -524,6 +524,10 @@ func (s *DeltaTsState) Next(data []byte) bool {
 					b = data[offset]
 					offset++
 					value |= uint64(b&0x7f) << shift
+					// The tenth byte holds only bit 63; more overflows uint64.
+					if shift == 63 && b > 1 {
+						return false
+					}
 					if b < 0x80 {
 						break
 					}
@@ -761,6 +765,11 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 			v |= uint64(b&0x7f) << shift
 
 			if b < 0x80 {
+				// The tenth byte holds only bit 63; more overflows uint64.
+				if shift == 63 && b > 1 {
+					return produced
+				}
+
 				break
 			}
 

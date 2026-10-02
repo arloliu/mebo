@@ -40,6 +40,11 @@ func DecodeU64(data []byte, offset int) (uint64, int, bool) {
 		cur++
 		value |= uint64(b&0x7f) << shift
 		if b < 0x80 {
+			// The tenth byte holds only bit 63; anything larger overflows uint64.
+			if shift == 63 && b > 1 {
+				return 0, offset, false
+			}
+
 			return value, cur, true
 		}
 		shift += 7

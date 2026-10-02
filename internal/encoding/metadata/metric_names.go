@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"fmt"
+	"math"
 	"unsafe"
 
 	"github.com/arloliu/mebo/endian"
@@ -26,14 +27,19 @@ func EncodeMetricNames(names []string, engine endian.EndianEngine) ([]byte, erro
 		return nil, fmt.Errorf("%w: metric count %d exceeds maximum 65535", errs.ErrInvalidMetricNamesCount, len(names))
 	}
 
-	// Calculate total size: 2 bytes for count + (2 bytes + name length) for each name
-	totalSize := 2
+	// Calculate total size: 2 bytes for count + (2 bytes + name length) for each name.
+	// Sum in uint64 and bound it by the blob's uint32 size limit (and the
+	// platform int) so a large name set cannot wrap the size on 32-bit.
+	totalSize := uint64(2)
 	for _, name := range names {
 		nameLen := len(name)
 		if nameLen > 65535 {
 			return nil, fmt.Errorf("%w: metric name '%s' exceeds maximum length 65535 bytes", errs.ErrInvalidMetricName, name)
 		}
-		totalSize += 2 + nameLen // Length prefix + string bytes
+		totalSize += 2 + uint64(nameLen) // Length prefix + string bytes
+	}
+	if totalSize > min(uint64(math.MaxUint32), uint64(math.MaxInt)) {
+		return nil, fmt.Errorf("%w: metric names payload of %d bytes", errs.ErrBlobSizeExceedsLimit, totalSize)
 	}
 
 	buf := make([]byte, totalSize)
