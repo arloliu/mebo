@@ -69,6 +69,15 @@ var materializeByNameFallbackFixed bool
 // correct on every version.
 var materializeCollisionSafe bool
 
+// taglessTagAtReportsFound is set true by scenarios_v2.go's init(), i.e. only
+// when built against a v1.5.0+ module (the release that introduced the v2
+// build tag). Since v1.5.0, TagAt/TagAtByName on a blob without tags report
+// ("", true) for an in-range index; v1.4.x documented and returned ("", false)
+// instead. The BlobSet spot checks accept that older result only for a metric
+// whose expected tag is empty and whose members all lack tags, so a missing
+// tag on a tagged member still fails on every version.
+var taglessTagAtReportsFound bool
+
 func (r *VerifyResult) addError(format string, args ...any) {
 	r.Errors = append(r.Errors, fmt.Sprintf(format, args...))
 }
@@ -713,6 +722,29 @@ func VerifyBlobSet(data []byte, m *Manifest) *VerifyResult {
 	return result
 }
 
+// legacyTaglessTagAt reports whether a failed BlobSet TagAtByName is the
+// documented pre-v1.5.0 result for a tagless metric (see
+// taglessTagAtReportsFound): the binary predates the ("", true) contract, the
+// expected and returned tags are both empty, and no member holding the metric
+// carries tags.
+func legacyTaglessTagAt(bs blob.BlobSet, name, gotTag, wantTag string) bool {
+	if taglessTagAtReportsFound || gotTag != "" || wantTag != "" {
+		return false
+	}
+	for _, nb := range bs.NumericBlobs() {
+		if nb.HasMetricName(name) && nb.HasTag() {
+			return false
+		}
+	}
+	for _, tb := range bs.TextBlobs() {
+		if tb.HasMetricName(name) && tb.HasTag() {
+			return false
+		}
+	}
+
+	return true
+}
+
 // verifyBlobSetMetricByNameAtSetLevel checks wantMetric through BlobSet's own
 // ByName accessors (AllNumericsByName/AllTextsByName, spot ValueAt/TimestampAt/
 // TagAtByName, MetricLenByName, MaterializeNumericMetricByName/
@@ -766,6 +798,7 @@ func verifyBlobSetMetricByNameAtSetLevel(bs blob.BlobSet, wantMetric ManifestMet
 			gotTs, tsOK := bs.TimestampAtByName(name, idx)
 			gotVal, valOK := bs.NumericValueAtByName(name, idx)
 			gotTag, tagOK := bs.TagAtByName(name, idx)
+			tagOK = tagOK || legacyTaglessTagAt(bs, name, gotTag, w.Tag)
 			if !tsOK || !valOK || !tagOK {
 				result.addError("%s: TimestampAtByName/NumericValueAtByName/TagAtByName(%d): not found", label, idx)
 				continue
@@ -840,6 +873,7 @@ func verifyBlobSetMetricByNameAtSetLevel(bs blob.BlobSet, wantMetric ManifestMet
 			gotTs, tsOK := bs.TimestampAtByName(name, idx)
 			gotVal, valOK := bs.TextValueAtByName(name, idx)
 			gotTag, tagOK := bs.TagAtByName(name, idx)
+			tagOK = tagOK || legacyTaglessTagAt(bs, name, gotTag, wantTag)
 			if !tsOK || !valOK || !tagOK {
 				result.addError("%s: TimestampAtByName/TextValueAtByName/TagAtByName(%d): not found", label, idx)
 				continue
