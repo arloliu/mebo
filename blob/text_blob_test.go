@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -1206,4 +1207,46 @@ func TestTextBlob_ByName_WithMetricNames(t *testing.T) {
 		require.Equal(t, 2, blob.LenByName("metric.b"))
 		require.Equal(t, 0, blob.LenByName("nonexistent"))
 	})
+}
+
+// TestTextBlob_DeltaTimestampZeroValue pins that a Delta-encoded timestamp of
+// exactly 0 does not reset the delta base: the next point decodes relative to
+// the previous timestamp, not to the blob start time.
+func TestTextBlob_DeltaTimestampZeroValue(t *testing.T) {
+	const metricID = uint64(42)
+	timestamps := []int64{-5, 0, 3, 0, 0, 10}
+
+	encoder, err := NewTextEncoder(time.UnixMicro(1_000_000).UTC(), WithTextTimestampEncoding(format.TypeDelta))
+	require.NoError(t, err)
+	require.NoError(t, encoder.StartMetricID(metricID, len(timestamps)))
+	for i, ts := range timestamps {
+		require.NoError(t, encoder.AddDataPoint(ts, "v"+strconv.Itoa(i), ""))
+	}
+	require.NoError(t, encoder.EndMetric())
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	viaAll := make([]int64, 0, len(timestamps))
+	for _, dp := range blob.All(metricID) {
+		viaAll = append(viaAll, dp.Ts)
+	}
+	require.Equal(t, timestamps, viaAll, "All")
+
+	for i, want := range timestamps {
+		got, ok := blob.TimestampAt(metricID, i)
+		require.Truef(t, ok, "TimestampAt(%d)", i)
+		require.Equalf(t, want, got, "TimestampAt(%d)", i)
+	}
+
+	material := blob.Materialize()
+	for i, want := range timestamps {
+		got, ok := material.TimestampAt(metricID, i)
+		require.Truef(t, ok, "Materialize TimestampAt(%d)", i)
+		require.Equalf(t, want, got, "Materialize TimestampAt(%d)", i)
+	}
 }

@@ -736,19 +736,11 @@ func (b TextBlob) decodeTags(dataBytes []byte, count int) iter.Seq[string] {
 func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int64, int, error) {
 	switch b.tsEncType { //nolint: exhaustive
 	case format.TypeDelta:
-		// Delta encoding: read varint delta from previous timestamp
-		// First data point: delta from blob start time
-		// Subsequent data points: delta from previous timestamp
+		// Delta encoding: each varint is the delta from the previous timestamp.
+		// Callers seed lastTs with the blob start time, which is the base the
+		// encoder uses for a metric's first data point.
 		delta, n := decodeVarint(data[offset:])
-
-		var ts int64
-		if *lastTs == 0 {
-			// First data point: add delta to blob start time
-			ts = b.startTimeMicros + delta
-		} else {
-			// Subsequent data points: add delta to previous timestamp
-			ts = *lastTs + delta
-		}
+		ts := *lastTs + delta
 		*lastTs = ts
 
 		return ts, n, nil
