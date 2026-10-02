@@ -199,32 +199,15 @@ func (s *TextBlobSet) materializeMetricCore(metricID uint64, resolve func(blob *
 			continue // This metric doesn't contribute to this logical metric
 		}
 
-		// Decode and append timestamps
-		for ts := range blob.allTimestampsFromEntry(entry) {
-			timestamps = append(timestamps, ts)
-		}
-
-		// Decode and append values
-		valsBefore := len(values)
-		for val := range blob.allValuesFromEntry(entry) {
-			values = append(values, val)
-		}
-		valsProduced := len(values) - valsBefore
-
-		// Decode and append tags if present
-		if hasTags && blob.HasTag() {
-			for tag := range blob.allTagsFromEntry(entry) {
-				tags = append(tags, tag)
-			}
-		} else if hasTags {
-			// This blob doesn't have tags, but other blobs do
-			// Fill with empty strings to maintain index alignment
-			for range valsProduced {
-				tags = append(tags, "")
+		// Walk complete data points once; a tagless member yields "" tags,
+		// which keeps the tag column aligned when other members carry tags.
+		for _, dp := range blob.allFromEntry(entry) {
+			timestamps = append(timestamps, dp.Ts)
+			values = append(values, dp.Val)
+			if hasTags {
+				tags = append(tags, dp.Tag)
 			}
 		}
-
-		timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
 	}
 
 	return MaterializedTextMetric{
@@ -301,33 +284,16 @@ func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, slo
 			slot := slotOf(blob, ord)
 			metricSet := material.metrics[slot]
 
-			// Decode and append timestamps
-			for ts := range blob.allTimestampsFromEntry(entry) {
-				metricSet.timestamps = append(metricSet.timestamps, ts)
-			}
-
-			// Decode and append values
-			valsBefore := len(metricSet.values)
-			for val := range blob.allValuesFromEntry(entry) {
-				metricSet.values = append(metricSet.values, val)
-			}
-			valsProduced := len(metricSet.values) - valsBefore
-
-			// Decode and append tags if present
-			if hasTags && blob.HasTag() {
-				for tag := range blob.allTagsFromEntry(entry) {
-					metricSet.tags = append(metricSet.tags, tag)
-				}
-			} else if hasTags {
-				// This blob doesn't have tags, but other blobs do
-				// Fill with empty strings to maintain index alignment
-				for range valsProduced {
-					metricSet.tags = append(metricSet.tags, "")
+			// Walk complete data points once; a tagless member yields "" tags,
+			// which keeps the tag column aligned when other members carry tags.
+			for _, dp := range blob.allFromEntry(entry) {
+				metricSet.timestamps = append(metricSet.timestamps, dp.Ts)
+				metricSet.values = append(metricSet.values, dp.Val)
+				if hasTags {
+					metricSet.tags = append(metricSet.tags, dp.Tag)
 				}
 			}
 
-			metricSet.timestamps, metricSet.values, metricSet.tags = alignMemberRows(
-				metricSet.timestamps, metricSet.values, metricSet.tags, hasTags)
 			material.metrics[slot] = metricSet
 		}
 	}

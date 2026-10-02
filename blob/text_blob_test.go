@@ -1280,6 +1280,10 @@ func TestTextBlob_RejectsMalformedTimestampEncoding(t *testing.T) {
 		_, _, err := b.decodeTimestampAt(overlong, 0, &lastTs)
 		require.ErrorIs(t, err, errs.ErrInvalidTimestampData)
 
+		overflowing := []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02}
+		_, _, err = b.decodeTimestampAt(overflowing, 0, &lastTs)
+		require.ErrorIs(t, err, errs.ErrInvalidTimestampData, "tenth byte above 0x01 overflows uint64")
+
 		tenBytes := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01}
 		ts, n, err := b.decodeTimestampAt(tenBytes, 0, &lastTs)
 		require.NoError(t, err)
@@ -1358,4 +1362,52 @@ func TestTextDecoder_RejectsCountBeyondData(t *testing.T) {
 	require.NoError(t, err)
 	_, err = decoder.Decode()
 	require.ErrorIs(t, err, errs.ErrInvalidNumOfDataPoints)
+}
+
+// TestTextDecoder_RejectsTruncatedUncompressedData pins that an uncompressed
+// data section shorter than the header's DataSize fails Decode.
+func TestTextDecoder_RejectsTruncatedUncompressedData(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC(), WithTextDataCompression(format.CompressionNone))
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 1))
+	require.NoError(t, enc.AddDataPoint(0, "ab", ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	decoder, err := NewTextDecoder(data[:len(data)-1])
+	require.NoError(t, err)
+	_, err = decoder.Decode()
+	require.ErrorIs(t, err, errs.ErrDataSizeMismatch)
+}
+
+// TestTextBlob_MaterializeKeepsOnlyCompletePoints pins that a text point whose
+// value is missing from the data is not materialized with an empty value.
+func TestTextBlob_MaterializeKeepsOnlyCompletePoints(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC(),
+		WithTextDataCompression(format.CompressionNone), WithoutMetricNames())
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 1))
+	require.NoError(t, enc.AddDataPoint(0, "", ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	data[len(data)-1] = 0xFF // value length 255 with no value bytes
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	metric, ok := blob.MaterializeMetric(1)
+	require.True(t, ok)
+	require.Empty(t, metric.Values)
+	require.Empty(t, metric.Timestamps)
+
+	mat := blob.Materialize()
+	_, ok = mat.ValueAt(1, 0)
+	require.False(t, ok)
+	_, ok = mat.TimestampAt(1, 0)
+	require.False(t, ok)
 }

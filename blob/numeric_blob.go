@@ -1103,9 +1103,13 @@ func (b NumericBlob) allDataPointsRawChimp(tsBytes, valBytes, tagBytes []byte, c
 // fused decoder (e.g. ALP). Works for any timestamp encoding.
 func (b NumericBlob) allDataPointsMaterialized(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
 	tsBuf := make([]int64, count)
-	b.decodeTimestampsSlice(tsBytes, count, tsBuf)
+	tsProduced := b.decodeTimestampsSlice(tsBytes, count, tsBuf)
 	valBuf := make([]float64, count)
-	b.decodeValuesSlice(valBytes, count, valBuf)
+	valProduced := b.decodeValuesSlice(valBytes, count, valBuf)
+
+	// Yield only complete rows: a stream shorter than Count must not surface
+	// zero-filled timestamps or values from the unwritten buffer tail.
+	count = min(tsProduced, valProduced)
 
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
@@ -1123,7 +1127,10 @@ func (b NumericBlob) allDataPointsMaterialized(tsBytes, valBytes, tagBytes []byt
 		tagNext, tagStop := iter.Pull(tagIter)
 		defer tagStop()
 		for i := range count {
-			tag, _ := tagNext()
+			tag, ok := tagNext()
+			if !ok {
+				return // the tag stream ended early: yield only complete rows
+			}
 			if !yield(i, NumericDataPoint{Ts: tsBuf[i], Val: valBuf[i], Tag: tag}) {
 				return
 			}
@@ -1178,9 +1185,9 @@ func (b NumericBlob) allDataPointsGeneric(tsBytes, valBytes, tagBytes []byte, co
 		for {
 			ts, tsOk := tsNext()
 			val, valOk := valNext()
-			tag, _ := tagNext()
+			tag, tagOk := tagNext()
 
-			if !tsOk || !valOk {
+			if !tsOk || !valOk || !tagOk {
 				break
 			}
 

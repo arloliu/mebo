@@ -104,8 +104,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tag length near 2^63 overflowed the tag bounds check;
   a corrupt text length byte pushed reads past the metric's data;
   `ValueAt`, `TagAt` and `AllTags` now read only the metric's own byte range;
-  and on 32-bit platforms the index size, ALP column sizes and ALP exception positions
+  and on 32-bit platforms the index size, ALP column sizes, ALP exception counts and exception positions
   no longer overflow `int`.
+- Further decode hardening:
+  `Decode` rejects payload sections that overlap the header or index,
+  ALP exception positions that are not strictly ascending and below the point count,
+  and ALP columns too large to address on the current platform;
+  a varint whose tenth byte overflows uint64 now fails instead of decoding as a truncated value;
+  every DeltaPacked decode path now yields the same prefix for a truncated group;
+  and LZ4 decompression of corrupt input no longer grows its buffer beyond 255× the input
+  (a 1-byte payload previously allocated 268 MB before failing).
+- Row iterators and materialization yield only complete rows when a corrupt stream holds
+  fewer points than its count, instead of zero-filled timestamps, empty text values
+  or empty tags for a tag stream that ends early.
+- `AddFromRows` and `AddFromRowsNoTag` reject a call that exceeds the metric's remaining
+  points before adding any rows.
+- `EncodeMetricNames` rejects a names payload larger than a blob can address,
+  and the exported shared-timestamp parsers reject a negative metric count.
 - Set materialization keeps timestamps, values and tags aligned when a member decodes
   fewer points than its count from a corrupt stream, instead of shifting later points.
 - Numeric decoder: a header whose payload offsets are out of order
