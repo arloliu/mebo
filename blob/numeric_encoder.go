@@ -168,6 +168,10 @@ func (e *NumericEncoder) cloneHeader() *section.NumericHeader {
 // method returns a theoretical per-metric count ceiling rather than a guarantee that
 // every payload shape will fit in a finished blob.
 //
+// The V1 limit assumes worst-case encoded sizes for timestamps and values.
+// Tags are variable-length and not bounded, so a tagged metric can still
+// overflow the tag offset delta below this count.
+//
 // Returns:
 //   - int: Maximum data points per metric for the current encoding configuration
 func (e *NumericEncoder) MaxDataPoints() int {
@@ -176,18 +180,18 @@ func (e *NumericEncoder) MaxDataPoints() int {
 	}
 
 	tsEnc := e.header.Flag.TimestampEncoding()
-	tsBytes := 9   // Default safe worst-case for delta varints
+	tsBytes := 10  // Delta: a zigzag delta-of-delta varint takes up to 10 bytes
 	switch tsEnc { //nolint:exhaustive // other enum values use the default fallback
 	case format.TypeRaw:
 		tsBytes = 8
 	case format.TypeDeltaPacked:
-		tsBytes = 5 // Max 17 bytes per 4 values -> ~4.25
+		tsBytes = 9 // Max 33 bytes per 4 values (control byte + 4 × 8) -> ~8.25
 	default:
-		// tsBytes already initialized to 9
+		// tsBytes already initialized to 10
 	}
 
 	valEnc := e.header.Flag.ValueEncoding()
-	valBytes := 9 // Gorilla/Chimp worst case is ~65-69 bits (~9 bytes)
+	valBytes := 10 // Gorilla worst case is 77 bits, Chimp 75 bits; ALP is at most ~9 bytes
 	if valEnc == format.TypeRaw {
 		valBytes = 8
 	}
