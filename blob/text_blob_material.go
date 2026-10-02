@@ -146,24 +146,36 @@ func (b TextBlob) Materialize() MaterializedTextBlob {
 func (b TextBlob) materializeMetricData(entry section.TextIndexEntry) materializedTextMetric {
 	count := int(entry.Count)
 	hasTag := b.HasTag()
-	timestamps := make([]int64, 0, count)
-	values := make([]string, 0, count)
+	timestamps := make([]int64, count)
+	values := make([]string, count)
 	var tags []string
 	if hasTag {
-		tags = make([]string, 0, count)
+		tags = make([]string, count)
 	}
 
+	// Write by index rather than append: the loop body is a closure, and
+	// slice headers it reassigns would escape to the heap on every call.
+	n := 0
 	for _, dp := range b.allFromEntry(entry) {
-		timestamps = append(timestamps, dp.Ts)
-		values = append(values, dp.Val)
-		if hasTag {
-			tags = append(tags, dp.Tag)
+		if n == count {
+			break
 		}
+		timestamps[n] = dp.Ts
+		values[n] = dp.Val
+		if hasTag {
+			tags[n] = dp.Tag
+		}
+		n++
+	}
+
+	// A corrupt stream may yield fewer complete rows than Count.
+	if hasTag {
+		tags = tags[:n]
 	}
 
 	return materializedTextMetric{
-		timestamps: timestamps,
-		values:     values,
+		timestamps: timestamps[:n],
+		values:     values[:n],
 		tags:       tags,
 	}
 }
