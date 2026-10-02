@@ -1132,8 +1132,9 @@ func (d NumericALPDecoder) decodeMainInto(data []byte, count int, dst []float64)
 	}
 	// patch exceptions by position afterwards (sidecar positions are ascending)
 	for k := 0; k < nExc; k++ {
-		p := int(d.engine.Uint32(exc[k*12 : k*12+4]))
-		if p < n {
+		// Compare as uint32: int(position) is negative on 32-bit for p >= 2^31.
+		p := d.engine.Uint32(exc[k*12 : k*12+4])
+		if uint64(p) < uint64(n) {
 			dst[p] = math.Float64frombits(d.engine.Uint64(exc[k*12+4 : k*12+12]))
 		}
 	}
@@ -1248,10 +1249,11 @@ func (d NumericALPDecoder) decodeRDInto(data []byte, count int, dst []float64) i
 		dst[i] = math.Float64frombits((left << rbw) | right)
 	}
 	for k := 0; k < nExc; k++ {
-		p := int(d.engine.Uint32(exc[k*6 : k*6+4]))
-		if p < n {
+		// Compare as uint32: int(position) is negative on 32-bit for p >= 2^31.
+		p := d.engine.Uint32(exc[k*6 : k*6+4])
+		if uint64(p) < uint64(n) {
 			left := uint64(d.engine.Uint16(exc[k*6+4 : k*6+6]))
-			right := alpReadBitsFast(rights, p*rbw, rbw, rightMask)
+			right := alpReadBitsFast(rights, int(p)*rbw, rbw, rightMask)
 			dst[p] = math.Float64frombits((left << rbw) | right)
 		}
 	}

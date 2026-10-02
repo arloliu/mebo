@@ -90,6 +90,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   When the same metric also existed in text members,
   an index past the numeric points used to return a text point,
   and a single-point numeric metric reported the text members' duration.
+- **Decoders reject crafted index counts instead of trusting them.**
+  `Decode` now checks every entry's point count against its payload ranges
+  (at least one timestamp byte per point, exactly eight bytes per raw timestamp or value,
+  one tag byte per point, a non-empty value column),
+  checks text entries against their data bytes,
+  and requires a shared-timestamp member to have the same count as its canonical entry.
+  A tiny crafted blob could previously crash the process from `Decode` or `Materialize`
+  with multi-gigabyte allocations, spin for seconds, read a neighboring metric's values,
+  or pair timestamps with the wrong values; these now fail with `ErrInvalidNumOfDataPoints`
+  or `ErrInvalidSharedTimestampTable`.
+- Further crafted-input panics fixed:
+  a tag length near 2^63 overflowed the tag bounds check;
+  a corrupt text length byte pushed reads past the metric's data;
+  `ValueAt`, `TagAt` and `AllTags` now read only the metric's own byte range;
+  and on 32-bit platforms the index size, ALP column sizes and ALP exception positions
+  no longer overflow `int`.
+- Set materialization keeps timestamps, values and tags aligned when a member decodes
+  fewer points than its count from a corrupt stream, instead of shifting later points.
 - Numeric decoder: a header whose payload offsets are out of order
   now returns `ErrInvalidValuePayloadOffset` or `ErrInvalidTagPayloadOffset` instead of panicking.
 - ALP decoding: a column header whose exponent or factor exceeds 18,

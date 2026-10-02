@@ -223,6 +223,10 @@ func ApplySharedTimestampTable(data []byte, engine endian.EndianEngine, metricCo
 			if status[idx] != 0 {
 				return fmt.Errorf("%w: shared index %d conflicts with existing assignment", errs.ErrInvalidSharedTimestampTable, idx)
 			}
+			if indexEntries[idx].Count != indexEntries[canonicalIdx].Count {
+				return fmt.Errorf("%w: shared index %d has %d points but canonical index %d has %d",
+					errs.ErrInvalidSharedTimestampTable, idx, indexEntries[idx].Count, canonicalIdx, indexEntries[canonicalIdx].Count)
+			}
 
 			indexEntries[idx].TimestampOffset = canonTsOffset
 			indexEntries[idx].TimestampLength = canonTsLength

@@ -436,17 +436,6 @@ func safeSlice(payload []byte, offset, length int) ([]byte, bool) {
 	return payload[offset : offset+length], true
 }
 
-// safeSuffix returns payload[offset:] when offset is within payload, or
-// nil,false otherwise. Used by the variable-length tag paths that slice from an
-// offset to the end of the payload.
-func safeSuffix(payload []byte, offset int) ([]byte, bool) {
-	if offset < 0 || offset > len(payload) {
-		return nil, false
-	}
-
-	return payload[offset:], true
-}
-
 // allFromEntry returns an iterator over (index, NumericDataPoint) for the given entry.
 func (b NumericBlob) allFromEntry(entry section.NumericIndexEntry) iter.Seq2[int, NumericDataPoint] {
 	if entry.Count == 0 {
@@ -531,7 +520,7 @@ func (b NumericBlob) allTagsFromEntry(entry section.NumericIndexEntry) iter.Seq[
 		}
 	}
 
-	tagBytes, ok := safeSuffix(b.tagPayload, entry.TagOffset)
+	tagBytes, ok := safeSlice(b.tagPayload, entry.TagOffset, entry.TagLength)
 	if !ok {
 		return func(yield func(string) bool) {}
 	}
@@ -581,23 +570,16 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 		return 0, false
 	}
 
-	// Get byte slice for values
-	valStart := entry.ValueOffset
-	if valStart > len(b.valPayload) {
+	// Read only this metric's own value range: variable-length codecs given
+	// the payload suffix would run on into the next metric's bytes.
+	valBytes, ok := safeSlice(b.valPayload, entry.ValueOffset, entry.ValueLength)
+	if !ok {
 		return 0, false
 	}
 
-	var valBytes []byte
-
 	switch b.ValueEncoding() { //nolint: exhaustive
 	case format.TypeRaw:
-		// Raw encoding: fixed 8 bytes per float64
-		valEnd := valStart + count*8
-		if valEnd > len(b.valPayload) {
-			return 0, false
-		}
-		valBytes = b.valPayload[valStart:valEnd]
-
+		// Raw encoding: fixed 8 bytes per float64 (length checked at decode)
 		engine := b.Engine()
 		if b.sameByteOrder {
 			decoder := ienc.NewNumericRawUnsafeDecoder(engine)
@@ -608,27 +590,18 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 
 		return decoder.At(valBytes, index, count)
 	case format.TypeGorilla:
-		// For Gorilla encoding, we need to calculate the exact byte length for this metric
-		// because the data is variable-length compressed. If we pass all remaining bytes,
-		// the decoder might read into the next metric's data, causing incorrect values.
 		decoder := ienc.NewNumericGorillaDecoder()
-
-		valBytes = b.valPayload[valStart:]
 
 		return decoder.At(valBytes, index, count)
 	case format.TypeChimp:
 		// Chimp encoding is also variable-length compressed like Gorilla.
 		decoder := ienc.NewNumericChimpDecoder()
 
-		valBytes = b.valPayload[valStart:]
-
 		return decoder.At(valBytes, index, count)
 	case format.TypeALP:
 		// ALP is also variable-length compressed; needs the endian engine.
 		engine := b.Engine()
 		decoder := ienc.NewNumericALPDecoder(engine)
-
-		valBytes = b.valPayload[valStart:]
 
 		return decoder.At(valBytes, index, count)
 	default:
@@ -644,13 +617,12 @@ func (b NumericBlob) tagAtFromEntry(entry section.NumericIndexEntry, index int) 
 		return "", false
 	}
 
-	// Get tag bytes starting from this metric's offset
-	tagBytes, ok := safeSuffix(b.tagPayload, entry.TagOffset)
+	// Read only this metric's own tag range, like allFromEntry.
+	tagBytes, ok := safeSlice(b.tagPayload, entry.TagOffset, entry.TagLength)
 	if !ok {
 		return "", false
 	}
 
-	// Tags always support random access
 	decoder := ienc.NewTagDecoder(b.Engine())
 
 	return decoder.At(tagBytes, index, count)

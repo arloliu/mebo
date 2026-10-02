@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
+	"github.com/arloliu/mebo/section"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1284,4 +1286,76 @@ func TestTextBlob_RejectsMalformedTimestampEncoding(t *testing.T) {
 		require.Equal(t, 10, n)
 		require.Equal(t, int64(math.MinInt64), ts)
 	})
+}
+
+// TestTextBlob_LengthByteSkippingPastDataDoesNotPanic pins that a value-length
+// byte pointing past the metric's data makes the read paths fail cleanly.
+func TestTextBlob_LengthByteSkippingPastDataDoesNotPanic(t *testing.T) {
+	for _, tsEnc := range []format.EncodingType{format.TypeRaw, format.TypeDelta} {
+		t.Run(tsEnc.String(), func(t *testing.T) {
+			enc, err := NewTextEncoder(time.Unix(0, 0).UTC(),
+				WithTextTimestampEncoding(tsEnc), WithTextDataCompression(format.CompressionNone), WithoutMetricNames())
+			require.NoError(t, err)
+			require.NoError(t, enc.StartMetricID(1, 3))
+			for i := range 3 {
+				require.NoError(t, enc.AddDataPoint(int64(i), "v", ""))
+			}
+			require.NoError(t, enc.EndMetric())
+			data, err := enc.Finish()
+			require.NoError(t, err)
+
+			header, err := section.ParseTextHeader(data[:section.HeaderSize])
+			require.NoError(t, err)
+			tsLen := 1
+			if tsEnc == format.TypeRaw {
+				tsLen = 9
+			}
+			data[int(header.DataOffset)+tsLen] = 200 // first point's value length
+
+			decoder, err := NewTextDecoder(data)
+			require.NoError(t, err)
+			blob, err := decoder.Decode()
+			if err != nil {
+				return // rejecting at open is also acceptable
+			}
+
+			require.NotPanics(t, func() {
+				for ts := range blob.AllTimestamps(1) {
+					_ = ts
+				}
+				for val := range blob.AllValues(1) {
+					_ = val
+				}
+				for i := range 3 {
+					_, _ = blob.TimestampAt(1, i)
+					_, _ = blob.ValueAt(1, i)
+					_, _ = blob.TagAt(1, i)
+				}
+				_ = blob.Materialize()
+			})
+		})
+	}
+}
+
+// TestTextDecoder_RejectsCountBeyondData pins that a text index entry whose
+// Count cannot fit its data bytes is rejected at decode, so materialization
+// cannot size allocations from it.
+func TestTextDecoder_RejectsCountBeyondData(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC(),
+		WithTextDataCompression(format.CompressionNone), WithoutMetricNames())
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 2))
+	require.NoError(t, enc.AddDataPoint(0, "a", ""))
+	require.NoError(t, enc.AddDataPoint(1, "b", ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	countOff := section.HeaderSize + 8
+	endian.GetLittleEndianEngine().PutUint16(data[countOff:countOff+2], 60000)
+
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+	_, err = decoder.Decode()
+	require.ErrorIs(t, err, errs.ErrInvalidNumOfDataPoints)
 }

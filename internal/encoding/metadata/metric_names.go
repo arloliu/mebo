@@ -83,6 +83,12 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 	count := engine.Uint16(data[offset:])
 	offset += 2
 
+	// Each name needs at least its 2-byte length, so a count beyond that is a
+	// truncated payload; reject it before sizing the result from it.
+	if int(count) > (len(data)-offset)/2 {
+		return nil, 0, fmt.Errorf("%w: %d metric names do not fit %d bytes", errs.ErrInvalidMetricNamesPayload, count, len(data)-offset)
+	}
+
 	// Pre-allocate slice for names
 	names := make([]string, count)
 
@@ -131,6 +137,12 @@ func DecodeMetricNamesBorrowed(data []byte, engine endian.EndianEngine) ([]strin
 
 	count := engine.Uint16(data[offset:])
 	offset += 2
+
+	// Each name needs at least its 2-byte length, so a count beyond that is a
+	// truncated payload; reject it before sizing the result from it.
+	if int(count) > (len(data)-offset)/2 {
+		return nil, 0, fmt.Errorf("%w: %d metric names do not fit %d bytes", errs.ErrInvalidMetricNamesPayload, count, len(data)-offset)
+	}
 
 	// Pre-allocate slice for names
 	names := make([]string, count)

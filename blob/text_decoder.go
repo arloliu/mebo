@@ -250,6 +250,13 @@ func (d *TextDecoder) parseMetricNames() ([]string, int, error) {
 // parseIndexEntries parses the index section starting at the given offset.
 // Returns the index entries and metric IDs in the same order.
 func (d *TextDecoder) parseIndexEntries(startOffset int) ([]section.TextIndexEntry, []uint64, error) {
+	// Compare counts before multiplying: on 32-bit platforms a crafted
+	// MetricCount times the entry size can wrap.
+	if startOffset > len(d.data) || d.metricCount > (len(d.data)-startOffset)/section.TextIndexEntrySize {
+		return nil, nil, fmt.Errorf("%w: %d entries do not fit %d index bytes",
+			errs.ErrInvalidIndexEntrySize, d.metricCount, len(d.data)-min(startOffset, len(d.data)))
+	}
+
 	expectedIndexSize := d.metricCount * section.TextIndexEntrySize
 	endOffset := startOffset + expectedIndexSize
 
@@ -293,6 +300,23 @@ func (d *TextDecoder) parseIndexEntries(startOffset int) ([]section.TextIndexEnt
 		}
 
 		indexEntries[i].Size = indexEntries[i+1].Offset - indexEntries[i].Offset
+	}
+
+	// Every point takes at least its timestamp (one varint byte, or nine raw
+	// bytes) and a value-length byte, plus a tag-length byte with tags. A larger
+	// Count can only come from a corrupt index and would size allocations.
+	minPointSize := uint64(2)
+	if d.header.Flag.GetTimestampEncoding() == format.TypeRaw {
+		minPointSize = 10
+	}
+	if d.header.Flag.HasTag() {
+		minPointSize++
+	}
+	for i := range indexEntries {
+		if uint64(indexEntries[i].Count)*minPointSize > uint64(indexEntries[i].Size) {
+			return nil, nil, fmt.Errorf("%w: entry %d has count %d but %d data bytes",
+				errs.ErrInvalidNumOfDataPoints, i, indexEntries[i].Count, indexEntries[i].Size)
+		}
 	}
 
 	return indexEntries, metricIDs, nil

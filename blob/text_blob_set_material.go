@@ -223,6 +223,8 @@ func (s *TextBlobSet) materializeMetricCore(metricID uint64, resolve func(blob *
 				tags = append(tags, "")
 			}
 		}
+
+		timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
 	}
 
 	return MaterializedTextMetric{
@@ -324,6 +326,8 @@ func (s *TextBlobSet) materializeBlobData(material *MaterializedTextBlobSet, slo
 				}
 			}
 
+			metricSet.timestamps, metricSet.values, metricSet.tags = alignMemberRows(
+				metricSet.timestamps, metricSet.values, metricSet.tags, hasTags)
 			material.metrics[slot] = metricSet
 		}
 	}

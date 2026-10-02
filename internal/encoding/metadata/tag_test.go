@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/arloliu/mebo/endian"
@@ -696,4 +697,21 @@ func TestTagDecoder_RoundTrip_LargeDataset(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, expected[idx], tag)
 	}
+}
+
+// TestDecodeTagAt_HugeLengthDoesNotOverflow pins that a tag length uvarint near
+// 2^63 is rejected rather than wrapping the bounds check negative.
+func TestDecodeTagAt_HugeLengthDoesNotOverflow(t *testing.T) {
+	data := binary.AppendUvarint(nil, math.MaxInt64-2)
+	data = append(data, 'x', 'y')
+
+	_, _, ok := decodeTagAt(data, 0)
+	require.False(t, ok)
+
+	require.NotPanics(t, func() {
+		for tag := range NewTagDecoder(endian.GetLittleEndianEngine()).All(data, 1) {
+			_ = tag
+		}
+		_, _ = NewTagDecoder(endian.GetLittleEndianEngine()).At(data, 0, 1)
+	})
 }
