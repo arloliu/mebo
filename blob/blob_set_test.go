@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/stretchr/testify/require"
@@ -1139,22 +1140,15 @@ func TestDecodeBlobSet_MixedBlobs(t *testing.T) {
 
 // TestDecodeBlobSet_InvalidBlob tests decoding with invalid blob data
 func TestDecodeBlobSet_InvalidBlob(t *testing.T) {
+	// An input that is neither a numeric nor a text blob is a parsing error.
 	t.Run("Too short data", func(t *testing.T) {
-		invalidData := []byte{0x01, 0x02, 0x03}
-		blobSet, err := DecodeBlobSet(invalidData)
-		// Current implementation: silently ignores invalid blobs
-		// This test documents the current behavior
-		require.NoError(t, err)
-		require.Empty(t, blobSet.numericBlobs)
-		require.Empty(t, blobSet.textBlobs)
+		_, err := DecodeBlobSet([]byte{0x01, 0x02, 0x03})
+		require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
 	})
 
 	t.Run("Empty byte slice", func(t *testing.T) {
-		emptyData := []byte{}
-		blobSet, err := DecodeBlobSet(emptyData)
-		require.NoError(t, err)
-		require.Empty(t, blobSet.numericBlobs)
-		require.Empty(t, blobSet.textBlobs)
+		_, err := DecodeBlobSet([]byte{})
+		require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
 	})
 
 	t.Run("Invalid magic number", func(t *testing.T) {
@@ -1163,11 +1157,8 @@ func TestDecodeBlobSet_InvalidBlob(t *testing.T) {
 		invalidData[0] = 0xFF // Wrong magic number
 		invalidData[1] = 0xFF
 
-		blobSet, err := DecodeBlobSet(invalidData)
-		// Current implementation: silently ignores invalid blobs
-		require.NoError(t, err)
-		require.Empty(t, blobSet.numericBlobs)
-		require.Empty(t, blobSet.textBlobs)
+		_, err := DecodeBlobSet(invalidData)
+		require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
 	})
 }
 

@@ -2,9 +2,11 @@ package blob
 
 import (
 	"cmp"
+	"fmt"
 	"iter"
 	"slices"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/section"
 )
 
@@ -185,7 +187,7 @@ func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
 func DecodeBlobSet(blobs ...[]byte) (BlobSet, error) {
 	numericBlobs := make([]NumericBlob, 0, len(blobs)/2)
 	textBlobs := make([]TextBlob, 0, len(blobs)/2)
-	for _, blob := range blobs {
+	for i, blob := range blobs {
 		if section.IsNumericBlob(blob) {
 			decoder, err := NewNumericDecoder(blob)
 			if err != nil {
@@ -210,6 +212,8 @@ func DecodeBlobSet(blobs ...[]byte) (BlobSet, error) {
 			}
 
 			textBlobs = append(textBlobs, tb)
+		} else {
+			return BlobSet{}, fmt.Errorf("%w: input %d is neither a numeric nor a text blob", errs.ErrInvalidMagicNumber, i)
 		}
 	}
 
@@ -459,6 +463,8 @@ func (bs BlobSet) AllTimestampsByName(metricName string) iter.Seq2[int, int64] {
 }
 
 func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
+	numPad := anyHasTag(bs.numericBlobs)
+	txtPad := anyHasTag(bs.textBlobs)
 	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
 	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
 
@@ -473,7 +479,18 @@ func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
 			}
 			foundInNumeric = true
 			if !blob.HasTag() {
-				// Tags disabled or optimized away: this member yields nothing.
+				// Tags disabled or optimized away. When other numeric members
+				// carry tags, pad with one empty tag per point so indexes stay
+				// aligned with TimestampAt and TagAt; otherwise yield nothing.
+				if numPad {
+					for range entry.Count {
+						if !yield(index, "") {
+							return
+						}
+						index++
+					}
+				}
+
 				continue
 			}
 			for tag := range blob.allTagsFromEntry(entry) {
@@ -490,7 +507,19 @@ func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
 
 		for _, blob := range bs.textBlobs {
 			entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
-			if !ok || !blob.HasTag() {
+			if !ok {
+				continue
+			}
+			if !blob.HasTag() {
+				if txtPad {
+					for range int(entry.Count) {
+						if !yield(index, "") {
+							return
+						}
+						index++
+					}
+				}
+
 				continue
 			}
 			for tag := range blob.allTagsFromEntry(entry) {
@@ -504,6 +533,8 @@ func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
 }
 
 func (bs BlobSet) AllTagsByName(metricName string) iter.Seq2[int, string] {
+	numPad := anyHasTag(bs.numericBlobs)
+	txtPad := anyHasTag(bs.textBlobs)
 	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
 	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
 
@@ -518,7 +549,18 @@ func (bs BlobSet) AllTagsByName(metricName string) iter.Seq2[int, string] {
 			}
 			foundInNumeric = true
 			if !blob.HasTag() {
-				// Tags disabled or optimized away: this member yields nothing.
+				// Tags disabled or optimized away. When other numeric members
+				// carry tags, pad with one empty tag per point so indexes stay
+				// aligned with TimestampAt and TagAt; otherwise yield nothing.
+				if numPad {
+					for range entry.Count {
+						if !yield(index, "") {
+							return
+						}
+						index++
+					}
+				}
+
 				continue
 			}
 			for tag := range blob.allTagsFromEntry(entry) {
@@ -535,7 +577,19 @@ func (bs BlobSet) AllTagsByName(metricName string) iter.Seq2[int, string] {
 
 		for _, blob := range bs.textBlobs {
 			entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
-			if !ok || !blob.HasTag() {
+			if !ok {
+				continue
+			}
+			if !blob.HasTag() {
+				if txtPad {
+					for range int(entry.Count) {
+						if !yield(index, "") {
+							return
+						}
+						index++
+					}
+				}
+
 				continue
 			}
 			for tag := range blob.allTagsFromEntry(entry) {
