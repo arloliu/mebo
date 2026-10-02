@@ -660,3 +660,25 @@ func TestTextBlobSet_MetricDuration(t *testing.T) {
 		require.Equal(t, int64(0), duration, "Single point should have 0 duration")
 	})
 }
+
+// TestTextBlobSet_AllTagsPadsTaglessMembers pins that TextBlobSet.AllTags and
+// AllTagsByName yield one empty tag per point for a member built without tags
+// when another member carries tags.
+func TestTextBlobSet_AllTagsPadsTaglessMembers(t *testing.T) {
+	t1, t2 := tagsTestTextBlobs(t)
+	id := t2.MetricIDs()[0]
+
+	txtSet, err := NewTextBlobSet([]TextBlob{t1, t2})
+	require.NoError(t, err)
+	var got []string
+	for tag := range txtSet.AllTags(id) {
+		got = append(got, tag)
+	}
+	require.Equal(t, tagsTestPaddingWant, got, "AllTags")
+
+	got = got[:0]
+	for tag := range txtSet.AllTagsByName(tagsTestMetric) {
+		got = append(got, tag)
+	}
+	require.Equal(t, tagsTestPaddingWant, got, "AllTagsByName")
+}
