@@ -1402,20 +1402,25 @@ func (bs BlobSet) MetricDuration(metricID uint64) int64 {
 	// metric; name-keyed duration walks exactly that metric's members.
 	// targetName IS the first colliding name, so a stripped member correctly
 	// contributes and needs no filter.
-	numTarget, numCollided := bs.numericIdentity.resolveID(metricID)
-	if bs.inNumeric(metricID, numTarget, numCollided) {
-		if numCollided {
-			return calculateDurationByName(bs.numericBlobs, numTarget, nil)
-		}
-
-		return calculateDuration(bs.numericBlobs, metricID)
+	// A metric found in numeric members is served by them alone, even when its duration is 0.
+	var duration int64
+	var found bool
+	if numTarget, numCollided := bs.numericIdentity.resolveID(metricID); numCollided {
+		duration, found = calculateDurationByName(bs.numericBlobs, numTarget, nil)
+	} else {
+		duration, found = calculateDuration(bs.numericBlobs, metricID)
+	}
+	if found {
+		return duration
 	}
 
 	if txtTarget, txtCollided := bs.textIdentity.resolveID(metricID); txtCollided {
-		return calculateDurationByName(bs.textBlobs, txtTarget, nil)
+		duration, _ = calculateDurationByName(bs.textBlobs, txtTarget, nil)
+	} else {
+		duration, _ = calculateDuration(bs.textBlobs, metricID)
 	}
 
-	return calculateDuration(bs.textBlobs, metricID)
+	return duration
 }
 
 // MetricDurationByName calculates the time span for the given metric name across all blobs.
@@ -1438,46 +1443,22 @@ func (bs BlobSet) MetricDuration(metricID uint64) int64 {
 func (bs BlobSet) MetricDurationByName(metricName string) int64 {
 	// A stripped member's ID hash-matches every colliding name; when metricName is not
 	// the first colliding name, those members belong to the other logical metric.
-	numSkipStripped := bs.numericIdentity.excludesStripped(metricName)
-	if bs.inNumericByName(metricName, numSkipStripped) {
-		var numFilter func(i int) bool
-		if numSkipStripped {
-			numFilter = func(i int) bool { return bs.numericBlobs[i].index.names != nil }
-		}
-
-		return calculateDurationByName(bs.numericBlobs, metricName, numFilter)
+	var numFilter func(i int) bool
+	if bs.numericIdentity.excludesStripped(metricName) {
+		numFilter = func(i int) bool { return bs.numericBlobs[i].index.names != nil }
+	}
+	// A metric found in numeric members is served by them alone, even when its duration is 0.
+	if duration, found := calculateDurationByName(bs.numericBlobs, metricName, numFilter); found {
+		return duration
 	}
 
 	var txtFilter func(i int) bool
 	if bs.textIdentity.excludesStripped(metricName) {
 		txtFilter = func(i int) bool { return bs.textBlobs[i].index.names != nil }
 	}
+	duration, _ := calculateDurationByName(bs.textBlobs, metricName, txtFilter)
 
-	return calculateDurationByName(bs.textBlobs, metricName, txtFilter)
-}
-
-// inNumeric reports whether the ID-keyed metric resolves to an entry in any
-// numeric member. Accessors that span both types serve such a metric from the
-// numeric members alone.
-func (bs BlobSet) inNumeric(metricID uint64, target string, collided bool) bool {
-	for i := range bs.numericBlobs {
-		if _, ok := bs.numericBlobs[i].index.resolveEntry(metricID, target, collided); ok {
-			return true
-		}
-	}
-
-	return false
-}
-
-// inNumericByName is the name-keyed counterpart of inNumeric.
-func (bs BlobSet) inNumericByName(metricName string, skipStripped bool) bool {
-	for i := range bs.numericBlobs {
-		if _, ok := bs.numericBlobs[i].index.resolveEntryByName(metricName, skipStripped); ok {
-			return true
-		}
-	}
-
-	return false
+	return duration
 }
 
 // numericPointFromEntry / textPointFromEntry assemble a full data point from a member's
@@ -1524,13 +1505,14 @@ type blobAccessor[T any] interface {
 }
 
 // calculateDuration is a generic helper that calculates metric duration across a slice of blobs.
+// It also reports whether any blob holds the metric, so callers need no separate lookup pass.
 // This function is inlined by the compiler for zero overhead compared to duplicated code.
 //
 // Performance: Optimized bi-directional search - finds first from start, last from end.
 // Average case: O(n/2) when metric is in middle blobs. Best case: O(2) when in first and last.
-func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) int64 {
+func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) (int64, bool) {
 	if len(blobs) == 0 {
-		return 0
+		return 0, false
 	}
 
 	// Find first blob containing the metric (forward search)
@@ -1543,7 +1525,7 @@ func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) int64 {
 	}
 
 	if firstIdx == -1 {
-		return 0 // Metric not found
+		return 0, false // Metric not found
 	}
 
 	// Find last blob containing the metric (reverse search)
@@ -1558,35 +1540,36 @@ func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) int64 {
 	// Get first timestamp from first blob
 	firstTimestamp, ok := blobs[firstIdx].TimestampAt(metricID, 0)
 	if !ok {
-		return 0
+		return 0, true
 	}
 
 	// Get last timestamp from last blob
 	lastBlobLen := blobs[lastIdx].Len(metricID)
 	if lastBlobLen == 0 {
-		return 0
+		return 0, true
 	}
 
 	lastTimestamp, ok := blobs[lastIdx].TimestampAt(metricID, lastBlobLen-1)
 	if !ok {
-		return 0
+		return 0, true
 	}
 
 	if lastTimestamp > firstTimestamp {
-		return lastTimestamp - firstTimestamp
+		return lastTimestamp - firstTimestamp, true
 	}
 
-	return 0
+	return 0, true
 }
 
 // calculateDurationByName is a generic helper that calculates metric duration by name across a slice of blobs.
+// It also reports whether any contributing blob holds the metric.
 // This function is inlined by the compiler for zero overhead compared to duplicated code.
 //
 // Performance: Optimized bi-directional search - finds first from start, last from end.
 // Average case: O(n/2) when metric is in middle blobs. Best case: O(2) when in first and last.
-func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, contributes func(i int) bool) int64 {
+func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, contributes func(i int) bool) (int64, bool) {
 	if len(blobs) == 0 {
-		return 0
+		return 0, false
 	}
 
 	// Find first blob containing the metric (forward search)
@@ -1602,7 +1585,7 @@ func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, co
 	}
 
 	if firstIdx == -1 {
-		return 0 // Metric not found
+		return 0, false // Metric not found
 	}
 
 	// Find last blob containing the metric (reverse search)
@@ -1620,23 +1603,23 @@ func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, co
 	// Get first timestamp from first blob
 	firstTimestamp, ok := blobs[firstIdx].TimestampAtByName(metricName, 0)
 	if !ok {
-		return 0
+		return 0, true
 	}
 
 	// Get last timestamp from last blob
 	lastBlobLen := blobs[lastIdx].LenByName(metricName)
 	if lastBlobLen == 0 {
-		return 0
+		return 0, true
 	}
 
 	lastTimestamp, ok := blobs[lastIdx].TimestampAtByName(metricName, lastBlobLen-1)
 	if !ok {
-		return 0
+		return 0, true
 	}
 
 	if lastTimestamp > firstTimestamp {
-		return lastTimestamp - firstTimestamp
+		return lastTimestamp - firstTimestamp, true
 	}
 
-	return 0
+	return 0, true
 }
