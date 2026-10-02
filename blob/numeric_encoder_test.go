@@ -3796,3 +3796,58 @@ func TestNumericEncoder_FinishStateErrorIsRecoverable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, blob.Len(1))
 }
+
+// TestAddFromRows_RejectsWholeCallWhenTooMany pins that a row helper call
+// exceeding the open metric's remaining capacity adds no rows, so the caller
+// can retry with the correct rows.
+func TestAddFromRows_RejectsWholeCallWhenTooMany(t *testing.T) {
+	type row struct {
+		ts  int64
+		val float64
+	}
+	rows := make([]row, 514)
+	for i := range rows {
+		rows[i] = row{ts: int64(i), val: float64(i)}
+	}
+	noTag := func(r row) (int64, float64) { return r.ts, r.val }
+	withTag := func(r row) (int64, float64, string) { return r.ts, r.val, "" }
+
+	for name, add := range map[string]func(*NumericEncoder, []row) error{
+		"AddFromRowsNoTag": func(e *NumericEncoder, rs []row) error { return AddFromRowsNoTag(e, rs, noTag) },
+		"AddFromRows":      func(e *NumericEncoder, rs []row) error { return AddFromRows(e, rs, withTag) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			enc, err := NewNumericEncoder(time.Unix(0, 0).UTC())
+			require.NoError(t, err)
+			require.NoError(t, enc.StartMetricID(1, 513))
+			require.ErrorIs(t, add(enc, rows), errs.ErrTooManyDataPoints)
+			require.NoError(t, add(enc, rows[:513]))
+			require.NoError(t, enc.EndMetric())
+		})
+	}
+}
+
+// TestAddFromRows_RejectsRowCountOverflowingCapacityCheck pins that a row count
+// near math.MaxInt cannot wrap the capacity check and get partly added.
+// Zero-size rows make such a slice free to allocate.
+func TestAddFromRows_RejectsRowCountOverflowingCapacityCheck(t *testing.T) {
+	huge := make([]struct{}, math.MaxInt)
+	noTag := func(struct{}) (int64, float64) { return 0, 0 }
+	withTag := func(struct{}) (int64, float64, string) { return 0, 0, "" }
+
+	for name, add := range map[string]func(*NumericEncoder, []struct{}) error{
+		"AddFromRowsNoTag": func(e *NumericEncoder, rs []struct{}) error { return AddFromRowsNoTag(e, rs, noTag) },
+		"AddFromRows":      func(e *NumericEncoder, rs []struct{}) error { return AddFromRows(e, rs, withTag) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			enc, err := NewNumericEncoder(time.Unix(0, 0).UTC())
+			require.NoError(t, err)
+			require.NoError(t, enc.StartMetricID(1, 513))
+			require.NoError(t, add(enc, huge[:1]))
+			require.ErrorIs(t, add(enc, huge), errs.ErrTooManyDataPoints)
+			// The rejected call added nothing, so the remaining 512 points still fit.
+			require.NoError(t, add(enc, huge[:512]))
+			require.NoError(t, enc.EndMetric())
+		})
+	}
+}

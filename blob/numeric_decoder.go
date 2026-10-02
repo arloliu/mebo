@@ -2,6 +2,7 @@ package blob
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/arloliu/mebo/compress"
 	"github.com/arloliu/mebo/endian"
@@ -422,6 +423,13 @@ func (d *NumericDecoder) parseIndexEntries(
 	}
 	indexSize := entrySize * d.metricCount
 
+	// The timestamp payload (or the shared timestamp table before it) must
+	// start at or after the end of the index, never inside the header or index.
+	if indexOffset+indexSize > int(d.header.TimestampPayloadOffset) {
+		return nil, nil, fmt.Errorf("%w: timestamp payload at %d overlaps the index ending at %d",
+			errs.ErrInvalidTimestampPayloadOffset, d.header.TimestampPayloadOffset, indexOffset+indexSize)
+	}
+
 	indexData := d.data[indexOffset : indexOffset+indexSize]
 	// Use int for accumulated offsets to prevent uint16 overflow
 	// Index entries store deltas as uint16/uint32, but absolute offsets can exceed those ranges
@@ -522,9 +530,33 @@ func (d *NumericDecoder) parseIndexEntries(
 	return indexEntries, metricIDs, nil
 }
 
+// validateALPExceptionPositions checks that an ALP column's exception sidecar
+// lists strictly ascending positions below count. The encoder always writes
+// them that way; the decode paths patch, iterate and binary-search the
+// sidecar under that assumption, so unsorted or duplicate positions would make
+// AllValues, DecodeAll and ValueAt disagree. stride is the bytes per exception.
+func validateALPExceptionPositions(exc []byte, nExc, stride, count int, engine endian.EndianEngine) error {
+	var prev uint32
+	for k := range nExc {
+		pos := engine.Uint32(exc[k*stride : k*stride+4])
+		if uint64(pos) >= uint64(count) || (k > 0 && pos <= prev) { //nolint:gosec // count is non-negative
+			return fmt.Errorf("exception %d has position %d, want ascending positions below %d", k, pos, count)
+		}
+		prev = pos
+	}
+
+	return nil
+}
+
 // maxALPMainWidth is the widest packed code an ALP main column can hold:
 // codes are FOR-adjusted uint64 values.
 const maxALPMainWidth = 64
+
+// maxALPColumnBits caps a column's packed bit count so every bit position and
+// section offset the ALP decoders compute in int stays representable,
+// including the +7 that rounds a bit count up to bytes. It only
+// binds on 32-bit platforms; it is a variable so tests can emulate them.
+var maxALPColumnBits = uint64(math.MaxInt)
 
 // validateALPColumns checks that every ALP-encoded value column begins with
 // a known scheme byte (0=main, 1=RD, 2=raw; see internal/encoding/
@@ -577,80 +609,12 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 		// ALPMaxSchemeByte above, so this switch is exhaustive.
 		switch scheme {
 		case 0: // alpSchemeMain
-			const mainHeaderSize = 15
-			if len(body) < mainHeaderSize {
-				return fmt.Errorf("%w: metric ID %d has ALP main column body of %d bytes, want at least %d (fixed header)",
-					errs.ErrInvalidALPColumn, entry.MetricID, len(body), mainHeaderSize)
-			}
-
-			// e and f index the 19-entry power-of-ten tables in every
-			// decode path; an out-of-range byte would panic there.
-			exp, factor := int(body[0]), int(body[1])
-			if exp > ienc.ALPMaxExponent || factor > ienc.ALPMaxExponent {
-				return fmt.Errorf("%w: metric ID %d has ALP main column exponent %d / factor %d, want at most %d",
-					errs.ErrInvalidALPColumn, entry.MetricID, exp, factor, ienc.ALPMaxExponent)
-			}
-
-			width := int(body[2])
-			if width > maxALPMainWidth {
-				return fmt.Errorf("%w: metric ID %d has ALP main column width %d, want at most %d",
-					errs.ErrInvalidALPColumn, entry.MetricID, width, maxALPMainWidth)
-			}
-
-			nExc := int(engine.Uint32(body[3:7]))
-			// uint64 arithmetic: count*width and nExc*12 can wrap int on 32-bit.
-			want := uint64(mainHeaderSize) + (uint64(count)*uint64(width)+7)/8 + uint64(nExc)*12 //nolint:gosec // count, width and nExc are non-negative
-			if uint64(len(body)) < want {
-				return fmt.Errorf("%w: metric ID %d has ALP main column body of %d bytes, want at least %d (width=%d, nExc=%d, count=%d)",
-					errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, width, nExc, count)
+			if err := validateALPMainColumn(entry, body, engine); err != nil {
+				return err
 			}
 		case 1: // alpSchemeRD
-			const rdHeaderSize = 7
-			if len(body) < rdHeaderSize {
-				return fmt.Errorf("%w: metric ID %d has ALP rd column body of %d bytes, want at least %d (fixed header)",
-					errs.ErrInvalidALPColumn, entry.MetricID, len(body), rdHeaderSize)
-			}
-
-			rbw := int(body[0])
-			codeBits := int(body[1])
-			nDict := int(body[2])
-			nExc := int(engine.Uint32(body[3:7]))
-			if rbw < ienc.ALPRDMinRightBits || rbw > ienc.ALPRDMaxRightBits {
-				return fmt.Errorf("%w: metric ID %d has ALP rd column right width %d, want %d..%d",
-					errs.ErrInvalidALPColumn, entry.MetricID, rbw, ienc.ALPRDMinRightBits, ienc.ALPRDMaxRightBits)
-			}
-
-			if nDict > ienc.ALPRDMaxDictSize {
-				return fmt.Errorf("%w: metric ID %d has ALP rd column nDict %d, want at most %d",
-					errs.ErrInvalidALPColumn, entry.MetricID, nDict, ienc.ALPRDMaxDictSize)
-			}
-
-			// codeBits must fit the fixed 8-entry dict array the decode paths
-			// index into. alpCodeBits(nDict) = bits.Len64(nDict-1) for a
-			// valid encoder output, which for nDict <= ALPRDMaxDictSize (8)
-			// tops out at bits.Len64(8-1) = bits.Len64(7) = 3 — so 3 is the
-			// largest codeBits an encoder can ever emit. Reject anything
-			// larger: decodeRDInto/allRD/atRD unpack a codeBits-wide code and
-			// index dict[code] with no other bound, so codeBits > 3 lets a
-			// corrupt code exceed the array and panic with index out of
-			// range. Deliberately compare against the literal 3 rather than
-			// checking `1<<codeBits > ienc.ALPRDMaxDictSize`: codeBits is an
-			// attacker-controlled byte (0-255), and Go's shift operator
-			// yields 0 for shift counts >= 64, so that form would silently
-			// pass validation for a corrupt codeBits like 64. (Codes that are
-			// < 1<<codeBits but >= nDict read a zero-valued dict entry —
-			// garbage output, not a panic — and need no separate check.)
-			const maxRDCodeBits = 3
-			if codeBits > maxRDCodeBits {
-				return fmt.Errorf("%w: metric ID %d has ALP rd column codeBits %d, want at most %d",
-					errs.ErrInvalidALPColumn, entry.MetricID, codeBits, maxRDCodeBits)
-			}
-
-			want := uint64(rdHeaderSize) + uint64(nDict)*2 + (uint64(count)*uint64(codeBits)+7)/8 + //nolint:gosec // all fields are non-negative
-				(uint64(count)*uint64(rbw)+7)/8 + uint64(nExc)*6 //nolint:gosec // all fields are non-negative
-			if uint64(len(body)) < want {
-				return fmt.Errorf("%w: metric ID %d has ALP rd column body of %d bytes, want at least %d (rbw=%d, codeBits=%d, nDict=%d, nExc=%d, count=%d)",
-					errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, rbw, codeBits, nDict, nExc, count)
+			if err := validateALPRDColumn(entry, body, engine); err != nil {
+				return err
 			}
 		case 2: // alpSchemeRaw
 			want := 1 + uint64(count)*8 //nolint:gosec // count is non-negative
@@ -662,6 +626,118 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 			// Unreachable: scheme was already range-checked against
 			// ALPMaxSchemeByte above, so it is always 0, 1, or 2 here.
 		}
+	}
+
+	return nil
+}
+
+// validateALPMainColumn checks one ALP main-scheme column body (after the
+// scheme byte) for header ranges, length and exception positions.
+func validateALPMainColumn(entry *section.NumericIndexEntry, body []byte, engine endian.EndianEngine) error {
+	count := entry.Count
+	const mainHeaderSize = 15
+	if len(body) < mainHeaderSize {
+		return fmt.Errorf("%w: metric ID %d has ALP main column body of %d bytes, want at least %d (fixed header)",
+			errs.ErrInvalidALPColumn, entry.MetricID, len(body), mainHeaderSize)
+	}
+
+	// e and f index the 19-entry power-of-ten tables in every
+	// decode path; an out-of-range byte would panic there.
+	exp, factor := int(body[0]), int(body[1])
+	if exp > ienc.ALPMaxExponent || factor > ienc.ALPMaxExponent {
+		return fmt.Errorf("%w: metric ID %d has ALP main column exponent %d / factor %d, want at most %d",
+			errs.ErrInvalidALPColumn, entry.MetricID, exp, factor, ienc.ALPMaxExponent)
+	}
+
+	width := int(body[2])
+	if width > maxALPMainWidth {
+		return fmt.Errorf("%w: metric ID %d has ALP main column width %d, want at most %d",
+			errs.ErrInvalidALPColumn, entry.MetricID, width, maxALPMainWidth)
+	}
+
+	// Keep nExc unsigned until the length check bounds it: int(uint32)
+	// is negative on 32-bit platforms for values >= 1<<31.
+	nExc := uint64(engine.Uint32(body[3:7]))
+	if uint64(count)*uint64(width)+7 > maxALPColumnBits { //nolint:gosec // count and width are non-negative
+		return fmt.Errorf("%w: metric ID %d has ALP main column of %d × %d bits, too large for this platform",
+			errs.ErrInvalidALPColumn, entry.MetricID, count, width)
+	}
+
+	// uint64 arithmetic: count*width and nExc*12 can wrap int on 32-bit.
+	want := uint64(mainHeaderSize) + (uint64(count)*uint64(width)+7)/8 + nExc*12 //nolint:gosec // count and width are non-negative
+	if uint64(len(body)) < want {
+		return fmt.Errorf("%w: metric ID %d has ALP main column body of %d bytes, want at least %d (width=%d, nExc=%d, count=%d)",
+			errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, width, nExc, count)
+	}
+
+	excStart := mainHeaderSize + (count*width+7)/8
+	if err := validateALPExceptionPositions(body[excStart:], int(nExc), 12, count, engine); err != nil { //nolint:gosec // nExc*12 <= len(body)
+		return fmt.Errorf("%w: metric ID %d: %w", errs.ErrInvalidALPColumn, entry.MetricID, err)
+	}
+
+	return nil
+}
+
+// validateALPRDColumn checks one ALP-RD column body (after the scheme byte) for
+// header ranges, length and exception positions.
+func validateALPRDColumn(entry *section.NumericIndexEntry, body []byte, engine endian.EndianEngine) error {
+	count := entry.Count
+	const rdHeaderSize = 7
+	if len(body) < rdHeaderSize {
+		return fmt.Errorf("%w: metric ID %d has ALP rd column body of %d bytes, want at least %d (fixed header)",
+			errs.ErrInvalidALPColumn, entry.MetricID, len(body), rdHeaderSize)
+	}
+
+	rbw := int(body[0])
+	codeBits := int(body[1])
+	nDict := int(body[2])
+	nExc := uint64(engine.Uint32(body[3:7])) // unsigned until bounded; see validateALPMainColumn
+	if rbw < ienc.ALPRDMinRightBits || rbw > ienc.ALPRDMaxRightBits {
+		return fmt.Errorf("%w: metric ID %d has ALP rd column right width %d, want %d..%d",
+			errs.ErrInvalidALPColumn, entry.MetricID, rbw, ienc.ALPRDMinRightBits, ienc.ALPRDMaxRightBits)
+	}
+
+	if nDict > ienc.ALPRDMaxDictSize {
+		return fmt.Errorf("%w: metric ID %d has ALP rd column nDict %d, want at most %d",
+			errs.ErrInvalidALPColumn, entry.MetricID, nDict, ienc.ALPRDMaxDictSize)
+	}
+
+	// codeBits must fit the fixed 8-entry dict array the decode paths
+	// index into. alpCodeBits(nDict) = bits.Len64(nDict-1) for a
+	// valid encoder output, which for nDict <= ALPRDMaxDictSize (8)
+	// tops out at bits.Len64(8-1) = bits.Len64(7) = 3 — so 3 is the
+	// largest codeBits an encoder can ever emit. Reject anything
+	// larger: decodeRDInto/allRD/atRD unpack a codeBits-wide code and
+	// index dict[code] with no other bound, so codeBits > 3 lets a
+	// corrupt code exceed the array and panic with index out of
+	// range. Deliberately compare against the literal 3 rather than
+	// checking `1<<codeBits > ienc.ALPRDMaxDictSize`: codeBits is an
+	// attacker-controlled byte (0-255), and Go's shift operator
+	// yields 0 for shift counts >= 64, so that form would silently
+	// pass validation for a corrupt codeBits like 64. (Codes that are
+	// < 1<<codeBits but >= nDict read a zero-valued dict entry —
+	// garbage output, not a panic — and need no separate check.)
+	const maxRDCodeBits = 3
+	if codeBits > maxRDCodeBits {
+		return fmt.Errorf("%w: metric ID %d has ALP rd column codeBits %d, want at most %d",
+			errs.ErrInvalidALPColumn, entry.MetricID, codeBits, maxRDCodeBits)
+	}
+
+	if uint64(count)*uint64(max(codeBits, rbw))+7 > maxALPColumnBits { //nolint:gosec // count and widths are non-negative
+		return fmt.Errorf("%w: metric ID %d has ALP rd column of %d × %d bits, too large for this platform",
+			errs.ErrInvalidALPColumn, entry.MetricID, count, max(codeBits, rbw))
+	}
+
+	want := uint64(rdHeaderSize) + uint64(nDict)*2 + (uint64(count)*uint64(codeBits)+7)/8 + //nolint:gosec // all fields are non-negative
+		(uint64(count)*uint64(rbw)+7)/8 + nExc*6 //nolint:gosec // all fields are non-negative
+	if uint64(len(body)) < want {
+		return fmt.Errorf("%w: metric ID %d has ALP rd column body of %d bytes, want at least %d (rbw=%d, codeBits=%d, nDict=%d, nExc=%d, count=%d)",
+			errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, rbw, codeBits, nDict, nExc, count)
+	}
+
+	excStart := rdHeaderSize + nDict*2 + (count*codeBits+7)/8 + (count*rbw+7)/8
+	if err := validateALPExceptionPositions(body[excStart:], int(nExc), 6, count, engine); err != nil { //nolint:gosec // nExc*6 <= len(body)
+		return fmt.Errorf("%w: metric ID %d: %w", errs.ErrInvalidALPColumn, entry.MetricID, err)
 	}
 
 	return nil

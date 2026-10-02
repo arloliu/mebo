@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -138,4 +139,65 @@ func TestNumericBlobSet_MaterializeKeepsColumnsAligned(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int64(5010), ts)
 	require.Equal(t, 51.0, val)
+}
+
+// TestNumericBlob_AllYieldsOnlyCompleteRows pins that the materializing All path
+// stops at the shorter of the decoded timestamp and value columns instead of
+// yielding zero-filled timestamps for a truncated stream.
+func TestNumericBlob_AllYieldsOnlyCompleteRows(t *testing.T) {
+	b := NumericBlob{blobBase: blobBase{tsEncType: format.TypeDelta, valEncType: format.TypeALP}}
+
+	tsBytes := []byte{0x0a, 0x80} // first timestamp 10, then a truncated varint
+	engine := endian.GetLittleEndianEngine()
+	valBytes := []byte{2} // ALP raw scheme: two little-endian float64 values
+	valBytes = engine.AppendUint64(valBytes, math.Float64bits(5))
+	valBytes = engine.AppendUint64(valBytes, math.Float64bits(7))
+
+	var got []NumericDataPoint
+	for _, dp := range b.allDataPointsMaterialized(tsBytes, valBytes, nil, 2) {
+		got = append(got, dp)
+	}
+	require.Equal(t, []NumericDataPoint{{Ts: 10, Val: 5}}, got)
+}
+
+// TestNumericDecoder_RejectsPayloadOverlappingIndex pins that a header whose
+// payload offsets point into the header or index is rejected.
+func TestNumericDecoder_RejectsPayloadOverlappingIndex(t *testing.T) {
+	enc, err := NewNumericEncoder(time.Unix(0, 0).UTC(),
+		WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw))
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 1))
+	require.NoError(t, enc.AddDataPoint(1000, 1.5, ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	// Drop the real payloads and point the sections into the header itself:
+	// every length and count check still holds, only the layout is impossible.
+	engine := endian.GetLittleEndianEngine()
+	corrupt := append([]byte(nil), data[:section.HeaderSize+section.NumericIndexEntrySize]...)
+	engine.PutUint32(corrupt[20:24], 0)
+	engine.PutUint32(corrupt[24:28], 8)
+	engine.PutUint32(corrupt[28:32], 16)
+
+	_, err = decodeHardening(t, corrupt)
+	require.ErrorIs(t, err, errs.ErrInvalidTimestampPayloadOffset)
+}
+
+// TestTextDecoder_RejectsDataOverlappingIndex is the text counterpart.
+func TestTextDecoder_RejectsDataOverlappingIndex(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC(), WithTextDataCompression(format.CompressionNone), WithoutMetricNames())
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 1))
+	require.NoError(t, enc.AddDataPoint(0, "v", ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	endian.GetLittleEndianEngine().PutUint32(data[20:24], section.HeaderSize) // data offset inside the index
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+	var decodeErr error
+	require.NotPanics(t, func() { _, decodeErr = decoder.Decode() })
+	require.Error(t, decodeErr)
 }

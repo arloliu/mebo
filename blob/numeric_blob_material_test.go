@@ -6,7 +6,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/arloliu/mebo/compress"
 	"github.com/arloliu/mebo/format"
+	"github.com/arloliu/mebo/section"
 )
 
 // Helper function to create a test blob with specified encodings
@@ -561,6 +563,70 @@ func TestMaterializedNumericBlob_Correctness_AllEncodings(t *testing.T) {
 				i++
 			}
 			require.Equal(t, 30, i)
+		})
+	}
+}
+
+// TestNumericBlob_TruncatedTagsYieldOnlyCompleteRows pins that a tag stream
+// which decodes fewer tags than Count ends every row reader at the last
+// decoded tag, instead of padding the missing tags with "".
+func TestNumericBlob_TruncatedTagsYieldOnlyCompleteRows(t *testing.T) {
+	for _, valEnc := range []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeALP} {
+		t.Run(valEnc.String(), func(t *testing.T) {
+			enc, err := NewNumericEncoder(time.Unix(0, 0).UTC(), WithTimestampEncoding(format.TypeRaw),
+				WithValueEncoding(valEnc), WithTagsEnabled(true))
+			require.NoError(t, err)
+			require.NoError(t, enc.StartMetricID(1, 2))
+			require.NoError(t, enc.AddDataPoint(1000, 1.5, "x"))
+			require.NoError(t, enc.AddDataPoint(2000, 2.5, "y"))
+			require.NoError(t, enc.EndMetric())
+			data, err := enc.Finish()
+			require.NoError(t, err)
+
+			// Raw tags are [1 'x' 1 'y']; claim 5 bytes for "y" so only "x" decodes.
+			// The tag bytes still cover Count, so Decode accepts the blob.
+			header, err := section.ParseNumericHeader(data)
+			require.NoError(t, err)
+			codec, err := compress.CreateCodec(format.CompressionZstd, "tags")
+			require.NoError(t, err)
+			tags, err := codec.Compress([]byte{1, 'x', 5, 'y'})
+			require.NoError(t, err)
+			data = append(data[:header.TagPayloadOffset:header.TagPayloadOffset], tags...)
+
+			decoder, err := NewNumericDecoder(data)
+			require.NoError(t, err)
+			blob, err := decoder.Decode()
+			require.NoError(t, err)
+
+			want := []NumericDataPoint{{Ts: 1000, Val: 1.5, Tag: "x"}}
+			var got []NumericDataPoint
+			for _, dp := range blob.All(1) {
+				got = append(got, dp)
+			}
+			require.Equal(t, want, got, "All")
+
+			got = got[:0]
+			blob.ForEach(1, func(_ int, dp NumericDataPoint) bool {
+				got = append(got, dp)
+				return true
+			})
+			require.Equal(t, want, got, "ForEach")
+
+			metric, ok := blob.MaterializeMetric(1)
+			require.True(t, ok)
+			require.Equal(t, []string{"x"}, metric.Tags, "MaterializeMetric tags")
+			require.Len(t, metric.Timestamps, 1, "MaterializeMetric timestamps")
+			require.Len(t, metric.Values, 1, "MaterializeMetric values")
+
+			require.Equal(t, 1, blob.Materialize().DataPointCount(1), "Materialize")
+
+			set, err := NewNumericBlobSet([]NumericBlob{blob})
+			require.NoError(t, err)
+			setMetric, ok := set.MaterializeMetric(1)
+			require.True(t, ok)
+			require.Equal(t, []string{"x"}, setMetric.Tags, "set MaterializeMetric tags")
+			require.Len(t, setMetric.Timestamps, 1, "set MaterializeMetric timestamps")
+			require.Equal(t, 1, set.Materialize().DataPointCount(1), "set Materialize")
 		})
 	}
 }

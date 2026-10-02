@@ -570,18 +570,15 @@ func (m MaterializedNumericBlobSet) MetricNames() []string {
 
 // alignMemberRows trims the rows one member just appended so the timestamp,
 // value and tag columns stay the same length. Columns are aligned before each
-// member, so a member that decoded fewer timestamps than values (or the
-// reverse) from a corrupt stream loses only its own unmatched tail instead of
-// shifting every later member's points. Tags are trimmed or padded with "".
+// member, so a member that decoded fewer timestamps, values or tags than the
+// others from a corrupt stream loses only its own unmatched tail instead of
+// shifting every later member's points. Callers pad tagless members with ""
+// before aligning, so a short tag column always means missing tags.
 func alignMemberRows[V any](timestamps []int64, values []V, tags []string, hasTags bool) ([]int64, []V, []string) {
 	n := min(len(timestamps), len(values))
 	if hasTags {
-		if len(tags) > n {
-			tags = tags[:n]
-		}
-		for len(tags) < n {
-			tags = append(tags, "")
-		}
+		n = min(n, len(tags))
+		tags = tags[:n]
 	}
 
 	return timestamps[:n], values[:n], tags

@@ -799,6 +799,11 @@ func decodeVarint(data []byte) (int64, int) {
 
 		uval |= uint64(b&0x7f) << shift
 		if b < 0x80 {
+			// The tenth byte holds only bit 63; more overflows uint64.
+			if shift == 63 && b > 1 {
+				return 0, 0
+			}
+
 			break
 		}
 		shift += 7

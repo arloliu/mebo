@@ -287,3 +287,129 @@ func TestValidateALPColumns_Raw(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// TestValidateALPColumns_ColumnTooLargeForPlatform pins that a column whose
+// packed bit count cannot be addressed with the platform int is rejected; the
+// limit is lowered here to emulate a 32-bit platform.
+func TestValidateALPColumns_ColumnTooLargeForPlatform(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	saved := maxALPColumnBits
+	maxALPColumnBits = 1 << 10
+	t.Cleanup(func() { maxALPColumnBits = saved })
+
+	const count, width = 64, 32 // 2048 bits > 1024
+	body := make([]byte, 15+(count*width+7)/8)
+	body[2] = width
+	column := append([]byte{0}, body...)
+	entry := alpValidateTestEntry(1, count, len(column))
+	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine), errs.ErrInvalidALPColumn)
+
+	const small = 16 // 512 bits fits
+	body = make([]byte, 15+(small*width+7)/8)
+	body[2] = width
+	column = append([]byte{0}, body...)
+	entry = alpValidateTestEntry(2, small, len(column))
+	require.NoError(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine))
+
+	// A bit count within 7 of the limit would overflow int
+	// when rounded up to bytes, so it is rejected too.
+	const nearCount, nearWidth = 34, 30 // 1020 bits; 1020+7 > 1024
+	body = make([]byte, 15+(nearCount*nearWidth+7)/8)
+	body[2] = nearWidth
+	column = append([]byte{0}, body...)
+	entry = alpValidateTestEntry(3, nearCount, len(column))
+	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine), errs.ErrInvalidALPColumn,
+		"main column")
+
+	const rdCount, rdWidth = 20, 51 // 1020 bits; codeBits 0, nDict 0
+	body = make([]byte, 7+(rdCount*rdWidth+7)/8)
+	body[0] = rdWidth
+	column = append([]byte{1}, body...)
+	entry = alpValidateTestEntry(4, rdCount, len(column))
+	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine), errs.ErrInvalidALPColumn,
+		"rd column")
+}
+
+// TestValidateALPColumns_ExceptionCountAboveInt32 pins that an exception count
+// of 2^31 or more is rejected by the length check.
+// On 32-bit platforms such a count is negative as an int,
+// so it must stay unsigned until the length check bounds it.
+func TestValidateALPColumns_ExceptionCountAboveInt32(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+
+	// Complete one-point columns: main is the 15-byte header with width 0;
+	// RD is its 7-byte header plus 7 bytes of 51-bit right parts.
+	// With nExc read as a negative int, 0xFFFFFFFF would shrink the required
+	// length below these bodies and pass.
+	mainColumn := func(nExc uint32) []byte {
+		body := make([]byte, 15)
+		engine.PutUint32(body[3:7], nExc)
+
+		return append([]byte{0}, body...)
+	}
+	rdColumn := func(nExc uint32) []byte {
+		body := make([]byte, 7+(51+7)/8)
+		body[0] = 51 // right width
+		engine.PutUint32(body[3:7], nExc)
+
+		return append([]byte{1}, body...)
+	}
+
+	for name, column := range map[string]func(uint32) []byte{"main": mainColumn, "rd": rdColumn} {
+		valid := column(0)
+		entry := alpValidateTestEntry(1, 1, len(valid))
+		require.NoErrorf(t, validateALPColumns(valid, []section.NumericIndexEntry{entry}, engine),
+			"%s column without exceptions", name)
+
+		for _, nExc := range []uint32{0x80000000, 0xFFFFFFFF} {
+			corrupt := column(nExc)
+			require.ErrorIsf(t, validateALPColumns(corrupt, []section.NumericIndexEntry{entry}, engine),
+				errs.ErrInvalidALPColumn, "%s column, nExc=%#x", name, nExc)
+		}
+	}
+}
+
+// TestValidateALPColumns_ExceptionPositions pins that exception positions must be
+// strictly ascending and below the point count, for main and RD columns.
+func TestValidateALPColumns_ExceptionPositions(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+
+	mainColumn := func(positions ...uint32) []byte {
+		body := make([]byte, 15)
+		engine.PutUint32(body[3:7], uint32(len(positions)))
+		for _, p := range positions {
+			body = engine.AppendUint32(body, p)
+			body = engine.AppendUint64(body, 0)
+		}
+
+		return append([]byte{0}, body...) // width 0: no code bytes for count points
+	}
+	rdColumn := func(positions ...uint32) []byte {
+		const points, rbw, codeBits, nDict = 4, 48, 1, 2
+		body := make([]byte, 7+nDict*2+(points*codeBits+7)/8+(points*rbw+7)/8)
+		body[0], body[1], body[2] = rbw, codeBits, nDict
+		engine.PutUint32(body[3:7], uint32(len(positions)))
+		for _, p := range positions {
+			body = engine.AppendUint32(body, p)
+			body = engine.AppendUint16(body, 0)
+		}
+
+		return append([]byte{1}, body...)
+	}
+
+	for name, build := range map[string]func(...uint32) []byte{"main": mainColumn, "rd": rdColumn} {
+		t.Run(name, func(t *testing.T) {
+			check := func(positions ...uint32) error {
+				column := build(positions...)
+				entry := alpValidateTestEntry(1, 4, len(column))
+
+				return validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+			}
+
+			require.NoError(t, check(0, 2, 3))
+			require.ErrorIs(t, check(1, 0), errs.ErrInvalidALPColumn, "descending")
+			require.ErrorIs(t, check(2, 2), errs.ErrInvalidALPColumn, "duplicate")
+			require.ErrorIs(t, check(4), errs.ErrInvalidALPColumn, "position == count")
+		})
+	}
+}

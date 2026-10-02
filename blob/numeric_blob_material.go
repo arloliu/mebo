@@ -117,7 +117,7 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 
 		// Fast path: use cached shared timestamps if available
 		if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
-			copy(timestamps, cached)
+			timestamps = timestamps[:copy(timestamps, cached)]
 		} else {
 			tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 			tsProduced := b.decodeTimestampsSlice(tsBytes, count, timestamps)
@@ -139,6 +139,10 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 
 			tags = tags[:idx]
 		}
+
+		// Keep only complete rows when a corrupt stream decoded short, so
+		// TimestampAt, ValueAt and TagAt agree on every index.
+		timestamps, values, tags = alignMemberRows(timestamps, values, tags, b.HasTag())
 
 		material.metrics = append(material.metrics, materializedNumericMetric{
 			timestamps: timestamps,
@@ -419,7 +423,7 @@ func (b NumericBlob) materializeEntry(entry section.NumericIndexEntry) Materiali
 
 	// Fast path: use cached shared timestamps if available
 	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
-		copy(timestamps, cached)
+		timestamps = timestamps[:copy(timestamps, cached)]
 	} else {
 		tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 		tsProduced := b.decodeTimestampsSlice(tsBytes, count, timestamps)
@@ -441,6 +445,9 @@ func (b NumericBlob) materializeEntry(entry section.NumericIndexEntry) Materiali
 
 		tags = tags[:idx]
 	}
+
+	// Keep only complete rows when a corrupt stream decoded short.
+	timestamps, values, tags = alignMemberRows(timestamps, values, tags, b.HasTag())
 
 	return MaterializedNumericMetric{
 		MetricID:   entry.MetricID,

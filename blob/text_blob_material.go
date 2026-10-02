@@ -140,32 +140,24 @@ func (b TextBlob) Materialize() MaterializedTextBlob {
 }
 
 // materializeMetricData decodes a single entry's timestamps/values/tags.
+// It walks complete data points once, so a corrupt entry that cannot yield all
+// of its Count points materializes only the points it actually holds, with no
+// empty placeholder fields.
 func (b TextBlob) materializeMetricData(entry section.TextIndexEntry) materializedTextMetric {
 	count := int(entry.Count)
-	timestamps := make([]int64, count)
-	values := make([]string, count)
+	hasTag := b.HasTag()
+	timestamps := make([]int64, 0, count)
+	values := make([]string, 0, count)
 	var tags []string
-	if b.HasTag() {
-		tags = make([]string, count)
+	if hasTag {
+		tags = make([]string, 0, count)
 	}
 
-	idx := 0
-	for ts := range b.allTimestampsFromEntry(entry) {
-		timestamps[idx] = ts
-		idx++
-	}
-
-	idx = 0
-	for val := range b.allValuesFromEntry(entry) {
-		values[idx] = val
-		idx++
-	}
-
-	if b.HasTag() {
-		idx = 0
-		for tag := range b.allTagsFromEntry(entry) {
-			tags[idx] = tag
-			idx++
+	for _, dp := range b.allFromEntry(entry) {
+		timestamps = append(timestamps, dp.Ts)
+		values = append(values, dp.Val)
+		if hasTag {
+			tags = append(tags, dp.Tag)
 		}
 	}
 

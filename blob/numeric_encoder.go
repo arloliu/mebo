@@ -1299,7 +1299,7 @@ func (e *NumericEncoder) AddDataPoints(timestamps []int64, values []float64, tag
 		return nil // No-op for empty input
 	}
 
-	if e.curPoints+tsLen > e.claimed {
+	if tsLen > e.claimed-e.curPoints {
 		return errs.ErrTooManyDataPoints
 	}
 
@@ -1481,6 +1481,13 @@ func AddFromRows[T any](
 		return nil
 	}
 
+	// Reject the whole call up front: batches are added one at a time, so a
+	// late rejection would leave the earlier batches in the metric.
+	// Subtract rather than add so a huge len(rows) cannot wrap the check.
+	if len(rows) > encoder.claimed-encoder.curPoints {
+		return errs.ErrTooManyDataPoints
+	}
+
 	// Process in batches to prevent excessive memory usage
 	// Maximum batch size is maxCachedSliceSize (512 by default)
 	for offset := 0; offset < len(rows); offset += maxCachedSliceSize {
@@ -1555,6 +1562,13 @@ func AddFromRowsNoTag[T any](
 ) error {
 	if len(rows) == 0 {
 		return nil
+	}
+
+	// Reject the whole call up front: batches are added one at a time, so a
+	// late rejection would leave the earlier batches in the metric.
+	// Subtract rather than add so a huge len(rows) cannot wrap the check.
+	if len(rows) > encoder.claimed-encoder.curPoints {
+		return errs.ErrTooManyDataPoints
 	}
 
 	// Process in batches to prevent excessive memory usage

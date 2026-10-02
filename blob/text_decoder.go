@@ -260,6 +260,12 @@ func (d *TextDecoder) parseIndexEntries(startOffset int) ([]section.TextIndexEnt
 	expectedIndexSize := d.metricCount * section.TextIndexEntrySize
 	endOffset := startOffset + expectedIndexSize
 
+	// The data section must start at or after the end of the index.
+	if endOffset > int(d.header.DataOffset) {
+		return nil, nil, fmt.Errorf("%w: data section at %d overlaps the index ending at %d",
+			errs.ErrInvalidTimestampPayloadOffset, d.header.DataOffset, endOffset)
+	}
+
 	if len(d.data) < endOffset {
 		return nil, nil, fmt.Errorf("%w: need %d bytes, have %d",
 			errs.ErrInvalidIndexEntrySize, expectedIndexSize, len(d.data)-startOffset)
