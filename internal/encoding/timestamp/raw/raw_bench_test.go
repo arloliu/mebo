@@ -57,8 +57,12 @@ func BenchmarkTimestampRawEncoder_WriteSlice(b *testing.B) {
 	}
 }
 
-// BenchmarkTimestampRawEncoder_Reset_vs_New compares Reset() vs creating new encoder
-func BenchmarkTimestampRawEncoder_Reset_vs_New(b *testing.B) {
+// BenchmarkTimestampRawEncoder_NewPerBatch benchmarks encoding each batch with a fresh encoder.
+//
+// The raw encoder has no reuse path to compare against:
+// Reset is a no-op that keeps the encoded data,
+// and Finish returns the buffer to the pool, ending the encoder.
+func BenchmarkTimestampRawEncoder_NewPerBatch(b *testing.B) {
 	timestamps := []int64{
 		1609459200000,
 		1609459201000,
@@ -67,35 +71,16 @@ func BenchmarkTimestampRawEncoder_Reset_vs_New(b *testing.B) {
 		1609459204000,
 	}
 
-	b.Run("with_reset", func(b *testing.B) {
+	b.ReportAllocs()
+
+	for b.Loop() {
 		encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
-		defer encoder.Finish()
-
-		b.ResetTimer()
-		b.ReportAllocs()
-
-		for b.Loop() {
-			for _, ts := range timestamps {
-				encoder.Write(ts)
-			}
-			_ = encoder.Bytes()
-			encoder.Finish()
+		for _, ts := range timestamps {
+			encoder.Write(ts)
 		}
-	})
-
-	b.Run("with_new", func(b *testing.B) {
-		b.ResetTimer()
-		b.ReportAllocs()
-
-		for b.Loop() {
-			encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
-			for _, ts := range timestamps {
-				encoder.Write(ts)
-			}
-			_ = encoder.Bytes()
-			encoder.Finish()
-		}
-	})
+		_ = encoder.Bytes()
+		encoder.Finish()
+	}
 }
 
 // BenchmarkTimestampRawEncoder_BufferGrowth benchmarks buffer growth patterns
@@ -112,19 +97,17 @@ func BenchmarkTimestampRawEncoder_BufferGrowth(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(size.name, func(b *testing.B) {
-			encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
-			defer encoder.Finish()
-
 			timestamps := make([]int64, size.count)
 			base := int64(1609459200000)
 			for i := range timestamps {
 				timestamps[i] = base + int64(i*1000)
 			}
 
-			b.ResetTimer()
 			b.ReportAllocs()
 
 			for b.Loop() {
+				// Finish ends the encoder, so each iteration grows a fresh buffer.
+				encoder := NewTimestampRawEncoder(endian.GetLittleEndianEngine())
 				encoder.WriteSlice(timestamps)
 				encoder.Finish()
 			}
