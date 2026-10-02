@@ -131,8 +131,8 @@ func (f TextFlag) Validate() error {
 		return errs.ErrInvalidHeaderFlags
 	}
 
-	// Validate timestamp encoding
-	if _, ok := validTimestampEncodings[f.TimestampEncoding]; !ok {
+	// Validate timestamp encoding: text blobs support Raw and Delta only.
+	if f.TimestampEncoding != uint8(format.TypeRaw) && f.TimestampEncoding != uint8(format.TypeDelta) {
 		return errs.ErrInvalidHeaderFlags
 	}
 

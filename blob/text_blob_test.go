@@ -1,10 +1,12 @@
 package blob
 
 import (
+	"math"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/stretchr/testify/require"
@@ -1249,4 +1251,37 @@ func TestTextBlob_DeltaTimestampZeroValue(t *testing.T) {
 		require.Truef(t, ok, "Materialize TimestampAt(%d)", i)
 		require.Equalf(t, want, got, "Materialize TimestampAt(%d)", i)
 	}
+}
+
+// TestTextBlob_RejectsMalformedTimestampEncoding pins that a text header naming
+// DeltaPacked (numeric-only) is rejected, and that an overlong Delta varint is a
+// decode error rather than a silently garbled timestamp.
+func TestTextBlob_RejectsMalformedTimestampEncoding(t *testing.T) {
+	t.Run("DeltaPacked header", func(t *testing.T) {
+		enc, err := NewTextEncoder(time.Unix(0, 0).UTC())
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricID(1, 1))
+		require.NoError(t, enc.AddDataPoint(5, "v", ""))
+		require.NoError(t, enc.EndMetric())
+		data, err := enc.Finish()
+		require.NoError(t, err)
+
+		data[2] = byte(format.TypeDeltaPacked)
+		_, err = NewTextDecoder(data)
+		require.ErrorIs(t, err, errs.ErrInvalidHeaderFlags)
+	})
+
+	t.Run("overlong delta varint", func(t *testing.T) {
+		b := TextBlob{blobBase: blobBase{tsEncType: format.TypeDelta}}
+		overlong := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01}
+		lastTs := int64(0)
+		_, _, err := b.decodeTimestampAt(overlong, 0, &lastTs)
+		require.ErrorIs(t, err, errs.ErrInvalidTimestampData)
+
+		tenBytes := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01}
+		ts, n, err := b.decodeTimestampAt(tenBytes, 0, &lastTs)
+		require.NoError(t, err)
+		require.Equal(t, 10, n)
+		require.Equal(t, int64(math.MinInt64), ts)
+	})
 }
