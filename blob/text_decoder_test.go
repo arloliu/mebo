@@ -504,3 +504,21 @@ func TestTextDecoder_MalformedIndex_IndexOffsetExceedsDataSize(t *testing.T) {
 		require.ErrorIs(t, err, errs.ErrInvalidIndexOffsets)
 	})
 }
+
+// TestTextDecoder_RejectsDataOverlappingIndex is the text counterpart.
+func TestTextDecoder_RejectsDataOverlappingIndex(t *testing.T) {
+	enc, err := NewTextEncoder(time.Unix(0, 0).UTC(), WithTextDataCompression(format.CompressionNone), WithoutMetricNames())
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 1))
+	require.NoError(t, enc.AddDataPoint(0, "v", ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	endian.GetLittleEndianEngine().PutUint32(data[20:24], section.HeaderSize) // data offset inside the index
+	decoder, err := NewTextDecoder(data)
+	require.NoError(t, err)
+	var decodeErr error
+	require.NotPanics(t, func() { _, decodeErr = decoder.Decode() })
+	require.Error(t, decodeErr)
+}

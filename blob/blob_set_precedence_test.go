@@ -181,8 +181,8 @@ func TestBlobSets_AllTagsAlignWithPoints(t *testing.T) {
 
 		return decodeSetTestNumeric(t, data)
 	}
-	textWithTags := func(start time.Time, tags ...string) TextBlob {
-		enc, err := NewTextEncoder(start, WithTextTagsEnabled(true))
+	textBlob := func(start time.Time, tagsEnabled bool, tags ...string) TextBlob {
+		enc, err := NewTextEncoder(start, WithTextTagsEnabled(tagsEnabled))
 		require.NoError(t, err)
 		require.NoError(t, enc.StartMetricName(name, len(tags)))
 		for i, tag := range tags {
@@ -227,8 +227,10 @@ func TestBlobSets_AllTagsAlignWithPoints(t *testing.T) {
 	}
 	require.Equal(t, want, got, "BlobSet.AllTagsByName")
 
-	t1 := textWithTags(base, "", "", "")
-	t2 := textWithTags(base.Add(time.Hour), "t0", "t1")
+	t1 := textBlob(base, false, "", "", "")
+	require.False(t, t1.HasTag(), "text member built without tags")
+	t2 := textBlob(base.Add(time.Hour), true, "t0", "t1")
+	require.True(t, t2.HasTag())
 	txtSet, err := NewTextBlobSet([]TextBlob{t1, t2})
 	require.NoError(t, err)
 	got = got[:0]
@@ -236,6 +238,24 @@ func TestBlobSets_AllTagsAlignWithPoints(t *testing.T) {
 		got = append(got, tag)
 	}
 	require.Equal(t, want, got, "TextBlobSet.AllTags")
+	got = got[:0]
+	for tag := range txtSet.AllTagsByName(name) {
+		got = append(got, tag)
+	}
+	require.Equal(t, want, got, "TextBlobSet.AllTagsByName")
+
+	txtBs := NewBlobSet(nil, []TextBlob{t1, t2})
+	got = got[:0]
+	for i, tag := range txtBs.AllTags(id) {
+		require.Len(t, got, i)
+		got = append(got, tag)
+	}
+	require.Equal(t, want, got, "text BlobSet.AllTags")
+	got = got[:0]
+	for _, tag := range txtBs.AllTagsByName(name) {
+		got = append(got, tag)
+	}
+	require.Equal(t, want, got, "text BlobSet.AllTagsByName")
 
 	// A set where no member carries tags still yields nothing, like a single blob.
 	untagged, err := NewNumericBlobSet([]NumericBlob{n1})
