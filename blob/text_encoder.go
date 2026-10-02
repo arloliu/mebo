@@ -296,6 +296,15 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 		return fmt.Errorf("%w: claimed %d points, trying to add %d", errs.ErrTooManyDataPoints, e.claimed, e.added+1)
 	}
 
+	// Validate lengths before writing anything, so a rejected point leaves
+	// neither bytes nor delta state behind.
+	if len(value) > ienc.MaxTextLength {
+		return fmt.Errorf("value length %d exceeds maximum %d", len(value), ienc.MaxTextLength)
+	}
+	if e.header.Flag.HasTag() && len(tag) > ienc.MaxTextLength {
+		return fmt.Errorf("tag length %d exceeds maximum %d", len(tag), ienc.MaxTextLength)
+	}
+
 	// Encode timestamp based on encoding type
 	e.buf.Reset()
 	tsEncoding := e.header.Flag.GetTimestampEncoding()
@@ -338,14 +347,6 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 		if err := e.dataEncoder.Write(string(e.buf.Bytes())); err != nil {
 			return fmt.Errorf("failed to write timestamp: %w", err)
 		}
-	}
-
-	// Validate lengths before encoding
-	if len(value) > ienc.MaxTextLength {
-		return fmt.Errorf("value length %d exceeds maximum %d", len(value), ienc.MaxTextLength)
-	}
-	if e.header.Flag.HasTag() && len(tag) > ienc.MaxTextLength {
-		return fmt.Errorf("tag length %d exceeds maximum %d", len(tag), ienc.MaxTextLength)
 	}
 
 	// NEW LAYOUT: Group length bytes together before data
