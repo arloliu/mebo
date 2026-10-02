@@ -83,6 +83,12 @@ type NumericEncoderConfig struct {
 //   - *NumericEncoderConfig: A new encoder configuration ready for use.
 func NewNumericEncoderConfig(startTime time.Time) *NumericEncoderConfig {
 	header := section.NewNumericHeader(startTime)
+	// Encoder defaults, as documented on the With* options: Delta timestamps,
+	// Gorilla values, no compression on either payload.
+	header.Flag.SetTimestampEncoding(format.TypeDelta)
+	header.Flag.SetValueEncoding(format.TypeGorilla)
+	header.Flag.SetTimestampCompression(format.CompressionNone)
+	header.Flag.SetValueCompression(format.CompressionNone)
 
 	config := &NumericEncoderConfig{
 		header:           header,

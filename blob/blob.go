@@ -237,8 +237,8 @@ func (b blobBase) Engine() endian.EndianEngine {
 	return bigEndianEngine
 }
 
-// TimestampEncodingType returns the timestamp encoding type.
-// Internal helper for decoder selection.
+// TimestampEncodingType returns the timestamp encoding stored in the blob
+// header. It is equivalent to TimestampEncoding.
 func (b blobBase) TimestampEncodingType() format.EncodingType {
 	return b.tsEncType
 }
@@ -261,16 +261,10 @@ func (b blobBase) IsBigEndian() bool {
 	return (b.flags & section.FlagEndianLittleEndian) != 0
 }
 
-// TimestampEncoding reports whether timestamps are raw: it returns format.TypeRaw
-// for raw timestamps and format.TypeDelta for every delta-of-delta encoding,
-// including format.TypeDeltaPacked. Use TimestampEncodingType for the exact
-// encoding stored in the header.
+// TimestampEncoding returns the timestamp encoding stored in the blob header:
+// format.TypeRaw, format.TypeDelta or format.TypeDeltaPacked.
 func (b blobBase) TimestampEncoding() format.EncodingType {
-	if (b.flags & section.FlagTsEncRaw) != 0 {
-		return format.TypeRaw
-	}
-
-	return format.TypeDelta
+	return b.tsEncType
 }
 
 // ValueEncoding returns the value encoding type.

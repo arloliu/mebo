@@ -101,13 +101,8 @@ func BenchmarkMaterializeMetric(b *testing.B) {
 func createBenchmarkBlob(metrics, pointsEach int, tsEnc, valEnc format.EncodingType, withTags bool) NumericBlob {
 	baseTime := time.Unix(1000000, 0).UTC()
 
-	var opts []NumericEncoderOption
-	if tsEnc != format.TypeRaw {
-		opts = append(opts, WithTimestampEncoding(tsEnc))
-	}
-	if valEnc != format.TypeRaw {
-		opts = append(opts, WithValueEncoding(valEnc))
-	}
+	// Always pass both encodings: Raw is not the encoder default.
+	opts := []NumericEncoderOption{WithTimestampEncoding(tsEnc), WithValueEncoding(valEnc)}
 	if withTags {
 		opts = append(opts, WithTagsEnabled(true))
 	}

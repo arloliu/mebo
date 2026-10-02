@@ -3169,3 +3169,27 @@ func TestNumericBlob_DeltaTenByteVarintAllPaths(t *testing.T) {
 		require.Equalf(t, want, got, "Materialize TimestampAt(%d)", i)
 	}
 }
+
+// TestNumericBlob_TimestampEncodingReportsExactType pins that TimestampEncoding
+// reports the exact timestamp encoding stored in the header, including
+// DeltaPacked, rather than collapsing every non-raw encoding to Delta.
+func TestNumericBlob_TimestampEncodingReportsExactType(t *testing.T) {
+	for _, tsEnc := range []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked} {
+		t.Run(tsEnc.String(), func(t *testing.T) {
+			encoder, err := NewNumericEncoder(time.Unix(1_700_000_000, 0).UTC(), WithTimestampEncoding(tsEnc))
+			require.NoError(t, err)
+			require.NoError(t, encoder.StartMetricID(1, 1))
+			require.NoError(t, encoder.AddDataPoint(1_700_000_000_000_000, 1, ""))
+			require.NoError(t, encoder.EndMetric())
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+
+			decoder, err := NewNumericDecoder(data)
+			require.NoError(t, err)
+			blob, err := decoder.Decode()
+			require.NoError(t, err)
+			require.Equal(t, tsEnc, blob.TimestampEncoding())
+			require.Equal(t, tsEnc, blob.TimestampEncodingType())
+		})
+	}
+}

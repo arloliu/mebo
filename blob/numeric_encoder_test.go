@@ -740,7 +740,7 @@ func TestNumericEncoder_Integration(t *testing.T) {
 func TestNumericEncoder_TimestampOffsetDelta(t *testing.T) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	encoder, err := NewNumericEncoder(startTime)
+	encoder, err := NewNumericEncoder(startTime, WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw))
 	require.NoError(t, err)
 
 	// Metric 1: 5 data points (timestamps: 40 bytes, values: 40 bytes with raw encoding)
@@ -905,7 +905,7 @@ func TestNumericEncoder_TimestampOffsetDelta_VaryingDataPoints(t *testing.T) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	metricCount := 5
 
-	encoder, err := NewNumericEncoder(startTime)
+	encoder, err := NewNumericEncoder(startTime, WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw))
 	require.NoError(t, err)
 
 	metricSizes := []int{1, 10, 3, 20, 5}
@@ -3616,4 +3616,26 @@ func encodePointAPIFixture(
 	require.NoError(t, err)
 
 	return data
+}
+
+// TestNewNumericEncoder_DefaultEncoding pins the documented defaults of an
+// encoder built without options: Delta timestamps, Gorilla values, and no
+// compression on either payload.
+func TestNewNumericEncoder_DefaultEncoding(t *testing.T) {
+	enc, err := NewNumericEncoder(time.Unix(1_700_000_000, 0).UTC())
+	require.NoError(t, err)
+	require.NoError(t, enc.StartMetricID(1, 2))
+	require.NoError(t, enc.AddDataPoint(1_700_000_000_000_000, 1.5, ""))
+	require.NoError(t, enc.AddDataPoint(1_700_000_001_000_000, 2.5, ""))
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+
+	var header section.NumericHeader
+	require.NoError(t, header.Parse(data[:section.HeaderSize]))
+	require.Equal(t, format.TypeDelta, header.Flag.TimestampEncoding())
+	require.Equal(t, format.TypeGorilla, header.Flag.ValueEncoding())
+	require.Equal(t, format.CompressionNone, header.Flag.TimestampCompression())
+	require.Equal(t, format.CompressionNone, header.Flag.ValueCompression())
+	require.True(t, header.Flag.IsLittleEndian())
 }
