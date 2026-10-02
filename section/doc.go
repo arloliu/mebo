@@ -20,37 +20,29 @@
 //
 // # Blob Structure
 //
-// A mebo blob consists of fixed-size sections followed by variable-size payloads:
+// A numeric blob is laid out as one contiguous byte slice.
+// Sections follow each other back to back, with no padding between them:
 //
 //	┌─────────────────────────────────────────────────────────┐
 //	│ Header (32 bytes, fixed)                                │
-//	│  - Flag (4 bytes): encoding/compression/options         │
-//	│  - MetricCount (4 bytes)                                │
-//	│  - StartTime (8 bytes)                                  │
-//	│  - Offsets (12 bytes): index, timestamp, value, tag     │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Metric Names Payload (variable, optional)               │
-//	│  - Only present when collision detected                 │
-//	│  - Length-prefixed strings                              │
+//	│ Metric Names Payload (optional, Options bit 2)          │
+//	│  - u16 count, then u16 length + bytes per name          │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Index (N × 16 bytes, fixed per entry)                   │
-//	│  - One entry per metric                                 │
-//	│  - MetricID, offsets, count                             │
+//	│ Index (N × 16 bytes, or N × 32 bytes for 0xEA30)        │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Padding (0-7 bytes, for 8-byte alignment)               │
+//	│ Shared Timestamp Table (optional, Options bit 3, V2)    │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Timestamp Payload (variable)                            │
-//	│  - Encoded + compressed timestamps                      │
+//	│ Timestamp Payload (encoded, then compressed as a unit)  │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Padding (0-7 bytes, for 8-byte alignment)               │
+//	│ Value Payload (encoded, then compressed as a unit)      │
 //	├─────────────────────────────────────────────────────────┤
-//	│ Value Payload (variable)                                │
-//	│  - Encoded + compressed values                          │
-//	├─────────────────────────────────────────────────────────┤
-//	│ Tag Payload (variable, optional)                        │
-//	│  - Only present if tags enabled                         │
-//	│  - Encoded + compressed tags                            │
+//	│ Tag Payload (optional, Options bit 0, always zstd)      │
 //	└─────────────────────────────────────────────────────────┘
+//
+// The index starts right after the names payload (byte 32 when there is none).
+// Decoders derive that position from the names payload length;
+// they do not read the header's IndexOffset field.
 //
 // # Header Format
 //
@@ -58,36 +50,44 @@
 //
 //	Bytes  | Field                    | Type   | Description
 //	-------|--------------------------|--------|----------------------------------
-//	0-3    | Flag                     | uint32 | Encoding, compression, options
-//	4-7    | MetricCount              | uint32 | Number of metrics in blob
-//	8-15   | StartTime                | int64  | Unix timestamp in microseconds
+//	0-3    | Flag                     | 4 × u8 | Options (u16), encoding, compression
+//	4-11   | StartTime                | int64  | Unix timestamp in microseconds
+//	12-15  | MetricCount              | uint32 | Number of metrics in blob
 //	16-19  | IndexOffset              | uint32 | Byte offset to index section
 //	20-23  | TimestampPayloadOffset   | uint32 | Byte offset to timestamp data
 //	24-27  | ValuePayloadOffset       | uint32 | Byte offset to value data
 //	28-31  | TagPayloadOffset         | uint32 | Byte offset to tag data
 //
-// TextHeader (32 bytes):
-//
-//	Same layout as NumericHeader but with text-specific magic number.
+// TextHeader (32 bytes) shares the Flag, StartTime, MetricCount and IndexOffset
+// positions, followed by DataOffset (20-23), the uncompressed DataSize (24-27)
+// and 4 reserved bytes (28-31).
 //
 // # Flag Format
 //
 // Flags are packed into 4 bytes (32 bits):
 //
-//	Byte 0-1 (Options, 16 bits):
+//	Bytes 0-1 (Options, 16 bits, always little-endian):
 //	  Bit 0: Tag support (0=disabled, 1=enabled)
-//	  Bit 1: Endianness (0=little-endian, 1=big-endian)
+//	  Bit 1: Endianness of every other field (0=little-endian, 1=big-endian)
 //	  Bit 2: Metric names payload (0=not present, 1=present)
-//	  Bit 3: Reserved (must be 0)
-//	  Bits 4-15: Magic number (0xEA10 for numeric, 0xEB10 for text)
+//	  Bit 3: Numeric: shared timestamp table present (V2 only); text: reserved, must be 0
+//	  Bits 4-15: Magic number:
+//	    0xEA10  numeric V1
+//	    0xEA20  numeric V2, compact (16-byte) index entries
+//	    0xEA30  numeric V2, extended (32-byte) index entries
+//	    0xEB10  text V1
 //
 //	Byte 2 (EncodingType, 8 bits):
-//	  Bits 0-3: Timestamp encoding (0x1=Raw, 0x2=Delta)
-//	  Bits 4-7: Value encoding (0x1=Raw, 0x2=Gorilla for numeric)
+//	  Bits 0-3: Timestamp encoding (0x1=Raw, 0x2=Delta, 0x5=DeltaPacked)
+//	  Bits 4-7: Value encoding (0x1=Raw, 0x3=Gorilla, 0x4=Chimp, 0x6=ALP)
 //
 //	Byte 3 (CompressionType, 8 bits):
 //	  Bits 0-3: Timestamp compression (0x1=None, 0x2=Zstd, 0x3=S2, 0x4=LZ4)
 //	  Bits 4-7: Value compression (0x1=None, 0x2=Zstd, 0x3=S2, 0x4=LZ4)
+//
+// The tag payload is not covered by byte 3: it is always zstd-compressed.
+// Text blobs use byte 2 for the timestamp encoding and byte 3 for the data
+// section's compression.
 //
 // Example flag decoding:
 //
@@ -105,7 +105,7 @@
 //
 // # Index Entry Format
 //
-// NumericIndexEntry (16 bytes):
+// NumericIndexEntry, compact (16 bytes, magics 0xEA10 and 0xEA20):
 //
 //	Bytes  | Field           | Type   | Description
 //	-------|-----------------|--------|----------------------------------
@@ -115,9 +115,21 @@
 //	12-13  | ValueOffset     | uint16 | Delta offset from previous metric
 //	14-15  | TagOffset       | uint16 | Delta offset from previous metric
 //
+// NumericIndexEntry, extended (32 bytes, magic 0xEA30):
+//
+//	Bytes  | Field           | Type   | Description
+//	-------|-----------------|--------|----------------------------------
+//	0-7    | MetricID        | uint64 | xxHash64 of metric name
+//	8-11   | Count           | uint32 | Number of data points
+//	12-15  | TimestampOffset | uint32 | Delta offset from previous metric
+//	16-19  | ValueOffset     | uint32 | Delta offset from previous metric
+//	20-23  | TagOffset       | uint32 | Delta offset from previous metric
+//	24-31  | Reserved        | 8 × u8 | Must be zero
+//
+// V1 entries keep insertion order; V2 entries are sorted by MetricID.
+//
 // Note: In memory, Count and offset fields are stored as 'int' to avoid type conversions.
-// On disk, they're stored as 'uint16' to save space. The decoder reconstructs absolute
-// offsets from delta offsets.
+// The decoder reconstructs absolute offsets from delta offsets.
 //
 // TextIndexEntry (16 bytes):
 //
@@ -139,10 +151,8 @@
 //	Metric 2: TimestampOffset = 100      (absolute: 0 + 100 = 100)
 //	Metric 3: TimestampOffset = 50       (absolute: 100 + 50 = 150)
 //
-// Benefits:
-//   - Most deltas fit in uint16 (0-65535)
-//   - Supports blobs with >65KB payloads
-//   - Minimal space overhead (2 bytes per offset)
+// Offsets point into the decompressed payload sections.
+// The last metric's range ends at the decompressed section's length.
 //
 // Decoder reconstruction:
 //
@@ -155,37 +165,35 @@
 //
 // The package defines important constants:
 //
-//	HeaderSize            = 32              // Fixed header size
-//	NumericIndexEntrySize = 16              // Fixed index entry size
-//	TextIndexEntrySize    = 16              // Fixed index entry size
-//	IndexOffsetOffset     = 32              // Index starts after header
-//	NumericMaxOffset      = math.MaxUint16  // Max offset value (65535)
+//	HeaderSize               = 32               // Fixed header size
+//	NumericIndexEntrySize    = 16               // Compact index entry size
+//	NumericExtIndexEntrySize = 32               // Extended index entry size
+//	TextIndexEntrySize       = 16               // Fixed index entry size
+//	IndexOffsetOffset        = 32               // Index starts after header (no names payload)
+//	NumericMaxOffset         = math.MaxUint16   // Max compact offset delta (65535)
 //
 // Magic numbers for format identification:
 //
-//	MagicNumericV1Opt = 0xEA10  // Numeric blob format v1
-//	MagicTextV1Opt  = 0xEB10  // Text blob format v1
+//	MagicNumericV1Opt    = 0xEA10  // Numeric blob format V1
+//	MagicNumericV2Opt    = 0xEA20  // Numeric blob format V2, compact index
+//	MagicNumericV2ExtOpt = 0xEA30  // Numeric blob format V2, extended index
+//	MagicTextV1Opt       = 0xEB10  // Text blob format V1
 //
-// Encoding type constants:
-//
-//	TimestampEncodingNRaw = 0x01  // Raw timestamp encoding
-//	TimestampTypeDelta    = 0x02  // Delta timestamp encoding
-//	ValueTypeRaw          = 0x10  // Raw value encoding
-//	ValueTypeGorilla      = 0x20  // Gorilla value encoding
-//
-// Compression type constants:
-//
-//	TimestampCompressionNone = 0x01  // No timestamp compression
-//	TimestampCompressionZstd = 0x02  // Zstd timestamp compression
-//	TimestampCompressionS2   = 0x03  // S2 timestamp compression
-//	TimestampCompressionLZ4  = 0x04  // LZ4 timestamp compression
-//	(Similar for value compression with <<4 shift)
+// Encoding and compression nibble values come from the format package
+// (format.TypeRaw, format.TypeDelta, format.CompressionZstd, ...).
 //
 // # Byte Order (Endianness)
 //
-// All multi-byte numeric values use the byte order specified in the flag:
+// The Options field (bytes 0-1) is always little-endian, so a reader can find
+// the endianness bit before choosing a byte order.
+// Every other multi-byte header, index, names-payload and shared-table field
+// uses the byte order selected by bit 1:
 //   - Bit 1 = 0: Little-endian (default, native on x86/x64/ARM)
 //   - Bit 1 = 1: Big-endian (network byte order)
+//
+// Codec payloads follow their own rules: raw timestamps and values follow bit 1,
+// while varints, the DeltaPacked group payload, the ALP bit-packed codes and the
+// Gorilla/Chimp bit streams have a fixed byte order.
 //
 // The endian package provides engine implementations for each:
 //
@@ -197,17 +205,6 @@
 //
 // For maximum performance, use little-endian on x86/x64/ARM systems to avoid
 // byte-swapping overhead.
-//
-// # Alignment
-//
-// Payload sections are aligned to 8-byte boundaries for optimal CPU cache performance:
-//   - Header: Always 32 bytes (8-byte aligned)
-//   - Index: Padded to next 8-byte boundary after last entry
-//   - Timestamp payload: Padded to 8-byte boundary
-//   - Value payload: Padded to 8-byte boundary
-//   - Tag payload: No padding required (last section)
-//
-// Padding bytes are filled with zeros.
 //
 // # Thread Safety
 //

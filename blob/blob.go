@@ -261,7 +261,10 @@ func (b blobBase) IsBigEndian() bool {
 	return (b.flags & section.FlagEndianLittleEndian) != 0
 }
 
-// TimestampEncoding returns the timestamp encoding type from packed flags.
+// TimestampEncoding reports whether timestamps are raw: it returns format.TypeRaw
+// for raw timestamps and format.TypeDelta for every delta-of-delta encoding,
+// including format.TypeDeltaPacked. Use TimestampEncodingType for the exact
+// encoding stored in the header.
 func (b blobBase) TimestampEncoding() format.EncodingType {
 	if (b.flags & section.FlagTsEncRaw) != 0 {
 		return format.TypeRaw

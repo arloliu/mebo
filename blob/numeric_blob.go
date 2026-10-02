@@ -360,7 +360,7 @@ func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool)
 //
 // Returns ("", true) if tags are not enabled but the metric and index are valid.
 //
-// Performance: O(1) - tags always support random access.
+// Performance: O(index) - tags are variable-length, so earlier tags are skipped.
 //
 // Example:
 //

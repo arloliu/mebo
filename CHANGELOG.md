@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **DeltaPacked timestamps: interleaving `AddDataPoint` and `AddDataPoints` on one metric no longer
+  corrupts the stream on AVX2 hosts.**
+  When a batch of 32 or more points followed single points
+  that had not yet filled a 4-value group,
+  the vectorized encoder wrote its groups ahead of the pending values,
+  and decoders returned wrong timestamps from that point on.
+  Output depended on the encoding CPU (non-AVX2 hosts were unaffected).
+  Blobs already written this way cannot be repaired by a decoder change;
+  re-encode them from source data.
+- **Text blobs: a Delta-encoded timestamp of exactly 0 no longer corrupts the next point.**
+  The decoder treated a previous timestamp of 0 as "no previous point"
+  and re-based the next delta on the blob start time,
+  so `[-5, 0, 3]` decoded as `[-5, 0, StartTime+3]`.
+  The encoded bytes were always correct; existing blobs now decode correctly.
+- Delta timestamps: `NumericBlob.All`, `ForEach` and `Materialize` now accept a 10-byte varint
+  after the first timestamp (a delta-of-delta of 2^62 or more),
+  as `AllTimestamps` and `TimestampAt` already did.
+  These paths previously stopped early and returned fewer points.
+- `MaterializedNumericBlobSet` and `MaterializedTextBlobSet` resolve `*ByName` lookups and
+  `HasMetricName` for names-free members by hashing the name,
+  matching the raw set and single-blob `Materialize()`.
+  They previously reported every name as missing when no member stored names.
+- Numeric decoder: a header whose payload offsets are out of order
+  now returns `ErrInvalidValuePayloadOffset` or `ErrInvalidTagPayloadOffset` instead of panicking.
+- ALP decoding: a column header whose exponent or factor exceeds 18,
+  whose packed width exceeds 64,
+  or whose ALP-RD right width is outside 48..63
+  now fails `Decode()` with `ErrInvalidALPColumn`.
+  An out-of-range exponent or factor previously panicked at decode time.
+
+### Documentation
+
+- `section` package docs now describe the actual layout:
+  no padding between sections, header field positions, the V2 magics,
+  the Options field's fixed little-endian byte order, the shared-timestamps bit,
+  the current encoding values, and the always-zstd tag payload.
+  `docs/design.md` no longer claims 8-byte payload alignment.
+- Corrected godoc for `TagAt` (O(index), not O(1)), `TimestampEncoding`
+  (reports DeltaPacked as Delta; use `TimestampEncodingType`),
+  `NumericHeader.MetricCount` (up to 65536) and `NumericIndexEntry.TagLength`.
+
 ## [1.10.0] - 2026-07-26
 
 This release makes metric-name storage collision-safe end to end: a hash collision between two
