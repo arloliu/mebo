@@ -151,11 +151,6 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 			valProduced := blob.decodeValuesSlice(valBytes, count, metricSet.values[valOff:])
 			metricSet.values = metricSet.values[:valOff+valProduced]
 
-			// Align timestamps to actual values produced (defensive against short-decode)
-			if len(metricSet.timestamps) > valOff+valProduced {
-				metricSet.timestamps = metricSet.timestamps[:valOff+valProduced]
-			}
-
 			// Decode and append tags (if enabled)
 			if hasTags && blob.HasTag() {
 				for tag := range blob.allTagsFromEntry(entry) {
@@ -169,6 +164,8 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 				}
 			}
 
+			metricSet.timestamps, metricSet.values, metricSet.tags = alignMemberRows(
+				metricSet.timestamps, metricSet.values, metricSet.tags, hasTags)
 			material.metrics[slot] = metricSet
 		}
 	}
@@ -276,11 +273,6 @@ func (s *NumericBlobSet) materializeMetricCore(metricID uint64, resolve func(blo
 		valProduced := blob.decodeValuesSlice(valBytes, count, values[valOff:])
 		values = values[:valOff+valProduced]
 
-		// Align timestamps to actual values produced (defensive against short-decode)
-		if len(timestamps) > valOff+valProduced {
-			timestamps = timestamps[:valOff+valProduced]
-		}
-
 		// Decode and append tags (if enabled)
 		if hasTags && blob.HasTag() {
 			for tag := range blob.allTagsFromEntry(entry) {
@@ -293,6 +285,8 @@ func (s *NumericBlobSet) materializeMetricCore(metricID uint64, resolve func(blo
 				tags = append(tags, "")
 			}
 		}
+
+		timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
 	}
 
 	return MaterializedNumericMetric{
@@ -572,4 +566,23 @@ func (m MaterializedNumericBlobSet) MetricNames() []string {
 	}
 
 	return names
+}
+
+// alignMemberRows trims the rows one member just appended so the timestamp,
+// value and tag columns stay the same length. Columns are aligned before each
+// member, so a member that decoded fewer timestamps than values (or the
+// reverse) from a corrupt stream loses only its own unmatched tail instead of
+// shifting every later member's points. Tags are trimmed or padded with "".
+func alignMemberRows[V any](timestamps []int64, values []V, tags []string, hasTags bool) ([]int64, []V, []string) {
+	n := min(len(timestamps), len(values))
+	if hasTags {
+		if len(tags) > n {
+			tags = tags[:n]
+		}
+		for len(tags) < n {
+			tags = append(tags, "")
+		}
+	}
+
+	return timestamps[:n], values[:n], tags
 }

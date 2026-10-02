@@ -327,12 +327,14 @@ func decodeTagAt(data []byte, offset int) (tagLen int, varintSize int, ok bool) 
 		return 0, 0, false
 	}
 
-	// Check for integer overflow before conversion and bounds check
-	if tagLenU64 > uint64(^uint(0)>>1) || offset+n+int(tagLenU64) > len(data) {
+	// Compare against the remaining bytes in uint64: offset+n <= len(data) here,
+	// so the subtraction cannot underflow, and a huge length cannot wrap the
+	// sum negative the way offset+n+int(tagLen) would.
+	if tagLenU64 > uint64(len(data)-offset-n) { //nolint:gosec // offset+n <= len(data), so the difference is non-negative
 		return 0, 0, false
 	}
 
-	return int(tagLenU64), n, true
+	return int(tagLenU64), n, true //nolint:gosec // bounded by len(data) above
 }
 
 // varintLen returns the number of bytes required to encode a uvarint.

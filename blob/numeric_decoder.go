@@ -188,7 +188,21 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		return blob, err
 	}
 
-	// Step 3.4: If values are ALP-encoded, validate every column's structure
+	// Step 3.5: If shared timestamps flag is set, parse and apply shared timestamp table
+	hasShared := d.header.Flag.HasSharedTimestamps()
+	if hasShared {
+		if err := d.applySharedTimestamps(indexOffset, indexEntries); err != nil {
+			return blob, err
+		}
+	}
+
+	// Step 3.6: Every read path and the shared-timestamp cache size their work
+	// from each entry's Count, so prove it fits the entry's payload first.
+	if err := validateEntryCounts(indexEntries, blob.tsEncType, blob.valEncType, d.header.Flag.HasTag()); err != nil {
+		return blob, err
+	}
+
+	// Step 3.7: If values are ALP-encoded, validate every column's structure
 	// once here (blob open), not on the decode hot path. An unknown scheme
 	// byte (>= 3) would otherwise decode silently as an empty/zero column
 	// through All/DecodeAll/At and the ForEach materialize path alike — every
@@ -205,20 +219,7 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 		}
 	}
 
-	// Step 3.5: If shared timestamps flag is set, parse and apply shared timestamp table
-	if d.header.Flag.HasSharedTimestamps() {
-		indexEnd := indexOffset + d.metricCount*d.header.Flag.IndexEntrySize()
-		sharedTableEnd := int(d.header.TimestampPayloadOffset)
-
-		if sharedTableEnd <= indexEnd {
-			return blob, fmt.Errorf("%w: shared timestamps flag set but table missing", errs.ErrInvalidSharedTimestampTable)
-		}
-
-		sharedTableData := d.data[indexEnd:sharedTableEnd]
-		if err := section.ApplySharedTimestampTable(sharedTableData, d.engine, d.metricCount, indexEntries); err != nil {
-			return blob, fmt.Errorf("failed to parse shared timestamp table: %w", err)
-		}
-
+	if hasShared {
 		// Build sharedTsCache: pre-decode timestamps for offsets used by multiple metrics.
 		// After ApplySharedTimestampTable, shared metrics have identical TimestampOffset values.
 		d.buildSharedTsCache(&blob, indexEntries)
@@ -301,6 +302,60 @@ func (d *NumericDecoder) parsePayloads() error {
 	return nil
 }
 
+// applySharedTimestamps parses the shared timestamp table that sits between the
+// index and the timestamp payload, and points every member entry at its
+// canonical entry's timestamps.
+func (d *NumericDecoder) applySharedTimestamps(indexOffset int, indexEntries []section.NumericIndexEntry) error {
+	indexEnd := indexOffset + d.metricCount*d.header.Flag.IndexEntrySize()
+	sharedTableEnd := int(d.header.TimestampPayloadOffset)
+
+	if sharedTableEnd <= indexEnd {
+		return fmt.Errorf("%w: shared timestamps flag set but table missing", errs.ErrInvalidSharedTimestampTable)
+	}
+
+	sharedTableData := d.data[indexEnd:sharedTableEnd]
+	if err := section.ApplySharedTimestampTable(sharedTableData, d.engine, d.metricCount, indexEntries); err != nil {
+		return fmt.Errorf("failed to parse shared timestamp table: %w", err)
+	}
+
+	return nil
+}
+
+// validateEntryCounts checks that each entry's Count fits its payload ranges.
+// Every timestamp encoding spends at least one byte per point (raw exactly
+// eight), raw values exactly eight, and each tag at least its one-byte length,
+// so a larger Count can only come from a corrupt or crafted index. Value
+// codecs that can spend less than a byte per point (Gorilla, Chimp, ALP) are
+// bounded through the timestamps instead; ALP still needs a non-empty column.
+func validateEntryCounts(entries []section.NumericIndexEntry, tsEnc, valEnc format.EncodingType, hasTag bool) error {
+	for i := range entries {
+		entry := &entries[i]
+		count := entry.Count
+		if count == 0 {
+			continue
+		}
+
+		tsOK := count <= entry.TimestampLength
+		if tsEnc == format.TypeRaw {
+			tsOK = entry.TimestampLength/8 == count && entry.TimestampLength%8 == 0
+		}
+
+		valOK := entry.ValueLength > 0
+		if valEnc == format.TypeRaw {
+			valOK = entry.ValueLength/8 == count && entry.ValueLength%8 == 0
+		}
+
+		tagOK := !hasTag || count <= entry.TagLength
+
+		if !tsOK || !valOK || !tagOK {
+			return fmt.Errorf("%w: metric ID %d has count %d but %d timestamp, %d value and %d tag bytes",
+				errs.ErrInvalidNumOfDataPoints, entry.MetricID, count, entry.TimestampLength, entry.ValueLength, entry.TagLength)
+		}
+	}
+
+	return nil
+}
+
 // validatePayloadOffsets checks that the header's timestamp, value and tag
 // payload offsets each lie within the blob and are in layout order; inverted
 // offsets would slice backwards when the sections are cut apart.
@@ -360,10 +415,12 @@ func (d *NumericDecoder) parseIndexEntries(
 	needMetricIDs bool,
 ) ([]section.NumericIndexEntry, []uint64, error) {
 	entrySize := d.header.Flag.IndexEntrySize()
-	indexSize := entrySize * d.metricCount
-	if len(d.data) < indexOffset+indexSize {
+	// Compare counts before multiplying: on 32-bit platforms a crafted
+	// MetricCount times the entry size can wrap.
+	if indexOffset > len(d.data) || d.metricCount > (len(d.data)-indexOffset)/entrySize {
 		return nil, nil, errs.ErrInvalidIndexEntrySize
 	}
+	indexSize := entrySize * d.metricCount
 
 	indexData := d.data[indexOffset : indexOffset+indexSize]
 	// Use int for accumulated offsets to prevent uint16 overflow
@@ -541,8 +598,9 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 			}
 
 			nExc := int(engine.Uint32(body[3:7]))
-			want := mainHeaderSize + (count*width+7)/8 + nExc*12
-			if len(body) < want {
+			// uint64 arithmetic: count*width and nExc*12 can wrap int on 32-bit.
+			want := uint64(mainHeaderSize) + (uint64(count)*uint64(width)+7)/8 + uint64(nExc)*12 //nolint:gosec // count, width and nExc are non-negative
+			if uint64(len(body)) < want {
 				return fmt.Errorf("%w: metric ID %d has ALP main column body of %d bytes, want at least %d (width=%d, nExc=%d, count=%d)",
 					errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, width, nExc, count)
 			}
@@ -588,14 +646,15 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 					errs.ErrInvalidALPColumn, entry.MetricID, codeBits, maxRDCodeBits)
 			}
 
-			want := rdHeaderSize + nDict*2 + (count*codeBits+7)/8 + (count*rbw+7)/8 + nExc*6
-			if len(body) < want {
+			want := uint64(rdHeaderSize) + uint64(nDict)*2 + (uint64(count)*uint64(codeBits)+7)/8 + //nolint:gosec // all fields are non-negative
+				(uint64(count)*uint64(rbw)+7)/8 + uint64(nExc)*6 //nolint:gosec // all fields are non-negative
+			if uint64(len(body)) < want {
 				return fmt.Errorf("%w: metric ID %d has ALP rd column body of %d bytes, want at least %d (rbw=%d, codeBits=%d, nDict=%d, nExc=%d, count=%d)",
 					errs.ErrInvalidALPColumn, entry.MetricID, len(body), want, rbw, codeBits, nDict, nExc, count)
 			}
 		case 2: // alpSchemeRaw
-			want := 1 + count*8
-			if len(column) < want {
+			want := 1 + uint64(count)*8 //nolint:gosec // count is non-negative
+			if uint64(len(column)) < want {
 				return fmt.Errorf("%w: metric ID %d has ALP raw column of %d bytes, want at least %d (count=%d)",
 					errs.ErrInvalidALPColumn, entry.MetricID, len(column), want, count)
 			}

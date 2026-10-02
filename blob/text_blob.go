@@ -734,6 +734,12 @@ func (b TextBlob) decodeTags(dataBytes []byte, count int) iter.Seq[string] {
 // Returns the timestamp, bytes consumed, and any error.
 // Updates lastTs for delta encoding.
 func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int64, int, error) {
+	// Callers advance by the length bytes of the previous point; a corrupt
+	// length can push the offset past the metric's data.
+	if offset < 0 || offset >= len(data) {
+		return 0, 0, fmt.Errorf("%w: data point offset %d outside %d data bytes", errs.ErrInvalidTimestampData, offset, len(data))
+	}
+
 	switch b.tsEncType { //nolint: exhaustive
 	case format.TypeDelta:
 		// Delta encoding: each varint is the delta from the previous timestamp.

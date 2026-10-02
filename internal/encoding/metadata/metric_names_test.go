@@ -232,3 +232,15 @@ func TestEncodeDecodeMetricNamesMaxUint16Count(t *testing.T) {
 	require.Equal(t, len(encoded), bytesRead)
 	require.Equal(t, len(names), len(decoded))
 }
+
+// TestDecodeMetricNames_CountBeyondPayload pins that a names count larger than
+// the payload can hold is rejected before the result is sized from it.
+func TestDecodeMetricNames_CountBeyondPayload(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	data := []byte{0xFF, 0xFF, 0x00, 0x00}
+
+	_, _, err := DecodeMetricNames(data, engine)
+	require.ErrorIs(t, err, errs.ErrInvalidMetricNamesPayload)
+	_, _, err = DecodeMetricNamesBorrowed(data, engine)
+	require.ErrorIs(t, err, errs.ErrInvalidMetricNamesPayload)
+}
