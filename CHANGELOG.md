@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching `TagAt` and `Materialize`.
   The encoder drops the tag flag from a blob whose tags are all empty,
   so such a member used to shift every later tag to the wrong data point.
+- Text decoder: a header naming DeltaPacked timestamps (numeric-only) is now rejected with
+  `ErrInvalidHeaderFlags` instead of decoding as empty metrics,
+  and a Delta timestamp varint longer than 10 bytes or cut short is now `ErrInvalidTimestampData`
+  instead of a garbled timestamp.
 - `DecodeBlobSet` now returns `ErrInvalidMagicNumber` for an input that is neither a numeric
   nor a text blob, as its godoc states, instead of silently skipping it.
 - `NumericBlobSet.ForEach*` now apply the set's metric identity, like `All*` and `ValueAt`.

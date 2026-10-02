@@ -740,6 +740,9 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 		// Callers seed lastTs with the blob start time, which is the base the
 		// encoder uses for a metric's first data point.
 		delta, n := decodeVarint(data[offset:])
+		if n == 0 {
+			return 0, 0, fmt.Errorf("%w: truncated or overlong delta varint", errs.ErrInvalidTimestampData)
+		}
 		ts := *lastTs + delta
 		*lastTs = ts
 
@@ -791,6 +794,9 @@ func decodeVarint(data []byte) (int64, int) {
 			break
 		}
 		shift += 7
+		if shift > 63 { // at most binary.MaxVarintLen64 (10) bytes
+			return 0, 0
+		}
 	}
 
 	// Zigzag decoding: converts unsigned back to signed
