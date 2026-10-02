@@ -12,6 +12,7 @@ import (
 
 func init() {
 	allScenarios = append(allScenarios, v2NumericScenarios()...)
+	taglessTagAtReportsFound = true
 }
 
 func v2NumericScenarios() []Scenario {
