@@ -977,3 +977,25 @@ func TestNumericBlobSet_MetricDuration(t *testing.T) {
 		require.Equal(t, int64(0), duration, "Single point should have 0 duration")
 	})
 }
+
+// TestNumericBlobSet_AllTagsPadsTaglessMembers pins that NumericBlobSet.AllTags
+// yields one empty tag per point for a member whose tag flag was cleared when
+// another member carries tags, and nothing when no member carries tags.
+func TestNumericBlobSet_AllTagsPadsTaglessMembers(t *testing.T) {
+	n1, n2, id := tagsTestNumericBlobs(t)
+
+	numSet, err := NewNumericBlobSet([]NumericBlob{n1, n2})
+	require.NoError(t, err)
+	var got []string
+	for tag := range numSet.AllTags(id) {
+		got = append(got, tag)
+	}
+	require.Equal(t, tagsTestPaddingWant, got)
+
+	// A set where no member carries tags still yields nothing, like a single blob.
+	untagged, err := NewNumericBlobSet([]NumericBlob{n1})
+	require.NoError(t, err)
+	for range untagged.AllTags(id) {
+		t.Fatal("tagless set must yield no tags")
+	}
+}

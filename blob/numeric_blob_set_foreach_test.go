@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/arloliu/mebo/internal/collisiontest"
 	"github.com/arloliu/mebo/internal/hash"
 )
 
@@ -305,4 +306,68 @@ func TestNumericBlobSet_ForEach_Sparse(t *testing.T) {
 		return true
 	}))
 	require.Equal(t, want, gotDPByName)
+}
+
+// TestNumericBlobSet_ForEachHonorsSetIdentity pins that the ForEach* set methods
+// resolve a collided ID and stripped members exactly like All*: a collided ID
+// yields only the first colliding name's series, and a stripped member attaches
+// to that first name only.
+func TestNumericBlobSet_ForEachHonorsSetIdentity(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	memberA := decodeSetTestNumeric(t, encodeSetTestNumeric(t, base, collisiontest.NameA, 1, 2))
+	memberB := decodeSetTestNumeric(t, encodeSetTestNumeric(t, base.Add(time.Hour), collisiontest.NameB, 70, 71))
+	stripped, ok, err := StripMetricNames(nil, encodeSetTestNumeric(t, base.Add(2*time.Hour), collisiontest.NameA, 9))
+	require.NoError(t, err)
+	require.True(t, ok)
+	memberS := decodeSetTestNumeric(t, stripped)
+
+	set, err := NewNumericBlobSet([]NumericBlob{memberA, memberB, memberS})
+	require.NoError(t, err)
+
+	values := func(seq func(func(float64) bool)) []float64 {
+		var out []float64
+		for v := range seq {
+			out = append(out, v)
+		}
+
+		return out
+	}
+	viaForEach := func(run func(func(int, float64) bool) bool) []float64 {
+		var out []float64
+		run(func(_ int, v float64) bool { out = append(out, v); return true })
+
+		return out
+	}
+
+	id := collisiontest.CollisionID
+	want := values(set.AllValues(id))
+	require.Equal(t, []float64{1, 2, 9}, want)
+
+	require.Equal(t, want, viaForEach(func(y func(int, float64) bool) bool {
+		return set.ForEachValues(id, y)
+	}), "ForEachValues")
+	require.Equal(t, want, viaForEach(func(y func(int, float64) bool) bool {
+		return set.ForEach(id, func(i int, dp NumericDataPoint) bool { return y(i, dp.Val) })
+	}), "ForEach")
+
+	var tsCount int
+	set.ForEachTimestamps(id, func(int, int64) bool { tsCount++; return true })
+	require.Equal(t, set.MetricLen(id), tsCount, "ForEachTimestamps")
+
+	for _, name := range []string{collisiontest.NameA, collisiontest.NameB} {
+		metric, found := set.MaterializeMetricByName(name)
+		require.Truef(t, found, "MaterializeMetricByName(%s)", name)
+		wantByName := metric.Values
+		require.Equalf(t, wantByName, viaForEach(func(y func(int, float64) bool) bool {
+			return set.ForEachValuesByName(name, y)
+		}), "ForEachValuesByName(%s)", name)
+		require.Equalf(t, wantByName, viaForEach(func(y func(int, float64) bool) bool {
+			return set.ForEachByName(name, func(i int, dp NumericDataPoint) bool { return y(i, dp.Val) })
+		}), "ForEachByName(%s)", name)
+
+		var n int
+		set.ForEachTimestampsByName(name, func(int, int64) bool { n++; return true })
+		require.Equalf(t, set.MetricLenByName(name), n, "ForEachTimestampsByName(%s)", name)
+	}
 }
