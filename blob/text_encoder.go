@@ -97,8 +97,9 @@ func NewTextEncoder(blobTS time.Time, opts ...TextEncoderOption) (*TextEncoder, 
 
 // StartMetricID begins encoding a new metric with the specified unique identifier and number of data points.
 //
-// The metricID should be a unique unsigned 64-bit integer. If the application does not have
-// a predefined metric ID, it can use the hash.ID function to hash the metric name string.
+// The metricID should be a unique unsigned 64-bit integer.
+// If the application does not have a predefined metric ID,
+// it can use mebo.MetricID to hash the metric name string.
 //
 // This method is exclusive with StartMetricName. Once StartMetricID is called, all subsequent
 // metrics must also use StartMetricID. Attempting to mix with StartMetricName will return

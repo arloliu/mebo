@@ -19,7 +19,8 @@
 //
 // # Architecture
 //
-// The package defines three core interfaces:
+// The package defines three core interfaces.
+// Each built-in compressor (NoOpCompressor, ZstdCompressor, S2Compressor, LZ4Compressor) implements Codec.
 //
 //	type Compressor interface {
 //	    Compress(data []byte) ([]byte, error)
@@ -38,7 +39,7 @@
 //
 // NoOp Compression (format.CompressionNone):
 //
-//	codec := compress.NewNoOpCodec()
+//	codec := compress.NewNoOpCompressor()
 //	compressed, _ := codec.Compress(data)  // Returns data unchanged
 //	original, _ := codec.Decompress(compressed)  // Returns data unchanged
 //
@@ -47,9 +48,10 @@
 //   - CPU is more critical than storage
 //   - Data is incompressible (random, encrypted)
 //
-// Zstandard (Zstd) - format.CompressionZstd:
+// Zstandard (Zstd) - format.CompressionZstd.
+// The implementation is the pure-Go github.com/klauspost/compress/zstd package; no cgo is involved.
 //
-//	codec := compress.NewZstdCodec()
+//	codec := compress.NewZstdCompressor()
 //	compressed, _ := codec.Compress(data)  // Best compression ratio
 //	original, _ := codec.Decompress(compressed)
 //
@@ -71,7 +73,7 @@
 //
 // S2 (Snappy Alternative) - format.CompressionS2:
 //
-//	codec := compress.NewS2Codec()
+//	codec := compress.NewS2Compressor()
 //	compressed, _ := codec.Compress(data)  // Fast with good compression
 //	original, _ := codec.Decompress(compressed)
 //
@@ -93,7 +95,7 @@
 //
 // LZ4 - format.CompressionLZ4:
 //
-//	codec := compress.NewLZ4Codec()
+//	codec := compress.NewLZ4Compressor()
 //	compressed, _ := codec.Compress(data)  // Very fast decompression
 //	original, _ := codec.Decompress(compressed)
 //
@@ -222,30 +224,28 @@
 //	)
 //
 //	// Text blob with S2 compression (faster)
-//	encoder, _ := blob.NewTextEncoder(time.Now(),
+//	textEncoder, _ := blob.NewTextEncoder(time.Now(),
 //	    blob.WithTextDataCompression(format.CompressionS2),
 //	)
 //
 // Decoders automatically detect and use the correct decompression algorithm
 // based on the blob header.
 //
-// # Advanced Usage
+// # Codec Lookup
 //
-// For custom compression needs, implement the Compressor/Decompressor interfaces:
+// CreateCodec and GetCodec return the built-in codec for a format.CompressionType:
 //
-//	type MyCodec struct{}
-//
-//	func (c *MyCodec) Compress(data []byte) ([]byte, error) {
-//	    // Custom compression logic
-//	    return compressedData, nil
+//	codec, err := compress.CreateCodec(format.CompressionZstd, "values")
+//	if err != nil {
+//	    return err
 //	}
+//	compressed, err := codec.Compress(data)
 //
-//	func (c *MyCodec) Decompress(data []byte) ([]byte, error) {
-//	    // Custom decompression logic
-//	    return originalData, nil
-//	}
-//
-// Register with the format package if you want blob encoder/decoder integration.
+// The set of algorithms is closed.
+// You can implement Compressor and Decompressor for your own use,
+// but there is no registry:
+// the blob encoders and decoders only use the four built-in algorithms,
+// selected by the compression type stored in the blob header.
 //
 // # Examples
 //

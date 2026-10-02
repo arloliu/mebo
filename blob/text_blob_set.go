@@ -374,7 +374,8 @@ func (s TextBlobSet) Blobs() []TextBlob {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(n) where n is the number of blobs to skip to reach the target index.
+// Performance: O(blobs) to find the blob, plus O(local index) within that blob,
+// because text data points are decoded sequentially.
 func (s TextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return "", false
@@ -420,7 +421,8 @@ func (s TextBlobSet) ValueAt(metricID uint64, index int) (string, bool) {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(n) where n is the number of blobs to skip to reach the target index.
+// Performance: O(blobs) to find the blob, plus O(local index) within that blob,
+// because text data points are decoded sequentially.
 func (s TextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
@@ -466,7 +468,8 @@ func (s TextBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 //   - The index is out of bounds
 //   - The index falls within a blob that doesn't contain this metric
 //
-// Performance: O(n) where n is the number of blobs to skip to reach the target index.
+// Performance: O(blobs) to find the blob, plus O(local index) within that blob,
+// because text data points are decoded sequentially.
 func (s TextBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return "", false

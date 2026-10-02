@@ -8,10 +8,10 @@ type (
 
 const (
 	TypeRaw         EncodingType = 0x1 // TypeRaw represents raw data with no format.
-	TypeDelta       EncodingType = 0x2 // TypeDelta represents delta-of-delta encoding for timestamps.
+	TypeDelta       EncodingType = 0x2 // TypeDelta represents delta timestamps: delta-of-delta in numeric blobs, plain delta in text blobs.
 	TypeGorilla     EncodingType = 0x3 // TypeGorilla represents Gorilla encoding for numeric values.
 	TypeChimp       EncodingType = 0x4 // TypeChimp represents Chimp encoding for numeric values.
-	TypeDeltaPacked EncodingType = 0x5 // TypeDeltaPacked represents delta-of-delta encoding with Group Varint packing for timestamps.
+	TypeDeltaPacked EncodingType = 0x5 // TypeDeltaPacked represents delta-of-delta timestamps with Group Varint packing (numeric blobs only).
 	TypeALP         EncodingType = 0x6 // TypeALP represents Adaptive Lossless floating-Point encoding for numeric values.
 
 	CompressionNone CompressionType = 0x1 // CompressionNone represents no compression.

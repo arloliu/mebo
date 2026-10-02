@@ -56,7 +56,8 @@ If no sharing is detected (all metrics have unique timestamps), no table is writ
 2. If set, reads the mapping table from between the metric index and timestamp payload
 3. `ApplySharedTimestampTable` mutates index entries in-place — shared metrics' `TimestampOffset` and `TimestampLength` are overwritten to match their canonical
 4. `buildSharedTsCache` pre-decodes timestamps for offsets referenced by multiple metrics and stores them in a `map[int][]int64`
-5. Subsequent `AllTimestamps`, `All`, or `Materialize` calls hit the cache instead of re-decoding
+5. Subsequent `AllTimestamps`, `ForEachTimestamps`, and `Materialize`/`MaterializeMetric` calls (on the blob or a `NumericBlobSet`) hit the cache instead of re-decoding;
+   `All`, `ForEach`, and `TimestampAt` still decode the canonical timestamp bytes on every call
 
 ## Binary Format
 
@@ -257,7 +258,7 @@ The extra allocations are: refcount map, cache map, and decoded `[]int64` slices
 | Different timestamp counts         | Not grouped (encoded byte length must match before hash comparison)           |
 | Same values but different encoding | Not grouped (comparison is at the encoded byte level, not decoded values)     |
 | Hash collision (xxHash64)          | Eliminated by `bytes.Equal` verification — zero false positives               |
-| V1 decoder reading V2+shared blob  | Safely rejected (different magic number `0xEA20` vs `0xEA10`)                 |
+| V1 decoder reading V2+shared blob  | Safely rejected (different magic number: `0xEA20` or `0xEA30` vs `0xEA10`)   |
 
 ## Backward Compatibility
 

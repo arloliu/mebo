@@ -52,13 +52,17 @@ type BlobReader interface {
 	HasMetricID(metricID uint64) bool
 
 	// HasMetricName returns true if the blob has the given metric name.
+	// A blob without a metric names payload matches the name by its hash.
 	HasMetricName(metricName string) bool
 
-	// MetricIDs returns a slice of all metric IDs in the blob.
+	// MetricIDs returns a slice of all metric IDs in the blob, in index order.
+	// Index order is encoding order for V1 layout and text blobs,
+	// and ascending MetricID order for V2 layout numeric blobs.
 	// The returned slice is cloned to prevent external modification.
 	MetricIDs() []uint64
 
 	// MetricNames returns a slice of all metric names in the blob.
+	// It returns an empty, non-nil slice if the blob has no metric names payload.
 	// The returned slice is cloned to prevent external modification.
 	MetricNames() []string
 
@@ -67,7 +71,8 @@ type BlobReader interface {
 	Len(metricID uint64) int
 
 	// LenByName returns the number of data points for the given metric name.
-	// Returns 0 if the metric name doesn't exist or the blob has no metric names.
+	// Returns 0 if the metric name doesn't exist.
+	// A blob without a metric names payload matches the name by its hash.
 	LenByName(metricName string) int
 }
 

@@ -299,7 +299,8 @@ func WithBigEndian() NumericEncoderOption {
 // Valid encoding types:
 //   - format.TypeRaw: No encoding; timestamps stored as raw 64-bit values.
 //   - format.TypeDelta: Delta-of-delta encoding; stores differences between consecutive timestamps as varints, ideal for regular intervals.
-//   - format.TypeDeltaPacked: Delta-of-delta encoding with Group Varint packing; better compression for irregular intervals.
+//   - format.TypeDeltaPacked: Delta-of-delta encoding with Group Varint packing.
+//     Its size is within a few percent of TypeDelta; the gain is faster bulk decoding during iteration.
 //
 // The default encoding is format.TypeDelta.
 //
@@ -320,6 +321,9 @@ func WithTimestampEncoding(enc format.EncodingType) NumericEncoderOption {
 //   - format.TypeRaw: No encoding; values stored as raw 64-bit IEEE 754 floats.
 //   - format.TypeGorilla: Facebook Gorilla XOR encoding; excellent compression for slowly changing float values.
 //   - format.TypeChimp: Chimp encoding; improved variant of Gorilla with better compression for noisy or volatile values.
+//   - format.TypeALP: Adaptive Lossless floating-Point encoding; best for decimal-quantized values
+//     such as readings rounded to a fixed number of decimal places.
+//     Random access is O(1) plus an O(log k) search over the column's k exceptions.
 //
 // The default encoding is format.TypeGorilla.
 //
@@ -380,9 +384,12 @@ func WithValueCompression(comp format.CompressionType) NumericEncoderOption {
 
 // WithTagsEnabled enables or disables per-point tag storage.
 //
-// When enabled, each data point may carry an associated text tag of up to
-// 255 UTF-8 bytes. Tags are stored in a separate compressed payload and do
-// not affect timestamp or value encoding.
+// When enabled, each data point may carry an associated text tag.
+// Numeric tags have no fixed per-tag length limit: each tag is stored with a uvarint length prefix.
+// In the default V1 layout, however, the encoded tags of one metric must fit the 65535-byte per-metric offset limit,
+// or the encoder returns ErrOffsetOutOfRange.
+// Tags are stored in a separate zstd-compressed payload that is omitted when every tag is empty,
+// and they do not affect timestamp or value encoding.
 //
 // Parameters:
 //   - enabled: Set to true to enable tag storage, false to disable it.

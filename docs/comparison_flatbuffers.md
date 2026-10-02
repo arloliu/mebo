@@ -55,17 +55,24 @@ Key observations:
 ## Random Access Performance (ValueAt)
 
 Random access to individual data points by index. Benchmarked across 200 metric IDs with random indices.
+Each op is 200 `ValueAt` calls, one per metric, so every ns/op figure below covers 200 accesses, not one.
 
 | Format | Config | 50 PPM (ns/op) | 200 PPM (ns/op) | Allocs/op |
 |--------|--------|---------------:|----------------:|----------:|
-| Mebo | Raw timestamp + any value | 4,956–4,988 | 4,972–5,007 | 0 |
+| Mebo | Raw value (any timestamp) | 4,956–4,988 | 4,972–5,007 | 0 |
 | Mebo | Gorilla value (any TS) | 52,916–53,784 | 168,279–169,689 | 0 |
 | FlatBuffers | any compression | 156,048–157,251 | 158,359–158,796 | 200 |
 
 Key observations:
-- Mebo with raw timestamps provides **O(1)** random access: ~5 ns/op regardless of point count, zero allocations.
-- Mebo with Gorilla values requires sequential unshuffle: cost grows with point count (52 µs at 50 PPM → 169 µs at 200 PPM), still zero allocations.
-- FlatBuffers random access costs ~157 ns, stable across point sizes because FlatBuffers stores values at fixed offsets. It allocates 200 objects per call (one per metric), adding GC pressure under load.
+- `ValueAt` cost depends on the **value** encoding, not the timestamp encoding.
+  Mebo with Raw values provides **O(1)** random access:
+  ~5 µs per 200-access op regardless of point count, zero allocations.
+- Mebo with Gorilla values must decode the XOR chain from the start of the column (O(index)):
+  cost grows with point count (52 µs at 50 PPM → 169 µs at 200 PPM per op), still zero allocations.
+  This holds even with Raw timestamps.
+- FlatBuffers random access costs ~157 µs per op, stable across point sizes
+  because FlatBuffers stores values at fixed offsets.
+  It allocates 200 objects per op (one per metric), adding GC pressure under load.
 - Mebo Raw+Raw is **31× faster** than FlatBuffers for numeric random access and allocates nothing.
 
 ---
@@ -77,13 +84,13 @@ Key observations:
 | Space | Delta + Gorilla | 9.690 bytes/point | 11.15 bytes/point (Zstd) | 13% smaller |
 | Decode + iterate | Raw + Raw | 127,835 | 667,612 (no compression) | 5.2× faster |
 | Decode + iterate | Delta + Gorilla | 555,757 | 667,612 (no compression) | 1.2× faster |
-| Random access | Raw timestamp | 4,972 | 158,796 (no compression) | 31× faster, 0 allocs |
+| Random access | Raw value | 4,972 | 158,796 (no compression) | 31× faster, 0 allocs |
 
 ### When to choose Mebo
 
 - **Numeric time-series data with regular intervals**: Delta+Gorilla encoding achieves better compression than FlatBuffers+Zstd without codec overhead.
 - **Sequential read workloads**: Mebo's in-memory iteration is significantly faster for full-scan patterns.
-- **High-frequency random access**: O(1) access with zero allocations (Raw timestamp encoding).
+- **High-frequency random access**: O(1) access with zero allocations (Raw value encoding for `ValueAt`, Raw timestamp encoding for `TimestampAt`).
 - **Advanced compression needs**: Chimp encoding and shared timestamps (no FlatBuffers equivalent) can achieve up to 60.5% space savings; see [Performance Guide](performance.md).
 
 ### When FlatBuffers may be preferable

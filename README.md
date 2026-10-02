@@ -21,7 +21,7 @@ Mebo is designed for **batch processing of already-collected metrics**, not stre
 ## Features
 
 **Storage format**
-- Binary blob format with compact index (16 bytes per metric entry)
+- Binary blob format with compact index (16 bytes per metric entry; 32 bytes for V2 extended entries)
 - O(1) metric lookup via 64-bit xxHash64 identifiers
 - Separate numeric (float64) and text (string) blob types
 - BlobSet: unified multi-blob access with global indexing across time windows
@@ -45,13 +45,10 @@ Mebo is designed for **batch processing of already-collected metrics**, not stre
 go get github.com/arloliu/mebo
 ```
 
-**Requirements:** Go 1.24.0 or higher
+**Requirements:** Go 1.25.0 or higher
 
-For Zstd compression, enable CGO for the high-performance C implementation (2-3x faster compression/decompression):
-
-```bash
-CGO_ENABLED=1 go build
-```
+Mebo is pure Go and needs no CGO.
+Zstd compression uses the pure-Go [klauspost/compress](https://github.com/klauspost/compress) implementation.
 
 ## Quick Start
 
@@ -92,18 +89,18 @@ func main() {
     }
     encoder.EndMetric()
 
-    blob, err := encoder.Finish()
+    data, err := encoder.Finish()
     if err != nil {
         panic(err)
     }
-    fmt.Printf("Encoded: %d bytes\n", len(blob.Bytes()))
+    fmt.Printf("Encoded: %d bytes\n", len(data))
 }
 ```
 
 ### Decoding
 
 ```go
-decoder, err := mebo.NewNumericDecoder(blob.Bytes())
+decoder, err := mebo.NewNumericDecoder(data)
 if err != nil {
     panic(err)
 }
@@ -114,7 +111,7 @@ if err != nil {
 
 // Sequential iteration — most efficient, zero allocations
 cpuID := mebo.MetricID("cpu.usage")
-for dp := range decoded.All(cpuID) {
+for _, dp := range decoded.All(cpuID) {
     fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 }
 
@@ -153,8 +150,8 @@ for the full breakdown across data shapes (decimals, counters, sparse data, full
 | Encoding | Size | Random access | Best for |
 |----------|------|----------------|----------|
 | Raw | 8 bytes fixed | O(1) | Irregular timestamps, random access needed |
-| Delta | 1–5 bytes | O(index) | Regular intervals (monitoring, 1-second cadence) |
-| DeltaPacked | 1–5 bytes | O(index) | Regular intervals; faster bulk decode via Group Varint |
+| Delta | ~1 byte typical, 10 bytes worst case | O(index) | Regular intervals (monitoring, 1-second cadence) |
+| DeltaPacked | ~1.25 bytes typical, ~8.25 bytes worst case | O(index) | Regular intervals; faster bulk decode via Group Varint |
 
 Delta and DeltaPacked produce similar compression ratios (~2% difference). Use DeltaPacked when iteration throughput matters more than encoding speed.
 
@@ -346,9 +343,8 @@ See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 ## Dependencies
 
 - [cespare/xxhash](https://github.com/cespare/xxhash) — fast non-cryptographic hash
-- [klauspost/compress](https://github.com/klauspost/compress) — S2 and Zstd
+- [klauspost/compress](https://github.com/klauspost/compress) — S2 and Zstd (pure Go)
 - [pierrec/lz4](https://github.com/pierrec/lz4) — LZ4
-- [valyala/gozstd](https://github.com/valyala/gozstd) — CGO-based Zstd
 
 ## License
 

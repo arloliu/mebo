@@ -149,15 +149,15 @@ for i, dp := range nb.All(metricID) {
 }
 
 // Callback style (hot paths, allocation-free):
-nb.ForEach(metricID, func(i int, dp NumericDataPoint) bool {
+nb.ForEach(metricID, func(i int, dp blob.NumericDataPoint) bool {
     process(i, dp)
     return true // return false to stop early
 })
 ```
 
-`ForEach` returns `false` if the metric does not exist (it returns `true`
-when iteration was merely stopped early). `ForEachByName` is the name-lookup
-variant.
+`ForEach` returns `false` if the metric does not exist or the callback is `nil`;
+it returns `true` when iteration was merely stopped early.
+`ForEachByName` is the name-lookup variant.
 
 ### Performance
 
@@ -170,7 +170,7 @@ loop so its closure is created once:
 
 ```go
 var sum float64
-fn := func(_ int, dp NumericDataPoint) bool { // created once
+fn := func(_ int, dp blob.NumericDataPoint) bool { // created once
     sum += dp.Val
     return true
 }
@@ -197,15 +197,34 @@ A `NumericBlobSet` groups time-ordered blobs and provides unified iteration acro
 ### Numeric blobs across time windows
 
 ```go
-blob1, _ := encoder1.Finish() // hour 0
-blob2, _ := encoder2.Finish() // hour 1
-blob3, _ := encoder3.Finish() // hour 2
+// Finish returns raw bytes; decode each one into a NumericBlob first
+decode := func(enc *blob.NumericEncoder) blob.NumericBlob {
+    data, err := enc.Finish()
+    if err != nil {
+        log.Fatal(err)
+    }
+    decoder, err := mebo.NewNumericDecoder(data)
+    if err != nil {
+        log.Fatal(err)
+    }
+    nb, err := decoder.Decode()
+    if err != nil {
+        log.Fatal(err)
+    }
+    return nb
+}
+blob1 := decode(encoder1) // hour 0
+blob2 := decode(encoder2) // hour 1
+blob3 := decode(encoder3) // hour 2
 
 // Pass in any order — BlobSet sorts by start time automatically
-blobSet, _ := mebo.NewNumericBlobSet([]blob.NumericBlob{blob3, blob1, blob2})
+blobSet, err := mebo.NewNumericBlobSet([]blob.NumericBlob{blob3, blob1, blob2})
+if err != nil {
+    log.Fatal(err)
+}
 
 cpuID := mebo.MetricID("cpu.usage")
-for dp := range blobSet.All(cpuID) {
+for _, dp := range blobSet.All(cpuID) {
     fmt.Printf("ts=%d, val=%f\n", dp.Ts, dp.Val)
 }
 
@@ -279,7 +298,8 @@ matTxt := blobSet.MaterializeText()
 ```
 
 **Avoid materialization when:**
-- Only sequential iteration is needed — use `BlobSet.All()` instead.
+- Only sequential iteration is needed —
+  use `NumericBlobSet.All()`/`TextBlobSet.All()` or `BlobSet.AllNumerics()`/`BlobSet.AllTexts()` instead.
 - Memory is constrained (~16 bytes × total data points).
 - Only a handful of data points need to be accessed.
 
@@ -289,7 +309,10 @@ matTxt := blobSet.MaterializeText()
 
 Tags are optional per-point string metadata. Enable them on the encoder and read them back during decoding.
 
-Tags add ~8–16 bytes of overhead per data point. Enable them only when per-point metadata is actually needed.
+Each numeric tag is stored as a varint length plus its UTF-8 bytes, and the whole tag payload is always Zstd-compressed,
+so the real cost depends on how repetitive your tags are and is usually far below the raw tag length.
+If every tag in a blob is empty, the tag payload is dropped entirely.
+Enable tags only when per-point metadata is actually needed.
 
 ```go
 startTime := time.Now()
@@ -298,8 +321,8 @@ metricID := mebo.MetricID("cpu.usage")
 // Option 1: use the tagged factory function
 encoder, _ := mebo.NewTaggedNumericEncoder(startTime)
 
-// Option 2: pass the option manually
-encoder, _ := mebo.NewNumericEncoder(startTime, blob.WithTagsEnabled(true))
+// Option 2 (equivalent): pass the option manually
+// encoder, _ := mebo.NewNumericEncoder(startTime, blob.WithTagsEnabled(true))
 
 encoder.StartMetricID(metricID, 10)
 for i := 0; i < 10; i++ {
@@ -308,12 +331,12 @@ for i := 0; i < 10; i++ {
 }
 encoder.EndMetric()
 
-blob, _ := encoder.Finish()
+data, _ := encoder.Finish()
 
 // Decode and read tags
-decoder, _ := mebo.NewNumericDecoder(blob.Bytes())
+decoder, _ := mebo.NewNumericDecoder(data)
 decoded, _ := decoder.Decode()
-for dp := range decoded.AllWithTags(metricID) {
+for _, dp := range decoded.All(metricID) {
     fmt.Printf("val=%f, tag=%s\n", dp.Val, dp.Tag)
 }
 ```
@@ -327,8 +350,10 @@ Mebo identifies metrics by `uint64` IDs. If your system already has numeric iden
 ```go
 var myMetricID uint64 = 123456789
 encoder.StartMetricID(myMetricID, 100)
-// ...
-for dp := range decoder.All(myMetricID) { ... }
+// ... add points, EndMetric, Finish, NewNumericDecoder, Decode ...
+for _, dp := range decoded.All(myMetricID) { // decoded is the NumericBlob from decoder.Decode()
+    fmt.Println(dp.Ts, dp.Val)
+}
 ```
 
 If you only have string names, convert them with `mebo.MetricID`, which applies xxHash64 and is deterministic across runs and machines:
@@ -340,4 +365,9 @@ memID := mebo.MetricID("memory.bytes") // uint64
 encoder.StartMetricID(cpuID, 100)
 ```
 
-The collision probability is negligible (~1 in 2⁶⁴). When a collision is detected, Mebo stores the metric name in the blob header for verification.
+The collision probability is negligible (~1 in 2⁶⁴).
+How a collision is handled depends on how the metric was started.
+With `StartMetricName`, Mebo detects the collision and automatically stores the metric names in a separate metric-names payload
+so that lookups by name stay exact.
+With `MetricID` plus `StartMetricID`, the encoder only sees IDs,
+so starting a second metric with an ID it already holds returns `ErrHashCollision`.

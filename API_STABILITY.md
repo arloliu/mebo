@@ -55,17 +55,15 @@ These packages are **stable** and will not break compatibility within the same m
   - Materialization types and methods
 
 - **`github.com/arloliu/mebo/compress`**
-  - `Codec` interface
-  - All codec implementations (`ZstdCodec`, `S2Codec`, `LZ4Codec`, `NoopCodec`)
-  - Codec creation functions
-  - Codec configuration types
+  - `Codec`, `Compressor`, and `Decompressor` interfaces
+  - All codec implementations (`ZstdCompressor`, `S2Compressor`, `LZ4Compressor`, `NoOpCompressor`)
+  - Their `New*Compressor` constructors
+  - Codec lookup functions (`CreateCodec`, `GetCodec`)
+  - `CompressionStats`
 
 - **`github.com/arloliu/mebo/encoding`**
-  - All timestamp encoders/decoders (`RawTimestamp`, `DeltaTimestamp`)
-  - All value encoders/decoders (`RawValue`, `GorillaValue`)
-  - All tag encoders/decoders
-  - All metric name encoders/decoders
-  - Columnar encoder/decoder utilities
+  - `ColumnarEncoder` and `ColumnarDecoder` interfaces (the only exports;
+    the concrete timestamp, value, tag, and metric-name codecs live under `internal/` and are not part of the public API)
 
 #### Supporting Packages
 - **`github.com/arloliu/mebo/endian`**
@@ -240,20 +238,20 @@ These new symbols are purely additive; no existing signature changed.
 
 ### Minimum Go Version
 
-- **v1.x**: Requires Go 1.23 or later
+- **v1.x**: Requires Go 1.25 or later (`go 1.25.0` in `go.mod`)
 
 ### Go Version Policy
 
-- We support the **last 2 major Go releases** (e.g., 1.24 and 1.25)
-- Minimum Go version may increase in **minor versions** (e.g., v1.1.0 might require Go 1.24)
+- We support the **last 2 major Go releases** (currently 1.25 and 1.26)
+- Minimum Go version may increase in **minor versions** (e.g., v1.6.0 raised it from Go 1.24 to Go 1.25)
 - We test against latest stable Go versions in CI
 
 ### Version Support Matrix
 
-| Mebo Version | Minimum Go | Tested Go Versions |
-|--------------|------------|-------------------|
-| v1.0.x       | 1.23       | 1.23, 1.24, 1.25  |
-| v1.1.x       | 1.24 (TBD) | 1.24, 1.25, 1.26  |
+| Mebo Version  | Minimum Go | Tested Go Versions |
+|---------------|------------|--------------------|
+| v1.0.x–v1.5.x | 1.24       | 1.24, 1.25         |
+| v1.6.0+       | 1.25       | 1.25, 1.26         |
 
 ## Breaking Change Process
 

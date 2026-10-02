@@ -73,12 +73,15 @@ func (b NumericBlob) HasMetricID(metricID uint64) bool {
 }
 
 // HasMetricName checks if the blob contains the given metric name.
-// Returns false if the blob doesn't have metric names payload.
+// If the blob has no metric names payload, the name is hashed with xxHash64
+// and matched by metric ID instead.
 func (b NumericBlob) HasMetricName(metricName string) bool {
 	return b.index.HasMetricName(metricName)
 }
 
-// MetricIDs returns a cloned slice of all metric IDs in the blob.
+// MetricIDs returns a cloned slice of all metric IDs in the blob, in index order.
+// For a V1 layout blob, index order is the order the metrics were encoded;
+// for a V2 layout blob, it is ascending MetricID order.
 // The returned slice is safe to modify; it does not reference internal state.
 func (b NumericBlob) MetricIDs() []uint64 {
 	return b.index.MetricIDs()

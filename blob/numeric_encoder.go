@@ -268,8 +268,9 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 
 // StartMetricID begins encoding a new metric with the specified unique identifier and number of data points.
 //
-// The metricID should be a unique unsigned 64-bit integer. If the application does not have
-// a predefined metric ID, it can use the hash.ID function to hash the metric name string.
+// The metricID should be a unique unsigned 64-bit integer.
+// If the application does not have a predefined metric ID,
+// it can use mebo.MetricID to hash the metric name string.
 //
 // This method is exclusive with StartMetricName. Once StartMetricID is called, all subsequent
 // metrics must also use StartMetricID. Attempting to mix with StartMetricName will return
@@ -363,9 +364,9 @@ func (e *NumericEncoder) startMetric(metricID uint64, numOfDataPoints int) error
 // If the application already has a unique metric ID, it should use StartMetricID instead
 // to avoid the overhead of hashing and collision detection.
 //
-// This method is exclusive with StartMetricID. Once StartMetricID is called, all subsequent
-// metrics must also use StartMetricName. Attempting to mix with StartMetricID will return
-// ErrMixedIdentifierMode.
+// This method is exclusive with StartMetricID.
+// Once StartMetricName is called, all subsequent metrics must also use StartMetricName.
+// Attempting to mix with StartMetricID will return ErrMixedIdentifierMode.
 //
 // Parameters:
 //   - metricName: Metric name string (must be non-empty)
@@ -373,7 +374,8 @@ func (e *NumericEncoder) startMetric(metricID uint64, numOfDataPoints int) error
 //
 // Returns:
 //   - error: ErrMetricAlreadyStarted, ErrMixedIdentifierMode, ErrInvalidMetricName,
-//     ErrInvalidNumOfDataPoints, or ErrMetricCountExceeded
+//     ErrInvalidNumOfDataPoints, ErrMetricCountExceeded, or ErrTooManyMetricNames
+//     when the names payload is required and the blob already holds 65535 metrics
 func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int) error {
 	if e.curMetricID != 0 {
 		return fmt.Errorf("%w: metric ID %d is already started", errs.ErrMetricAlreadyStarted, e.curMetricID)
@@ -1541,7 +1543,7 @@ func AddFromRows[T any](
 //	    {TS: 1609459201000000, Val: 101.2},
 //	}
 //	encoder, _ := NewNumericEncoder(time.Now())
-//	encoder.StartMetricID(hash.ID("metric1"), len(points))
+//	encoder.StartMetricID(mebo.MetricID("metric1"), len(points))
 //	err := AddFromRowsNoTag(encoder, points, func(p DataPoint) (int64, float64) {
 //	    return p.TS, p.Val
 //	})
