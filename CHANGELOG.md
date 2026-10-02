@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HasMetricName` for names-free members by hashing the name,
   matching the raw set and single-blob `Materialize()`.
   They previously reported every name as missing when no member stored names.
+- **Text encoder: a data point rejected for an oversized value or tag no longer leaves its
+  timestamp in the stream.**
+  The timestamp was written before the length check, so later valid points decoded as garbage
+  and `ValueAt` could panic on the resulting blob.
+- `NumericEncoder.MaxDataPoints()` now uses true worst-case encoded sizes
+  (10-byte Delta varints, ~8.25 bytes per DeltaPacked timestamp, 77-bit Gorilla values),
+  so a V1 metric at the reported limit always fits its timestamp and value payloads.
+  Tags are variable-length and not covered:
+  a tagged metric below the limit can still overflow the V1 tag offset.
+  The reported limits are lower than before.
 - `NumericBlobSet.ForEach*` now apply the set's metric identity, like `All*` and `ValueAt`.
   A collided ID previously yielded every colliding name's points as one series,
   and a by-name call included stripped members that belong to the other colliding name.

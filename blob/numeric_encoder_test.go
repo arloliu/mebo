@@ -3639,3 +3639,51 @@ func TestNewNumericEncoder_DefaultEncoding(t *testing.T) {
 	require.Equal(t, format.CompressionNone, header.Flag.ValueCompression())
 	require.True(t, header.Flag.IsLittleEndian())
 }
+
+// TestNumericEncoder_MaxDataPointsFitsWorstCase pins that a V1 metric holding
+// exactly MaxDataPoints() worst-case points still fits the uint16 offset deltas,
+// so a following metric does not fail with ErrOffsetOutOfRange.
+func TestNumericEncoder_MaxDataPointsFitsWorstCase(t *testing.T) {
+	combos := []struct {
+		ts, val format.EncodingType
+	}{
+		{format.TypeDelta, format.TypeGorilla},
+		{format.TypeDelta, format.TypeChimp},
+		{format.TypeDelta, format.TypeRaw},
+		{format.TypeDeltaPacked, format.TypeGorilla},
+		{format.TypeDeltaPacked, format.TypeRaw},
+		{format.TypeRaw, format.TypeGorilla},
+	}
+
+	for _, c := range combos {
+		t.Run(fmt.Sprintf("%v-%v", c.ts, c.val), func(t *testing.T) {
+			enc, err := NewNumericEncoder(time.Unix(0, 0).UTC(), WithTimestampEncoding(c.ts), WithValueEncoding(c.val))
+			require.NoError(t, err)
+			n := enc.MaxDataPoints()
+
+			// Alternating huge jumps give delta-of-deltas near ±2^62 (10-byte
+			// varints, widest DeltaPacked lanes); pseudo-random bit patterns give
+			// the widest XOR blocks.
+			timestamps := make([]int64, n)
+			values := make([]float64, n)
+			state := uint64(0x9E3779B97F4A7C15)
+			for i := range n {
+				if i%2 == 1 {
+					timestamps[i] = 1 << 61
+				}
+				state ^= state << 13
+				state ^= state >> 7
+				state ^= state << 17
+				values[i] = math.Float64frombits(state&^(0x7FF<<52) | 0x3FF<<52)
+			}
+
+			for id := uint64(1); id <= 2; id++ {
+				require.NoError(t, enc.StartMetricID(id, n))
+				require.NoError(t, enc.AddDataPoints(timestamps, values, nil))
+				require.NoError(t, enc.EndMetric(), "metric %d", id)
+			}
+			_, err = enc.Finish()
+			require.NoError(t, err)
+		})
+	}
+}
