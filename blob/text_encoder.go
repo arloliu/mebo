@@ -123,11 +123,6 @@ func (e *TextEncoder) StartMetricID(metricID uint64, numOfDataPoints int) error 
 		return fmt.Errorf("%w: cannot use StartMetricID after StartMetricName", errs.ErrMixedIdentifierMode)
 	}
 
-	// Set mode on first use
-	if e.identifierMode == modeUndefined {
-		e.identifierMode = modeUserID
-	}
-
 	if metricID == 0 {
 		return errs.ErrInvalidMetricID
 	}
@@ -149,6 +144,10 @@ func (e *TextEncoder) StartMetricID(metricID uint64, numOfDataPoints int) error 
 		return fmt.Errorf("%w: metric ID 0x%016x already used", errs.ErrHashCollision, metricID)
 	}
 	e.usedIDs[metricID] = struct{}{}
+
+	// Lock ID mode only once the call is accepted, so a rejected call leaves
+	// the encoder free to use StartMetricName instead.
+	e.identifierMode = modeUserID
 
 	return e.startMetric(metricID, numOfDataPoints)
 }
@@ -221,6 +220,10 @@ func (e *TextEncoder) StartMetricName(metricName string, numOfDataPoints int) er
 	}
 
 	metricID := hash.ID(metricName)
+	// ID 0 marks "no metric open"; a name hashing to it cannot be tracked.
+	if metricID == 0 {
+		return fmt.Errorf("%w: metric name %q hashes to the reserved metric ID 0", errs.ErrInvalidMetricName, metricName)
+	}
 
 	// Read-only duplicate-name and prospective-collision detection.
 	var prospectiveCollision bool
@@ -445,6 +448,16 @@ func (e *TextEncoder) FinishInto(dst []byte) ([]byte, error) {
 }
 
 func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
+	// State errors are checked before the teardown below so the encoder stays
+	// usable: the caller can end the open metric, or add one, and retry.
+	if e.curMetricID != 0 {
+		return dst, errs.ErrMetricNotEnded
+	}
+
+	if len(e.indexEntries) == 0 {
+		return dst, errs.ErrNoMetricsAdded
+	}
+
 	// Return buffers to pool even on error paths
 	defer func() {
 		if e.buf != nil {
@@ -455,15 +468,6 @@ func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 			e.dataEncoder.Reset()
 		}
 	}()
-
-	// Check state
-	if e.curMetricID != 0 {
-		return dst, errs.ErrMetricNotEnded
-	}
-
-	if len(e.indexEntries) == 0 {
-		return dst, errs.ErrNoMetricsAdded
-	}
 
 	// Clone header for immutability
 	header := e.cloneHeader()

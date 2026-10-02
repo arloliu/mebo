@@ -53,6 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timestamp in the stream.**
   The timestamp was written before the length check, so later valid points decoded as garbage
   and `ValueAt` could panic on the resulting blob.
+- **Numeric encoder: retrying `EndMetric` after `ErrDataPointCountMismatch` no longer corrupts
+  DeltaPacked timestamps or ALP values.**
+  EndMetric flushed the pending DeltaPacked group and the ALP column before checking the count,
+  so points added after the error were encoded out of order or dropped.
+- Encoders now reject cleanly, leaving their state usable:
+  - `Finish` returning `ErrMetricNotEnded` or `ErrNoMetricsAdded` no longer tears the encoder down,
+    so ending the metric (or adding one) and calling `Finish` again works instead of panicking.
+  - A rejected `StartMetricID` no longer locks the encoder into ID mode.
+  - `AddDataPoints` with empty timestamps but non-empty values now returns a length-mismatch error.
+  - `StartMetricName` rejects a name whose hash is the reserved metric ID 0
+    (`ErrInvalidMetricName`), which previously corrupted the following metric.
 - `NumericEncoder.MaxDataPoints()` now uses true worst-case encoded sizes
   (10-byte Delta varints, ~8.25 bytes per DeltaPacked timestamp, 77-bit Gorilla values),
   so a V1 metric at the reported limit always fits its timestamp and value payloads.
