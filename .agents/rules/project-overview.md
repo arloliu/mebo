@@ -18,7 +18,7 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 
 ## Technology Stack
 
-- **Language**: Go >=1.24.0
+- **Language**: Go >=1.25.0
 - **Module**: github.com/arloliu/mebo
 - **Architecture**: Columnar time-series storage with pluggable encoders
 
