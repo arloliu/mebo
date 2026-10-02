@@ -70,6 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tags are variable-length and not covered:
   a tagged metric below the limit can still overflow the V1 tag offset.
   The reported limits are lower than before.
+- Set-level `AllTags` (`NumericBlobSet`, `TextBlobSet`, `BlobSet`, and `ByName` forms) now yield
+  one empty tag per point for a member without tags when another member carries tags,
+  matching `TagAt` and `Materialize`.
+  The encoder drops the tag flag from a blob whose tags are all empty,
+  so such a member used to shift every later tag to the wrong data point.
+- `DecodeBlobSet` now returns `ErrInvalidMagicNumber` for an input that is neither a numeric
+  nor a text blob, as its godoc states, instead of silently skipping it.
 - `NumericBlobSet.ForEach*` now apply the set's metric identity, like `All*` and `ValueAt`.
   A collided ID previously yielded every colliding name's points as one series,
   and a by-name call included stripped members that belong to the other colliding name.

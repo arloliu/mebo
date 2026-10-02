@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/internal/collisiontest"
 )
 
@@ -157,4 +158,112 @@ func TestNumericBlobSet_ForEachHonorsSetIdentity(t *testing.T) {
 		set.ForEachTimestampsByName(name, func(int, int64) bool { n++; return true })
 		require.Equalf(t, set.MetricLenByName(name), n, "ForEachTimestampsByName(%s)", name)
 	}
+}
+
+// TestBlobSets_AllTagsAlignWithPoints pins that set-level AllTags yields one tag
+// per data point when any member carries tags: a member whose tags were all
+// empty (so its tag flag was cleared) contributes empty strings, keeping every
+// index aligned with TagAt, AllTimestamps and Materialize.
+func TestBlobSets_AllTagsAlignWithPoints(t *testing.T) {
+	const name = "tags.metric"
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	numericWithTags := func(start time.Time, tags ...string) NumericBlob {
+		enc, err := NewNumericEncoder(start, WithTagsEnabled(true))
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricName(name, len(tags)))
+		for i, tag := range tags {
+			require.NoError(t, enc.AddDataPoint(start.UnixMicro()+int64(i), float64(i), tag))
+		}
+		require.NoError(t, enc.EndMetric())
+		data, err := enc.Finish()
+		require.NoError(t, err)
+
+		return decodeSetTestNumeric(t, data)
+	}
+	textWithTags := func(start time.Time, tags ...string) TextBlob {
+		enc, err := NewTextEncoder(start, WithTextTagsEnabled(true))
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricName(name, len(tags)))
+		for i, tag := range tags {
+			require.NoError(t, enc.AddDataPoint(start.UnixMicro()+int64(i), "v", tag))
+		}
+		require.NoError(t, enc.EndMetric())
+		data, err := enc.Finish()
+		require.NoError(t, err)
+		decoder, err := NewTextDecoder(data)
+		require.NoError(t, err)
+		blob, err := decoder.Decode()
+		require.NoError(t, err)
+
+		return blob
+	}
+
+	want := []string{"", "", "", "t0", "t1"}
+
+	n1 := numericWithTags(base, "", "", "")
+	require.False(t, n1.HasTag(), "all-empty tags clear the tag flag")
+	n2 := numericWithTags(base.Add(time.Hour), "t0", "t1")
+	id := n2.MetricIDs()[0]
+
+	numSet, err := NewNumericBlobSet([]NumericBlob{n1, n2})
+	require.NoError(t, err)
+	var got []string
+	for tag := range numSet.AllTags(id) {
+		got = append(got, tag)
+	}
+	require.Equal(t, want, got, "NumericBlobSet.AllTags")
+
+	bs := NewBlobSet([]NumericBlob{n1, n2}, nil)
+	got = got[:0]
+	for i, tag := range bs.AllTags(id) {
+		require.Len(t, got, i)
+		got = append(got, tag)
+	}
+	require.Equal(t, want, got, "BlobSet.AllTags")
+	got = got[:0]
+	for _, tag := range bs.AllTagsByName(name) {
+		got = append(got, tag)
+	}
+	require.Equal(t, want, got, "BlobSet.AllTagsByName")
+
+	t1 := textWithTags(base, "", "", "")
+	t2 := textWithTags(base.Add(time.Hour), "t0", "t1")
+	txtSet, err := NewTextBlobSet([]TextBlob{t1, t2})
+	require.NoError(t, err)
+	got = got[:0]
+	for tag := range txtSet.AllTags(id) {
+		got = append(got, tag)
+	}
+	require.Equal(t, want, got, "TextBlobSet.AllTags")
+
+	// A set where no member carries tags still yields nothing, like a single blob.
+	untagged, err := NewNumericBlobSet([]NumericBlob{n1})
+	require.NoError(t, err)
+	for range untagged.AllTags(id) {
+		t.Fatal("tagless set must yield no tags")
+	}
+}
+
+// TestDecodeBlobSet_RejectsUnrecognizedInput pins that an input that is neither
+// a numeric nor a text blob fails DecodeBlobSet instead of being dropped.
+func TestDecodeBlobSet_RejectsUnrecognizedInput(t *testing.T) {
+	valid := encodeSetTestNumeric(t, time.Unix(1_700_000_000, 0).UTC(), "m", 1)
+
+	flipped := append([]byte(nil), valid...)
+	flipped[1] ^= 0xFF
+
+	for name, bad := range map[string][]byte{
+		"bad magic": flipped,
+		"too short": {1, 2},
+		"empty":     {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := DecodeBlobSet(valid, bad)
+			require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
+		})
+	}
+
+	_, err := DecodeBlobSet(valid)
+	require.NoError(t, err)
 }

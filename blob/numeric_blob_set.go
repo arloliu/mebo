@@ -166,18 +166,30 @@ func (s NumericBlobSet) AllValues(metricID uint64) iter.Seq[float64] {
 // The iterator will seamlessly traverse all blobs, yielding tags in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped. Tags can be empty strings.
+//
+// When any member carries tags, a member without tags yields one empty tag
+// per data point, so the sequence stays aligned with the data points.
+// A set where no member carries tags yields nothing.
 func (s NumericBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 	targetName, collided := s.identity.resolveID(metricID)
+
+	padTags := anyHasTag(s.blobs)
 
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			if !blob.HasTag() {
-				// Tags disabled or optimized away: this member yields nothing.
-				continue
-			}
 			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
 			if !ok {
+				continue
+			}
+			if !blob.HasTag() {
+				// Tags disabled or optimized away. When other members carry
+				// tags, pad with one empty tag per point to keep the sequence
+				// aligned with the data points; otherwise yield nothing.
+				if padTags && !yieldEmptyTags(entry.Count, yield) {
+					return
+				}
+
 				continue
 			}
 			for tag := range blob.allTagsFromEntry(entry) {
@@ -528,4 +540,28 @@ func (s NumericBlobSet) MetricDurationByName(metricName string) int64 {
 	}
 
 	return calculateDurationByName(s.blobs, metricName, nil)
+}
+
+// anyHasTag reports whether any member of a set carries tags. Set-level tag
+// iterators pad tagless members with empty tags only in that case, matching
+// how Materialize fills a tagless member's tag column.
+func anyHasTag[B interface{ HasTag() bool }](blobs []B) bool {
+	for i := range blobs {
+		if blobs[i].HasTag() {
+			return true
+		}
+	}
+
+	return false
+}
+
+// yieldEmptyTags yields n empty tags, reporting false if yield stopped early.
+func yieldEmptyTags(n int, yield func(string) bool) bool {
+	for range n {
+		if !yield("") {
+			return false
+		}
+	}
+
+	return true
 }

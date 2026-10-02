@@ -244,18 +244,30 @@ func (s TextBlobSet) AllValuesByName(metricName string) iter.Seq[string] {
 // The iterator will seamlessly traverse all blobs, yielding tags in
 // time order. If a metric is not present in some blobs, those blobs are
 // automatically skipped. Tags can be empty strings.
+//
+// When any member carries tags, a member without tags yields one empty tag
+// per data point, so the sequence stays aligned with the data points.
+// A set where no member carries tags yields nothing.
 func (s TextBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 	targetName, collided := s.identity.resolveID(metricID)
+
+	padTags := anyHasTag(s.blobs)
 
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			if !blob.HasTag() {
-				// Tags disabled or optimized away: this member yields nothing.
-				continue
-			}
 			entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
 			if !ok {
+				continue
+			}
+			if !blob.HasTag() {
+				// Tags disabled or optimized away. When other members carry
+				// tags, pad with one empty tag per point to keep the sequence
+				// aligned with the data points; otherwise yield nothing.
+				if padTags && !yieldEmptyTags(int(entry.Count), yield) {
+					return
+				}
+
 				continue
 			}
 			for tag := range blob.allTagsFromEntry(entry) {
@@ -275,15 +287,23 @@ func (s TextBlobSet) AllTags(metricID uint64) iter.Seq[string] {
 func (s TextBlobSet) AllTagsByName(metricName string) iter.Seq[string] {
 	skipStripped := s.identity.excludesStripped(metricName)
 
+	padTags := anyHasTag(s.blobs)
+
 	return func(yield func(string) bool) {
 		for i := range s.blobs {
 			blob := &s.blobs[i]
-			if !blob.HasTag() {
-				// Tags disabled or optimized away: this member yields nothing.
-				continue
-			}
 			entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
 			if !ok {
+				continue
+			}
+			if !blob.HasTag() {
+				// Tags disabled or optimized away. When other members carry
+				// tags, pad with one empty tag per point to keep the sequence
+				// aligned with the data points; otherwise yield nothing.
+				if padTags && !yieldEmptyTags(int(entry.Count), yield) {
+					return
+				}
+
 				continue
 			}
 			for tag := range blob.allTagsFromEntry(entry) {
