@@ -1146,30 +1146,6 @@ func TestDecodeBlobSet_MixedBlobs(t *testing.T) {
 	})
 }
 
-// TestDecodeBlobSet_InvalidBlob tests decoding with invalid blob data
-func TestDecodeBlobSet_InvalidBlob(t *testing.T) {
-	// An input that is neither a numeric nor a text blob is a parsing error.
-	t.Run("Too short data", func(t *testing.T) {
-		_, err := DecodeBlobSet([]byte{0x01, 0x02, 0x03})
-		require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
-	})
-
-	t.Run("Empty byte slice", func(t *testing.T) {
-		_, err := DecodeBlobSet([]byte{})
-		require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
-	})
-
-	t.Run("Invalid magic number", func(t *testing.T) {
-		// Create blob with invalid magic number (32 bytes with wrong magic)
-		invalidData := make([]byte, 32)
-		invalidData[0] = 0xFF // Wrong magic number
-		invalidData[1] = 0xFF
-
-		_, err := DecodeBlobSet(invalidData)
-		require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
-	})
-}
-
 // TestDecodeBlobSet_CorruptedNumericBlob tests handling of corrupted numeric blob
 func TestDecodeBlobSet_CorruptedNumericBlob(t *testing.T) {
 	// Create a valid numeric blob first
@@ -2272,27 +2248,6 @@ func decodeSetTestNumeric(t *testing.T, data []byte) NumericBlob {
 	return blob
 }
 
-func buildSetTestText(t *testing.T, start time.Time, name string, vals ...string) TextBlob {
-	t.Helper()
-
-	enc, err := NewTextEncoder(start, WithTextTagsEnabled(true))
-	require.NoError(t, err)
-	require.NoError(t, enc.StartMetricName(name, len(vals)))
-	for i, v := range vals {
-		require.NoError(t, enc.AddDataPoint(start.UnixMicro()+int64(i)*1_000_000, v, "t"+v))
-	}
-	require.NoError(t, enc.EndMetric())
-	data, err := enc.Finish()
-	require.NoError(t, err)
-
-	decoder, err := NewTextDecoder(data)
-	require.NoError(t, err)
-	blob, err := decoder.Decode()
-	require.NoError(t, err)
-
-	return blob
-}
-
 // tagsTestNumericBlobs returns a numeric member whose three tags are all empty
 // (so the encoder clears its tag flag) and a tagged member, plus the metric ID.
 func tagsTestNumericBlobs(t *testing.T) (untagged, tagged NumericBlob, metricID uint64) {
@@ -2359,10 +2314,10 @@ func TestBlobSet_NumericPrecedenceForRandomAccess(t *testing.T) {
 	const name = "shared.metric"
 	base := time.Unix(1_700_000_000, 0).UTC()
 
-	numeric := decodeSetTestNumeric(t, encodeSetTestNumeric(t, base, name, 1, 2))
+	numeric := encodeNumericSeries(t, base, nil, numericSeries{name, []float64{1, 2}})
 	id := numeric.MetricIDs()[0]
-	text1 := buildSetTestText(t, base, name, "a", "b", "c", "d", "e")
-	text2 := buildSetTestText(t, base.Add(time.Hour), name, "f")
+	text1 := encodeTextSeries(t, base, textSeries{name, []string{"a", "b", "c", "d", "e"}})
+	text2 := encodeTextSeries(t, base.Add(time.Hour), textSeries{name, []string{"f"}})
 
 	bs := NewBlobSet([]NumericBlob{numeric}, []TextBlob{text1, text2})
 	require.Equal(t, 2, bs.MetricLen(id))
@@ -2382,7 +2337,7 @@ func TestBlobSet_NumericPrecedenceForRandomAccess(t *testing.T) {
 
 	// A single numeric point has zero duration; the text members must not be
 	// consulted once the metric is found in a numeric member.
-	single := decodeSetTestNumeric(t, encodeSetTestNumeric(t, base, name, 7))
+	single := encodeNumericSeries(t, base, nil, numericSeries{name, []float64{7}})
 	bs = NewBlobSet([]NumericBlob{single}, []TextBlob{text1})
 	require.Equal(t, 1, bs.MetricLen(id))
 	require.Equal(t, int64(0), bs.MetricDuration(id))
@@ -2430,8 +2385,10 @@ func TestDecodeBlobSet_RejectsUnrecognizedInput(t *testing.T) {
 		"empty":     {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := DecodeBlobSet(valid, bad)
-			require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
+			_, err := DecodeBlobSet(bad)
+			require.ErrorIs(t, err, errs.ErrInvalidMagicNumber, "alone")
+			_, err = DecodeBlobSet(valid, bad)
+			require.ErrorIs(t, err, errs.ErrInvalidMagicNumber, "after a valid blob")
 		})
 	}
 
