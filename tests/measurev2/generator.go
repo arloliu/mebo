@@ -171,7 +171,7 @@ func GenerateProfile(p Profile, cfg DataConfig) *TestData {
 	}
 
 	baseInterval := time.Duration(p.IntervalMs) * time.Millisecond
-	// Sub-ms jitter: ±0.5 ms expressed as a fraction of the interval
+	// Sub-microsecond jitter: ±500 ns (0.0005 ms) per interval, expressed as a fraction of the interval.
 	jitterFrac := 0.0005 * float64(time.Millisecond) / float64(baseInterval)
 
 	const burstyPeriod = 50 // inject a gap every 50 points

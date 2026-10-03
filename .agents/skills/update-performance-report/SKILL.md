@@ -20,7 +20,7 @@ This skill runs the encoding benchmark matrix tool and generates `docs/performan
 cd tests/measurev2 && go run . -pretty -verbose -output /tmp/mebo_bench_results.json 2>&1
 ```
 
-Wait for completion. With default settings (200 metrics × 200 points, 24 combos: 12 standard + 12 shared-timestamp — 3 timestamp encodings × 4 value encodings: Raw, Gorilla, Chimp, ALP), this takes ~5-10 minutes (5 benchmarks per combo: encode, decode, iterate, random ValueAt, random TimestampAt).
+Wait for completion. With default settings (200 metrics × 200 points, 30 combos: 15 standard + 15 shared-timestamp — 3 timestamp encodings × 5 value encodings: Raw, Gorilla, Chimp, ALP, ALP-RLE), this takes ~5-10 minutes (5 benchmarks per combo: encode, decode, iterate, random ValueAt, random TimestampAt).
 
 ### Step 2: Generate the report
 
@@ -42,8 +42,8 @@ The benchmark JSON has this structure:
 ```
 {
   "metadata": { "go_version", "os", "arch", "num_cpu", "timestamp", "data_config" },
-  "matrix": [ { per-combo benchmark results (24 entries: 12 standard + 12 shared-TS) } ],
-  "scaling": [ { per-combo bytes/point at different point counts (24 entries) } ]
+  "matrix": [ { per-combo benchmark results (30 entries: 15 standard + 15 shared-TS) } ],
+  "scaling": [ { per-combo bytes/point at different point counts (30 entries) } ]
 }
 ```
 
@@ -132,7 +132,7 @@ Generate 4-6 bullet points based on the data:
 - Is encode speed vs compression a meaningful tradeoff? (ALP's encode is markedly slower than
   Gorilla/Chimp — its (e,f) search cost — worth calling out if ALP appears in the top compression
   ranks)
-- Note the decode speed difference: shared-TS combos decode faster due to smaller blob size
+- Note the decode speed difference: shared-TS combos pay at open for decoding the shared timestamp cache (see Domain Knowledge), so they can decode slower than non-shared combos despite smaller blobs
 
 #### `{{ENCODE_PERFORMANCE}}`
 
@@ -167,11 +167,22 @@ complexity classes as of 2026-07:
 - Raw (timestamp or value): true O(1), direct offset into a fixed-width array.
 - ALP (value): O(1) windowed bit read + O(log k) binary search over that column's exception
   sidecar (k = exceptions in that column, not n). Not a plain O(1) — don't round it down.
+- ALP-RLE (value): a column that uses the runs layout first ranks its run-start bitmap with a word-wise popcount over bits 0..index
+  (`alpRunsRank` in `internal/encoding/value/alp/alp_runs.go`, no rank directory),
+  so O(index/64), at most 3 popcounts at 150 points,
+  then does the nested ALP lookup (O(1) + O(log k)).
+  A column without enough repeats stays a plain ALP column.
+  Verified from source 2026-10-04.
 - Gorilla, Chimp (value): O(index) — must sequentially decode the XOR chain from the start of
   the column. This is true regardless of which *timestamp* encoding the combo pairs it with;
   don't assume "Raw + Chimp" is O(1) just because the timestamp half is.
 - Delta, DeltaPacked (timestamp): O(index) — must sequentially decode every delta from the
   start, since each value depends on the accumulated sum before it.
+- Shared timestamps (any timestamp encoding): O(1).
+  The shared columns are decoded once into `sharedTsCache` when the blob is opened (`blob/numeric_decoder.go`),
+  and `TimestampAt` reads the cache.
+  The script's `ts_complexity()` applies this to every `shared-*` label,
+  so a `shared-delta-*` row is never labelled O(index).
 
 If a new value/timestamp encoding is ever added, its `At()` complexity MUST be verified by
 reading the actual decoder source (look for a doc comment stating Big-O, or read the loop
@@ -276,12 +287,26 @@ After writing, read back `docs/performance.md` and verify:
 4. Scaling table shows decreasing BPP as points increase (two tables: standard and shared-TS)
 5. Decision tree and config table reference actual benchmark numbers
 6. Shared-TS combos show ~20-25% additional savings over equivalent non-shared combos
-7. Shared-TS combos show faster decode (smaller blobs) but similar iteration speed
+7. Shared-TS combos show similar iteration speed; their decode (open) can be slower because it builds the shared timestamp cache
 8. Random Access table: Raw (value or timestamp) should be near the fastest on its axis; Gorilla/Chimp
    ValueAt and Delta/DeltaPacked TimestampAt should be visibly slower (sequential decode) than Raw/ALP
    on the same axis — if a Gorilla/Chimp combo's ValueAt looks as fast as Raw's, something is wrong
    (check the access pattern actually varies the index; index 0 for every metric would hide the
    O(index) cost). ALP's ValueAt should sit between Raw and Gorilla/Chimp, closer to Raw.
+   ALP-RLE's ValueAt should be close to ALP's on this data (few or no runs columns).
+   Shared-TS rows' TimestampAt should be close to Raw's, whatever their timestamp encoding.
+9. Re-add the manual [Codec Selection by Data Shape] section (see Step 4).
+
+### Step 4: Re-add the manual section
+
+The template keeps the TOC entry and header note for "Codec Selection by Data Shape",
+but not the section itself.
+Rebuild it from the per-profile JSON (the reproduce recipe in its "Provenance" box)
+and insert it before "## Choosing an Encoding Strategy".
+Copy the previous version from git (`git show HEAD:docs/performance.md`) as the starting point,
+refresh every number from the new JSON, and keep each table's provenance with it:
+numbers from other sources (for example the layout-averaged ALP-RLE measurements in
+`docs/specs/alp-rle-design.md`) stay in their own subsection with their own provenance.
 
 ## Domain Knowledge for Interpreting Results
 
@@ -289,11 +314,23 @@ These hints help generate accurate observations from the data:
 
 - **DeltaPacked vs Delta**: DeltaPacked uses Group Varint encoding for **faster decode/iteration**, not for better compression. Size difference is marginal.
 - **Chimp vs Gorilla**: Chimp typically achieves slightly better compression ratio. Both use XOR-based encoding.
-- **ALP**: Adaptive Lossless floating-Point encoding (`format.TypeALP`). Wins big (2.5–6× smaller than the next-best codec) on **decimal-quantized** data — sensor readings rounded to a fixed number of decimal places. On this skill's default benchmark data (a full-precision random walk, not decimal-quantized), ALP will NOT show its real advantage and may rank worse than Chimp/Gorilla on both size and speed — that's expected, not a regression. ALP's encode is also markedly slower than Gorilla/Chimp (per-column (e,f) search cost). See `docs/performance.md`'s "Codec Selection by Data Shape" section (sourced from `tests/measurev2`'s realistic profiles, not this matrix) for where ALP actually wins.
+- **ALP**: Adaptive Lossless floating-Point encoding (`format.TypeALP`). Wins big on **decimal-quantized** data (1.9–2.7× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles, 4–6× smaller than Raw) — sensor readings rounded to a fixed number of decimal places. On this skill's default benchmark data (a full-precision random walk, not decimal-quantized), ALP will NOT show its real advantage and may rank worse than Chimp/Gorilla on both size and speed — that's expected, not a regression. ALP's encode is also markedly slower than Gorilla/Chimp (per-column (e,f) search cost). See `docs/performance.md`'s "Codec Selection by Data Shape" section (sourced from `tests/measurev2`'s realistic profiles, not this matrix) for where ALP actually wins.
+- **ALP-RLE**: ALP with a run-length front end (`format.TypeALPRLE`).
+  Each column keeps the runs layout only when it is smaller than the plain ALP column,
+  so on this skill's default data (a full-precision random walk that almost never repeats a value)
+  ALP-RLE should match ALP's size and encode within a few percent of it.
+  A visible size gap here is a finding to investigate, not noise.
+  Its wins are on columns where many consecutive points repeat;
+  the profile section and `docs/specs/alp-rle-design.md` cover those.
 - **Shared Timestamps**: `WithSharedTimestamps()` deduplicates identical timestamp sequences across metrics. When all metrics share the same sampling schedule (typical in monitoring), the timestamp column is stored once instead of N times. Savings scale with metric count: more metrics = greater benefit. Expect ~20-25% additional savings over non-shared equivalents at 200 metrics.
-- **Shared-TS decode advantage**: Shared-TS combos decode faster because the blob is smaller (less data to parse). The decode memory footprint is also smaller (shared timestamp index vs per-metric copies).
+- **Shared-TS decode cost**: opening a shared-TS blob decodes each shared timestamp column once into `sharedTsCache` (`blob/numeric_decoder.go`),
+  which makes `TimestampAt` O(1) afterwards.
+  In the 2026-10 run, shared-TS decode (open) was about 20% slower than non-shared
+  and slightly larger in B/op despite the smaller blob;
+  don't claim shared-TS decodes faster unless the data shows it.
 - **Scaling**: Below ~10 points/metric, fixed per-metric overhead dominates. Above ~100, diminishing returns.
 - **Encode speed**: Raw encoding is fastest (no computation). Compressed encodings trade CPU for space. Shared-TS combos have slightly higher encode cost due to the deduplication detection logic.
-- **Decode speed**: All combos within the same group (shared vs non-shared) tend to have similar decode speed since it's dominated by header parsing overhead. Shared-TS combos decode faster than non-shared due to smaller blob size.
+- **Decode speed**: All combos within the same group (shared vs non-shared) tend to have similar decode speed since it's dominated by header parsing overhead.
+  Shared-TS combos also build the shared timestamp cache at open, which can make them slower than non-shared.
 - **Iteration**: Compressed data can iterate faster than raw due to reduced memory bandwidth — smaller data fits better in CPU cache.
 
