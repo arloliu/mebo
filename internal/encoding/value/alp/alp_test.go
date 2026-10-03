@@ -238,7 +238,8 @@ func TestNumericALP_At_MatchesAll(t *testing.T) {
 }
 
 // TestNumericALP_UnknownScheme_Decoders pins the internal decoders' behavior
-// on an unknown scheme byte (the first one past ALPMaxSchemeByte): the
+// on an unknown scheme byte (the first one past ALPRLEMaxSchemeByte; the
+// decoders accept the runs scheme 3 unconditionally): the
 // blob-layer validation (blob/numeric_decoder.go's validateALPColumns) is
 // what actually surfaces this as an error, but that seam deliberately keeps
 // All/DecodeAll/At themselves error-free, per the alpScheme* doc comment in
@@ -254,7 +255,7 @@ func TestNumericALP_UnknownScheme_Decoders(t *testing.T) {
 	require.LessOrEqualf(t, data[0], ALPMaxSchemeByte, "sanity: encoder must emit a known scheme byte")
 
 	unknown := append([]byte(nil), data...)
-	unknown[0] = ALPMaxSchemeByte + 1 // first unknown scheme byte (3)
+	unknown[0] = ALPRLEMaxSchemeByte + 1 // first unknown scheme byte (4)
 
 	dec := NewNumericALPDecoder(eng)
 

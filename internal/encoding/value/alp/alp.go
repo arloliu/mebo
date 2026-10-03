@@ -35,21 +35,19 @@ import (
 //	      [exceptions: nExc×(pos:4, left:2)]
 //	raw:  [count×8 raw float64]
 //
-// alpSchemeMain, alpSchemeRD, and alpSchemeRaw are the ONLY scheme bytes a
-// TypeALP (encoding type 0x6) column payload may start with. This set is
-// closed: do not add a fourth scheme under 0x6. Every decoder here (All,
-// DecodeAll, At) falls through an unlabeled default: case for any other
-// byte, decoding the column as empty/zero rather than erroring — and blobs
-// already written by shipped v1.8.0+ encoders are read by shipped v1.8.0+
-// decoders that only recognize these three, so a new scheme byte would be
-// silently dropped by any reader built before it existed. If ALP's on-disk
-// format ever needs a new scheme, introduce a new encoding type instead
-// (see docs/specs/alp-bp128-wiring-design.md) so old readers
-// reject it via section/numeric_flag.go's encoding-type allow-list instead
-// of silently losing data. The blob layer validates the payload's first
-// byte against ALPMaxSchemeByte once per column at blob open
-// (blob/numeric_decoder.go) specifically because this default: fallthrough
-// is otherwise indistinguishable from data loss.
+// alpSchemeMain, alpSchemeRD, and alpSchemeRaw are the ONLY scheme bytes a TypeALP (encoding type 0x6) column payload may start with.
+// This set is closed: do not add a fourth scheme under 0x6.
+// Shipped v1.8.0+ decoders fall through an unlabeled default: case for any other byte,
+// decoding the column as empty/zero rather than erroring,
+// so a new scheme byte would be silently dropped by any reader built before it existed.
+// A new layout therefore needs a new encoding type (see docs/specs/alp-rle-design.md),
+// so old readers reject it via section/numeric_flag.go's encoding-type allow-list instead of silently losing data.
+// The runs layout (scheme 3, alp_runs.go) is exactly that:
+// it is valid only under TypeALPRLE (0x7), whose column format is a superset of 0x6.
+// The decoders here accept it unconditionally.
+// The blob layer validates the payload's first byte against ALPMaxSchemeByte (0x6) or ALPRLEMaxSchemeByte (0x7)
+// once per column at blob open (blob/numeric_decoder.go),
+// specifically because the default: fallthrough is otherwise indistinguishable from data loss.
 const (
 	alpSchemeMain byte = 0
 	alpSchemeRD   byte = 1
@@ -166,11 +164,13 @@ type NumericALPEncoder struct {
 	excScratch  []uint32 // reused exception-position buffer for ALP-main, filled by alpMainStats
 	// ALP-RD planner scratch, all reused across columns to keep RD planning
 	// allocation-free after warmup:
-	patScratch []uint64 // full-column bit patterns (sized n)
-	rdLefts    []uint64 // distinct left values (the counting table's touched list)
-	rdCounts   []int32  // per-distinct-left counts, parallel to rdLefts
-	rdExcPos   []uint32 // encodeRD exception positions
-	rdExcLeft  []uint16 // encodeRD exception left values
+	patScratch []uint64  // full-column bit patterns (sized n)
+	rdLefts    []uint64  // distinct left values (the counting table's touched list)
+	rdCounts   []int32   // per-distinct-left counts, parallel to rdLefts
+	rdExcPos   []uint32  // encodeRD exception positions
+	rdExcLeft  []uint16  // encodeRD exception left values
+	runScratch []float64 // run values for the runs layout (alp_runs.go), reused across columns
+	runs       bool      // may write the runs layout (scheme 3); set only by NewNumericALPRLEEncoder
 	flushed    bool
 }
 
@@ -216,7 +216,11 @@ func (e *NumericALPEncoder) flush() {
 	if e.flushed || e.seqCount == 0 {
 		return
 	}
-	e.encodeColumn(e.pending)
+	if e.runs {
+		e.encodeColumnRuns(e.pending)
+	} else {
+		e.encodeColumn(e.pending)
+	}
 	e.flushed = true
 }
 
@@ -826,6 +830,7 @@ func (e *NumericALPEncoder) Finish() {
 	e.rdCounts = nil
 	e.rdExcPos = nil
 	e.rdExcLeft = nil
+	e.runScratch = nil
 	e.flushed = false
 }
 
@@ -959,6 +964,8 @@ func (d NumericALPDecoder) All(data []byte, count int) iter.Seq[float64] {
 			d.allMain(data[1:], count, yield)
 		case alpSchemeRD:
 			d.allRD(data[1:], count, yield)
+		case alpSchemeRuns:
+			d.allRuns(data, count, yield)
 		default:
 		}
 	}
@@ -1299,6 +1306,8 @@ func (d NumericALPDecoder) DecodeAll(data []byte, count int, dst []float64) int 
 		return d.decodeMainInto(data[1:], count, dst)
 	case alpSchemeRD:
 		return d.decodeRDInto(data[1:], count, dst)
+	case alpSchemeRuns:
+		return d.decodeRunsInto(data, count, dst)
 	default:
 		return 0
 	}
@@ -1321,6 +1330,8 @@ func (d NumericALPDecoder) At(data []byte, index int, count int) (float64, bool)
 		return d.atMain(data[1:], index, count), true
 	case alpSchemeRD:
 		return d.atRD(data[1:], index, count), true
+	case alpSchemeRuns:
+		return d.atRuns(data, index, count)
 	default:
 		return 0, false
 	}
