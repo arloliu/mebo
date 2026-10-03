@@ -285,6 +285,12 @@ func NewTimestampRawDecoder(engine endian.EndianEngine) TimestampRawDecoder {
 //
 // Returns:
 //   - iter.Seq[int64]: Iterator yielding decoded timestamps (microseconds since Unix epoch)
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d TimestampRawDecoder) All(data []byte, count int) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		if len(data) == 0 || count == 0 {
@@ -414,6 +420,12 @@ func NewTimestampRawUnsafeDecoder(engine endian.EndianEngine) TimestampRawUnsafe
 //
 // Returns:
 //   - iter.Seq[int64]: Iterator yielding decoded timestamps (microseconds since Unix epoch)
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d TimestampRawUnsafeDecoder) All(data []byte, count int) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		if len(data) < count*8 || count == 0 {

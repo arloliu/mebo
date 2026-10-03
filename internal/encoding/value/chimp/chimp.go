@@ -359,6 +359,12 @@ func NewNumericChimpDecoder() NumericChimpDecoder {
 //
 // Returns:
 //   - iter.Seq[float64]: Iterator yielding decoded float64 values
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d NumericChimpDecoder) All(data []byte, count int) iter.Seq[float64] { //nolint:cyclop // windowed XOR decode has four inherent flag branches
 	return func(yield func(float64) bool) {
 		if len(data) == 0 || count == 0 {

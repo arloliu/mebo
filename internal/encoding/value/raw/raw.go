@@ -270,6 +270,12 @@ func NewNumericRawDecoder(engine endian.EndianEngine) NumericRawDecoder {
 //
 // Returns:
 //   - iter.Seq[float64]: Iterator yielding decoded float64 values
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d NumericRawDecoder) All(data []byte, count int) iter.Seq[float64] {
 	return func(yield func(float64) bool) {
 		if len(data) < count*8 || count == 0 {
@@ -404,6 +410,12 @@ func NewNumericRawUnsafeDecoder(engine endian.EndianEngine) NumericRawUnsafeDeco
 //
 // Returns:
 //   - iter.Seq[float64]: Iterator yielding decoded float64 values
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d NumericRawUnsafeDecoder) All(data []byte, count int) iter.Seq[float64] {
 	return func(yield func(float64) bool) {
 		if len(data) < count*8 || count == 0 {

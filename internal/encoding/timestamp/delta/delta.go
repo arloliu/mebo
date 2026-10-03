@@ -628,6 +628,12 @@ func (s *DeltaTsState) Ts() int64 {
 //	        break
 //	    }
 //	}
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 	return func(yield func(int64) bool) {
 		if len(data) == 0 || count <= 0 {
