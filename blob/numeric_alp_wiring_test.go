@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -137,19 +138,27 @@ func alpRLETestBits(values []float64) []uint64 {
 // and the blob must really contain both runs (scheme 3) and plain columns.
 func TestNumericBlob_ALPRLE_DispatchParity(t *testing.T) {
 	layouts := []struct {
-		name string
-		opts []NumericEncoderOption
+		name   string
+		tagged bool
+		opts   []NumericEncoderOption
 	}{
-		{"v1-le-raw-ts", []NumericEncoderOption{WithTimestampEncoding(format.TypeRaw)}},
-		{"v1-be-delta-zstd", []NumericEncoderOption{
+		{"v1-le-raw-ts", false, []NumericEncoderOption{WithTimestampEncoding(format.TypeRaw)}},
+		{"v1-be-delta-zstd", false, []NumericEncoderOption{
 			WithBigEndian(), WithTimestampEncoding(format.TypeDelta), WithValueCompression(format.CompressionZstd),
 		}},
-		{"v2-shared-deltapacked", []NumericEncoderOption{
+		{"v2-shared-deltapacked", false, []NumericEncoderOption{
 			WithBlobLayoutV2(), WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked),
 		}},
-		{"v2-be-shared-tags", []NumericEncoderOption{
+		{"v2-be-shared-tags", true, []NumericEncoderOption{
 			WithBigEndian(), WithBlobLayoutV2(), WithSharedTimestamps(), WithTagsEnabled(true),
 		}},
+	}
+	tagOf := func(tagged bool, id uint64, i int) string {
+		if !tagged {
+			return ""
+		}
+
+		return fmt.Sprintf("m%d-p%d", id, i)
 	}
 	metrics := alpRLETestMetrics()
 	start := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
@@ -162,7 +171,7 @@ func TestNumericBlob_ALPRLE_DispatchParity(t *testing.T) {
 			for _, m := range metrics {
 				require.NoError(t, enc.StartMetricID(m.id, len(m.values)))
 				for i, v := range m.values {
-					require.NoError(t, enc.AddDataPoint(start.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+					require.NoError(t, enc.AddDataPoint(start.Add(time.Duration(i)*time.Second).UnixMicro(), v, tagOf(layout.tagged, m.id, i)))
 				}
 				require.NoError(t, enc.EndMetric())
 			}
@@ -221,6 +230,7 @@ func TestNumericBlob_ALPRLE_DispatchParity(t *testing.T) {
 				got = got[:0]
 				require.True(t, blob.ForEach(m.id, func(idx int, dp NumericDataPoint) bool {
 					require.Equal(t, len(got), idx)
+					require.Equal(t, tagOf(layout.tagged, m.id, idx), dp.Tag)
 					got = append(got, dp.Val)
 
 					return true

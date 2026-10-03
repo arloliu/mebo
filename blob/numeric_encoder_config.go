@@ -325,7 +325,9 @@ func WithTimestampEncoding(enc format.EncodingType) NumericEncoderOption {
 //     such as readings rounded to a fixed number of decimal places.
 //     Random access is O(1) plus an O(log k) search over the column's k exceptions.
 //   - format.TypeALPRLE: ALP with a run-length front end for columns where many points repeat the previous value.
-//     Each column is never larger than under format.TypeALP; readers older than this encoding reject the blob.
+//     Each uncompressed column is never larger than under format.TypeALP;
+//     with value compression the compressed payload is not guaranteed to shrink.
+//     Readers older than this encoding reject the blob.
 //
 // The default encoding is format.TypeGorilla.
 //
