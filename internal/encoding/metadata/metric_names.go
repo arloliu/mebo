@@ -79,27 +79,17 @@ func EncodeMetricNames(names []string, engine endian.EndianEngine) ([]byte, erro
 //   - int: The total number of bytes consumed (offset after last name)
 //   - error: An error if decoding fails (e.g., truncated data, invalid length)
 func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, error) {
-	offset := 0
-
-	// Read count
-	if len(data) < offset+2 {
-		return nil, 0, fmt.Errorf("%w: cannot read metric names count (need 2 bytes, have %d)", errs.ErrInvalidMetricNamesPayload, len(data))
+	count, err := readMetricNamesCount(data, engine)
+	if err != nil {
+		return nil, 0, err
 	}
-
-	count := engine.Uint16(data[offset:])
-	offset += 2
-
-	// Each name needs at least its 2-byte length, so a count beyond that is a
-	// truncated payload; reject it before sizing the result from it.
-	if int(count) > (len(data)-offset)/2 {
-		return nil, 0, fmt.Errorf("%w: %d metric names do not fit %d bytes", errs.ErrInvalidMetricNamesPayload, count, len(data)-offset)
-	}
+	offset := 2
 
 	// Pre-allocate slice for names
 	names := make([]string, count)
 
 	// Read each name
-	for i := 0; i < int(count); i++ {
+	for i := range count {
 		// Read name length
 		if len(data) < offset+2 {
 			return nil, 0, fmt.Errorf("%w: cannot read length for metric name %d (need 2 bytes at offset %d, have %d total)",
@@ -134,27 +124,17 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 //
 // Format and validation are identical to DecodeMetricNames.
 func DecodeMetricNamesBorrowed(data []byte, engine endian.EndianEngine) ([]string, int, error) {
-	offset := 0
-
-	// Read count
-	if len(data) < offset+2 {
-		return nil, 0, fmt.Errorf("%w: cannot read metric names count (need 2 bytes, have %d)", errs.ErrInvalidMetricNamesPayload, len(data))
+	count, err := readMetricNamesCount(data, engine)
+	if err != nil {
+		return nil, 0, err
 	}
-
-	count := engine.Uint16(data[offset:])
-	offset += 2
-
-	// Each name needs at least its 2-byte length, so a count beyond that is a
-	// truncated payload; reject it before sizing the result from it.
-	if int(count) > (len(data)-offset)/2 {
-		return nil, 0, fmt.Errorf("%w: %d metric names do not fit %d bytes", errs.ErrInvalidMetricNamesPayload, count, len(data)-offset)
-	}
+	offset := 2
 
 	// Pre-allocate slice for names
 	names := make([]string, count)
 
 	// Read each name
-	for i := 0; i < int(count); i++ {
+	for i := range count {
 		// Read name length
 		if len(data) < offset+2 {
 			return nil, 0, fmt.Errorf("%w: cannot read length for metric name %d (need 2 bytes at offset %d, have %d total)",
@@ -213,4 +193,20 @@ func VerifyMetricNamesHashes(names []string, metricIDs []uint64, hashFunc func(s
 	}
 
 	return nil
+}
+
+// readMetricNamesCount reads the 2-byte name count that prefixes a metric names
+// payload. Each name needs at least its 2-byte length, so a count beyond that is
+// a truncated payload; it is rejected before callers size a result from it.
+func readMetricNamesCount(data []byte, engine endian.EndianEngine) (int, error) {
+	if len(data) < 2 {
+		return 0, fmt.Errorf("%w: cannot read metric names count (need 2 bytes, have %d)", errs.ErrInvalidMetricNamesPayload, len(data))
+	}
+
+	count := int(engine.Uint16(data))
+	if count > (len(data)-2)/2 {
+		return 0, fmt.Errorf("%w: %d metric names do not fit %d bytes", errs.ErrInvalidMetricNamesPayload, count, len(data)-2)
+	}
+
+	return count, nil
 }
