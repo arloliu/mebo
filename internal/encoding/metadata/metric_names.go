@@ -91,7 +91,9 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 	// Read each name
 	for i := range count {
 		// Read name length
-		if len(data) < offset+2 {
+		// Compare against the remaining bytes: offset+n can wrap int on
+		// 32-bit platforms for a payload near 2 GiB.
+		if len(data)-offset < 2 {
 			return nil, 0, fmt.Errorf("%w: cannot read length for metric name %d (need 2 bytes at offset %d, have %d total)",
 				errs.ErrInvalidMetricNamesPayload, i, offset, len(data))
 		}
@@ -100,7 +102,7 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 		offset += 2
 
 		// Read name bytes
-		if len(data) < offset+int(nameLen) {
+		if len(data)-offset < int(nameLen) {
 			return nil, 0, fmt.Errorf("%w: cannot read metric name %d (need %d bytes at offset %d, have %d total)",
 				errs.ErrInvalidMetricNamesPayload, i, nameLen, offset, len(data))
 		}
@@ -136,7 +138,9 @@ func DecodeMetricNamesBorrowed(data []byte, engine endian.EndianEngine) ([]strin
 	// Read each name
 	for i := range count {
 		// Read name length
-		if len(data) < offset+2 {
+		// Compare against the remaining bytes: offset+n can wrap int on
+		// 32-bit platforms for a payload near 2 GiB.
+		if len(data)-offset < 2 {
 			return nil, 0, fmt.Errorf("%w: cannot read length for metric name %d (need 2 bytes at offset %d, have %d total)",
 				errs.ErrInvalidMetricNamesPayload, i, offset, len(data))
 		}
@@ -145,7 +149,7 @@ func DecodeMetricNamesBorrowed(data []byte, engine endian.EndianEngine) ([]strin
 		offset += 2
 
 		// Read name bytes
-		if len(data) < offset+int(nameLen) {
+		if len(data)-offset < int(nameLen) {
 			return nil, 0, fmt.Errorf("%w: cannot read metric name %d (need %d bytes at offset %d, have %d total)",
 				errs.ErrInvalidMetricNamesPayload, i, nameLen, offset, len(data))
 		}

@@ -259,3 +259,42 @@ func TestEncodeMetricNames_PayloadBeyondBlobLimit(t *testing.T) {
 	_, err := EncodeMetricNames(names, endian.GetLittleEndianEngine())
 	require.ErrorIs(t, err, errs.ErrBlobSizeExceedsLimit)
 }
+
+// TestDecodeMetricNames_LengthBoundaries pins the name length checks at their
+// exact boundaries for both decoders. The checks compare against the remaining
+// bytes (len(data)-offset, never negative) rather than offset+n, which wraps
+// int on 32-bit platforms for a crafted payload near 2 GiB; that payload is too
+// large for a unit test, so the boundaries are pinned here instead.
+func TestDecodeMetricNames_LengthBoundaries(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	decoders := map[string]func([]byte, endian.EndianEngine) ([]string, int, error){
+		"owning":   DecodeMetricNames,
+		"borrowed": DecodeMetricNamesBorrowed,
+	}
+	cases := []struct {
+		name    string
+		data    []byte
+		want    []string
+		wantErr bool
+	}{
+		{"name fills the payload", []byte{1, 0, 3, 0, 'a', 'b', 'c'}, []string{"abc"}, false},
+		{"name one byte past the payload", []byte{1, 0, 4, 0, 'a', 'b', 'c'}, nil, true},
+		{"length prefix one byte short", []byte{2, 0, 1, 0, 'a', 1}, nil, true},
+		{"empty name at the end", []byte{2, 0, 1, 0, 'a', 0, 0}, []string{"a", ""}, false},
+	}
+
+	for decName, decode := range decoders {
+		for _, tc := range cases {
+			t.Run(decName+"/"+tc.name, func(t *testing.T) {
+				names, n, err := decode(tc.data, engine)
+				if tc.wantErr {
+					require.ErrorIs(t, err, errs.ErrInvalidMetricNamesPayload)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, tc.want, names)
+				require.Equal(t, len(tc.data), n)
+			})
+		}
+	}
+}
