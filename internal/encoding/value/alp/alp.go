@@ -171,6 +171,9 @@ type NumericALPEncoder struct {
 	rdExcLeft  []uint16  // encodeRD exception left values
 	runScratch []float64 // run values for the runs layout (alp_runs.go), reused across columns
 	runs       bool      // may write the runs layout (scheme 3); set only by NewNumericALPRLEEncoder
+	seeded     bool      // seed the (e,f) search with (lastE, lastF); set only while encoding nested run values
+	lastE      int       // (e, f) chosen for the last column
+	lastF      int
 	flushed    bool
 }
 
@@ -247,7 +250,13 @@ func (e *NumericALPEncoder) encodeColumn(values []float64) {
 	n := len(values)
 	stride := alpSampleStride(n)
 
-	ee, ff := alpBestEF(values, stride)
+	var ee, ff int
+	if e.seeded {
+		ee, ff = alpBestEFSeeded(values, stride, e.lastE, e.lastF)
+	} else {
+		ee, ff = alpBestEF(values, stride)
+	}
+	e.lastE, e.lastF = ee, ff
 
 	// Reusable digit scratch: alpMainStats records each value's ALP-main digit
 	// here so encodeMain/encodeMainFast can pack without a second
@@ -431,6 +440,99 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 	}
 
 	return bestE, bestF
+}
+
+// alpBestEFSeeded is alpBestEF with (seedE, seedF) evaluated first.
+// A good seed sets a tight bound early, so pruning skips most other candidates;
+// the seed wins ties, otherwise the result matches alpBestEF.
+// It is a separate copy so the unseeded search used for every plain column stays unchanged.
+func alpBestEFSeeded(values []float64, stride, seedE, seedF int) (bestE, bestF int) {
+	var sbuf [64]float64 // ≤63 entries: alpSampleStride's bound (see TestAlpRDSampleBound)
+	ns := 0
+	for i := 0; i < len(values); i += stride {
+		sbuf[ns] = values[i]
+		ns++
+	}
+	sample := sbuf[:ns]
+
+	best := math.MaxFloat64
+	fullCnt := (len(values) + stride - 1) / stride
+	if est, ok := alpEFEstimate(sample, seedE, seedF, fullCnt, best); ok {
+		best = est
+		bestE, bestF = seedE, seedF
+	}
+	for e := 0; e <= alpMaxExponent; e++ {
+		for f := 0; f <= e; f++ {
+			if e == seedE && f == seedF {
+				continue
+			}
+			if est, ok := alpEFEstimate(sample, e, f, fullCnt, best); ok && est < best {
+				best = est
+				bestE, bestF = e, f
+			}
+		}
+	}
+
+	return bestE, bestF
+}
+
+// alpEFEstimate estimates the main-scheme size of sample at (e,f), mirroring one candidate of alpBestEF.
+// ok is false when the estimate is pruned because it cannot beat best.
+func alpEFEstimate(sample []float64, e, f, fullCnt int, best float64) (float64, bool) {
+	pe := alpPow10[e]
+	ie := alpInvPow10[e]
+	pf := alpPow10[f]
+	iff := alpInvPow10[f]
+	var nExc int
+	mn := int64(math.MaxInt64)
+	mx := int64(math.MinInt64)
+	for _, v := range sample {
+		scaled := v * pe * iff
+		var d int64
+		if math.Abs(scaled) < 1<<51 {
+			d = int64(alpFastRound(scaled))
+		} else {
+			r := math.Round(scaled)
+			if math.Abs(r) >= 9.2e18 {
+				nExc++
+				if float64(nExc)*96 >= best {
+					return 0, false
+				}
+
+				continue
+			}
+			d = int64(r)
+		}
+		if float64(d)*pf*ie != v {
+			nExc++
+			if float64(nExc)*96 >= best {
+				return 0, false
+			}
+
+			continue
+		}
+		upd := false
+		if d < mn {
+			mn = d
+			upd = true
+		}
+		if d > mx {
+			mx = d
+			upd = true
+		}
+		if upd {
+			wcur := bits.Len64(uint64(mx - mn))
+			if float64(fullCnt*wcur)+float64(nExc)*96 >= best {
+				return 0, false
+			}
+		}
+	}
+	width := 0
+	if nExc < len(sample) && mx >= mn {
+		width = bits.Len64(uint64(mx - mn))
+	}
+
+	return float64(len(sample)*width + nExc*96), true
 }
 
 // alpMainStats computes the FOR minimum, bit width, and exception positions for
