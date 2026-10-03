@@ -1,7 +1,7 @@
 # Design: ALP with run-length front end (`TypeALPRLE`, 0x7)
 
 **Date:** 2026-10-03
-**Status:** Phases 0–3 implemented on `feat/alp-rle` (2026-10-04); Phase 4 (docs) pending.
+**Status:** Phases 0–4 done on `feat/alp-rle` (2026-10-04).
 The ratio gate and all three speed gates pass,
 measured layout-averaged through the real blob encoder in Phase 3.
 The `DecodeAll` gate was restated against Chimp by the owner on 2026-10-03.
@@ -159,6 +159,20 @@ encoding a hold-50% column costs 2.03× plain ALP, because the (e, f) search dom
 and the nested column pays it again.
 Working report: `tmp/alp-rle-phase3-measurement.md` (gitignored).
 
+Both were addressed after Phase 3, measured the same layout-averaged way:
+
+- `ForEachValues` on ALP and ALP-RLE columns now decodes each column with `DecodeAll` into a pooled buffer
+  (`1737133`, `29ae0b8`).
+  On the hold-50% shape, ALP-RLE went from 6.4 to about 3.2 ns/pt and plain ALP from 4.0 to about 3.0,
+  against Chimp's 4.8, with no allocations per metric (300 per 100 metrics before).
+  Columns over 8,192 points still use the per-point iterator, so the pooled buffers stay bounded.
+- The nested column's (e, f) search is seeded with the plain column's (e, f) (`3030e3b`, see §Encoder).
+  Whole-blob encode of the hold-50% shape went from 1,579 to 1,188 µs, 1.53× plain ALP's 776 µs;
+  run-free encode is unchanged at about 1.01×.
+  Rerunning the whole-blob table above, only `cal_2dp_hold30` changes at two decimals (1.44 to 1.43 B/point),
+  and a few percentages move by 0.1 point;
+  the current table is in `docs/performance.md` ("ALP-RLE on repeat-heavy data").
+
 ## Key decisions
 
 - **A new encoding byte, not a fourth ALP scheme.**
@@ -233,8 +247,9 @@ Working report: `tmp/alp-rle-phase3-measurement.md` (gitignored).
 
 - `DecodeAll` keeps the existing contract (`alp.go:1272`):
   it writes `min(count, len(dst))` values, returns that number, and still parses the column with the full `count`.
-  It decodes the nested column into scratch, then expands without branches,
-  `idx += bit(i); dst[i] = runs[idx]` from `idx = -1`, stopping at the destination length.
+  For `n = min(count, len(dst))` it decodes the first `r = rank(n-1)` run values into `dst[n-r:n]`,
+  then expands forward in place without branches, `idx += bit(i); dst[i] = runs[idx]`, stopping at the destination length.
+  The expansion never overwrites a run value before reading it, so it needs no scratch (`decodeRunsInto`).
   Phase 1 tests must cover empty, short and oversized destinations, including one that ends inside a bitmap word;
   the PoC's expansion helpers already pass such a test (`TestPOCRLEExpandShortDst`).
   Processing one bitmap word at a time with bounds checks hoisted measured 0.30 ns/point,
@@ -333,9 +348,14 @@ and `blob/numeric_alp_scheme_test.go` so scheme 3 is rejected under 0x6 and acce
 
 User docs say when to pick `TypeALPRLE` over `TypeALP`:
 each uncompressed column is never larger, and encoding costs one extra pass
-(about 1% on run-free data, about 2× plain ALP when half the points repeat).
-They also say that with value compression enabled the whole payload is not guaranteed to shrink.
+(about 1% on run-free data, about 1.5× plain ALP when half the points repeat, after the seeded search).
+They also say that with value compression enabled the whole payload is not guaranteed to shrink,
+and that readers older than this encoding reject the blob.
 Add the performance numbers from Phase 3.
+
+Done 2026-10-04: `README.md`, `docs/design.md`, `docs/best_practices.md`,
+and `docs/performance.md` (regenerated, with ALP-RLE in every table and an ALP-RLE subsection under "Codec Selection by Data Shape");
+the `update-performance-report` skill now knows ALP-RLE and the O(1) shared-timestamp `TimestampAt`.
 
 ## Rejected alternatives
 
