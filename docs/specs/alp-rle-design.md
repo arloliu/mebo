@@ -221,6 +221,11 @@ Working report: `tmp/alp-rle-phase3-measurement.md` (gitignored).
   An earlier rule that used the average bits per point skipped repeated exceptions,
   which cost far more than the average; the review's counterexample (plain 83 bytes, runs 71 bytes) is now tried.
   Without pruning, columns with a handful of repeats paid a second encode for nothing (1.29× plain in the pre-check).
+- The nested column's (e, f) search is seeded with the plain column's (e, f), which usually prunes most other candidates early.
+  It returns the same (e, f) as an unseeded search unless the seed ties the minimum estimate, and then keeps the seed;
+  a differential test pins this.
+  Measured 2026-10-04: encoding shapes with runs got 10–32% faster, run-free and special-value shapes were unchanged,
+  and 1,794 of 1,800 test columns were byte-identical, 6 smaller and none larger.
 - When both exist, the encoder keeps the smaller one in exact bytes; ties go to plain.
 - The choice is per column, like ALP's existing main/RD/raw choice (`alp.go:242-292`).
 
