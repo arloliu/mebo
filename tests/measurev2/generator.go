@@ -215,8 +215,21 @@ func GenerateProfile(p Profile, cfg DataConfig) *TestData {
 				data.Values[idx] = quantize(currentValue, p.Decimals)
 
 			default: // "gauge" and anything else
-				// Bounded small-step random walk: ±0.5% of current value per step
-				deltaFrac := (rng.Float64()*2.0 - 1.0) * 0.005
+				// Bounded small-step random walk: ±StepPct% (default 0.5%) of current value per step.
+				// With Hold > 0 a point repeats the previous value with that probability;
+				// profiles without Hold draw no extra random numbers, so their data is unchanged.
+				if p.Hold > 0 && j > 0 && rng.Float64() < p.Hold {
+					data.Values[idx] = data.Values[idx-1]
+
+					continue
+				}
+
+				stepFrac := 0.005
+				if p.StepPct > 0 {
+					stepFrac = p.StepPct / 100
+				}
+
+				deltaFrac := (rng.Float64()*2.0 - 1.0) * stepFrac
 				currentValue += currentValue * deltaFrac
 				data.Values[idx] = quantize(currentValue, p.Decimals)
 			}

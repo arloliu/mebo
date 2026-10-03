@@ -42,3 +42,35 @@ func TestShareTimestamps(t *testing.T) {
 		}
 	}
 }
+
+// TestProfileHoldRepeats checks that a Hold profile repeats about that share of points.
+func TestProfileHoldRepeats(t *testing.T) {
+	cfg := DataConfig{NumMetrics: 20, PointsPerMetric: 150, Seed: 42}
+	for _, tc := range []struct {
+		name     string
+		min, max float64
+	}{
+		{"cal_2dp_hold30", 0.25, 0.40},
+		{"cal_2dp_hold50", 0.45, 0.60},
+		{"cal_2dp_hold70", 0.65, 0.80},
+	} {
+		p, ok := findProfile(tc.name)
+		if !ok {
+			t.Fatalf("%s should resolve", tc.name)
+		}
+		d := GenerateProfile(p, cfg)
+		repeats, pairs := 0, 0
+		for m := range cfg.NumMetrics {
+			for j := 1; j < cfg.PointsPerMetric; j++ {
+				pairs++
+				if d.Values[m*cfg.PointsPerMetric+j] == d.Values[m*cfg.PointsPerMetric+j-1] {
+					repeats++
+				}
+			}
+		}
+		share := float64(repeats) / float64(pairs)
+		if share < tc.min || share > tc.max {
+			t.Fatalf("%s: %.2f of points repeat, want %.2f..%.2f", tc.name, share, tc.min, tc.max)
+		}
+	}
+}
