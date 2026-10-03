@@ -434,6 +434,12 @@ func (s *gorillaBlockState) next(reader *bitstream.Reader) (trailing int, blockS
 //   - iter.Seq[float64]: Iterator yielding decoded float64 values
 //
 // If the data is malformed or insufficient, the iterator may yield fewer values.
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d NumericGorillaDecoder) All(data []byte, count int) iter.Seq[float64] {
 	return func(yield func(float64) bool) {
 		if len(data) == 0 || count == 0 {

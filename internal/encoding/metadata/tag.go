@@ -254,6 +254,12 @@ func (c *TagCursor) Next() (string, bool) {
 //
 // Returns:
 //   - iter.Seq[string]: Iterator yielding decoded string tags
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d TagDecoder) All(data []byte, count int) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		offset := 0

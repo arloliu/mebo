@@ -931,8 +931,16 @@ func alpReadBitsAt(src []byte, bitpos, width int) uint64 {
 	return c
 }
 
-// All streams decoded values one at a time. Zero-allocation on the common path
-// (no exceptions); only the rare exception path reads from a sidecar region.
+// All streams decoded values one at a time.
+// Building the iterator allocates its closure;
+// iterating it does not allocate on the common path (no exceptions),
+// and only the rare exception path reads from a sidecar region.
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d NumericALPDecoder) All(data []byte, count int) iter.Seq[float64] {
 	return func(yield func(float64) bool) {
 		if count <= 0 || len(data) == 0 {

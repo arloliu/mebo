@@ -537,6 +537,12 @@ func (s DeltaPackedTsState) Ts() int64 {
 //
 // Returns:
 //   - iter.Seq[int64]: Iterator yielding decoded timestamps
+//
+// It stays out of line: inlining it would copy the returned closure into the
+// caller, and the compiler does not inline calls inside such a copy, so every
+// per-element helper would become a call.
+//
+//go:noinline
 func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64] { //nolint:cyclop // packed decode has intentional scalar tail and SIMD branches
 	return func(yield func(int64) bool) {
 		if len(data) == 0 || count <= 0 {
