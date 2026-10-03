@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-03
+
+This release hardens every decoder against corrupt and crafted input,
+fixes several encoder and decoder defects that could corrupt or misread data,
+and makes iteration faster.
+
+Encoder defaults now match their documentation (Delta timestamps and Gorilla values, no value compression),
+which changes the bytes a default encoder writes and makes `ValueAt`/`TimestampAt` on such blobs sequential.
+Pass Raw encodings explicitly to keep the previous output.
+
+Blobs written by earlier versions stay readable;
+decoded results change only where earlier versions misread data, such as a text timestamp of 0.
+
+Delta iteration is faster:
+`NumericBlob.ForEach` over Delta+Gorilla or Delta+Chimp takes 15–39% less time at 100–1000 points,
+and `NumericBlobSet.ForEach` about 25% less.
+
+See [API_STABILITY.md](API_STABILITY.md#behaviour-changes-v1110) for the behaviour changes and migration notes.
+
 ### Changed
 
 - **Encoder defaults now match their documentation.**
@@ -588,7 +607,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/arloliu/mebo/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/arloliu/mebo/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/arloliu/mebo/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/arloliu/mebo/compare/v1.7.1...v1.8.0

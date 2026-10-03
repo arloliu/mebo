@@ -234,6 +234,40 @@ These new symbols are purely additive; no existing signature changed.
   `StartMetricName`'s preflight on both encoders so an over-long name is rejected before any
   state mutation rather than at `Finish`.
 
+## Behaviour Changes (v1.11.0)
+
+v1.11.0 adds no exported symbols and changes no signatures.
+Every change below makes the implementation match its documentation.
+Blobs written by earlier versions stay readable;
+decoded results change only where earlier versions misread data.
+Callers that relied on the previous behaviour should apply the listed migration.
+
+- **Encoder defaults.**
+  `blob.NewNumericEncoder` without options now writes Delta timestamps and Gorilla values with no value compression,
+  and `blob.NewTextEncoder` writes Delta timestamps, as the option docs always stated.
+  Default output bytes therefore differ from v1.10.0,
+  and `ValueAt`/`TimestampAt` on default-encoded blobs cost O(index) instead of O(1).
+  Migration: to keep the previous output and O(1) random access, pass
+  `WithTimestampEncoding(format.TypeRaw)`, `WithValueEncoding(format.TypeRaw)` and
+  `WithValueCompression(format.CompressionZstd)` to the numeric encoder,
+  and `WithTextTimestampEncoding(format.TypeRaw)` to the text encoder.
+- **`TimestampEncoding()`** on blobs returns the encoding stored in the header,
+  including `format.TypeDeltaPacked`, instead of reporting DeltaPacked as `format.TypeDelta`.
+- **`NumericEncoder.MaxDataPoints()`** reports lower limits, computed from true worst-case encoded sizes.
+- **`DecodeBlobSet`** returns `errs.ErrInvalidMagicNumber` for an input that is neither a numeric nor a text blob,
+  as its godoc states, instead of silently skipping it.
+- **Set-level `AllTags`** (`NumericBlobSet`, `TextBlobSet`, `BlobSet` and their `ByName` forms)
+  yields one empty tag per point for a tagless member when another member carries tags,
+  so tag indexes align with `TagAt` and `Materialize`.
+- **`BlobSet` numeric precedence.**
+  `TimestampAt`, `TagAt`, `MetricDuration`, `MetricLen` and their `ByName` forms
+  serve a metric found in numeric members from those members only, like `AllTimestamps` and `AllTags`.
+- **Stricter decoding.**
+  Blobs whose structure contradicts itself (counts beyond their payloads, overlapping sections,
+  malformed ALP columns, overlong varints, text headers naming numeric-only encodings)
+  now fail `Decode` with a wrapped `errs` sentinel instead of panicking or returning wrong data.
+  mebo's own encoders never produce such blobs.
+
 ## Go Version Compatibility
 
 ### Minimum Go Version
