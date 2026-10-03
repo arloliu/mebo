@@ -3,6 +3,7 @@ package blob
 import (
 	"github.com/arloliu/mebo/format"
 	ienc "github.com/arloliu/mebo/internal/encoding"
+	"github.com/arloliu/mebo/internal/pool"
 	"github.com/arloliu/mebo/section"
 )
 
@@ -252,6 +253,8 @@ func forEachDeltaChimp(tsBytes, valBytes []byte, count int, yield func(int, Nume
 // keeps the callback and decoder cursor on the stack — allocation-free per
 // call. For the stateful value codecs (Gorilla/Chimp) it is also faster because
 // the XOR decode state stays in registers instead of a heap closure.
+// ALP and ALP-RLE columns are bulk-decoded into a pooled buffer first,
+// which is faster than per-value decoding and allocation-free once the pool is warm.
 //
 // Parameters:
 //   - metricID: The metric ID to iterate over.
@@ -373,8 +376,10 @@ func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, bas
 		return ienc.FusedChimpEach(valBytes, entry.Count, base, yield)
 	case format.TypeRaw:
 		return ienc.RawValuesEach(valBytes, entry.Count, base, b.Engine(), b.sameByteOrder, yield)
+	case format.TypeALP, format.TypeALPRLE:
+		return b.forEachALPValues(valBytes, entry.Count, base, yield)
 	default:
-		// ALP, ALP-RLE (and any future codec without a static Each) drains the
+		// Any future codec without a static Each or bulk path drains the
 		// slice-decode iterator. For a single column this matches AllValues
 		// exactly — no iter.Pull — so there is no regression; it just does not
 		// get the stack-state speedup.
@@ -441,4 +446,26 @@ func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry,
 
 		return idx
 	}
+}
+
+// forEachALPValues bulk-decodes an ALP or ALP-RLE column into a pooled buffer and yields from it.
+// ALP has no stateful per-point decoder, so one DecodeAll beats draining the codec's All iterator,
+// and a warm pool keeps it allocation-free.
+// It yields only the values DecodeAll produced, the same rows the iterator yields for a validated column,
+// and returns like forEachValuesFromEntry: the index after the last value, or -1 if yield stopped.
+// yield receives values, never the buffer, so returning the buffer to the pool afterwards is safe,
+// including when yield itself calls ForEachValues.
+func (b NumericBlob) forEachALPValues(valBytes []byte, count, base int, yield func(int, float64) bool) int {
+	ptr := pool.GetFloat64SlicePtr(count)
+	defer pool.PutFloat64SlicePtr(ptr)
+
+	buf := *ptr
+	n := b.decodeValuesSlice(valBytes, count, buf)
+	for i, v := range buf[:n] {
+		if !yield(base+i, v) {
+			return -1
+		}
+	}
+
+	return base + n
 }
