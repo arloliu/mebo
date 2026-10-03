@@ -86,7 +86,7 @@
 //	}
 //
 //	// Random access — complexity depends on encoding: O(1) for Raw, O(1)+O(log k)
-//	// for ALP, O(index) for Gorilla/Chimp/Delta/DeltaPacked (see ValueAt/TimestampAt)
+//	// for ALP, O(index) for Gorilla/Chimp and unshared Delta/DeltaPacked (see ValueAt/TimestampAt)
 //	val, ok := numBlob.ValueAt(metricID, 50) // Get 51st point
 //	ts, ok := numBlob.TimestampAt(metricID, 50)
 //
@@ -177,7 +177,8 @@
 //   - Raw (timestamp or value): O(1), direct offset into a fixed-width array
 //   - ALP (value): O(1) windowed bit read + O(log k) binary search over that
 //     column's exceptions (k = exceptions in the column, not its length)
-//   - Delta, DeltaPacked (timestamp): O(index), must sequentially decode from start
+//   - Delta, DeltaPacked (timestamp): O(index), must sequentially decode from start,
+//     except timestamps shared across metrics: O(1) from a cache built at open
 //   - Gorilla, Chimp (value): O(index), must decompress the XOR chain from start
 //   - Materialized: O(1), ~5 ns (direct array access), regardless of the
 //     underlying encoding — the one-time materialization cost decodes everything

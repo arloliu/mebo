@@ -278,10 +278,12 @@ func (b NumericBlob) AllTagsByName(metricName string) iter.Seq[string] {
 //   - The index is out of bounds
 //   - The timestamp encoding isn't Raw, Delta, or DeltaPacked
 //
-// Performance: O(1) for Raw. Delta and DeltaPacked must sequentially decode every
-// preceding value in the metric to reconstruct the running sum, so both are O(index)
-// (worst case O(n)) — prefer Raw timestamps when random access matters, or
-// materialize the blob for O(1) access regardless of encoding.
+// Performance: O(1) for Raw, and O(1) for any encoding when the metric shares its
+// timestamps with other metrics (WithSharedTimestamps), since shared timestamps are
+// decoded once when the blob is opened. Otherwise Delta and DeltaPacked must
+// sequentially decode every preceding value in the metric to reconstruct the running
+// sum, so both are O(index) (worst case O(n)) — prefer Raw or shared timestamps when
+// random access matters, or materialize the blob for O(1) access regardless of encoding.
 func (b NumericBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
 	entry, ok := b.index.GetByID(metricID)
 	if !ok {
@@ -536,6 +538,11 @@ func (b NumericBlob) timestampAtFromEntry(entry section.NumericIndexEntry, index
 	count := entry.Count
 	if index < 0 || index >= count {
 		return 0, false
+	}
+
+	// Fast path: shared timestamps were pre-decoded when the blob was opened.
+	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok && index < len(cached) {
+		return cached[index], true
 	}
 
 	tsBytes, ok := safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)

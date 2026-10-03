@@ -148,6 +148,40 @@ func BenchmarkNumericBlob_TimestampAt(b *testing.B) {
 	})
 }
 
+// BenchmarkNumericBlob_TimestampAt_SharedTimestamps measures TimestampAt on a
+// production-shaped blob (100 metrics × 150 points, shared DeltaPacked
+// timestamps), where every metric reads the timestamps decoded at open.
+func BenchmarkNumericBlob_TimestampAt_SharedTimestamps(b *testing.B) {
+	const numMetrics, points = 100, 150
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewNumericEncoder(startTime,
+		WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP), WithSharedTimestamps())
+	require.NoError(b, err)
+	for m := range numMetrics {
+		require.NoError(b, encoder.StartMetricID(uint64(9000+m), points))
+		for i := range points {
+			ts := startTime.Add(time.Duration(i*15) * time.Second).UnixMicro()
+			require.NoError(b, encoder.AddDataPoint(ts, float64(m)+float64(i)*0.01, ""))
+		}
+		require.NoError(b, encoder.EndMetric())
+	}
+	data, err := encoder.Finish()
+	require.NoError(b, err)
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(b, err)
+	blob, err := decoder.Decode()
+	require.NoError(b, err)
+
+	for _, index := range []int{0, points / 2, points - 1} {
+		b.Run(fmt.Sprintf("Index%d", index), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = blob.TimestampAt(9050, index)
+			}
+		})
+	}
+}
+
 func BenchmarkNumericBlobSet_ValueAt(b *testing.B) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	metricName := "test.metric"

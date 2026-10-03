@@ -235,10 +235,15 @@ have fundamentally different random-access complexity, not just different consta
 | Raw (timestamp or value) | O(1) | Direct offset into a fixed-width array |
 | ALP (value) | O(1) + O(log k) | O(1) windowed bit read, plus binary search over that column's exception sidecar (k = exceptions in that column, not n) |
 | Delta / DeltaPacked (timestamp) | O(index) | Must sequentially decode every delta from the start — each value depends on the accumulated sum before it |
+| Shared timestamps (any encoding) | O(1) | Decoded once into a cache when the blob is opened; `TimestampAt` reads the cache |
 | Gorilla / Chimp (value) | O(index) | Must sequentially decode the XOR chain from the start of the column |
 
 A uniformly random index makes the O(index) encodings pay their realistic *average* cost across
 a column, not a cherry-picked best (index 0) or worst (last index) case.
+
+> **Note:** in the "Shared Delta" and "Shared DeltaPacked" rows below, the `TimestampAt` column predates the shared-timestamp cache.
+> It still shows O(index) decode times.
+> Those rows are O(1) now; they are refreshed the next time this report is regenerated.
 
 | Configuration | ValueAt (ns/op) | Value complexity | TimestampAt (ns/op) | Timestamp complexity |
 |---|---:|---|---:|---|

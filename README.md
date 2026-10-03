@@ -35,7 +35,7 @@ Mebo is designed for **batch processing of already-collected metrics**, not stre
 
 **Access patterns**
 - Sequential iteration: O(n), zero allocations
-- Random access by index: O(1) for Raw (timestamp or value); ALP values add O(log k) for that column's exceptions; Delta/DeltaPacked timestamps and Gorilla/Chimp values are O(index) (sequential decode from the start) — see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance) for measured ns/op
+- Random access by index: O(1) for Raw (timestamp or value); ALP values add O(log k) for that column's exceptions; shared timestamps (any encoding) are O(1) from a cache built when the blob is opened; other Delta/DeltaPacked timestamps and Gorilla/Chimp values are O(index) (sequential decode from the start) — see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance) for measured ns/op
 - Materialized random access: O(1) ~5 ns after one-time decode cost
 - Safe concurrent reads from all decoded blob types
 

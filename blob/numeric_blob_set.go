@@ -309,8 +309,8 @@ func (s NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 //   - The index falls within a blob that doesn't contain this metric
 //
 // Performance: O(blobs) to find the blob, plus the per-blob access cost:
-// O(1) for Raw timestamps
-// and O(local index) for Delta and DeltaPacked timestamps.
+// O(1) for Raw timestamps and for timestamps shared across metrics (any encoding),
+// and O(local index) for other Delta and DeltaPacked timestamps.
 func (s NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	if index < 0 || len(s.blobs) == 0 {
 		return 0, false
