@@ -462,10 +462,8 @@ func NewTimestampDeltaDecoder() TimestampDeltaDecoder {
 // The zero value is not usable; construct with NewDeltaTsState.
 type DeltaTsState struct {
 	curTS     int64
-	delta     int64
 	prevDelta int64
 	offset    int
-	seqCount  int
 }
 
 // NewDeltaTsState initializes the state from the payload, consuming the first
@@ -478,15 +476,55 @@ func NewDeltaTsState(data []byte) (DeltaTsState, bool) {
 	}
 
 	return DeltaTsState{
-		curTS:    int64(first), //nolint:gosec
-		offset:   offset,
-		seqCount: 1,
+		curTS:  int64(first), //nolint:gosec
+		offset: offset,
 	}, true
 }
 
 // Next decodes the next timestamp from data. Returns false when the stream is
 // exhausted or corrupted.
+//
+// The first value after the initial timestamp is a delta and the rest are
+// delta-of-deltas; with prevDelta starting at zero, one accumulation step
+// serves both.
 func (s *DeltaTsState) Next(data []byte) bool {
+	return s.NextShort(data) || s.NextLong(data)
+}
+
+// NextShort decodes the next timestamp when it is a one- or two-byte varint
+// (a delta-of-delta within ±8191), the common case for regular and lightly
+// jittered intervals, and returns false otherwise without consuming input.
+// It is small enough to inline, so hot loops call
+// NextShort(data) || NextLong(data) to keep the common case free of calls.
+// Its inline cost sits exactly at the budget of 80; after editing it, confirm
+// "can inline (*DeltaTsState).NextShort" with go build -gcflags=-m.
+func (s *DeltaTsState) NextShort(data []byte) bool {
+	offset := s.offset
+	if offset >= len(data) {
+		return false
+	}
+	value := uint64(data[offset])
+	offset++
+	if value >= 0x80 {
+		if offset >= len(data) || data[offset] >= 0x80 {
+			return false
+		}
+		value = value&0x7f | uint64(data[offset])<<7
+		offset++
+	}
+	s.prevDelta += int64(value>>1) ^ -int64(value&1)
+	s.curTS += s.prevDelta
+	s.offset = offset
+
+	return true
+}
+
+// NextLong decodes the next timestamp of any varint length. It is the
+// out-of-line counterpart of NextShort and returns false when the stream is
+// exhausted or corrupted.
+//
+//go:noinline
+func (s *DeltaTsState) NextLong(data []byte) bool {
 	offset := s.offset
 	if offset >= len(data) {
 		return false
@@ -540,17 +578,9 @@ func (s *DeltaTsState) Next(data []byte) bool {
 		}
 	}
 
-	decoded := int64((value >> 1) ^ -(value & 1)) //nolint:gosec
-	if s.seqCount == 1 {
-		s.delta = decoded
-		s.curTS += s.delta
-		s.prevDelta = s.delta
-	} else {
-		s.prevDelta += decoded
-		s.curTS += s.prevDelta
-	}
+	s.prevDelta += int64((value >> 1) ^ -(value & 1)) //nolint:gosec
+	s.curTS += s.prevDelta
 	s.offset = offset
-	s.seqCount++
 
 	return true
 }

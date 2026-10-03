@@ -37,6 +37,50 @@ func TestTimestampDeltaCodecContract(t *testing.T) {
 	require.False(t, state.Next(encoder.Bytes()))
 }
 
+// TestDeltaTsState_ShortLongSplit pins the NextShort/NextLong contract the
+// fused loops rely on: NextShort decodes only one- and two-byte varints and
+// leaves the state untouched otherwise, and NextLong decodes any length.
+func TestDeltaTsState_ShortLongSplit(t *testing.T) {
+	// After the first delta (+1 s, three bytes): 0 and +5 µs (one byte),
+	// +100 µs (two bytes), -1 s (three bytes), and a +1 s return.
+	timestamps := []int64{1_000_000, 2_000_000, 3_000_000, 4_000_005, 5_000_010, 6_000_115, 6_000_220, 7_000_325}
+
+	encoder := NewTimestampDeltaEncoder()
+	encoder.WriteSlice(timestamps)
+	encoded := append([]byte(nil), encoder.Bytes()...)
+	encoder.Finish()
+
+	state, ok := NewDeltaTsState(encoded)
+	require.True(t, ok)
+	got := []int64{state.Ts()}
+	sawShort, sawLong := false, false
+	for len(got) < len(timestamps) {
+		before := state
+		if state.NextShort(encoded) {
+			sawShort = true
+		} else {
+			require.Equal(t, before, state, "NextShort must not consume a varint longer than two bytes")
+			require.True(t, state.NextLong(encoded))
+			sawLong = true
+		}
+		got = append(got, state.Ts())
+	}
+	require.Equal(t, timestamps, got)
+	require.True(t, sawShort, "fixture must exercise NextShort")
+	require.True(t, sawLong, "fixture must exercise NextLong")
+	require.False(t, state.NextShort(encoded))
+	require.False(t, state.NextLong(encoded))
+
+	// NextLong alone also decodes single-byte varints.
+	state, ok = NewDeltaTsState(encoded)
+	require.True(t, ok)
+	got = []int64{state.Ts()}
+	for len(got) < len(timestamps) && state.NextLong(encoded) {
+		got = append(got, state.Ts())
+	}
+	require.Equal(t, timestamps, got)
+}
+
 // === TimestampDeltaEncoder Tests ===
 
 func TestTimestampDeltaEncoder_NewEncoder(t *testing.T) {

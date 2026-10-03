@@ -1,6 +1,7 @@
 package fused
 
 import (
+	tsdelta "github.com/arloliu/mebo/internal/encoding/timestamp/delta"
 	"github.com/arloliu/mebo/internal/encoding/timestamp/deltapacked"
 	"github.com/arloliu/mebo/internal/encoding/value/chimp"
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
@@ -25,7 +26,7 @@ func FusedDeltaGorillaEach(tsData, valData []byte, count int, yield func(int, in
 		return
 	}
 
-	ds, tsOk := newDeltaState(tsData)
+	ds, tsOk := tsdelta.NewDeltaTsState(tsData)
 	if !tsOk {
 		return
 	}
@@ -36,12 +37,12 @@ func FusedDeltaGorillaEach(tsData, valData []byte, count int, yield func(int, in
 	}
 	val := gc.First()
 
-	if !yield(0, ds.curTS, val) {
+	if !yield(0, ds.Ts(), val) {
 		return
 	}
 
 	for i := 1; i < count; i++ {
-		if !decodeDeltaTimestamp(&ds, tsData) {
+		if !ds.NextShort(tsData) && !ds.NextLong(tsData) {
 			return
 		}
 
@@ -50,7 +51,7 @@ func FusedDeltaGorillaEach(tsData, valData []byte, count int, yield func(int, in
 			return
 		}
 
-		if !yield(i, ds.curTS, val) {
+		if !yield(i, ds.Ts(), val) {
 			return
 		}
 	}
@@ -64,7 +65,7 @@ func FusedDeltaChimpEach(tsData, valData []byte, count int, yield func(int, int6
 		return
 	}
 
-	ds, tsOk := newDeltaState(tsData)
+	ds, tsOk := tsdelta.NewDeltaTsState(tsData)
 	if !tsOk {
 		return
 	}
@@ -75,12 +76,12 @@ func FusedDeltaChimpEach(tsData, valData []byte, count int, yield func(int, int6
 	}
 	val := cc.First()
 
-	if !yield(0, ds.curTS, val) {
+	if !yield(0, ds.Ts(), val) {
 		return
 	}
 
 	for i := 1; i < count; i++ {
-		if !decodeDeltaTimestamp(&ds, tsData) {
+		if !ds.NextShort(tsData) && !ds.NextLong(tsData) {
 			return
 		}
 
@@ -89,7 +90,7 @@ func FusedDeltaChimpEach(tsData, valData []byte, count int, yield func(int, int6
 			return
 		}
 
-		if !yield(i, ds.curTS, val) {
+		if !yield(i, ds.Ts(), val) {
 			return
 		}
 	}
@@ -181,21 +182,21 @@ func FusedDeltaEach(tsData []byte, count int, yield func(int, int64) bool) {
 		return
 	}
 
-	ds, tsOk := newDeltaState(tsData)
+	ds, tsOk := tsdelta.NewDeltaTsState(tsData)
 	if !tsOk {
 		return
 	}
 
-	if !yield(0, ds.curTS) {
+	if !yield(0, ds.Ts()) {
 		return
 	}
 
 	for i := 1; i < count; i++ {
-		if !decodeDeltaTimestamp(&ds, tsData) {
+		if !ds.NextShort(tsData) && !ds.NextLong(tsData) {
 			return
 		}
 
-		if !yield(i, ds.curTS) {
+		if !yield(i, ds.Ts()) {
 			return
 		}
 	}

@@ -190,7 +190,7 @@ func forEachDeltaGorilla(tsBytes, valBytes []byte, count int, yield func(int, Nu
 	}
 
 	for i := 1; i < count; i++ {
-		if !ts.Next(tsBytes) {
+		if !ts.NextShort(tsBytes) && !ts.NextLong(tsBytes) {
 			return
 		}
 
@@ -227,7 +227,7 @@ func forEachDeltaChimp(tsBytes, valBytes []byte, count int, yield func(int, Nume
 	}
 
 	for i := 1; i < count; i++ {
-		if !ts.Next(tsBytes) {
+		if !ts.NextShort(tsBytes) && !ts.NextLong(tsBytes) {
 			return
 		}
 
