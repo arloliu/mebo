@@ -271,7 +271,7 @@ func (b NumericBlob) ForEachValues(metricID uint64, yield func(idx int, val floa
 		return false
 	}
 
-	b.forEachValuesFromEntry(entry, yield)
+	b.forEachValuesFromEntry(entry, 0, yield)
 
 	return true
 }
@@ -294,7 +294,7 @@ func (b NumericBlob) ForEachValuesByName(metricName string, yield func(idx int, 
 		return false
 	}
 
-	b.forEachValuesFromEntry(entry, yield)
+	b.forEachValuesFromEntry(entry, 0, yield)
 
 	return true
 }
@@ -321,7 +321,7 @@ func (b NumericBlob) ForEachTimestamps(metricID uint64, yield func(idx int, ts i
 		return false
 	}
 
-	b.forEachTimestampsFromEntry(entry, yield)
+	b.forEachTimestampsFromEntry(entry, 0, yield)
 
 	return true
 }
@@ -344,7 +344,7 @@ func (b NumericBlob) ForEachTimestampsByName(metricName string, yield func(idx i
 		return false
 	}
 
-	b.forEachTimestampsFromEntry(entry, yield)
+	b.forEachTimestampsFromEntry(entry, 0, yield)
 
 	return true
 }
@@ -352,35 +352,44 @@ func (b NumericBlob) ForEachTimestampsByName(metricName string, yield func(idx i
 // forEachValuesFromEntry slices the value payload for the entry and dispatches
 // to the encoding-specific static decode loop. It mirrors decodeValues; keep
 // the two in sync.
-func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, yield func(int, float64) bool) {
+//
+// Indexes passed to yield start at base. Returns the index after the last
+// yielded value, or -1 if yield returned false, so a set can chain members
+// with continuous indexes and no adapter closure.
+func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, base int, yield func(int, float64) bool) int {
 	if entry.Count == 0 {
-		return
+		return base
 	}
 
 	valBytes, ok := safeSlice(b.valPayload, entry.ValueOffset, entry.ValueLength)
 	if !ok {
-		return
+		return base
 	}
 
 	switch b.ValueEncoding() { //nolint:exhaustive // default branch drains the remaining codecs
 	case format.TypeGorilla:
-		ienc.FusedGorillaEach(valBytes, entry.Count, yield)
+		return ienc.FusedGorillaEach(valBytes, entry.Count, base, yield)
 	case format.TypeChimp:
-		ienc.FusedChimpEach(valBytes, entry.Count, yield)
+		return ienc.FusedChimpEach(valBytes, entry.Count, base, yield)
 	case format.TypeRaw:
-		ienc.RawValuesEach(valBytes, entry.Count, b.Engine(), b.sameByteOrder, yield)
+		return ienc.RawValuesEach(valBytes, entry.Count, base, b.Engine(), b.sameByteOrder, yield)
 	default:
 		// ALP (and any future codec without a static Each) drains the
 		// slice-decode iterator. For a single column this matches AllValues
 		// exactly — no iter.Pull — so there is no regression; it just does not
 		// get the stack-state speedup.
-		i := 0
+		// Break rather than return inside the range-over-func body: a return
+		// there moves the result slot to the heap for every call.
+		idx := base
 		for v := range b.decodeValues(valBytes, entry.Count) {
-			if !yield(i, v) {
-				return
+			if !yield(idx, v) {
+				idx = -1
+				break
 			}
-			i++
+			idx++
 		}
+
+		return idx
 	}
 }
 
@@ -388,41 +397,48 @@ func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, yie
 // dispatches to the encoding-specific static decode loop. It mirrors
 // allTimestampsFromEntry (including the shared-TS cache fast path); keep them in
 // sync.
-func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry, yield func(int, int64) bool) {
+//
+// Indexes and the result follow forEachValuesFromEntry.
+func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry, base int, yield func(int, int64) bool) int {
 	if entry.Count == 0 {
-		return
+		return base
 	}
 
 	// Fast path: yield cached pre-decoded shared timestamps.
 	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
 		for i, ts := range cached {
-			if !yield(i, ts) {
-				return
+			if !yield(base+i, ts) {
+				return -1
 			}
 		}
 
-		return
+		return base + len(cached)
 	}
 
 	tsBytes, ok := safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)
 	if !ok {
-		return
+		return base
 	}
 
 	switch b.tsEncType { //nolint:exhaustive // default branch drains the remaining codecs
 	case format.TypeDelta:
-		ienc.FusedDeltaEach(tsBytes, entry.Count, yield)
+		return ienc.FusedDeltaEach(tsBytes, entry.Count, base, yield)
 	case format.TypeDeltaPacked:
-		ienc.FusedDeltaPackedEach(tsBytes, entry.Count, yield)
+		return ienc.FusedDeltaPackedEach(tsBytes, entry.Count, base, yield)
 	case format.TypeRaw:
-		ienc.RawTimestampsEach(tsBytes, entry.Count, b.Engine(), b.sameByteOrder, yield)
+		return ienc.RawTimestampsEach(tsBytes, entry.Count, base, b.Engine(), b.sameByteOrder, yield)
 	default:
-		i := 0
+		// Break rather than return inside the range-over-func body: a return
+		// there moves the result slot to the heap for every call.
+		idx := base
 		for ts := range b.decodeTimestamps(tsBytes, entry.Count) {
-			if !yield(i, ts) {
-				return
+			if !yield(idx, ts) {
+				idx = -1
+				break
 			}
-			i++
+			idx++
 		}
+
+		return idx
 	}
 }

@@ -248,24 +248,28 @@ func FusedDeltaPackedChimpEach(tsData, valData []byte, count int, yield func(int
 	fused.FusedDeltaPackedChimpEach(tsData, valData, count, yield)
 }
 
-// FusedDeltaEach decodes Delta timestamps through yield.
-func FusedDeltaEach(tsData []byte, count int, yield func(int, int64) bool) {
-	fused.FusedDeltaEach(tsData, count, yield)
+// FusedDeltaEach decodes Delta timestamps through yield, indexing from base.
+// Returns the next index, or -1 if yield stopped the iteration.
+func FusedDeltaEach(tsData []byte, count, base int, yield func(int, int64) bool) int {
+	return fused.FusedDeltaEach(tsData, count, base, yield)
 }
 
-// FusedGorillaEach decodes Gorilla values through yield.
-func FusedGorillaEach(valData []byte, count int, yield func(int, float64) bool) {
-	fused.FusedGorillaEach(valData, count, yield)
+// FusedGorillaEach decodes Gorilla values through yield, indexing from base.
+// Returns the next index, or -1 if yield stopped the iteration.
+func FusedGorillaEach(valData []byte, count, base int, yield func(int, float64) bool) int {
+	return fused.FusedGorillaEach(valData, count, base, yield)
 }
 
-// FusedChimpEach decodes Chimp values through yield.
-func FusedChimpEach(valData []byte, count int, yield func(int, float64) bool) {
-	fused.FusedChimpEach(valData, count, yield)
+// FusedChimpEach decodes Chimp values through yield, indexing from base.
+// Returns the next index, or -1 if yield stopped the iteration.
+func FusedChimpEach(valData []byte, count, base int, yield func(int, float64) bool) int {
+	return fused.FusedChimpEach(valData, count, base, yield)
 }
 
-// FusedDeltaPackedEach decodes packed Delta timestamps through yield.
-func FusedDeltaPackedEach(tsData []byte, count int, yield func(int, int64) bool) {
-	fused.FusedDeltaPackedEach(tsData, count, yield)
+// FusedDeltaPackedEach decodes packed Delta timestamps through yield, indexing
+// from base. Returns the next index, or -1 if yield stopped the iteration.
+func FusedDeltaPackedEach(tsData []byte, count, base int, yield func(int, int64) bool) int {
+	return fused.FusedDeltaPackedEach(tsData, count, base, yield)
 }
 
 // FusedDeltaGorillaAll returns fused Delta and Gorilla values.
@@ -328,14 +332,17 @@ func FusedDeltaPackedTagAll(tsData, tagData []byte, count int, yield func(int, i
 	fused.FusedDeltaPackedTagAll(tsData, tagData, count, yield)
 }
 
-// RawTimestampsEach decodes raw timestamps and calls yield for each timestamp.
-func RawTimestampsEach(data []byte, count int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, int64) bool) {
-	tsraw.RawTimestampsEach(data, count, engine, nativeByteOrder, yield)
+// RawTimestampsEach decodes raw timestamps and calls yield for each timestamp,
+// indexing from base. Returns the next index, or -1 if yield stopped the
+// iteration.
+func RawTimestampsEach(data []byte, count, base int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, int64) bool) int {
+	return tsraw.RawTimestampsEach(data, count, base, engine, nativeByteOrder, yield)
 }
 
-// RawValuesEach decodes raw values and calls yield for each value.
-func RawValuesEach(data []byte, count int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, float64) bool) {
-	valraw.RawValuesEach(data, count, engine, nativeByteOrder, yield)
+// RawValuesEach decodes raw values and calls yield for each value, indexing
+// from base. Returns the next index, or -1 if yield stopped the iteration.
+func RawValuesEach(data []byte, count, base int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, float64) bool) int {
+	return valraw.RawValuesEach(data, count, base, engine, nativeByteOrder, yield)
 }
 
 // EncodeMetricNames encodes names into the established length-prefixed payload.

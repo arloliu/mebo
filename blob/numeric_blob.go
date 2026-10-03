@@ -780,7 +780,7 @@ func (b NumericBlob) allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes []byte, c
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedDeltaEach(tsBytes, count, func(i int, ts int64) bool {
+			ienc.FusedDeltaEach(tsBytes, count, 0, func(i int, ts int64) bool {
 				val, _ := valDecoder.At(valBytes, i, count)
 
 				return yield(i, NumericDataPoint{Ts: ts, Val: val})
@@ -1018,7 +1018,7 @@ func (b NumericBlob) allDataPointsRawGorilla(tsBytes, valBytes, tagBytes []byte,
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedGorillaEach(valBytes, count, func(i int, val float64) bool {
+			ienc.FusedGorillaEach(valBytes, count, 0, func(i int, val float64) bool {
 				// Use At() for timestamps - O(1) direct memory access
 				ts, _ := tsDecoder.At(tsBytes, i, count)
 
@@ -1071,7 +1071,7 @@ func (b NumericBlob) allDataPointsRawChimp(tsBytes, valBytes, tagBytes []byte, c
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedChimpEach(valBytes, count, func(i int, val float64) bool {
+			ienc.FusedChimpEach(valBytes, count, 0, func(i int, val float64) bool {
 				// Use At() for timestamps - O(1) direct memory access
 				ts, _ := tsDecoder.At(tsBytes, i, count)
 

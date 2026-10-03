@@ -518,35 +518,40 @@ func UnsafeDecodeInt64Slice(data []byte) ([]int64, error) {
 	return decodeInt64SliceUnsafe(data)
 }
 
-// RawTimestampsEach decodes raw int64 timestamps and calls yield for each timestamp.
-// It stops when yield returns false.
-func RawTimestampsEach(data []byte, count int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, int64) bool) {
+// RawTimestampsEach decodes raw int64 timestamps and calls yield for each
+// timestamp, with indexes starting at base. It stops when yield returns false.
+//
+// Returns the index after the last yielded timestamp, or -1 if yield returned
+// false.
+func RawTimestampsEach(data []byte, count, base int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, int64) bool) int {
 	if count == 0 || len(data) < count*8 {
-		return
+		return base
 	}
 
 	if len(data)%8 != 0 {
-		return
+		return base
 	}
 
 	if nativeByteOrder {
 		timestamps, err := UnsafeDecodeInt64Slice(data[:count*8])
 		if err == nil && timestamps != nil {
 			for i, timestamp := range timestamps {
-				if !yield(i, timestamp) {
-					return
+				if !yield(base+i, timestamp) {
+					return -1
 				}
 			}
 
-			return
+			return base + count
 		}
 	}
 
 	for i := range count {
 		start := i * 8
 		timestamp := int64(engine.Uint64(data[start : start+8])) //nolint:gosec
-		if !yield(i, timestamp) {
-			return
+		if !yield(base+i, timestamp) {
+			return -1
 		}
 	}
+
+	return base + count
 }

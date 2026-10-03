@@ -175,119 +175,145 @@ func FusedDeltaPackedChimpEach(tsData, valData []byte, count int, yield func(int
 }
 
 // FusedDeltaEach decodes delta-of-delta timestamps, invoking yield with
-// (index, timestamp) for each data point. Values are not decoded here (caller
-// uses At() for raw values). Stops early if yield returns false.
-func FusedDeltaEach(tsData []byte, count int, yield func(int, int64) bool) {
+// (index, timestamp) for each data point, where indexes start at base. Values
+// are not decoded here (caller uses At() for raw values).
+//
+// Returns the index after the last yielded timestamp, or -1 if yield returned
+// false. A caller iterating several streams passes the result as the next
+// base to keep indexes continuous.
+func FusedDeltaEach(tsData []byte, count, base int, yield func(int, int64) bool) int {
 	if count == 0 || len(tsData) == 0 {
-		return
+		return base
 	}
 
 	ds, tsOk := tsdelta.NewDeltaTsState(tsData)
 	if !tsOk {
-		return
+		return base
 	}
 
-	if !yield(0, ds.Ts()) {
-		return
+	if !yield(base, ds.Ts()) {
+		return -1
 	}
 
 	for i := 1; i < count; i++ {
 		if !ds.NextShort(tsData) && !ds.NextLong(tsData) {
-			return
+			return base + i
 		}
 
-		if !yield(i, ds.Ts()) {
-			return
+		if !yield(base+i, ds.Ts()) {
+			return -1
 		}
 	}
+
+	return base + count
 }
 
 // FusedGorillaEach decodes Gorilla-compressed values, invoking yield with
-// (index, value) for each data point. Timestamps are not decoded here (caller
-// uses At() for raw timestamps). Stops early if yield returns false.
-func FusedGorillaEach(valData []byte, count int, yield func(int, float64) bool) {
+// (index, value) for each data point, where indexes start at base. Timestamps
+// are not decoded here (caller uses At() for raw timestamps).
+//
+// Returns the index after the last yielded value, or -1 if yield returned
+// false.
+func FusedGorillaEach(valData []byte, count, base int, yield func(int, float64) bool) int {
 	if count == 0 || len(valData) == 0 {
-		return
+		return base
 	}
 
 	gc, valOk := gorilla.NewGorillaCursor(valData)
 	if !valOk {
-		return
+		return base
 	}
 	val := gc.First()
 
-	if !yield(0, val) {
-		return
+	if !yield(base, val) {
+		return -1
 	}
 
 	for i := 1; i < count; i++ {
 		val, valOk = gc.Next()
 		if !valOk {
-			return
+			return base + i
 		}
 
-		if !yield(i, val) {
-			return
+		if !yield(base+i, val) {
+			return -1
 		}
 	}
+
+	return base + count
 }
 
 // FusedChimpEach decodes Chimp-compressed values, invoking yield with
-// (index, value) for each data point. Timestamps are not decoded here (caller
-// uses At() for raw timestamps). Stops early if yield returns false.
-func FusedChimpEach(valData []byte, count int, yield func(int, float64) bool) {
+// (index, value) for each data point, where indexes start at base. Timestamps
+// are not decoded here (caller uses At() for raw timestamps).
+//
+// Returns the index after the last yielded value, or -1 if yield returned
+// false.
+func FusedChimpEach(valData []byte, count, base int, yield func(int, float64) bool) int {
 	if count == 0 || len(valData) == 0 {
-		return
+		return base
 	}
 
 	cc, valOk := chimp.NewChimpCursor(valData)
 	if !valOk {
-		return
+		return base
 	}
 	val := cc.First()
 
-	if !yield(0, val) {
-		return
+	if !yield(base, val) {
+		return -1
 	}
 
 	for i := 1; i < count; i++ {
 		val, valOk = cc.Next()
 		if !valOk {
-			return
+			return base + i
 		}
 
-		if !yield(i, val) {
-			return
+		if !yield(base+i, val) {
+			return -1
 		}
 	}
+
+	return base + count
 }
 
 // FusedDeltaPackedEach decodes Group Varint packed delta-of-delta timestamps,
-// invoking yield with (index, timestamp) for each data point. It is the
-// timestamp-only counterpart of FusedDeltaPackedGorillaEach (same packed decode
-// state machine, no value stream). Stops early if yield returns false.
+// invoking yield with (index, timestamp) for each data point, where indexes
+// start at base. It is the timestamp-only counterpart of
+// FusedDeltaPackedGorillaEach (same packed decode state machine, no value
+// stream).
+//
+// Returns the index after the last yielded timestamp, or -1 if yield returned
+// false.
 //
 // Like the other Each variants this must stay a static package-level function:
 // running the same loop inside a heap-allocated range-over-func closure body
 // keeps the DeltaPacked cursor on the heap and measures slower (see
 // docs/perf/iterate_closure_optimization.md).
-func FusedDeltaPackedEach(tsData []byte, count int, yield func(int, int64) bool) {
+func FusedDeltaPackedEach(tsData []byte, count, base int, yield func(int, int64) bool) int {
 	if count == 0 || len(tsData) == 0 {
-		return
+		return base
 	}
 
 	dps, tsOk := deltapacked.NewDeltaPackedTsState(tsData)
 	if !tsOk {
-		return
+		return base
 	}
 
-	if !yield(0, dps.Ts()) {
-		return
+	if !yield(base, dps.Ts()) {
+		return -1
 	}
 
 	for i := 1; i < count; i++ {
-		if !dps.Next(count-i) || !yield(i, dps.Ts()) {
-			return
+		if !dps.Next(count - i) {
+			return base + i
+		}
+
+		if !yield(base+i, dps.Ts()) {
+			return -1
 		}
 	}
+
+	return base + count
 }

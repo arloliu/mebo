@@ -508,31 +508,36 @@ func UnsafeDecodeFloat64Slice(data []byte) ([]float64, error) {
 	return decodeFloat64SliceUnsafe(data)
 }
 
-// RawValuesEach decodes raw float64 values and calls yield for each value.
-// It stops when yield returns false.
-func RawValuesEach(data []byte, count int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, float64) bool) {
+// RawValuesEach decodes raw float64 values and calls yield for each value,
+// with indexes starting at base. It stops when yield returns false.
+//
+// Returns the index after the last yielded value, or -1 if yield returned
+// false.
+func RawValuesEach(data []byte, count, base int, engine endian.EndianEngine, nativeByteOrder bool, yield func(int, float64) bool) int {
 	if count == 0 || len(data) < count*8 {
-		return
+		return base
 	}
 
 	if nativeByteOrder {
 		floats, err := UnsafeDecodeFloat64Slice(data[:count*8])
 		if err == nil && floats != nil {
 			for i, value := range floats {
-				if !yield(i, value) {
-					return
+				if !yield(base+i, value) {
+					return -1
 				}
 			}
 
-			return
+			return base + count
 		}
 	}
 
 	for i := range count {
 		start := i * 8
 		bits := engine.Uint64(data[start : start+8])
-		if !yield(i, math.Float64frombits(bits)) {
-			return
+		if !yield(base+i, math.Float64frombits(bits)) {
+			return -1
 		}
 	}
+
+	return base + count
 }

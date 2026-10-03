@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the decode step for one- and two-byte delta-of-deltas (regular or lightly jittered intervals) is now inlined.
   Iterating Delta+Gorilla/Chimp/Raw blobs with `All` is about 9–20% faster,
   and `NumericBlobSet.ForEachTimestamps` about 27% faster.
+- `NumericBlobSet.ForEachValues` and `ForEachTimestamps` call `yield` directly instead of through an adapter closure:
+  about 17% and 25% faster again, with no per-call allocations for every timestamp encoding
+  and for Gorilla, Chimp and Raw values (ALP values still decode through an iterator).
+  Index and early-stop semantics are unchanged.
 
 ### Fixed
 
