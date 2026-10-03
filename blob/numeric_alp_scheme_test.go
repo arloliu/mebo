@@ -183,3 +183,82 @@ func TestNumericDecoder_ALPCorruptNExc_Errors(t *testing.T) {
 	require.Errorf(t, err, "a corrupt nExc field must be reported as an error, not panic")
 	require.ErrorIsf(t, err, errs.ErrInvalidALPColumn, "got %v", err)
 }
+
+// alpRLESchemeTestBlob encodes one hold-50% metric as uncompressed ALP-RLE
+// and returns the blob and the offset of its column, which must use the runs layout.
+func alpRLESchemeTestBlob(t *testing.T) ([]byte, int) {
+	t.Helper()
+	start := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewNumericEncoder(start,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeALPRLE),
+		WithValueCompression(format.CompressionNone))
+	require.NoError(t, err)
+
+	values := alpRLETestMetrics()[0].values
+	require.NoError(t, encoder.StartMetricID(42, len(values)))
+	for i, v := range values {
+		require.NoError(t, encoder.AddDataPoint(start.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+	}
+	require.NoError(t, encoder.EndMetric())
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+
+	header, err := section.ParseNumericHeader(data)
+	require.NoError(t, err)
+	off := int(header.ValuePayloadOffset)
+	require.Equal(t, byte(3), data[off], "sanity: the column must use the runs layout")
+
+	decoder, err := NewNumericDecoder(append([]byte(nil), data...))
+	require.NoError(t, err)
+	_, err = decoder.Decode()
+	require.NoError(t, err, "unmodified ALP-RLE blob must decode cleanly")
+
+	return data, off
+}
+
+// TestNumericDecoder_ALPRLEScheme_Errors pins the open-time scheme gate for both ALP encoding types:
+// a runs column is rejected under TypeALP, an unknown scheme byte is rejected under TypeALPRLE,
+// and a corrupt runs column or nested column is reported instead of panicking.
+func TestNumericDecoder_ALPRLEScheme_Errors(t *testing.T) {
+	data, off := alpRLESchemeTestBlob(t)
+	decode := func(blob []byte) error {
+		decoder, err := NewNumericDecoder(blob)
+		require.NoError(t, err, "header and offsets stay well-formed")
+		_, err = decoder.Decode()
+
+		return err
+	}
+
+	t.Run("runs column under TypeALP", func(t *testing.T) {
+		header, err := section.ParseNumericHeader(data)
+		require.NoError(t, err)
+		header.Flag.SetValueEncoding(format.TypeALP)
+		corrupted := append([]byte(nil), data...)
+		copy(corrupted, header.Bytes())
+		require.ErrorIs(t, decode(corrupted), errs.ErrInvalidALPScheme)
+	})
+
+	t.Run("scheme 4 under TypeALPRLE", func(t *testing.T) {
+		corrupted := append([]byte(nil), data...)
+		corrupted[off] = 4
+		require.ErrorIs(t, decode(corrupted), errs.ErrInvalidALPScheme)
+	})
+
+	t.Run("bitmap without a run at point 0", func(t *testing.T) {
+		corrupted := append([]byte(nil), data...)
+		corrupted[off+5] &^= 1
+		require.ErrorIs(t, decode(corrupted), errs.ErrInvalidALPColumn)
+	})
+
+	t.Run("nested exception count beyond the column", func(t *testing.T) {
+		// [3][nRuns:4][bitmap: 150 points = 19 bytes][nested scheme][e][f][width][nExc:4]...
+		nestedOff := off + 5 + 19
+		require.Equal(t, byte(0), data[nestedOff], "sanity: the nested column must be ALP main")
+		corrupted := append([]byte(nil), data...)
+		for i := nestedOff + 4; i < nestedOff+8; i++ {
+			corrupted[i] = 0xFF
+		}
+		require.ErrorIs(t, decode(corrupted), errs.ErrInvalidALPColumn)
+	})
+}

@@ -214,8 +214,9 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 	// fields are out of range) would otherwise panic deep in the decode paths
 	// on out-of-range slicing/indexing — validated here too, so both classes
 	// of corruption are caught at blob open instead of on the decode hot path.
-	if blob.valEncType == format.TypeALP {
-		if err := validateALPColumns(blob.valPayload, indexEntries, d.engine); err != nil {
+	// ALP-RLE columns may also use the runs layout (scheme 3); ALP columns may not.
+	if blob.valEncType == format.TypeALP || blob.valEncType == format.TypeALPRLE {
+		if err := validateALPColumns(blob.valPayload, indexEntries, d.engine, blob.valEncType == format.TypeALPRLE); err != nil {
 			return blob, err
 		}
 	}
@@ -326,8 +327,9 @@ func (d *NumericDecoder) applySharedTimestamps(indexOffset int, indexEntries []s
 // Every timestamp encoding spends at least one byte per point (raw exactly
 // eight), raw values exactly eight, and each tag at least its one-byte length,
 // so a larger Count can only come from a corrupt or crafted index. Value
-// codecs that can spend less than a byte per point (Gorilla, Chimp, ALP) are
-// bounded through the timestamps instead; ALP still needs a non-empty column.
+// codecs that can spend less than a byte per point (Gorilla, Chimp, ALP,
+// ALP-RLE) are bounded through the timestamps instead; ALP and ALP-RLE still
+// need a non-empty column.
 func validateEntryCounts(entries []section.NumericIndexEntry, tsEnc, valEnc format.EncodingType, hasTag bool) error {
 	for i := range entries {
 		entry := &entries[i]
@@ -559,8 +561,9 @@ const maxALPMainWidth = 64
 var maxALPColumnBits = uint64(math.MaxInt)
 
 // validateALPColumns checks that every ALP-encoded value column begins with
-// a known scheme byte (0=main, 1=RD, 2=raw; see internal/encoding/
-// numeric_alp.go's ALPMaxSchemeByte) and that the column's body is at least
+// a known scheme byte (0=main, 1=RD, 2=raw; see internal/encoding/value/alp's
+// ALPMaxSchemeByte), plus 3=runs when allowRuns is set (TypeALPRLE blobs only),
+// and that the column's body is at least
 // as long as its own header-declared layout requires. It runs once per
 // column at blob open — this is the earliest seam that both sees the
 // decompressed column payload and can return an error — rather than inside
@@ -586,7 +589,7 @@ var maxALPColumnBits = uint64(math.MaxInt)
 // A main column's exponent and factor index the power-of-ten tables,
 // so both must be at most ALPMaxExponent, and its width is at most 64.
 // An RD column's right width must be within ALPRDMinRightBits..ALPRDMaxRightBits.
-func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEntry, engine endian.EndianEngine) error {
+func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEntry, engine endian.EndianEngine, allowRuns bool) error {
 	for i := range indexEntries {
 		entry := &indexEntries[i]
 		if entry.ValueLength == 0 {
@@ -594,38 +597,75 @@ func validateALPColumns(valPayload []byte, indexEntries []section.NumericIndexEn
 		}
 
 		column := valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-		scheme := column[0]
-		if scheme > ienc.ALPMaxSchemeByte {
-			return fmt.Errorf("%w: metric ID %d has ALP scheme byte %d, want 0 (main), 1 (rd), or 2 (raw)",
-				errs.ErrInvalidALPScheme, entry.MetricID, scheme)
-		}
-
-		body := column[1:]
-		count := entry.Count
-
-		// Scheme byte values below mirror the unexported alpSchemeMain (0),
-		// alpSchemeRD (1), alpSchemeRaw (2) constants in
-		// internal/encoding/value/alp/alp.go — already range-checked against
-		// ALPMaxSchemeByte above, so this switch is exhaustive.
-		switch scheme {
-		case 0: // alpSchemeMain
-			if err := validateALPMainColumn(entry, body, engine); err != nil {
+		if allowRuns && column[0] == ienc.ALPRLEMaxSchemeByte {
+			if err := validateALPRunsColumn(entry, column[1:], engine); err != nil {
 				return err
 			}
-		case 1: // alpSchemeRD
-			if err := validateALPRDColumn(entry, body, engine); err != nil {
-				return err
-			}
-		case 2: // alpSchemeRaw
-			want := 1 + uint64(count)*8 //nolint:gosec // count is non-negative
-			if uint64(len(column)) < want {
-				return fmt.Errorf("%w: metric ID %d has ALP raw column of %d bytes, want at least %d (count=%d)",
-					errs.ErrInvalidALPColumn, entry.MetricID, len(column), want, count)
-			}
-		default:
-			// Unreachable: scheme was already range-checked against
-			// ALPMaxSchemeByte above, so it is always 0, 1, or 2 here.
+
+			continue
 		}
+
+		if column[0] > ienc.ALPMaxSchemeByte {
+			want := "0 (main), 1 (rd), or 2 (raw)"
+			if allowRuns {
+				want = "0 (main), 1 (rd), 2 (raw), or 3 (runs)"
+			}
+
+			return fmt.Errorf("%w: metric ID %d has ALP scheme byte %d, want %s",
+				errs.ErrInvalidALPScheme, entry.MetricID, column[0], want)
+		}
+
+		if err := validateALPPlainColumn(entry, column, engine); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateALPPlainColumn checks one ALP column whose scheme byte is 0 (main), 1 (rd) or 2 (raw).
+// The caller has already range-checked the scheme byte against ALPMaxSchemeByte.
+func validateALPPlainColumn(entry *section.NumericIndexEntry, column []byte, engine endian.EndianEngine) error {
+	body := column[1:]
+	count := entry.Count
+
+	// Scheme byte values below mirror the unexported alpSchemeMain (0),
+	// alpSchemeRD (1), alpSchemeRaw (2) constants in
+	// internal/encoding/value/alp/alp.go — already range-checked against
+	// ALPMaxSchemeByte by the caller, so this switch is exhaustive.
+	switch column[0] {
+	case 0: // alpSchemeMain
+		return validateALPMainColumn(entry, body, engine)
+	case 1: // alpSchemeRD
+		return validateALPRDColumn(entry, body, engine)
+	case 2: // alpSchemeRaw
+		want := 1 + uint64(count)*8 //nolint:gosec // count is non-negative
+		if uint64(len(column)) < want {
+			return fmt.Errorf("%w: metric ID %d has ALP raw column of %d bytes, want at least %d (count=%d)",
+				errs.ErrInvalidALPColumn, entry.MetricID, len(column), want, count)
+		}
+	default:
+		// Unreachable: the caller range-checks the scheme byte against
+		// ALPMaxSchemeByte, so it is always 0, 1, or 2 here.
+	}
+
+	return nil
+}
+
+// validateALPRunsColumn checks one ALP-RLE runs column body (after scheme byte 3).
+// The codec checks the runs envelope (header, bitmap, nested scheme byte);
+// the nested column of run values then goes through every plain-column check with count = nRuns,
+// including the maxALPColumnBits bound the nested decoders rely on.
+func validateALPRunsColumn(entry *section.NumericIndexEntry, body []byte, engine endian.EndianEngine) error {
+	nRuns, nested, err := ienc.ValidateALPRunsColumn(body, entry.Count, engine)
+	if err != nil {
+		return fmt.Errorf("metric ID %d: %w", entry.MetricID, err)
+	}
+
+	nestedEntry := *entry
+	nestedEntry.Count = nRuns
+	if err := validateALPPlainColumn(&nestedEntry, nested, engine); err != nil {
+		return fmt.Errorf("nested run values of %d runs: %w", nRuns, err)
 	}
 
 	return nil

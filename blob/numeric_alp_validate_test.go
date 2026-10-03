@@ -44,7 +44,7 @@ func TestValidateALPColumns_Main(t *testing.T) {
 	t.Run("body shorter than 15 bytes", func(t *testing.T) {
 		column := append([]byte{0}, make([]byte, 5)...) // body len 5 < 15
 		entry := alpValidateTestEntry(1, 8, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -54,7 +54,7 @@ func TestValidateALPColumns_Main(t *testing.T) {
 		wantCodesLen := (count*width + 7) / 8 // 4 bytes
 		column := buildMain(width, nExc, wantCodesLen-1, 0)
 		entry := alpValidateTestEntry(2, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -65,7 +65,7 @@ func TestValidateALPColumns_Main(t *testing.T) {
 		excLen := nExc*12 - 1 // one byte short of the declared nExc
 		column := buildMain(width, nExc, codesLen, excLen)
 		entry := alpValidateTestEntry(3, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -77,7 +77,7 @@ func TestValidateALPColumns_Main(t *testing.T) {
 			column := buildMain(width, nExc, codesLen, 0)
 			column[1], column[2] = byte(ef[0]), byte(ef[1])
 			entry := alpValidateTestEntry(8, count, len(column))
-			err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+			err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 			require.ErrorIsf(t, err, errs.ErrInvalidALPColumn, "e=%d f=%d", ef[0], ef[1])
 		}
 	})
@@ -88,7 +88,7 @@ func TestValidateALPColumns_Main(t *testing.T) {
 		column := buildMain(width, nExc, codesLen, 0)
 		column[1], column[2] = 18, 18
 		entry := alpValidateTestEntry(9, count, len(column))
-		require.NoError(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine))
+		require.NoError(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false))
 	})
 
 	t.Run("width exceeds 64", func(t *testing.T) {
@@ -96,7 +96,7 @@ func TestValidateALPColumns_Main(t *testing.T) {
 		codesLen := (count*width + 7) / 8
 		column := buildMain(width, nExc, codesLen, 0)
 		entry := alpValidateTestEntry(10, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
 
@@ -106,7 +106,7 @@ func TestValidateALPColumns_Main(t *testing.T) {
 		excLen := nExc * 12
 		column := buildMain(width, nExc, codesLen, excLen)
 		entry := alpValidateTestEntry(4, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.NoError(t, err)
 	})
 }
@@ -133,7 +133,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 	t.Run("body shorter than 7 bytes", func(t *testing.T) {
 		column := append([]byte{1}, make([]byte, 3)...) // body len 3 < 7
 		entry := alpValidateTestEntry(1, 8, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -141,7 +141,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 	t.Run("nDict exceeds max", func(t *testing.T) {
 		column := buildRD(48, 2, 9, 0, 0, 0, 0, 0) // nDict = 9 > ALPRDMaxDictSize (8)
 		entry := alpValidateTestEntry(2, 8, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -158,7 +158,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen, 0)
 		entry := alpValidateTestEntry(8, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -175,7 +175,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen, 0)
 		entry := alpValidateTestEntry(9, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -186,7 +186,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2-1, leftLen, rightLen, 0) // dict short by 1
 		entry := alpValidateTestEntry(3, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -197,7 +197,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen-1, rightLen, 0) // left short by 1
 		entry := alpValidateTestEntry(4, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -208,7 +208,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		rightLen := (count*rbw + 7) / 8
 		column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen-1, 0) // right short by 1, left intact
 		entry := alpValidateTestEntry(7, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -220,7 +220,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		excLen := nExc*6 - 1 // one byte short
 		column := buildRD(rbw, codeBits, nDict, nExc, nDict*2, leftLen, rightLen, excLen)
 		entry := alpValidateTestEntry(5, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -234,7 +234,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 			rightLen := (count*rbw + 7) / 8
 			column := buildRD(rbw, codeBits, nDict, 0, nDict*2, leftLen, rightLen, 0)
 			entry := alpValidateTestEntry(11, count, len(column))
-			err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+			err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 			require.ErrorIsf(t, err, errs.ErrInvalidALPColumn, "rbw=%d", rbw)
 		}
 	})
@@ -246,7 +246,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		excLen := nExc * 6
 		column := buildRD(rbw, codeBits, nDict, nExc, nDict*2, leftLen, rightLen, excLen)
 		entry := alpValidateTestEntry(6, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.NoError(t, err)
 	})
 
@@ -260,7 +260,7 @@ func TestValidateALPColumns_RD(t *testing.T) {
 		excLen := nExc * 6
 		column := buildRD(rbw, codeBits, nDict, nExc, nDict*2, leftLen, rightLen, excLen)
 		entry := alpValidateTestEntry(10, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.NoError(t, err)
 	})
 }
@@ -274,7 +274,7 @@ func TestValidateALPColumns_Raw(t *testing.T) {
 		count := 5
 		column := append([]byte{2}, make([]byte, count*8-1)...) // one byte short
 		entry := alpValidateTestEntry(1, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.Error(t, err)
 		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
 	})
@@ -283,7 +283,7 @@ func TestValidateALPColumns_Raw(t *testing.T) {
 		count := 5
 		column := append([]byte{2}, make([]byte, count*8)...)
 		entry := alpValidateTestEntry(2, count, len(column))
-		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+		err := validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 		require.NoError(t, err)
 	})
 }
@@ -302,14 +302,14 @@ func TestValidateALPColumns_ColumnTooLargeForPlatform(t *testing.T) {
 	body[2] = width
 	column := append([]byte{0}, body...)
 	entry := alpValidateTestEntry(1, count, len(column))
-	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine), errs.ErrInvalidALPColumn)
+	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false), errs.ErrInvalidALPColumn)
 
 	const small = 16 // 512 bits fits
 	body = make([]byte, 15+(small*width+7)/8)
 	body[2] = width
 	column = append([]byte{0}, body...)
 	entry = alpValidateTestEntry(2, small, len(column))
-	require.NoError(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine))
+	require.NoError(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false))
 
 	// A bit count within 7 of the limit would overflow int
 	// when rounded up to bytes, so it is rejected too.
@@ -318,7 +318,7 @@ func TestValidateALPColumns_ColumnTooLargeForPlatform(t *testing.T) {
 	body[2] = nearWidth
 	column = append([]byte{0}, body...)
 	entry = alpValidateTestEntry(3, nearCount, len(column))
-	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine), errs.ErrInvalidALPColumn,
+	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false), errs.ErrInvalidALPColumn,
 		"main column")
 
 	const rdCount, rdWidth = 20, 51 // 1020 bits; codeBits 0, nDict 0
@@ -326,7 +326,7 @@ func TestValidateALPColumns_ColumnTooLargeForPlatform(t *testing.T) {
 	body[0] = rdWidth
 	column = append([]byte{1}, body...)
 	entry = alpValidateTestEntry(4, rdCount, len(column))
-	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine), errs.ErrInvalidALPColumn,
+	require.ErrorIs(t, validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false), errs.ErrInvalidALPColumn,
 		"rd column")
 }
 
@@ -358,12 +358,12 @@ func TestValidateALPColumns_ExceptionCountAboveInt32(t *testing.T) {
 	for name, column := range map[string]func(uint32) []byte{"main": mainColumn, "rd": rdColumn} {
 		valid := column(0)
 		entry := alpValidateTestEntry(1, 1, len(valid))
-		require.NoErrorf(t, validateALPColumns(valid, []section.NumericIndexEntry{entry}, engine),
+		require.NoErrorf(t, validateALPColumns(valid, []section.NumericIndexEntry{entry}, engine, false),
 			"%s column without exceptions", name)
 
 		for _, nExc := range []uint32{0x80000000, 0xFFFFFFFF} {
 			corrupt := column(nExc)
-			require.ErrorIsf(t, validateALPColumns(corrupt, []section.NumericIndexEntry{entry}, engine),
+			require.ErrorIsf(t, validateALPColumns(corrupt, []section.NumericIndexEntry{entry}, engine, false),
 				errs.ErrInvalidALPColumn, "%s column, nExc=%#x", name, nExc)
 		}
 	}
@@ -403,7 +403,7 @@ func TestValidateALPColumns_ExceptionPositions(t *testing.T) {
 				column := build(positions...)
 				entry := alpValidateTestEntry(1, 4, len(column))
 
-				return validateALPColumns(column, []section.NumericIndexEntry{entry}, engine)
+				return validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, false)
 			}
 
 			require.NoError(t, check(0, 2, 3))
@@ -412,4 +412,100 @@ func TestValidateALPColumns_ExceptionPositions(t *testing.T) {
 			require.ErrorIs(t, check(4), errs.ErrInvalidALPColumn, "position == count")
 		})
 	}
+}
+
+// TestValidateALPColumns_Runs drives validateALPColumns with hand-built ALP-RLE runs columns (scheme byte 3).
+// The nested column of run values must pass every plain-column check with count = nRuns, not the point count.
+func TestValidateALPColumns_Runs(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+
+	// buildRuns constructs [3][nRuns:4][bitmap][nested] for count points whose runs start at starts.
+	buildRuns := func(count int, starts []int, nested []byte) []byte {
+		column := engine.AppendUint32([]byte{3}, uint32(len(starts)))
+		bm := make([]byte, (count+7)/8)
+		for _, s := range starts {
+			bm[s/8] |= 1 << (s % 8)
+		}
+		column = append(column, bm...)
+
+		return append(column, nested...)
+	}
+	// mainNested is a complete main column of n run values at the given width with the given exception positions.
+	mainNested := func(width, n int, positions ...uint32) []byte {
+		body := make([]byte, 15+(n*width+7)/8)
+		body[2] = byte(width)
+		engine.PutUint32(body[3:7], uint32(len(positions)))
+		for _, p := range positions {
+			body = engine.AppendUint32(body, p)
+			body = engine.AppendUint64(body, 0)
+		}
+
+		return append([]byte{0}, body...)
+	}
+	check := func(column []byte, count int, allowRuns bool) error {
+		entry := alpValidateTestEntry(7, count, len(column))
+
+		return validateALPColumns(column, []section.NumericIndexEntry{entry}, engine, allowRuns)
+	}
+
+	const count = 12
+	starts := []int{0, 3, 7, 9}
+	valid := buildRuns(count, starts, mainNested(0, len(starts)))
+
+	t.Run("valid runs column", func(t *testing.T) {
+		require.NoError(t, check(valid, count, true))
+	})
+
+	t.Run("scheme 3 rejected without allowRuns", func(t *testing.T) {
+		require.ErrorIs(t, check(valid, count, false), errs.ErrInvalidALPScheme)
+	})
+
+	t.Run("scheme 4 rejected with allowRuns", func(t *testing.T) {
+		column := append([]byte(nil), valid...)
+		column[0] = 4
+		require.ErrorIs(t, check(column, count, true), errs.ErrInvalidALPScheme)
+	})
+
+	t.Run("envelope error carries the metric ID", func(t *testing.T) {
+		column := append([]byte(nil), valid...)
+		column[5] &^= 1 // bit 0 clear
+		err := check(column, count, true)
+		require.ErrorIs(t, err, errs.ErrInvalidALPColumn)
+		require.Contains(t, err.Error(), "metric ID 7")
+	})
+
+	t.Run("nested exception count beyond the body", func(t *testing.T) {
+		column := buildRuns(count, starts, mainNested(0, len(starts)))
+		engine.PutUint32(column[1+4+2+4:], 0xFFFFFFFF) // nested nExc
+		require.ErrorIs(t, check(column, count, true), errs.ErrInvalidALPColumn)
+	})
+
+	t.Run("nested exception positions index runs, not points", func(t *testing.T) {
+		require.NoError(t, check(buildRuns(count, starts, mainNested(0, len(starts), 3)), count, true))
+		// Position 4 is a valid point index (< 12) but not a valid run index (>= nRuns 4).
+		require.ErrorIs(t, check(buildRuns(count, starts, mainNested(0, len(starts), 4)), count, true),
+			errs.ErrInvalidALPColumn)
+	})
+
+	t.Run("nested raw column shorter than nRuns values", func(t *testing.T) {
+		nested := append([]byte{2}, make([]byte, 8*len(starts)-1)...)
+		require.ErrorIs(t, check(buildRuns(count, starts, nested), count, true), errs.ErrInvalidALPColumn)
+		nested = append(nested, 0)
+		require.NoError(t, check(buildRuns(count, starts, nested), count, true))
+	})
+
+	t.Run("nested column too large for platform", func(t *testing.T) {
+		saved := maxALPColumnBits
+		maxALPColumnBits = 1 << 10
+		t.Cleanup(func() { maxALPColumnBits = saved })
+
+		// 64 runs of one point each: the bitmap is 64 bits, but the nested column is 64 × 32 = 2048 bits.
+		const points = 64
+		all := make([]int, points)
+		for i := range all {
+			all[i] = i
+		}
+		require.ErrorIs(t, check(buildRuns(points, all, mainNested(32, points)), points, true), errs.ErrInvalidALPColumn)
+		require.NoError(t, check(buildRuns(points, all, mainNested(8, points)), points, true), "512 bits fits")
+	})
 }

@@ -23,6 +23,9 @@ const (
 	// ALPMaxSchemeByte is the highest valid ALP scheme byte.
 	ALPMaxSchemeByte = alp.ALPMaxSchemeByte
 
+	// ALPRLEMaxSchemeByte is the highest valid ALP-RLE scheme byte (3, the runs layout).
+	ALPRLEMaxSchemeByte = alp.ALPRLEMaxSchemeByte
+
 	// ALPRDMaxDictSize is the maximum ALP-RD dictionary size.
 	ALPRDMaxDictSize = alp.ALPRDMaxDictSize
 
@@ -224,8 +227,20 @@ func NewNumericALPEncoder(engine endian.EndianEngine) *NumericALPEncoder {
 }
 
 // NewNumericALPDecoder creates an adaptive lossless floating-point decoder.
+// It decodes both ALP and ALP-RLE columns.
 func NewNumericALPDecoder(engine endian.EndianEngine) NumericALPDecoder {
 	return alp.NewNumericALPDecoder(engine)
+}
+
+// NewNumericALPRLEEncoder creates an ALP encoder that may also write the runs layout.
+func NewNumericALPRLEEncoder(engine endian.EndianEngine) *NumericALPEncoder {
+	return alp.NewNumericALPRLEEncoder(engine)
+}
+
+// ValidateALPRunsColumn checks the runs envelope of an ALP-RLE scheme-3 column body.
+// It returns the run count and the nested column, which the caller validates as a plain ALP column of that many values.
+func ValidateALPRunsColumn(body []byte, count int, engine endian.EndianEngine) (int, []byte, error) {
+	return alp.ValidateRunsColumn(body, count, engine)
 }
 
 // FusedDeltaGorillaEach decodes Delta timestamps and Gorilla values together.

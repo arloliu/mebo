@@ -62,6 +62,9 @@
 //     Random access is O(index).
 //   - ALP (format.TypeALP): Adaptive Lossless floating-Point for decimal-quantized data (SIGMOD 2024).
 //     Random access is O(1) plus O(log k) over the column's k exceptions.
+//   - ALP-RLE (format.TypeALPRLE): ALP with a run-length front end for columns where many points repeat the previous value.
+//     Each column is never larger than under ALP.
+//     Random access adds a popcount over the column's run-start bitmap.
 //
 // Text values and tags:
 //   - Text blob values and tags are length-prefixed with one byte each, so each is at most 255 bytes.

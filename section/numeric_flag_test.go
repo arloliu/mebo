@@ -13,6 +13,16 @@ func TestNumericFlag_ALPValueEncodingValid(t *testing.T) {
 	require.NoError(t, f.Validate())
 }
 
+func TestNumericFlag_ALPRLEValueEncodingValid(t *testing.T) {
+	f := NewNumericFlag()
+	f.SetValueEncoding(format.TypeALPRLE)
+	require.NoError(t, f.Validate())
+
+	// The first value encoding past TypeALPRLE stays unassigned and rejected.
+	f.SetValueEncoding(format.TypeALPRLE + 1)
+	require.Error(t, f.Validate())
+}
+
 func TestNumericFlag_IsValidMagicNumber(t *testing.T) {
 	tests := []struct {
 		name  string

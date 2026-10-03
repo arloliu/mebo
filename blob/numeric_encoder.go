@@ -190,7 +190,7 @@ func (e *NumericEncoder) MaxDataPoints() int {
 	}
 
 	valEnc := e.header.Flag.ValueEncoding()
-	valBytes := 10 // Gorilla worst case is 77 bits, Chimp 75 bits; ALP is at most ~9 bytes
+	valBytes := 10 // Gorilla worst case is 77 bits, Chimp 75 bits; ALP is at most ~9 bytes, and ALP-RLE never exceeds ALP
 	if valEnc == format.TypeRaw {
 		valBytes = 8
 	}
@@ -237,6 +237,8 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 		encoder.valEncoder = ienc.NewNumericChimpEncoder()
 	case format.TypeALP:
 		encoder.valEncoder = ienc.NewNumericALPEncoder(encoder.engine)
+	case format.TypeALPRLE:
+		encoder.valEncoder = ienc.NewNumericALPRLEEncoder(encoder.engine)
 	case format.TypeDelta:
 		return nil, fmt.Errorf("%w: value encoding %s not supported yet", errs.ErrUnsupportedEncoding, enc.String())
 	default:
@@ -489,11 +491,11 @@ func (e *NumericEncoder) EndMetric() error {
 		return err
 	}
 
-	// For bit-packed encodings (Gorilla, Chimp, ALP), flush any pending bits
+	// For bit-packed encodings (Gorilla, Chimp, ALP, ALP-RLE), flush any pending bits
 	// BEFORE calculating sizes, so the sizes include all flushed data.
 	// For other encodings, this is a no-op as Bytes() just returns the buffer.
 	valEnc := e.header.Flag.ValueEncoding()
-	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp || valEnc == format.TypeALP {
+	if valEnc == format.TypeGorilla || valEnc == format.TypeChimp || valEnc == format.TypeALP || valEnc == format.TypeALPRLE {
 		_ = e.valEncoder.Bytes() // Flush pending bits
 	}
 

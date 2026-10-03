@@ -15,7 +15,7 @@ import (
 // combination, with and without tags.
 func TestNumericBlob_ForEachValues_MatchesAll(t *testing.T) {
 	tsEncodings := []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked}
-	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP}
+	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE}
 
 	for _, tsEnc := range tsEncodings {
 		for _, valEnc := range valEncodings {
@@ -61,7 +61,7 @@ func TestNumericBlob_ForEachValues_MatchesAll(t *testing.T) {
 // timestamp path via the encoder default.
 func TestNumericBlob_ForEachTimestamps_MatchesAll(t *testing.T) {
 	tsEncodings := []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked}
-	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP}
+	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE}
 
 	for _, tsEnc := range tsEncodings {
 		for _, valEnc := range valEncodings {

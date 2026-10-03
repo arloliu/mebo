@@ -103,7 +103,7 @@ var defaultTextOptions = []blob.TextEncoderOption{
 // Available options:
 //   - blob.WithLittleEndian() / blob.WithBigEndian()
 //   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta|TypeDeltaPacked)
-//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla|TypeChimp|TypeALP)
+//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla|TypeChimp|TypeALP|TypeALPRLE)
 //   - blob.WithTimestampCompression(format.CompressionNone|Zstd|S2|LZ4)
 //   - blob.WithValueCompression(format.CompressionNone|Zstd|S2|LZ4)
 //   - blob.WithTagsEnabled(true|false)

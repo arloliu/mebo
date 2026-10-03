@@ -607,7 +607,7 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 		decoder := ienc.NewNumericChimpDecoder()
 
 		return decoder.At(valBytes, index, count)
-	case format.TypeALP:
+	case format.TypeALP, format.TypeALPRLE:
 		// ALP needs the endian engine.
 		engine := b.Engine()
 		decoder := ienc.NewNumericALPDecoder(engine)
@@ -648,10 +648,10 @@ func (b NumericBlob) tagAtFromEntry(entry section.NumericIndexEntry, index int) 
 //
 // All other combinations fall back to generic implementation.
 func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
-	// ALP values have no stateful fused decoder, so the generic path would pay
+	// ALP and ALP-RLE values have no stateful fused decoder, so the generic path would pay
 	// per-point iter.Pull overhead. Materialize ts+values via DecodeAll and zip
 	// instead (works for any timestamp encoding).
-	if b.ValueEncoding() == format.TypeALP {
+	if enc := b.ValueEncoding(); enc == format.TypeALP || enc == format.TypeALPRLE {
 		return b.allDataPointsMaterialized(tsBytes, valBytes, tagBytes, count)
 	}
 
@@ -1252,7 +1252,7 @@ func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] 
 	case format.TypeChimp:
 		decoder := ienc.NewNumericChimpDecoder()
 		return decoder.All(valBytes, count)
-	case format.TypeALP:
+	case format.TypeALP, format.TypeALPRLE:
 		engine := b.Engine()
 		decoder := ienc.NewNumericALPDecoder(engine)
 
@@ -1319,7 +1319,7 @@ func (b NumericBlob) decodeValuesSlice(valBytes []byte, count int, dst []float64
 		decoder := ienc.NewNumericChimpDecoder()
 
 		return decoder.DecodeAll(valBytes, count, dst)
-	case format.TypeALP:
+	case format.TypeALP, format.TypeALPRLE:
 		engine := b.Engine()
 		decoder := ienc.NewNumericALPDecoder(engine)
 

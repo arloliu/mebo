@@ -103,8 +103,8 @@ func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield fun
 // they return is constructed and invoked in this frame and never escapes —
 // this is what makes ForEach allocation-free where All cannot be.
 func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
-	// ALP values: materialize ts+values and zip (avoids generic iter.Pull overhead).
-	if b.ValueEncoding() == format.TypeALP {
+	// ALP and ALP-RLE values: materialize ts+values and zip (avoids generic iter.Pull overhead).
+	if enc := b.ValueEncoding(); enc == format.TypeALP || enc == format.TypeALPRLE {
 		b.allDataPointsMaterialized(tsBytes, valBytes, tagBytes, count)(yield)
 		return
 	}
@@ -374,7 +374,7 @@ func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, bas
 	case format.TypeRaw:
 		return ienc.RawValuesEach(valBytes, entry.Count, base, b.Engine(), b.sameByteOrder, yield)
 	default:
-		// ALP (and any future codec without a static Each) drains the
+		// ALP, ALP-RLE (and any future codec without a static Each) drains the
 		// slice-decode iterator. For a single column this matches AllValues
 		// exactly — no iter.Pull — so there is no regression; it just does not
 		// get the stack-state speedup.

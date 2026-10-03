@@ -108,7 +108,7 @@ func (c *NumericEncoderConfig) setTimestampEncoding(enc format.EncodingType) err
 	case format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked:
 		c.header.Flag.SetTimestampEncoding(enc)
 		return nil
-	case format.TypeGorilla, format.TypeChimp, format.TypeALP:
+	case format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
 		return fmt.Errorf("%v encoding is not supported for timestamps", enc)
 	default:
 		return fmt.Errorf("invalid timestamp encoding: %v", enc)
@@ -118,7 +118,7 @@ func (c *NumericEncoderConfig) setTimestampEncoding(enc format.EncodingType) err
 // setValueEncoding sets the value encoding type.
 func (c *NumericEncoderConfig) setValueEncoding(enc format.EncodingType) error {
 	switch enc { //nolint: exhaustive
-	case format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP:
+	case format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
 		c.header.Flag.SetValueEncoding(enc)
 		return nil
 	default:
@@ -324,6 +324,8 @@ func WithTimestampEncoding(enc format.EncodingType) NumericEncoderOption {
 //   - format.TypeALP: Adaptive Lossless floating-Point encoding; best for decimal-quantized values
 //     such as readings rounded to a fixed number of decimal places.
 //     Random access is O(1) plus an O(log k) search over the column's k exceptions.
+//   - format.TypeALPRLE: ALP with a run-length front end for columns where many points repeat the previous value.
+//     Each column is never larger than under format.TypeALP; readers older than this encoding reject the blob.
 //
 // The default encoding is format.TypeGorilla.
 //
