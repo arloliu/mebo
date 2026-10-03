@@ -12,6 +12,24 @@ import (
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
+
+	// blob uses the codecs only through the internal/encoding facade, whose
+	// types are aliases of these packages' types. The compiler exports a
+	// method's body only from its defining package (or from a package that
+	// already inlined it), so without these imports the facade-aliased
+	// methods on per-point paths (DeltaTsState.NextShort, GorillaValState.Next,
+	// VarStringEncoder.WriteVarint, ...) are calls instead of inlined code.
+	// Keep this list in sync with facade.go's imports; a test enforces it.
+	_ "github.com/arloliu/mebo/internal/encoding/fused"
+	_ "github.com/arloliu/mebo/internal/encoding/metadata"
+	_ "github.com/arloliu/mebo/internal/encoding/timestamp/delta"
+	_ "github.com/arloliu/mebo/internal/encoding/timestamp/deltapacked"
+	_ "github.com/arloliu/mebo/internal/encoding/timestamp/raw"
+	_ "github.com/arloliu/mebo/internal/encoding/timestamp/simple8b"
+	_ "github.com/arloliu/mebo/internal/encoding/value/alp"
+	_ "github.com/arloliu/mebo/internal/encoding/value/chimp"
+	_ "github.com/arloliu/mebo/internal/encoding/value/gorilla"
+	_ "github.com/arloliu/mebo/internal/encoding/value/raw"
 )
 
 // Global engine cache to avoid interface overhead

@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about 17% and 25% faster again, with no per-call allocations for every timestamp encoding
   and for Gorilla, Chimp and Raw values (ALP values still decode through an iterator).
   Index and early-stop semantics are unchanged.
+- Per-point codec methods inline into package `blob` again, as they did before v1.9.0 moved the codecs behind an internal facade.
+  In benchmarks of 100 to 1000 points, `NumericBlob.ForEach` over Delta+Gorilla or Delta+Chimp blobs takes about 15–39% less time
+  (`NumericBlobSet.ForEach` about 25% less), and text encoding about 4–8% less.
 
 ### Fixed
 
