@@ -144,7 +144,7 @@
 // Numeric Encoder Options:
 //   - blob.WithLittleEndian() / blob.WithBigEndian() - Byte order
 //   - blob.WithTimestampEncoding(format.TypeRaw|TypeDelta|TypeDeltaPacked) - Timestamp encoding
-//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla|TypeChimp|TypeALP) - Value encoding
+//   - blob.WithValueEncoding(format.TypeRaw|TypeGorilla|TypeChimp|TypeALP|TypeALPRLE) - Value encoding
 //   - blob.WithTimestampCompression(format.CompressionNone|Zstd|S2|LZ4) - Timestamp compression
 //   - blob.WithValueCompression(format.CompressionNone|Zstd|S2|LZ4) - Value compression
 //   - blob.WithTagsEnabled(true|false) - Enable/disable tags

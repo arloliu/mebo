@@ -41,6 +41,7 @@ var (
 		uint8(format.TypeGorilla): {},
 		uint8(format.TypeChimp):   {},
 		uint8(format.TypeALP):     {},
+		uint8(format.TypeALPRLE):  {},
 	}
 
 	validTimestampCompressions = map[uint8]struct{}{

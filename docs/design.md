@@ -92,6 +92,7 @@ const (
 	ValueEncodingGorilla = 0x3 << 4 // 0x30, format.TypeGorilla
 	ValueEncodingChimp   = 0x4 << 4 // 0x40, format.TypeChimp
 	ValueEncodingALP     = 0x6 << 4 // 0x60, format.TypeALP
+	ValueEncodingALPRLE  = 0x7 << 4 // 0x70, format.TypeALPRLE
 
 	// Compression types (bits 0-3 for timestamp, 4-7 for value)
 	CompressionNone   = 0x1

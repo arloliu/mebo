@@ -34,6 +34,7 @@ func AllCombos() []EncodingCombo {
 		{format.TypeGorilla, "gorilla"},
 		{format.TypeChimp, "chimp"},
 		{format.TypeALP, "alp"},
+		{format.TypeALPRLE, "alprle"},
 	}
 
 	combos := make([]EncodingCombo, 0, len(tsEncodings)*len(valEncodings))
@@ -70,6 +71,7 @@ func SharedTSCombos() []EncodingCombo {
 		{format.TypeGorilla, "gorilla"},
 		{format.TypeChimp, "chimp"},
 		{format.TypeALP, "alp"},
+		{format.TypeALPRLE, "alprle"},
 	}
 
 	combos := make([]EncodingCombo, 0, len(tsEncodings)*len(valEncodings))

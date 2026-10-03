@@ -272,7 +272,7 @@ func TestNumericEncoder_AddDataPoints(t *testing.T) {
 
 func TestNumericEncoder_MixedPointAPIsPreserveOrder(t *testing.T) {
 	tsEncodings := []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked}
-	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP}
+	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE}
 	pointCounts := []int{1, 10, 50, 63, 64, 65, 100, 200, 512, 513}
 	endians := []struct {
 		name string
@@ -3705,6 +3705,7 @@ func TestNumericEncoder_EndMetricCountMismatchIsRetryable(t *testing.T) {
 		{format.TypeDeltaPacked, format.TypeGorilla},
 		{format.TypeDelta, format.TypeALP},
 		{format.TypeRaw, format.TypeALP},
+		{format.TypeDeltaPacked, format.TypeALPRLE},
 		{format.TypeDelta, format.TypeGorilla},
 		{format.TypeDelta, format.TypeChimp},
 	}

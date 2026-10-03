@@ -571,7 +571,7 @@ func TestMaterializedNumericBlob_Correctness_AllEncodings(t *testing.T) {
 // which decodes fewer tags than Count ends every row reader at the last
 // decoded tag, instead of padding the missing tags with "".
 func TestNumericBlob_TruncatedTagsYieldOnlyCompleteRows(t *testing.T) {
-	for _, valEnc := range []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeALP} {
+	for _, valEnc := range []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeALP, format.TypeALPRLE} {
 		t.Run(valEnc.String(), func(t *testing.T) {
 			enc, err := NewNumericEncoder(time.Unix(0, 0).UTC(), WithTimestampEncoding(format.TypeRaw),
 				WithValueEncoding(valEnc), WithTagsEnabled(true))

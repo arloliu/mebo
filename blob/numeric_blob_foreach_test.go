@@ -67,7 +67,7 @@ func buildForEachTestBlob(t *testing.T, tsEnc, valEnc format.EncodingType, withT
 // and without tags.
 func TestNumericBlob_ForEach_MatchesAll(t *testing.T) {
 	tsEncodings := []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked}
-	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP}
+	valEncodings := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE}
 
 	for _, tsEnc := range tsEncodings {
 		for _, valEnc := range valEncodings {
