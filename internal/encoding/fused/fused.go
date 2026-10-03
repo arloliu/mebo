@@ -10,22 +10,6 @@ import (
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
 )
 
-// deltaState keeps the root fused loops compatible with the codec-owned
-// incremental Delta decoder.
-type deltaState struct {
-	state tsdelta.DeltaTsState
-	curTS int64
-}
-
-func newDeltaState(data []byte) (deltaState, bool) {
-	state, ok := tsdelta.NewDeltaTsState(data)
-	if !ok {
-		return deltaState{}, false
-	}
-
-	return deltaState{state: state, curTS: state.Ts()}, true
-}
-
 // FusedDeltaGorillaAll returns an iterator that decodes delta-of-delta timestamps and
 // Gorilla-compressed values in a single fused loop, avoiding iter.Pull overhead.
 //
@@ -68,7 +52,7 @@ func FusedDeltaGorillaTagAll(tsData, valData, tagData []byte, count int, tagYiel
 	}
 
 	// Initialize timestamp delta-of-delta state.
-	ds, tsOk := newDeltaState(tsData)
+	ds, tsOk := tsdelta.NewDeltaTsState(tsData)
 	if !tsOk {
 		return
 	}
@@ -87,13 +71,13 @@ func FusedDeltaGorillaTagAll(tsData, valData, tagData []byte, count int, tagYiel
 	}
 
 	// Yield first data point
-	if !tagYield(0, ds.curTS, val, tag) {
+	if !tagYield(0, ds.Ts(), val, tag) {
 		return
 	}
 
 	// Decode remaining data points
 	for i := 1; i < count; i++ {
-		if !decodeDeltaTimestamp(&ds, tsData) {
+		if !ds.NextShort(tsData) && !ds.NextLong(tsData) {
 			return
 		}
 
@@ -107,7 +91,7 @@ func FusedDeltaGorillaTagAll(tsData, valData, tagData []byte, count int, tagYiel
 			return
 		}
 
-		if !tagYield(i, ds.curTS, val, tag) {
+		if !tagYield(i, ds.Ts(), val, tag) {
 			return
 		}
 	}
@@ -128,7 +112,7 @@ func FusedDeltaTagAll(tsData, tagData []byte, count int, yield func(int, int64, 
 	}
 
 	// Initialize timestamp delta-of-delta state.
-	ds, tsOk := newDeltaState(tsData)
+	ds, tsOk := tsdelta.NewDeltaTsState(tsData)
 	if !tsOk {
 		return
 	}
@@ -141,13 +125,13 @@ func FusedDeltaTagAll(tsData, tagData []byte, count int, yield func(int, int64, 
 	}
 
 	// Yield first data point
-	if !yield(0, ds.curTS, tag) {
+	if !yield(0, ds.Ts(), tag) {
 		return
 	}
 
 	// Decode remaining data points
 	for i := 1; i < count; i++ {
-		if !decodeDeltaTimestamp(&ds, tsData) {
+		if !ds.NextShort(tsData) && !ds.NextLong(tsData) {
 			return
 		}
 
@@ -156,7 +140,7 @@ func FusedDeltaTagAll(tsData, tagData []byte, count int, yield func(int, int64, 
 			return
 		}
 
-		if !yield(i, ds.curTS, tag) {
+		if !yield(i, ds.Ts(), tag) {
 			return
 		}
 	}
@@ -211,15 +195,6 @@ func FusedGorillaTagAll(valData, tagData []byte, count int, yield func(int, floa
 	}
 }
 
-func decodeDeltaTimestamp(ds *deltaState, data []byte) bool {
-	if !ds.state.Next(data) {
-		return false
-	}
-	ds.curTS = ds.state.Ts()
-
-	return true
-}
-
 // Chimp and Gorilla cursors return decoded values directly so fused callbacks
 // do not carry wrapper state or count bookkeeping in their hot loops.
 
@@ -260,7 +235,7 @@ func FusedDeltaChimpTagAll(tsData, valData, tagData []byte, count int, tagYield 
 	}
 
 	// Initialize timestamp delta-of-delta state.
-	ds, tsOk := newDeltaState(tsData)
+	ds, tsOk := tsdelta.NewDeltaTsState(tsData)
 	if !tsOk {
 		return
 	}
@@ -279,13 +254,13 @@ func FusedDeltaChimpTagAll(tsData, valData, tagData []byte, count int, tagYield 
 	}
 
 	// Yield first data point
-	if !tagYield(0, ds.curTS, val, tag) {
+	if !tagYield(0, ds.Ts(), val, tag) {
 		return
 	}
 
 	// Decode remaining data points
 	for i := 1; i < count; i++ {
-		if !decodeDeltaTimestamp(&ds, tsData) {
+		if !ds.NextShort(tsData) && !ds.NextLong(tsData) {
 			return
 		}
 
@@ -299,7 +274,7 @@ func FusedDeltaChimpTagAll(tsData, valData, tagData []byte, count int, tagYield 
 			return
 		}
 
-		if !tagYield(i, ds.curTS, val, tag) {
+		if !tagYield(i, ds.Ts(), val, tag) {
 			return
 		}
 	}

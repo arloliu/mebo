@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TimestampEncoding()` on blobs now returns the exact encoding stored in the header,
   including `format.TypeDeltaPacked`.
   It previously reported DeltaPacked as `format.TypeDelta`.
+- Faster iteration over Delta timestamps:
+  the decode step for one- and two-byte delta-of-deltas (regular or lightly jittered intervals) is now inlined.
+  Iterating Delta+Gorilla/Chimp/Raw blobs with `All` is about 9–20% faster,
+  and `NumericBlobSet.ForEachTimestamps` about 27% faster.
 
 ### Fixed
 
