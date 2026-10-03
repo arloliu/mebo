@@ -82,8 +82,9 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 | Rapidly changing or discontinuous values | Raw value | No decompression overhead |
 | Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; ~20–25% additional savings at 200 metrics |
 | Decimal-quantized sensor data (2–4 dp) | ALP value | 1.9–2.7× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles; costs more to encode |
+| Decimal data where many points repeat the previous value | ALP-RLE value | Stores each run of repeats once; see [ALP or ALP-RLE?](#alp-or-alp-rle) |
 | Frequent random-access timestamps | Raw timestamp | O(1) `TimestampAt`; Delta/DeltaPacked must sequentially decode from the start (O(index)) |
-| Frequent random-access values | Raw or ALP value | Raw is O(1); ALP is O(1) + O(log k) (k = exceptions in the column) — both far ahead of Gorilla/Chimp, which must sequentially decode the XOR chain from the start (O(index)) |
+| Frequent random-access values | Raw, ALP or ALP-RLE value | Raw is O(1); ALP is O(1) + O(log k) (k = exceptions in the column); ALP-RLE adds a bitmap rank of O(index/64) on columns with runs — all far ahead of Gorilla/Chimp, which must sequentially decode the XOR chain from the start (O(index)) |
 
 DeltaPacked vs Delta: DeltaPacked uses Group Varint for **faster decode/iteration**, not better compression. Size difference is marginal (~2%). Choose DeltaPacked when iteration throughput matters more than encoding speed.
 
@@ -93,6 +94,29 @@ Random access is not just a timestamp-encoding question — the *value* encoding
 much, and Gorilla/Chimp are the slow axis there (see
 [Performance Guide § Random Access Performance](performance.md#random-access-performance) for
 measured ns/op across every combination).
+
+### ALP or ALP-RLE?
+
+`format.TypeALPRLE` is ALP with a run-length front end.
+For each column, the encoder builds the plain ALP column and keeps a runs layout instead only when that is smaller:
+a bitmap marks where each run of identical values starts, and the run values are stored once as an ALP column.
+
+Pick ALP-RLE over ALP when many consecutive points repeat the previous value,
+such as held gauges, status values, or slow sensors scraped faster than they change.
+
+- **Size:** each uncompressed column is never larger than under ALP.
+  On a 2-decimal gauge where half the points repeat, a whole blob of 100 metrics × 150 points is 1.12 bytes/point,
+  against 1.68 for ALP and 3.38 for Chimp.
+  Columns without enough repeats stay plain ALP columns, byte for byte.
+- **Value compression:** with Zstd, S2 or LZ4 the codec compresses the whole value payload,
+  and a smaller input is not guaranteed to compress smaller, so the compressed payload is not guaranteed to shrink.
+- **Encode cost:** one extra pass counts the runs, about 1% on data without repeats.
+  When half the points repeat, encoding is about 1.5× ALP, because the run values get their own ALP column.
+- **Read cost:** on that half-repeated gauge, `DecodeAll` is 3× faster than Chimp, `ValueAt` is 1.14× ALP,
+  and `ForEachValues` is about 3.2 ns/point against Chimp's 4.8.
+- **Compatibility:** readers older than this encoding reject the blob; see [ALP-RLE: upgrade consumers before producers](#alp-rle-upgrade-consumers-before-producers).
+
+The measurements and their method are in the [Performance Guide](performance.md#alp-rle-on-repeat-heavy-data).
 
 ### Codec compression is optional
 
@@ -113,6 +137,13 @@ The default (`NewDefaultNumericEncoder`) uses no codec compression and is the re
 3. Enable `WithSharedTimestamps()` on producers.
 
 Do not enable shared timestamps on producers until all consumers have been upgraded. The decoder will return an error when a V1-only decoder encounters a V2 blob.
+
+### ALP-RLE: upgrade consumers before producers
+
+Blobs encoded with `format.TypeALPRLE` use a value-encoding flag that older readers do not know,
+so a decoder older than this encoding rejects the blob with an invalid-header-flags error.
+Upgrade every consumer before switching producers to ALP-RLE, as for shared timestamps above.
+Readers that support it decode ALP and ALP-RLE blobs alike.
 
 ### Materialize only when random access is frequent
 

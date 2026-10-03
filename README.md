@@ -28,14 +28,14 @@ Mebo is designed for **batch processing of already-collected metrics**, not stre
 
 **Encoding**
 - Timestamp encodings: Raw, Delta, DeltaPacked (Group Varint)
-- Value encodings: Raw, Gorilla (XOR), Chimp (improved XOR, VLDB 2022), ALP (Adaptive Lossless floating-Point, SIGMOD 2024) for decimal-quantized data
+- Value encodings: Raw, Gorilla (XOR), Chimp (improved XOR, VLDB 2022), ALP (Adaptive Lossless floating-Point, SIGMOD 2024) for decimal-quantized data, and ALP-RLE (ALP with a run-length front end) for columns where many points repeat the previous value
 - Optional codec compression: Zstd, S2, LZ4
 - Shared timestamps: deduplicates identical timestamp columns across metrics
 - Optional per-point tag support
 
 **Access patterns**
 - Sequential iteration: O(n), zero allocations
-- Random access by index: O(1) for Raw (timestamp or value); ALP values add O(log k) for that column's exceptions; shared timestamps (any encoding) are O(1) from a cache built when the blob is opened; other Delta/DeltaPacked timestamps and Gorilla/Chimp values are O(index) (sequential decode from the start) — see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance) for measured ns/op
+- Random access by index: O(1) for Raw (timestamp or value); ALP values add O(log k) for that column's exceptions, and ALP-RLE columns with runs add an O(index/64) bitmap rank; shared timestamps (any encoding) are O(1) from a cache built when the blob is opened; other Delta/DeltaPacked timestamps and Gorilla/Chimp values are O(index) (sequential decode from the start) — see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance) for measured ns/op
 - Materialized random access: O(1) ~5 ns after one-time decode cost
 - Safe concurrent reads from all decoded blob types
 
@@ -136,9 +136,11 @@ Benchmark: 200 metrics × 200 points (40,000 total data points), AMD Ryzen 9 995
 
 That table uses general-shape random-walk data. On **decimal-quantized data** — sensor readings
 rounded to a fixed number of decimal places, a very common real-world shape — ALP does
-dramatically better: **2.854 bytes/point (5.6× smaller than raw)** on a 2-decimal-place gauge
-profile. See [Performance Guide § Codec Selection by Data Shape](docs/performance.md#codec-selection-by-data-shape)
-for the full breakdown across data shapes (decimals, counters, sparse data, full-precision noise).
+dramatically better: **2.854 bytes/point (5.6× smaller than raw)** on a 2-decimal-place gauge profile.
+Where many points also repeat the previous value, ALP-RLE goes further:
+2.138 bytes/point when half the points repeat, against 2.761 for ALP and 4.346 for Chimp.
+See [Performance Guide § Codec Selection by Data Shape](docs/performance.md#codec-selection-by-data-shape)
+for the full breakdown across data shapes (decimals, counters, sparse data, repeated values, full-precision noise).
 
 - Full benchmark tables, scaling analysis, and decision tree: [Performance Guide](docs/performance.md)
 - Mebo vs FlatBuffers head-to-head: [Comparison](docs/comparison_flatbuffers.md)
@@ -163,9 +165,13 @@ Delta and DeltaPacked produce similar compression ratios (~2% difference). Use D
 | Gorilla | 1–8 bytes | O(index) | Slowly changing values (CPU, memory); XOR-based, VLDB 2015 |
 | Chimp | 1–8 bytes | O(index) | Same as Gorilla; ~2.9% better compression; VLDB 2022 |
 | ALP | Variable | O(1) + O(log k)* | Decimal-quantized sensor data (2–4 dp): 4–6× smaller than raw, 1–2.5× smaller than the next-best codec. No guaranteed win on genuinely full-precision data — costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
+| ALP-RLE | Variable | O(index/64) + O(log k)† | Columns where many points repeat the previous value: each uncompressed column is never larger than ALP; a 2-dp gauge where half the points repeat is 1.12 B/pt vs 3.38 for Chimp (100 × 150 blob). Older readers reject it; see [ALP or ALP-RLE?](docs/best_practices.md#alp-or-alp-rle) |
 
 \* k = exceptions in that column, not its length — measured 21–32× faster than Gorilla/Chimp's
 `ValueAt` on the main benchmark's 200-point columns; see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance).
+
+† A column with runs first ranks its run-start bitmap, one 64-bit word at a time (at most 3 words at 150 points);
+a column without enough repeats is stored and read exactly like ALP.
 
 ### Compression Algorithms
 
@@ -258,6 +264,7 @@ encoder, _ := mebo.NewDefaultTextEncoder(time.Now())
 │  (Columnar algos)  │    │  (Zstd, S2, LZ4)   │
 │ Delta, Gorilla,    │    │                    │
 │ Chimp, ALP,        │    │                    │
+│ ALP-RLE,           │    │                    │
 │ DeltaPacked        │    │                    │
 └────────────────────┘    └────────────────────┘
          │                          │
@@ -274,7 +281,7 @@ encoder, _ := mebo.NewDefaultTextEncoder(time.Now())
 |---------|---------------|
 | `mebo` | Top-level convenience API and `MetricID` helper |
 | `blob` | High-level encoders, decoders, and BlobSet management |
-| `encoding` | Columnar encoding algorithms (Delta, DeltaPacked, Gorilla, Chimp, ALP, Raw) |
+| `encoding` | Columnar encoding algorithms (Delta, DeltaPacked, Gorilla, Chimp, ALP, ALP-RLE, Raw) |
 | `compress` | Codec compression layer (Zstd, S2, LZ4) |
 | `section` | Binary format structures, headers, index |
 | `format` | Encoding and compression type constants |
