@@ -566,7 +566,7 @@ The time-series data is organized into two separate, columnar payloads to maximi
 
 **Layout Process:**
 1. Concatenate all values from all metrics sequentially
-2. Apply encoding transformation (Raw, Gorilla, Chimp, or ALP)
+2. Apply encoding transformation (Raw, Gorilla, Chimp, ALP, or ALP-RLE)
 3. Optionally compress the entire payload as a single block
 4. Track individual metric positions via `ValueOffset` in index
 
@@ -604,6 +604,23 @@ The time-series data is organized into two separate, columnar payloads to maximi
   - **Cons:** Higher encode cost; no guaranteed win on full-precision data
   - **Use Case:** Sensor readings rounded to a fixed number of decimal places
 
+- **ALP-RLE (0x70):** ALP with a run-length front end
+  - **Layout:** a superset of ALP's column format.
+    Column schemes 0–2 are byte-for-byte the ALP schemes.
+    Scheme 3 is the runs layout: a run count, a bitmap with one bit per point marking where each run of identical values starts,
+    and a nested ALP column (scheme 0, 1 or 2) holding one value per run.
+    Run equality is bitwise, so −0.0, +0.0 and NaN payloads stay distinct.
+  - **Encoder:** builds the plain ALP column first and keeps the runs layout only when it is smaller,
+    so each uncompressed column is never larger than under ALP.
+    With value compression, the payload as a whole is not guaranteed to compress smaller.
+  - **Pros:** Can shrink columns where many consecutive points repeat, full-precision values included;
+    a column the runs layout does not shrink (for example a constant one, which plain ALP already packs at width 0) stays a plain ALP column;
+    `ValueAt` stays a bitmap rank plus an ALP lookup
+  - **Cons:** About 1.5× ALP's encode cost on columns where half the points repeat;
+    readers older than this encoding reject the blob
+  - **Use Case:** Decimal data that often holds the previous value, such as held gauges and status values
+  - **Spec:** [`docs/specs/alp-rle-design.md`](specs/alp-rle-design.md)
+
 **Compression:** Optional second-stage compression (typically None for performance, or Zstd for cold storage).
 
 #### Access Patterns
@@ -617,10 +634,15 @@ The time-series data is organized into two separate, columnar payloads to maximi
 | Values       | Gorilla     | O(index)            | O(N)              | Medium          |
 | Values       | Chimp       | O(index)            | O(N)              | Medium          |
 | Values       | ALP         | O(1) + O(log k)*    | O(N)              | Medium          |
+| Values       | ALP-RLE     | O(index/64) + O(log k)† | O(N)          | Medium          |
 
 \* k = exceptions in that column (not N); see `internal/encoding/value/alp/alp.go`'s
 `At`/`atMain`/`atRD`. Measured ns/op for every combination:
 [Performance Guide § Random Access Performance](performance.md#random-access-performance).
+
+† Only columns stored in the runs layout pay the bitmap rank (`alpRunsRank` in `internal/encoding/value/alp/alp_runs.go`):
+a popcount per 64-bit bitmap word up to the index, with no stored rank directory.
+Other ALP-RLE columns are plain ALP columns.
 
 #### Implementation Notes
 
@@ -706,6 +728,9 @@ Max Blob Size = Header + Index + Timestamps + Values
 -   **Random Access Trade-offs:**
     -   **Values (`Raw`), Timestamps (`Raw`):** True **O(1)** random access — a direct offset into a fixed-width array.
     -   **Values (`ALP`):** **O(1) + O(log k)** — an O(1) windowed bit read plus a binary search over that column's exception sidecar (k = exceptions in the column, not its length). ALP achieves this without the sub-chunking `Gorilla`/`Chimp` would need, via its exception-sidecar design.
+    -   **Values (`ALP-RLE`):** the same as ALP for plain columns.
+        A runs-layout column first ranks its run-start bitmap, one popcount per 64-bit word up to the index (O(index/64), at most 3 words at 150 points),
+        then looks up that run in the nested ALP column.
     -   **Values (`Gorilla` / `Chimp`) / Timestamps (`Delta` / `DeltaPacked`):** Require sequentially decoding from the start of the metric's data up to the target index — O(index), worst case O(N). For fast random access with these encodings, the data would need to be further broken into smaller, indexed sub-chunks (or use ALP/Raw for the axis that needs it, or materialize the blob for O(1) access regardless of encoding).
 
 ## Example: 150 Metrics × 10 Points
