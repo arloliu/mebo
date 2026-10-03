@@ -7,9 +7,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
+	"github.com/arloliu/mebo/section"
 )
 
 // tagsTestMetric names the metric in the set AllTags padding tests.
@@ -2394,4 +2396,36 @@ func TestDecodeBlobSet_RejectsUnrecognizedInput(t *testing.T) {
 
 	_, err := DecodeBlobSet(valid)
 	require.NoError(t, err)
+}
+
+// TestBlobSet_MetricLenNumericPrecedenceOnEmptyEntry pins that MetricLen and
+// MetricLenByName treat a metric found in a numeric member as numeric even when
+// that entry holds no points, like the TimestampAt, TagAt and MetricDuration
+// forms, instead of falling through to the text members.
+func TestBlobSet_MetricLenNumericPrecedenceOnEmptyEntry(t *testing.T) {
+	const name = "shared.metric"
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	// Zero the numeric entry's Count; the names payload keeps it findable by name.
+	data := encodeSetTestNumeric(t, base, name, 1, 2, 3)
+	hdr, err := section.ParseNumericHeader(data)
+	require.NoError(t, err)
+	countOff := int(hdr.IndexOffset) + 8
+	endian.GetLittleEndianEngine().PutUint16(data[countOff:countOff+2], 0)
+	numeric := decodeSetTestNumeric(t, data)
+	id := hash.ID(name)
+	require.Equal(t, 0, numeric.Len(id), "patched numeric entry must be empty")
+
+	text := encodeTextSeries(t, base, textSeries{name, []string{"a", "b"}})
+	bs := NewBlobSet([]NumericBlob{numeric}, []TextBlob{text})
+
+	_, ok := bs.TimestampAt(id, 0)
+	require.False(t, ok, "TimestampAt must not reach the text member")
+	_, ok = bs.TimestampAtByName(name, 0)
+	require.False(t, ok, "TimestampAtByName must not reach the text member")
+	_, ok = bs.TagAtByName(name, 0)
+	require.False(t, ok, "TagAtByName must not reach the text member")
+	require.Equal(t, int64(0), bs.MetricDurationByName(name))
+	require.Equal(t, 0, bs.MetricLen(id))
+	require.Equal(t, 0, bs.MetricLenByName(name))
 }

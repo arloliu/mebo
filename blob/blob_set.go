@@ -1219,14 +1219,16 @@ func (bs BlobSet) MetricLen(metricID uint64) int {
 	txtTarget, txtCollided := bs.textIdentity.resolveID(metricID)
 
 	totalLen := 0
+	foundInNumeric := false
 
 	for i := range bs.numericBlobs {
 		if entry, ok := bs.numericBlobs[i].index.resolveEntry(metricID, numTarget, numCollided); ok {
 			totalLen += entry.Count
+			foundInNumeric = true
 		}
 	}
 
-	if totalLen > 0 {
+	if foundInNumeric {
 		return totalLen
 	}
 
@@ -1260,14 +1262,16 @@ func (bs BlobSet) MetricLenByName(metricName string) int {
 	txtSkipStripped := bs.textIdentity.excludesStripped(metricName)
 
 	totalLen := 0
+	foundInNumeric := false
 
 	for i := range bs.numericBlobs {
 		if entry, ok := bs.numericBlobs[i].index.resolveEntryByName(metricName, numSkipStripped); ok {
 			totalLen += entry.Count
+			foundInNumeric = true
 		}
 	}
 
-	if totalLen > 0 {
+	if foundInNumeric {
 		return totalLen
 	}
 
