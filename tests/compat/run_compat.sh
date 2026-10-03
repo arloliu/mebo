@@ -18,8 +18,9 @@
 # Build tags:
 #   The script automatically applies "-tags v2" for any version >= v1.5.0,
 #   "-tags alp" for any version >= v1.8.0, "-tags alpvalidate" for any
-#   version >= v1.9.0, and "-tags metricnames" for any version >= v1.10.0. Add a new version gate next to needs_v2_tag() /
-#   needs_alp_tag() / needs_metricnames_tag() if future releases introduce
+#   version >= v1.9.0, "-tags metricnames" for any version >= v1.10.0, and
+#   "-tags alprle" for any version >= v1.12.0. Add a new version gate next to needs_v2_tag() /
+#   needs_alp_tag() / needs_metricnames_tag() / needs_alprle_tag() if future releases introduce
 #   more capability tags.
 #
 # Capability-gated encodings:
@@ -155,6 +156,23 @@ needs_metricnames_tag() {
     [[ "$major" -gt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -ge 10 ]]; }
 }
 
+# needs_alprle_tag returns true if $1 >= v1.12.0, the first release planned to
+# ship format.TypeALPRLE (value encoding 0x7); the ALP-RLE scenarios
+# (scenarios_alprle.go) reference it, so they live behind this tag (mirrors
+# needs_alp_tag). Branch refs pass every gate, like the other tags. Update the
+# version here if ALP-RLE ships in a different release.
+needs_alprle_tag() {
+    local ref="$1"
+    if ! is_semver_ref "$ref"; then
+        warn_non_semver "$ref"
+        return 0
+    fi
+    local tag="${ref#v}"
+    local major minor
+    IFS='.' read -r major minor _ <<< "$tag"
+    [[ "$major" -gt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -ge 12 ]]; }
+}
+
 # build_tags_for returns the combined "-tags a,b" argument (or "") for the
 # given release tag/ref, based on which capabilities it supports.
 build_tags_for() {
@@ -164,6 +182,7 @@ build_tags_for() {
     needs_alp_tag "$tag" && tags+=("alp")
     needs_alpvalidate_tag "$tag" && tags+=("alpvalidate")
     needs_metricnames_tag "$tag" && tags+=("metricnames")
+    needs_alprle_tag "$tag" && tags+=("alprle")
     if [[ ${#tags[@]} -eq 0 ]]; then
         echo ""
     else
@@ -187,6 +206,7 @@ needs_v2_tag "$OLD_TAG" && OLD_SUPPORTS_V2=true || true
 # Matrix 3b asserts OLD decodes (gate passes) or gracefully rejects them.
 CAPABILITY_BUCKETS=(
     "alp:alp-:needs_alp_tag"
+    "alprle:alprle-:needs_alprle_tag"
 )
 
 # Whether NEW was built with the metric-names (v1.10.0+) capability, i.e.
