@@ -14,7 +14,8 @@ import (
 // ALP-RLE speed gates at the production shape (docs/specs/alp-rle-design.md, "Speed gates"):
 // 100 metrics × 150 points, little-endian V2 with shared DeltaPacked timestamps, no compression, no tags.
 // Decode-side benchmarks use the calibrated hold-50% shape, where every ALP-RLE column takes the runs layout;
-// the run-free encode benchmark uses a 2-decimal gauge with no repeats, where every column stays plain.
+// the run-free encode benchmark uses a 2-decimal gauge with no forced holds,
+// whose few rounding repeats never pass the encoder's pruning rule, so every column stays plain.
 // Each benchmark runs Chimp (production today), ALP and ALP-RLE on the same data.
 // Single-binary results only show direction; the gates are decided layout-averaged.
 
@@ -89,6 +90,7 @@ func alpRLEGateBlob(tb testing.TB, cols [][]float64, valEnc format.EncodingType)
 	return blob
 }
 
+// BenchmarkALPRLEGate_ValueAt measures one NumericBlob.ValueAt lookup per metric, spread over the whole column.
 func BenchmarkALPRLEGate_ValueAt(b *testing.B) {
 	cols := alpRLEGateColumns(0.5, 1)
 	for _, e := range alpRLEGateEncodings {
@@ -110,6 +112,7 @@ func BenchmarkALPRLEGate_ValueAt(b *testing.B) {
 	}
 }
 
+// BenchmarkALPRLEGate_Materialize measures materializing the whole blob, reported per point.
 func BenchmarkALPRLEGate_Materialize(b *testing.B) {
 	cols := alpRLEGateColumns(0.5, 1)
 	for _, e := range alpRLEGateEncodings {
@@ -124,6 +127,7 @@ func BenchmarkALPRLEGate_Materialize(b *testing.B) {
 	}
 }
 
+// BenchmarkALPRLEGate_ForEachValues measures ForEachValues over every metric, reported per point.
 func BenchmarkALPRLEGate_ForEachValues(b *testing.B) {
 	cols := alpRLEGateColumns(0.5, 1)
 	for _, e := range alpRLEGateEncodings {
@@ -149,6 +153,7 @@ func BenchmarkALPRLEGate_ForEachValues(b *testing.B) {
 	}
 }
 
+// BenchmarkALPRLEGate_EncodeRunFree measures encoding the whole blob from gauges without forced holds.
 func BenchmarkALPRLEGate_EncodeRunFree(b *testing.B) {
 	cols := alpRLEGateColumns(0, 2)
 	for _, e := range alpRLEGateEncodings {
@@ -161,6 +166,7 @@ func BenchmarkALPRLEGate_EncodeRunFree(b *testing.B) {
 	}
 }
 
+// BenchmarkALPRLEGate_EncodeHold50 measures encoding the whole blob from the hold-50% gauges.
 func BenchmarkALPRLEGate_EncodeHold50(b *testing.B) {
 	cols := alpRLEGateColumns(0.5, 1)
 	for _, e := range alpRLEGateEncodings {
