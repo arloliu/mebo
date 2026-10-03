@@ -1,7 +1,15 @@
 # Performance Guide
 
-> **Auto-generated** by the `update-performance-report` agent skill from benchmark data.
-> To regenerate: run `tests/measurev2/` and use the skill.
+> Most of this document is **auto-generated** by the `update-performance-report` agent skill
+> from benchmark data — everything from [Quick Reference](#quick-reference) through
+> [Scaling Analysis](#scaling-analysis).
+> To regenerate those sections: run `tests/measurev2/` and use the skill.
+>
+> The [Codec Selection by Data Shape](#codec-selection-by-data-shape) section is composed manually from `tests/measurev2`'s profile-based benchmarks
+> (its "Provenance" boxes have the reproduce recipes);
+> the skill does not regenerate it.
+> **Regenerating this document wipes that section:**
+> re-add it after running the skill, from the per-profile JSON its recipes produce (gitignored, so regenerate them first).
 
 {{BENCHMARK_METADATA}}
 
@@ -17,6 +25,7 @@ This document provides encoding benchmark results, scaling analysis, and best pr
 - [Iteration Performance](#iteration-performance)
 - [Random Access Performance](#random-access-performance)
 - [Scaling Analysis](#scaling-analysis)
+- [Codec Selection by Data Shape](#codec-selection-by-data-shape)
 - [Choosing an Encoding Strategy](#choosing-an-encoding-strategy)
 
 ## Quick Reference
@@ -55,7 +64,7 @@ make bench-measure
 
 ## Encoding Comparison
 
-All 24 valid encoding combinations (12 standard timestamp × value + 12 with shared timestamps — 3 timestamp encodings × 4 value encodings: Raw, Gorilla, Chimp, ALP), benchmarked without additional compression codecs.
+All 30 valid encoding combinations (15 standard timestamp × value + 15 with shared timestamps — 3 timestamp encodings × 5 value encodings: Raw, Gorilla, Chimp, ALP, ALP-RLE), benchmarked without additional compression codecs.
 Shared-timestamp combos use `WithSharedTimestamps()` to deduplicate identical timestamp sequences across metrics.
 
 Sorted by encoded size (most efficient first):
@@ -96,7 +105,9 @@ have fundamentally different random-access complexity, not just different consta
 |---|---|---|
 | Raw (timestamp or value) | O(1) | Direct offset into a fixed-width array |
 | ALP (value) | O(1) + O(log k) | O(1) windowed bit read, plus binary search over that column's exception sidecar (k = exceptions in that column, not n) |
+| ALP-RLE (value) | O(index/64) + O(log k) | A column with repeats ranks the run-start bitmap one 64-bit word at a time (at most 3 popcounts at 150 points), then reads that run like ALP; a column without repeats is plain ALP |
 | Delta / DeltaPacked (timestamp) | O(index) | Must sequentially decode every delta from the start — each value depends on the accumulated sum before it |
+| Shared timestamps (any encoding) | O(1) | Decoded once into a cache when the blob is opened; `TimestampAt` reads the cache |
 | Gorilla / Chimp (value) | O(index) | Must sequentially decode the XOR chain from the start of the column |
 
 A uniformly random index makes the O(index) encodings pay their realistic *average* cost across

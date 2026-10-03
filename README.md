@@ -125,14 +125,14 @@ For bulk insertion, buffer reuse with `FinishInto`, callback iteration with `For
 
 ## Performance
 
-Benchmark: 200 metrics × 200 points (40,000 total data points), AMD Ryzen 9 9950X3D, Go go1.26.1.
+Benchmark: 200 metrics × 200 points (40,000 total data points), AMD Ryzen 9 9950X3D, Go go1.26.7.
 
 | Configuration | Bytes/Point | Space Savings | Notes |
 |---------------|------------:|:-------------:|-------|
 | Shared Delta + Chimp | 6.349 | 60.5% | Best compression; requires shared timestamps |
 | Delta + Chimp | 8.297 | 48.4% | Best without shared timestamps |
 | Delta + Gorilla | 8.544 | 46.9% | Default; well-tested XOR encoding |
-| Raw + Raw | 16.081 | 0% | Baseline; fastest encode (315,017 ns/op) |
+| Raw + Raw | 16.081 | 0% | Baseline; fastest encode (330,719 ns/op) |
 
 That table uses general-shape random-walk data. On **decimal-quantized data** — sensor readings
 rounded to a fixed number of decimal places, a very common real-world shape — ALP does
@@ -164,8 +164,8 @@ Delta and DeltaPacked produce similar compression ratios (~2% difference). Use D
 | Chimp | 1–8 bytes | O(index) | Same as Gorilla; ~2.9% better compression; VLDB 2022 |
 | ALP | Variable | O(1) + O(log k)* | Decimal-quantized sensor data (2–4 dp): 4–6× smaller than raw, 1–2.5× smaller than the next-best codec. No guaranteed win on genuinely full-precision data — costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
 
-\* k = exceptions in that column, not its length — measured 25–35× faster than Gorilla/Chimp's
-`ValueAt` on 200-point columns; see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance).
+\* k = exceptions in that column, not its length — measured 21–32× faster than Gorilla/Chimp's
+`ValueAt` on the main benchmark's 200-point columns; see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance).
 
 ### Compression Algorithms
 
@@ -203,7 +203,7 @@ encoder, _ := mebo.NewDefaultNumericEncoder(time.Now())
 **Configuration**: Delta timestamps, Gorilla values, no codec compression.
 **Result**: 8.544 bytes/point (46.9% savings). Recommended for most workloads.
 
-### Fastest Iteration (DeltaPacked + Raw)
+### Fast Iteration Without a Value Codec (DeltaPacked + Raw)
 
 ```go
 encoder, _ := mebo.NewNumericEncoder(time.Now(),
@@ -212,10 +212,11 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 10.244 bytes/point (36.3% savings), 216,241 ns/op sequential iteration for the
-200×200 dataset — among the fastest of any configuration. DeltaPacked's Group Varint batch
-decoding is optimized for read throughput, not encode speed; if encode speed is the priority,
-plain Raw + Raw is fastest to encode (315,017 ns/op) at the cost of no compression.
+**Result**: 10.244 bytes/point (36.3% savings), 269,766 ns/op sequential iteration for the 200×200 dataset.
+DeltaPacked's Group Varint batch decoding is optimized for read throughput, not encode speed;
+if encode speed is the priority, plain Raw + Raw is fastest to encode (330,719 ns/op) at the cost of no compression.
+In the 2026-10 run, the ALP and ALP-RLE combos iterate faster (Raw + ALP at 198,948 ns/op);
+see [Performance Guide § Iteration Performance](docs/performance.md#iteration-performance).
 
 ### Query-Optimized (Raw + Raw)
 

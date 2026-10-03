@@ -66,7 +66,7 @@ Fixed per-metric overhead (index entry, header flags, metadata) totals ~34–44 
 | Points/Metric | Approx BPP (Delta+Gorilla) | Efficiency |
 |---------------|---------------------------|------------|
 | 1             | ~32                       | Poor — overhead dominates |
-| 10            | ~10.7                     | Acceptable |
+| 10            | ~11.0                     | Acceptable |
 | 50            | ~8.9                      | Good |
 | 100           | ~8.6                      | Excellent |
 | 200           | ~8.5                      | Optimal — diminishing returns beyond this |
@@ -81,7 +81,7 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 | Slowly changing floats (CPU, memory) | Gorilla or Chimp value | XOR compression; ~2–5 bytes/val |
 | Rapidly changing or discontinuous values | Raw value | No decompression overhead |
 | Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; ~20–25% additional savings at 200 metrics |
-| Decimal-quantized sensor data (2–4 dp) | ALP value | 2.5–6× smaller than Chimp/Gorilla on this shape; costs more to encode |
+| Decimal-quantized sensor data (2–4 dp) | ALP value | 1.9–2.7× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles; costs more to encode |
 | Frequent random-access timestamps | Raw timestamp | O(1) `TimestampAt`; Delta/DeltaPacked must sequentially decode from the start (O(index)) |
 | Frequent random-access values | Raw or ALP value | Raw is O(1); ALP is O(1) + O(log k) (k = exceptions in the column) — both far ahead of Gorilla/Chimp, which must sequentially decode the XOR chain from the start (O(index)) |
 

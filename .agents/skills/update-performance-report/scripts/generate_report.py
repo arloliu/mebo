@@ -20,16 +20,40 @@ import sys
 # offset (true O(1)). ALP is a windowed bit read (O(1)) plus a binary search over
 # that column's exception sidecar (O(log k), k = exceptions in the column, not n) —
 # genuinely different from a plain O(1), so don't collapse it into "O(1)" either.
+# ALP-RLE adds a rank over the run-start bitmap before the nested ALP lookup:
+# a word-wise popcount of bits 0..index with no rank directory
+# (alpRunsRank in internal/encoding/value/alp/alp_runs.go),
+# so O(index/64), at most 3 popcounts at 150 points.
+# Columns that stay plain (no runs layout) are exactly ALP.
 # Gorilla/Chimp (values) and Delta/DeltaPacked (timestamps) must sequentially decode
 # from the start of the column, so they're O(index), worst-case O(n).
+# Shared timestamps (any encoding) are decoded once into a cache when the blob is opened
+# (sharedTsCache, built in blob/numeric_decoder.go),
+# so TimestampAt is O(1) for every shared-* combo regardless of its timestamp encoding;
+# see ts_complexity().
 AT_COMPLEXITY = {
     'raw': 'O(1)',
     'alp': 'O(1) + O(log k) exceptions',
+    'alprle': 'O(index/64) bitmap rank + O(1) + O(log k) exceptions',
     'gorilla': 'O(index), sequential XOR decode from the start',
     'chimp': 'O(index), sequential XOR decode from the start',
     'delta': 'O(index), sequential decode from the start',
     'deltapacked': 'O(index), sequential decode from the start',
 }
+
+SHARED_TS_COMPLEXITY = 'O(1), cached when the blob is opened'
+
+VAL_NAMES = {'raw': 'Raw', 'gorilla': 'Gorilla', 'chimp': 'Chimp', 'alp': 'ALP', 'alprle': 'ALP-RLE'}
+TS_NAMES = {'raw': 'Raw', 'delta': 'Delta', 'deltapacked': 'DeltaPacked'}
+
+
+def ts_complexity(label):
+    """TimestampAt complexity for a combo label; shared-* combos read a cache."""
+    shared, ts_key, _ = parse_label(label)
+    if shared:
+        return SHARED_TS_COMPLEXITY
+
+    return AT_COMPLEXITY.get(ts_key, 'unknown')
 
 
 def parse_label(label):
@@ -44,19 +68,12 @@ def parse_label(label):
 
 def fmt_label(label):
     """Convert label like 'shared-delta-chimp' to 'Shared Delta + Chimp'."""
-    parts = label.split('-')
-    if parts[0] == 'shared':
-        ts = parts[1]
-        val = parts[2]
-        ts_name = {'raw': 'Raw', 'delta': 'Delta', 'deltapacked': 'DeltaPacked'}[ts]
-        val_name = {'raw': 'Raw', 'gorilla': 'Gorilla', 'chimp': 'Chimp', 'alp': 'ALP'}[val]
-        return f"Shared {ts_name} + {val_name}"
-    else:
-        ts = parts[0]
-        val = parts[1]
-        ts_name = {'raw': 'Raw', 'delta': 'Delta', 'deltapacked': 'DeltaPacked'}[ts]
-        val_name = {'raw': 'Raw', 'gorilla': 'Gorilla', 'chimp': 'Chimp', 'alp': 'ALP'}[val]
-        return f"{ts_name} + {val_name}"
+    shared, ts, val = parse_label(label)
+    name = f"{TS_NAMES[ts]} + {VAL_NAMES[val]}"
+    if shared:
+        return f"Shared {name}"
+
+    return name
 
 
 def gen_benchmark_metadata(meta):
@@ -191,6 +208,30 @@ def gen_encoding_observations(matrix):
             f"({d_alp['encode']['ns_per_op']:,.0f} vs {d_chimp['encode']['ns_per_op']:,.0f} "
             f"ns/op for Chimp) due to its per-column (e,f) search."
         )
+    d_alprle = next((r for r in matrix if r['label'] == 'delta-alprle'), None)
+    if d_alp is not None and d_alprle is not None:
+        rle_size = (d_alprle['bytes_per_point'] / d_alp['bytes_per_point'] - 1) * 100
+        rle_enc = d_alprle['encode']['ns_per_op'] / d_alp['encode']['ns_per_op']
+        if abs(rle_size) < 0.05:
+            rle_size_text = "the same size as Delta + ALP"
+        elif rle_size < 0:
+            rle_size_text = f"{abs(rle_size):.1f}% smaller than Delta + ALP"
+        else:
+            rle_size_text = f"{rle_size:.1f}% larger than Delta + ALP"
+        # Explain only a size tie, which means few or no columns took the runs layout;
+        # the generator may be fed a profile JSON with repeats, so assume nothing else.
+        if abs(rle_size) < 0.05:
+            rle_reason = (
+                " — the same size means few or no columns had enough repeats for the runs layout"
+            )
+        else:
+            rle_reason = ""
+        lines.append(
+            f"- **ALP-RLE on this dataset**: Delta + ALP-RLE is "
+            f"{d_alprle['bytes_per_point']:.3f} BPP, {rle_size_text}, and encodes at "
+            f"{rle_enc:.2f}× its cost{rle_reason}. ALP-RLE pays off where many consecutive "
+            f"points repeat; see \"Codec Selection by Data Shape\" below."
+        )
     lines.append(
         f"- **DeltaPacked vs Delta**: DeltaPacked shows ~{abs(dp_vs_d):.1f}% "
         f"{'larger' if dp_vs_d > 0 else 'smaller'} encoded size than Delta "
@@ -224,14 +265,22 @@ def gen_encoding_observations(matrix):
     shared_dec = sorted(shared_combos, key=lambda x: x['decode']['ns_per_op'])
     non_shared_dec = sorted(non_shared, key=lambda x: x['decode']['ns_per_op'])
     dec_delta_pct = (1 - shared_dec[0]['decode']['ns_per_op'] / non_shared_dec[0]['decode']['ns_per_op']) * 100
-    dec_comparator = "faster than" if dec_delta_pct >= 0 else "close to (slightly slower than)"
+    if dec_delta_pct >= 0:
+        dec_reason = (
+            "decode speed is dominated by header-parsing overhead, so blob-size differences from "
+            "timestamp dedup show up more in memory footprint than in raw decode latency at this scale."
+        )
+    else:
+        dec_reason = (
+            "shared-TS blobs are smaller, but opening one also decodes the shared timestamp columns "
+            "into the cache behind its O(1) `TimestampAt`, so a smaller blob does not mean a faster open."
+        )
     lines.append(
         f"- **Decode speed**: The fastest shared-TS combo decodes "
-        f"~{abs(dec_delta_pct):.0f}% {dec_comparator} the fastest non-shared combo "
+        f"~{abs(dec_delta_pct):.0f}% {'faster' if dec_delta_pct >= 0 else 'slower'} than the "
+        f"fastest non-shared combo "
         f"({shared_dec[0]['decode']['ns_per_op']:,.0f} vs "
-        f"{non_shared_dec[0]['decode']['ns_per_op']:,.0f} ns/op) — decode speed is dominated by "
-        f"header-parsing overhead, so blob-size differences from timestamp dedup show up more "
-        f"in memory footprint than in raw decode latency at this scale."
+        f"{non_shared_dec[0]['decode']['ns_per_op']:,.0f} ns/op) — {dec_reason}"
     )
 
     return '\n'.join(lines)
@@ -266,12 +315,12 @@ def gen_random_access_table(matrix):
         "|---|---:|---|---:|---|",
     ]
     for r in by_combined:
-        _, ts_key, val_key = parse_label(r['label'])
+        _, _, val_key = parse_label(r['label'])
         lines.append(
             f"| {fmt_label(r['label'])} | {r['random_value_at']['ns_per_op']:,.0f} "
             f"| {AT_COMPLEXITY.get(val_key, 'unknown')} "
             f"| {r['random_timestamp_at']['ns_per_op']:,.0f} "
-            f"| {AT_COMPLEXITY.get(ts_key, 'unknown')} |"
+            f"| {ts_complexity(r['label'])} |"
         )
     return '\n'.join(lines)
 
@@ -408,7 +457,8 @@ def gen_decision_tree(matrix):
         matrix, key=lambda x: x['random_value_at']['ns_per_op'] + x['random_timestamp_at']['ns_per_op']
     )
     fastest_random = by_random_access[0]
-    _, fr_ts_key, fr_val_key = parse_label(fastest_random['label'])
+    _, _, fr_val_key = parse_label(fastest_random['label'])
+    fr_ts = ts_complexity(fastest_random['label'])
 
     # Best non-shared
     non_shared = sorted(
@@ -430,7 +480,7 @@ What is your priority?
 │
 ├─ Fastest iteration / decode?
 │  ├─ Sequential scan → {fmt_label(fastest_iter['label'])} ({fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op)
-│  └─ Random access  → {fmt_label(fastest_random['label'])} (ValueAt {fastest_random['random_value_at']['ns_per_op']:,.0f} ns/op [{AT_COMPLEXITY.get(fr_val_key, '?')}], TimestampAt {fastest_random['random_timestamp_at']['ns_per_op']:,.0f} ns/op [{AT_COMPLEXITY.get(fr_ts_key, '?')}])
+│  └─ Random access  → {fmt_label(fastest_random['label'])} (ValueAt {fastest_random['random_value_at']['ns_per_op']:,.0f} ns/op [{AT_COMPLEXITY.get(fr_val_key, '?')}], TimestampAt {fastest_random['random_timestamp_at']['ns_per_op']:,.0f} ns/op [{fr_ts}])
 │
 └─ Best balance (size + speed)?
    ├─ With shared TS → {fmt_label(by_bpp[0]['label'])} ({by_bpp[0]['bytes_per_point']:.3f} BPP, {by_bpp[0]['iter_seq']['ns_per_op']:,.0f} ns/op iter)
@@ -454,7 +504,8 @@ def gen_config_selection(matrix):
         matrix, key=lambda x: x['random_value_at']['ns_per_op'] + x['random_timestamp_at']['ns_per_op']
     )
     fastest_random = by_random_access[0]
-    _, fr_ts_key, fr_val_key = parse_label(fastest_random['label'])
+    _, _, fr_val_key = parse_label(fastest_random['label'])
+    fr_ts = ts_complexity(fastest_random['label'])
 
     # Best balance: a combo that ranks in the top 5 for BOTH BPP and iteration speed.
     # This intersection is frequently empty (compression leaders and speed leaders are
@@ -485,7 +536,7 @@ def gen_config_selection(matrix):
 | **Fastest iteration** | {fmt_label(fastest_iter['label'])} | {fastest_iter['iter_seq']['ns_per_op']:,.0f} ns/op | Fastest sequential scan of any combo tested |
 | **Fastest encode** | {fmt_label(fastest_enc['label'])} | {fastest_enc['encode']['ns_per_op']:,.0f} ns/op | {fastest_enc_rationale} |
 | **Best balance** | {fmt_label(balance['label'])} | {balance['bytes_per_point']:.3f} BPP, {balance['iter_seq']['ns_per_op']:,.0f} ns/op iter | {balance_rationale} |
-| **Random access** | {fmt_label(fastest_random['label'])} | ValueAt {fastest_random['random_value_at']['ns_per_op']:,.0f} ns/op, TimestampAt {fastest_random['random_timestamp_at']['ns_per_op']:,.0f} ns/op | Value: {AT_COMPLEXITY.get(fr_val_key, '?')}; Timestamp: {AT_COMPLEXITY.get(fr_ts_key, '?')} |
+| **Random access** | {fmt_label(fastest_random['label'])} | ValueAt {fastest_random['random_value_at']['ns_per_op']:,.0f} ns/op, TimestampAt {fastest_random['random_timestamp_at']['ns_per_op']:,.0f} ns/op | Value: {AT_COMPLEXITY.get(fr_val_key, '?')}; Timestamp: {fr_ts} |
 | **Maximum throughput** | Raw + Raw | {raw_raw['encode']['ns_per_op']:,.0f} ns/op encode | Baseline; no encoding overhead but largest output |"""
 
 
