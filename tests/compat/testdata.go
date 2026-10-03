@@ -123,6 +123,12 @@ type Manifest struct {
 	// explicitly force names on (WithMetricNames(), a real collision, or
 	// text's names-on-by-default); left false (no assertion) elsewhere.
 	WantNamesPayload bool `json:"want_names_payload,omitempty"`
+	// PanicWithoutALPValidation marks a Graceful ALP corruption fixture that
+	// a decoder without open-time ALP validation (v1.8.0) is known to panic
+	// on. runDecode tolerates the panic only when this is set AND the
+	// decoding binary was built without the "alpvalidate" tag; see
+	// verify.go's alpOpenValidation. Ignored by "decode".
+	PanicWithoutALPValidation bool `json:"panic_without_alp_validation,omitempty"`
 }
 
 // bitsToFloat64 converts stored bit pattern back to float64.
