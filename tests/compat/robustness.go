@@ -22,6 +22,20 @@ type corruptScenario struct {
 // legitimately accept as structurally valid-but-wrong — see
 // corrupt-flipped-bits below for the one fixture that does this today.
 func corruptionScenarios(indir string) []corruptScenario {
+	scenarios := baseCorruptionScenarios(indir)
+	for _, extra := range extraCorruptionScenarios {
+		scenarios = append(scenarios, extra(indir)...)
+	}
+
+	return scenarios
+}
+
+// extraCorruptionScenarios holds corruption fixture builders registered by
+// capability-tagged files (e.g. scenarios_alp.go), whose seed blobs only
+// exist when the generating binary was built with that capability.
+var extraCorruptionScenarios []func(indir string) []corruptScenario
+
+func baseCorruptionScenarios(indir string) []corruptScenario {
 	seed := "num-v1-defaults"
 	return []corruptScenario{
 		{

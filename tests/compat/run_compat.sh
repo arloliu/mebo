@@ -17,9 +17,18 @@
 #
 # Build tags:
 #   The script automatically applies "-tags v2" for any version >= v1.5.0,
-#   and "-tags metricnames" for any version >= v1.10.0. Add a new version
-#   gate in needs_v2_tag() / needs_metricnames_tag() if future releases
-#   introduce more capability tags.
+#   "-tags alp" for any version >= v1.8.0, "-tags alpvalidate" for any
+#   version >= v1.9.0, and "-tags metricnames" for any version >= v1.10.0. Add a new version gate next to needs_v2_tag() /
+#   needs_alp_tag() / needs_metricnames_tag() if future releases introduce
+#   more capability tags.
+#
+# Capability-gated encodings:
+#   Scenarios for a value encoding that older releases cannot read (ALP is
+#   the first) use their own ID prefix and are listed in CAPABILITY_BUCKETS.
+#   Matrix 2 drops a bucket OLD does not support, and Matrix 3b then requires
+#   OLD to reject that bucket gracefully; when OLD supports it, OLD must
+#   decode it like any other blob. Adding a new encoding = one tag gate plus
+#   one CAPABILITY_BUCKETS entry.
 #
 # Test Matrix:
 #   1. OLD encodes → NEW decodes:                 expect all PASS  (backward compat: new code reads old data)
@@ -31,6 +40,9 @@
 #        - when OLD predates V2, only NEW's V1-layout output is used here,
 #          and NEW's V2-only output is exercised in matrix 3 as a "must
 #          reject" case instead.
+#  3b. OLD and NEW's capability-gated output (one bucket per encoding, e.g. alp-*):
+#        - OLD supports the encoding:        expect all PASS
+#        - OLD predates the encoding:        expect ERROR, no panic (graceful reject)
 #   3. OLD decodes NEW's V2-only output:
 #        - OLD supports V2:                  expect all PASS  (V2 is an understood format)
 #        - OLD predates V2:                  expect ERROR, no panic (graceful reject)
@@ -94,6 +106,37 @@ needs_v2_tag() {
     [[ "$major" -gt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -ge 5 ]]; }
 }
 
+# needs_alp_tag returns true if $1 >= v1.8.0, the first release with
+# format.TypeALP; the ALP scenarios (scenarios_alp.go) reference it, so they
+# live behind this tag (mirrors needs_v2_tag).
+needs_alp_tag() {
+    local ref="$1"
+    if ! is_semver_ref "$ref"; then
+        warn_non_semver "$ref"
+        return 0
+    fi
+    local tag="${ref#v}"
+    local major minor
+    IFS='.' read -r major minor _ <<< "$tag"
+    [[ "$major" -gt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -ge 8 ]]; }
+}
+
+# needs_alpvalidate_tag returns true if $1 >= v1.9.0, the first release that
+# validates ALP columns when a blob is opened. Without it (v1.8.0) the
+# harness tolerates the known panic on alp-corrupt-flipped-values only; see
+# alpOpenValidation in verify.go.
+needs_alpvalidate_tag() {
+    local ref="$1"
+    if ! is_semver_ref "$ref"; then
+        warn_non_semver "$ref"
+        return 0
+    fi
+    local tag="${ref#v}"
+    local major minor
+    IFS='.' read -r major minor _ <<< "$tag"
+    [[ "$major" -gt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -ge 9 ]]; }
+}
+
 # needs_metricnames_tag returns true if $1 >= v1.10.0 (needs -tags
 # metricnames). v1.10.0 adds new public symbols (WithMetricNames,
 # WithoutMetricNames, StripMetricNames, StripMetricNamesInPlace,
@@ -118,6 +161,8 @@ build_tags_for() {
     local tag="$1"
     local tags=()
     needs_v2_tag "$tag" && tags+=("v2")
+    needs_alp_tag "$tag" && tags+=("alp")
+    needs_alpvalidate_tag "$tag" && tags+=("alpvalidate")
     needs_metricnames_tag "$tag" && tags+=("metricnames")
     if [[ ${#tags[@]} -eq 0 ]]; then
         echo ""
@@ -137,6 +182,13 @@ NEW_BUILD_TAGS="$(build_tags_for "$NEW_TAG")"
 OLD_SUPPORTS_V2=false
 needs_v2_tag "$OLD_TAG" && OLD_SUPPORTS_V2=true || true
 
+# Capability-gated encodings, as "name:scenario-id-prefix:gate-function".
+# Each bucket's blobs are kept out of Matrix 2 when OLD lacks the gate, and
+# Matrix 3b asserts OLD decodes (gate passes) or gracefully rejects them.
+CAPABILITY_BUCKETS=(
+    "alp:alp-:needs_alp_tag"
+)
+
 # Whether NEW was built with the metric-names (v1.10.0+) capability, i.e.
 # whether the metric-names-specific "must decode" scenarios and "must
 # reject" adversarial fixtures (mn-*) exist at all for this pair.
@@ -144,8 +196,14 @@ NEW_SUPPORTS_METRICNAMES=false
 needs_metricnames_tag "$NEW_TAG" && NEW_SUPPORTS_METRICNAMES=true || true
 
 # Slug versions for directory/binary names (strip dots and 'v').
-old_slug="${OLD_TAG//[v.]}"
-new_slug="${NEW_TAG//[v.]}"
+# Slugs are used as path components, so anything other than [A-Za-z0-9_-]
+# (e.g. the '/' in a branch ref like feat/x) becomes '-'.
+slugify() {
+    local s="${1//[v.]}"
+    echo "${s//[^A-Za-z0-9_-]/-}"
+}
+old_slug="$(slugify "${OLD_TAG}")"
+new_slug="$(slugify "${NEW_TAG}")"
 
 # ============================================================
 # Configuration
@@ -167,6 +225,7 @@ DATA_OLD="${TESTDATA}/encoded-by-${old_slug}"
 DATA_NEW_FULL="${TESTDATA}/encoded-by-${new_slug}-full"
 DATA_NEW_NEWFORMAT="${TESTDATA}/encoded-by-${new_slug}-newformat"
 DATA_NEW_V1ONLY="${TESTDATA}/encoded-by-${new_slug}-v1only"
+DATA_NEW_FORWARD="${TESTDATA}/encoded-by-${new_slug}-forward-${old_slug}"
 DATA_CORRUPT="${TESTDATA}/corrupted"
 DATA_MN_REJECT="${TESTDATA}/metricnames-reject-${new_slug}"
 
@@ -205,6 +264,14 @@ section "Setup (${OLD_TAG} ↔ ${NEW_TAG})"
 echo "  OLD_TAG=${OLD_TAG}  build_tags='${OLD_BUILD_TAGS}'"
 echo "  NEW_TAG=${NEW_TAG}  build_tags='${NEW_BUILD_TAGS}'"
 mkdir -p "${WORK_DIR}" "${TESTDATA}"
+# Start every run from empty output directories: testdata/ persists between
+# runs (it is gitignored), and DATA_CORRUPT is shared by every version pair,
+# so leftover fixtures from an earlier pair would otherwise be re-checked here.
+rm -rf "${DATA_OLD}" "${DATA_NEW_FULL}" "${DATA_NEW_NEWFORMAT}" "${DATA_NEW_V1ONLY}" \
+    "${DATA_NEW_FORWARD}" "${DATA_CORRUPT}" "${DATA_MN_REJECT}"
+for bucket in "${CAPABILITY_BUCKETS[@]}"; do
+    rm -rf "${TESTDATA}/encoded-by-${new_slug}-${bucket%%:*}"
+done
 
 info "Creating worktree for ${OLD_TAG}"
 git -C "${REPO_ROOT}" worktree add --detach "${WORK_OLD}" "${OLD_TAG}" 2>&1
@@ -282,6 +349,45 @@ for f in "${DATA_NEW_FULL}"/num-v1-*.blob "${DATA_NEW_FULL}"/num-v1-*.json \
 done
 ok "Filter V1-only blobs for OLD decoder"
 
+# Split NEW's output by capability bucket. DATA_NEW_FORWARD is NEW's full
+# output minus every bucket OLD cannot read; each bucket also gets its own
+# directory for Matrix 3b.
+mkdir -p "${DATA_NEW_FORWARD}"
+cp -a "${DATA_NEW_FULL}/." "${DATA_NEW_FORWARD}/"
+#
+# A bucket NEW supports must be non-empty and every manifest must have its
+# blob; otherwise Matrix 3b would skip or run zero scenarios and pass
+# without testing anything. Copy errors fail the step instead of being
+# swallowed.
+for bucket in "${CAPABILITY_BUCKETS[@]}"; do
+    IFS=':' read -r cap_name cap_prefix cap_gate <<< "${bucket}"
+    cap_dir="${TESTDATA}/encoded-by-${new_slug}-${cap_name}"
+    mkdir -p "${cap_dir}"
+    cap_files=()
+    while IFS= read -r -d '' f; do
+        cap_files+=("$f")
+    done < <(find "${DATA_NEW_FULL}" -maxdepth 1 -type f -name "${cap_prefix}*" -print0)
+    if [[ ${#cap_files[@]} -gt 0 ]] && ! cp "${cap_files[@]}" "${cap_dir}/"; then
+        fail "Copy ${cap_name} bucket into ${cap_dir}"
+    fi
+    if "${cap_gate}" "${NEW_TAG}" 2>/dev/null; then
+        n_json=0
+        missing_blob=""
+        for m in "${cap_dir}"/*.json; do
+            [[ -e "$m" ]] || continue
+            n_json=$((n_json+1))
+            [[ -e "${m%.json}.blob" ]] || missing_blob+=" $(basename "${m%.json}")"
+        done
+        if [[ "${n_json}" -eq 0 || -n "${missing_blob}" ]]; then
+            fail "Capability bucket ${cap_name}: ${NEW_TAG} supports it but produced ${n_json} manifest(s); missing blobs:${missing_blob:- none}"
+        fi
+    fi
+    if ! "${cap_gate}" "${OLD_TAG}" 2>/dev/null; then
+        rm -f "${DATA_NEW_FORWARD}/${cap_prefix}"*
+    fi
+done
+ok "Split capability-gated blobs (${#CAPABILITY_BUCKETS[@]} bucket(s))"
+
 # ============================================================
 # 3. Cross-version decode matrix
 # ============================================================
@@ -303,7 +409,7 @@ run_step "Matrix-1 backward compat (${OLD_TAG}→${NEW_TAG})" \
 if [[ "${OLD_SUPPORTS_V2}" == "true" ]]; then
     info "Matrix 2: ${OLD_TAG} decodes ALL blobs encoded by ${NEW_TAG} (forward compat, full — OLD already supports V2)"
     run_step "Matrix-2 forward compat (${NEW_TAG} full→${OLD_TAG} decoder)" \
-        "${BIN_OLD}" decode --indir "${DATA_NEW_FULL}"
+        "${BIN_OLD}" decode --indir "${DATA_NEW_FORWARD}"
 else
     info "Matrix 2: ${OLD_TAG} decodes V1-layout blobs encoded by ${NEW_TAG} (forward compat)"
     run_step "Matrix-2 forward compat (${NEW_TAG} V1-layout→${OLD_TAG} decoder)" \
@@ -334,6 +440,30 @@ else
         echo "    [SKIP] No new-format blobs found — ${NEW_TAG} may not introduce a new layout"
     fi
 fi
+
+# Matrix 3b: capability-gated encodings. OLD must decode a bucket it
+# supports and reject (gracefully, no panic) a bucket it predates.
+for bucket in "${CAPABILITY_BUCKETS[@]}"; do
+    IFS=':' read -r cap_name cap_prefix cap_gate <<< "${bucket}"
+    cap_dir="${TESTDATA}/encoded-by-${new_slug}-${cap_name}"
+    if [[ -z "$(ls "${cap_dir}"/*.blob 2>/dev/null)" ]]; then
+        if "${cap_gate}" "${NEW_TAG}" 2>/dev/null; then
+            fail "Matrix-3b ${cap_name}: ${NEW_TAG} supports ${cap_name} but its bucket is empty"
+        else
+            info "Matrix 3b (${cap_name}): skipped — ${NEW_TAG} predates ${cap_name}"
+        fi
+        continue
+    fi
+    if "${cap_gate}" "${OLD_TAG}" 2>/dev/null; then
+        info "Matrix 3b (${cap_name}): ${OLD_TAG} decodes ${cap_name} blobs encoded by ${NEW_TAG}"
+        run_step "Matrix-3b ${cap_name} decode (${NEW_TAG}→${OLD_TAG})" \
+            "${BIN_OLD}" decode --indir "${cap_dir}"
+    else
+        info "Matrix 3b (${cap_name}): ${OLD_TAG} predates ${cap_name}; must reject ${NEW_TAG}'s blobs gracefully"
+        run_step "Matrix-3b ${cap_name} graceful reject (${NEW_TAG}→${OLD_TAG})" \
+            "${BIN_OLD}" reject --indir "${cap_dir}"
+    fi
+done
 
 # Matrix 4: OLD self-compat baseline
 info "Matrix 4: ${OLD_TAG} self-compatibility (baseline)"

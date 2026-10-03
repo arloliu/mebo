@@ -198,13 +198,9 @@ func runDecode(args []string, expectError bool) error {
 			// it means the harness never got to run the decoder, so it
 			// proves nothing about graceful handling.
 			if decodeErr != nil {
-				var pe *panicError
-				if errors.As(decodeErr, &pe) {
-					fmt.Printf("FAIL (decoder panicked): %v\n", decodeErr)
-				} else {
-					fmt.Printf("FAIL (harness error — fixture could not be read): %v\n", decodeErr)
+				if !reportGracefulDecodeErr(s, decodeErr) {
+					failed = append(failed, s.id)
 				}
-				failed = append(failed, s.id)
 			} else {
 				outcome := "decoded without error"
 				if result != nil && result.DecodeErr != nil {
@@ -290,6 +286,26 @@ func runDecode(args []string, expectError bool) error {
 	return nil
 }
 
+// reportGracefulDecodeErr prints the outcome of a Graceful row whose decode
+// returned a harness-level error, and reports whether the row still passes.
+// Only a known, frozen v1.8.0 panic on a fixture marked
+// PanicWithoutALPValidation passes; see verify.go's alpOpenValidation.
+func reportGracefulDecodeErr(s scenarioMeta, decodeErr error) bool {
+	var pe *panicError
+	switch {
+	case errors.As(decodeErr, &pe) && s.panicWithoutALPValidation && !alpOpenValidation:
+		fmt.Printf("KNOWN (decoder panicked; this release predates open-time ALP validation, added in v1.9.0): %v\n", decodeErr)
+
+		return true
+	case errors.As(decodeErr, &pe):
+		fmt.Printf("FAIL (decoder panicked): %v\n", decodeErr)
+	default:
+		fmt.Printf("FAIL (harness error — fixture could not be read): %v\n", decodeErr)
+	}
+
+	return false
+}
+
 type scenarioMeta struct {
 	id       string
 	blobType BlobType
@@ -303,6 +319,9 @@ type scenarioMeta struct {
 	// decode success nor decode failure is asserted — only the absence of
 	// a panic.
 	graceful bool
+	// panicWithoutALPValidation is copied from the manifest's
+	// PanicWithoutALPValidation field (see testdata.go).
+	panicWithoutALPValidation bool
 }
 
 // scenariosToRun returns the list of scenarios to process.
@@ -317,7 +336,7 @@ func scenariosToRun(indir, filter string) ([]scenarioMeta, error) {
 			if err != nil {
 				return nil, fmt.Errorf("read manifest for %s: %w", id, err)
 			}
-			result = append(result, scenarioMeta{id: id, blobType: m.BlobType, expectErrIs: m.ExpectErrIs, graceful: m.Graceful})
+			result = append(result, scenarioMeta{id: id, blobType: m.BlobType, expectErrIs: m.ExpectErrIs, graceful: m.Graceful, panicWithoutALPValidation: m.PanicWithoutALPValidation})
 		}
 		return result, nil
 	}
@@ -337,7 +356,7 @@ func scenariosToRun(indir, filter string) ([]scenarioMeta, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read manifest %s: %w", e.Name(), err)
 		}
-		result = append(result, scenarioMeta{id: id, blobType: m.BlobType, expectErrIs: m.ExpectErrIs, graceful: m.Graceful})
+		result = append(result, scenarioMeta{id: id, blobType: m.BlobType, expectErrIs: m.ExpectErrIs, graceful: m.Graceful, panicWithoutALPValidation: m.PanicWithoutALPValidation})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].id < result[j].id })
 	return result, nil

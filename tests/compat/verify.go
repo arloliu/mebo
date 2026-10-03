@@ -78,6 +78,16 @@ var materializeCollisionSafe bool
 // tag on a tagged member still fails on every version.
 var taglessTagAtReportsFound bool
 
+// alpOpenValidation is set true by alp_validate.go's init() (build tag
+// "alpvalidate"), i.e. only when built against a v1.9.0+ module. v1.8.0, the
+// first ALP release, had no open-time ALP column validation and panics on a
+// corrupted ALP value payload; v1.9.0 added validateALPColumns, which rejects
+// the same bytes with ErrInvalidALPScheme/ErrInvalidALPColumn. runDecode uses
+// this to tolerate that known, frozen v1.8.0 panic only on fixtures marked
+// Manifest.PanicWithoutALPValidation, so a panic in any other fixture, or in
+// any v1.9.0+ binary, still fails.
+var alpOpenValidation bool
+
 func (r *VerifyResult) addError(format string, args ...any) {
 	r.Errors = append(r.Errors, fmt.Sprintf(format, args...))
 }
