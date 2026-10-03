@@ -331,8 +331,8 @@ func TestNumericBlobSet_ForEach_Sparse(t *testing.T) {
 func TestNumericBlobSet_ForEachHonorsSetIdentity(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0).UTC()
 
-	memberA := decodeSetTestNumeric(t, encodeSetTestNumeric(t, base, collisiontest.NameA, 1, 2))
-	memberB := decodeSetTestNumeric(t, encodeSetTestNumeric(t, base.Add(time.Hour), collisiontest.NameB, 70, 71))
+	memberA := encodeNumericSeries(t, base, nil, numericSeries{collisiontest.NameA, []float64{1, 2}})
+	memberB := encodeNumericSeries(t, base.Add(time.Hour), nil, numericSeries{collisiontest.NameB, []float64{70, 71}})
 	stripped, ok, err := StripMetricNames(nil, encodeSetTestNumeric(t, base.Add(2*time.Hour), collisiontest.NameA, 9))
 	require.NoError(t, err)
 	require.True(t, ok)

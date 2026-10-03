@@ -1171,14 +1171,12 @@ func TestNumericBlobSet_MaterializeKeepsColumnsAligned(t *testing.T) {
 	set, err := NewNumericBlobSet([]NumericBlob{corrupt, second})
 	require.NoError(t, err)
 
-	for name, metric := range map[string]MaterializedNumericMetric{
-		"MaterializeMetric": func() MaterializedNumericMetric { m, _ := set.MaterializeMetric(1); return m }(),
-	} {
-		require.Lenf(t, metric.Values, len(metric.Timestamps), "%s column lengths", name)
-		last := len(metric.Timestamps) - 1
-		require.Equalf(t, int64(5010), metric.Timestamps[last], "%s last timestamp", name)
-		require.Equalf(t, 51.0, metric.Values[last], "%s last value", name)
-	}
+	metric, ok := set.MaterializeMetric(1)
+	require.True(t, ok)
+	require.Len(t, metric.Values, len(metric.Timestamps), "MaterializeMetric column lengths")
+	last := len(metric.Timestamps) - 1
+	require.Equal(t, int64(5010), metric.Timestamps[last], "MaterializeMetric last timestamp")
+	require.Equal(t, 51.0, metric.Values[last], "MaterializeMetric last value")
 
 	mat := set.Materialize()
 	n := mat.DataPointCount(1)
