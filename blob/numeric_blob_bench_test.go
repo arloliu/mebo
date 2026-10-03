@@ -1,9 +1,12 @@
 package blob
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
@@ -1017,4 +1020,67 @@ func encodeLayoutRawBlobs(tb testing.TB, numBlobs, numMetrics, pointsPerMetric i
 	}
 
 	return result
+}
+
+// BenchmarkNumericBlob_ForEach_DeltaCodecs measures the data-point ForEach
+// loops for Delta timestamps with Gorilla and Chimp values, on regular and
+// lightly jittered intervals.
+func BenchmarkNumericBlob_ForEach_DeltaCodecs(b *testing.B) {
+	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	metricID := hash.ID("bench.foreach")
+
+	codecs := []struct {
+		name   string
+		valEnc format.EncodingType
+	}{
+		{"DeltaGorilla", format.TypeGorilla},
+		{"DeltaChimp", format.TypeChimp},
+	}
+	intervals := []struct {
+		name   string
+		jitter int64 // maximum absolute deviation from a 1s interval, in µs
+	}{
+		{"regular", 0},
+		{"jitter", 500},
+	}
+
+	for _, codec := range codecs {
+		for _, interval := range intervals {
+			for _, count := range []int{10, 100, 1000} {
+				name := fmt.Sprintf("%s/%s/%dpts", codec.name, interval.name, count)
+				b.Run(name, func(b *testing.B) {
+					encoder, err := NewNumericEncoder(startTime,
+						WithTimestampEncoding(format.TypeDelta), WithValueEncoding(codec.valEnc))
+					require.NoError(b, err)
+					require.NoError(b, encoder.StartMetricID(metricID, count))
+					ts := startTime.UnixMicro()
+					for i := range count {
+						jitter := int64(0)
+						if interval.jitter > 0 {
+							jitter = int64(i*7919)%(2*interval.jitter+1) - interval.jitter
+						}
+						require.NoError(b, encoder.AddDataPoint(ts+jitter, 100.0+float64(i%17)*0.25, ""))
+						ts += 1_000_000
+					}
+					require.NoError(b, encoder.EndMetric())
+					data, err := encoder.Finish()
+					require.NoError(b, err)
+					decoder, err := NewNumericDecoder(data)
+					require.NoError(b, err)
+					blob, err := decoder.Decode()
+					require.NoError(b, err)
+
+					var sum float64
+					b.ReportAllocs()
+					for b.Loop() {
+						blob.ForEach(metricID, func(_ int, dp NumericDataPoint) bool {
+							sum += dp.Val
+							return true
+						})
+					}
+					_ = sum
+				})
+			}
+		}
+	}
 }
