@@ -2,9 +2,11 @@ package blob
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
@@ -263,4 +265,195 @@ func TestNumericBlob_ForEachSingleColumn_ByName(t *testing.T) {
 
 	require.False(t, blob.ForEachValuesByName("no.such.metric", func(int, float64) bool { return true }))
 	require.False(t, blob.ForEachTimestampsByName("no.such.metric", func(int, int64) bool { return true }))
+}
+
+// buildALPFamilyBlob encodes alpRLETestMetrics (runs columns, NaN and −0 runs, a single point)
+// under valEnc with shared DeltaPacked timestamps and the given start time.
+func buildALPFamilyBlob(t *testing.T, valEnc format.EncodingType, start time.Time, opts ...NumericEncoderOption) NumericBlob {
+	t.Helper()
+	opts = append([]NumericEncoderOption{
+		WithValueEncoding(valEnc), WithTimestampEncoding(format.TypeDeltaPacked), WithSharedTimestamps(),
+	}, opts...)
+	enc, err := NewNumericEncoder(start, opts...)
+	require.NoError(t, err)
+	for _, m := range alpRLETestMetrics() {
+		require.NoError(t, enc.StartMetricID(m.id, len(m.values)))
+		for i, v := range m.values {
+			require.NoError(t, enc.AddDataPoint(start.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+		}
+		require.NoError(t, enc.EndMetric())
+	}
+	data, err := enc.Finish()
+	require.NoError(t, err)
+	dec, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+	blob, err := dec.Decode()
+	require.NoError(t, err)
+
+	return blob
+}
+
+// TestNumericBlob_ForEachValues_ALPBulkDecode pins the bulk-decode path ALP and ALP-RLE take in ForEachValues
+// against AllValues, which still drains the codec iterator and so is an independent oracle.
+// It covers runs columns, NaN payloads and −0 (compared bitwise), every early-stop position class,
+// a nested ForEachValues call from inside yield, and both byte orders.
+func TestNumericBlob_ForEachValues_ALPBulkDecode(t *testing.T) {
+	start := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	for _, valEnc := range []format.EncodingType{format.TypeALP, format.TypeALPRLE} {
+		for _, bigEndian := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%v_bigEndian=%v", valEnc, bigEndian), func(t *testing.T) {
+				var opts []NumericEncoderOption
+				if bigEndian {
+					opts = append(opts, WithBigEndian())
+				}
+				blob := buildALPFamilyBlob(t, valEnc, start, opts...)
+				metrics := alpRLETestMetrics()
+
+				for _, m := range metrics {
+					var want []float64
+					for v := range blob.AllValues(m.id) {
+						want = append(want, v)
+					}
+					require.Equal(t, alpRLETestBits(m.values), alpRLETestBits(want), "oracle sanity")
+
+					var got []float64
+					require.True(t, blob.ForEachValues(m.id, func(i int, v float64) bool {
+						require.Equal(t, len(got), i)
+						got = append(got, v)
+
+						return true
+					}))
+					require.Equalf(t, alpRLETestBits(want), alpRLETestBits(got), "metric %d", m.id)
+
+					// Stop after the first, a word-boundary and the last value.
+					for _, stop := range []int{0, 63, 64, len(want) - 1} {
+						if stop < 0 || stop >= len(want) {
+							continue
+						}
+						var prefix []float64
+						require.True(t, blob.ForEachValues(m.id, func(i int, v float64) bool {
+							prefix = append(prefix, v)
+
+							return i < stop
+						}), "early stop still reports the metric as found")
+						require.Equalf(t, alpRLETestBits(want[:stop+1]), alpRLETestBits(prefix), "metric %d stop %d", m.id, stop)
+					}
+				}
+
+				// A nested call from inside yield gets its own pooled buffer.
+				outer, inner := metrics[0], metrics[4]
+				var nestedOK bool
+				blob.ForEachValues(outer.id, func(i int, _ float64) bool {
+					if i != 10 {
+						return true
+					}
+					var got []float64
+					blob.ForEachValues(inner.id, func(_ int, v float64) bool {
+						got = append(got, v)
+
+						return true
+					})
+					nestedOK = assert.ObjectsAreEqual(alpRLETestBits(inner.values), alpRLETestBits(got))
+
+					return true
+				})
+				require.True(t, nestedOK, "nested ForEachValues must see the inner metric's values")
+			})
+		}
+	}
+}
+
+// TestNumericBlobSet_ForEachValues_ALPBulkDecode checks that the bulk-decode path keeps NumericBlobSet's
+// global indexes continuous across member blobs and stops the whole set when yield stops mid-blob.
+func TestNumericBlobSet_ForEachValues_ALPBulkDecode(t *testing.T) {
+	start := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	for _, valEnc := range []format.EncodingType{format.TypeALP, format.TypeALPRLE} {
+		t.Run(valEnc.String(), func(t *testing.T) {
+			blobs := make([]NumericBlob, 3)
+			for i := range blobs {
+				blobs[i] = buildALPFamilyBlob(t, valEnc, start.Add(time.Duration(i)*time.Hour))
+			}
+			set, err := NewNumericBlobSet(blobs)
+			require.NoError(t, err)
+
+			id := alpRLETestMetrics()[0].id
+			var want []float64
+			for v := range set.AllValues(id) {
+				want = append(want, v)
+			}
+			require.Len(t, want, 3*len(alpRLETestMetrics()[0].values))
+
+			var got []float64
+			require.True(t, set.ForEachValues(id, func(i int, v float64) bool {
+				require.Equal(t, len(got), i, "global index must be continuous across blobs")
+				got = append(got, v)
+
+				return true
+			}))
+			require.Equal(t, alpRLETestBits(want), alpRLETestBits(got))
+
+			stop := len(want)/2 + 7 // inside the second blob
+			var prefix []float64
+			set.ForEachValues(id, func(i int, v float64) bool {
+				prefix = append(prefix, v)
+
+				return i < stop
+			})
+			require.Equal(t, alpRLETestBits(want[:stop+1]), alpRLETestBits(prefix), "yield stopping mid-blob stops the set")
+		})
+	}
+}
+
+// TestNumericBlob_ForEachValues_ALPDoesNotAllocate pins that the bulk-decode path is allocation-free once the pool is warm,
+// for a single blob and across a set.
+func TestNumericBlob_ForEachValues_ALPDoesNotAllocate(t *testing.T) {
+	if raceEnabled {
+		t.Skip("sync.Pool intentionally drops Puts under the race detector; the zero-alloc invariant only holds without -race")
+	}
+	start := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	var sink float64
+	yield := func(_ int, v float64) bool { sink += v; return true }
+	for _, valEnc := range []format.EncodingType{format.TypeALP, format.TypeALPRLE} {
+		blob := buildALPFamilyBlob(t, valEnc, start)
+		set, err := NewNumericBlobSet([]NumericBlob{blob, buildALPFamilyBlob(t, valEnc, start.Add(time.Hour))})
+		require.NoError(t, err)
+		for _, m := range alpRLETestMetrics() {
+			blob.ForEachValues(m.id, yield) // warm the pool for this size
+			require.Zerof(t, testing.AllocsPerRun(100, func() { blob.ForEachValues(m.id, yield) }), "%v blob metric %d", valEnc, m.id)
+			require.Zerof(t, testing.AllocsPerRun(100, func() { set.ForEachValues(m.id, yield) }), "%v set metric %d", valEnc, m.id)
+		}
+	}
+	require.NotZero(t, sink)
+}
+
+// TestNumericBlob_ForEachValues_ALPConcurrent runs the pooled bulk-decode path from many goroutines on one blob,
+// so the race detector (make test runs with -race) checks that pooled buffers are never shared between calls.
+func TestNumericBlob_ForEachValues_ALPConcurrent(t *testing.T) {
+	blob := buildALPFamilyBlob(t, format.TypeALPRLE, time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	metrics := alpRLETestMetrics()
+	var wg sync.WaitGroup
+	errs := make(chan string, 64)
+	for g := range 8 {
+		wg.Go(func() {
+			for r := range 50 {
+				m := metrics[(g+r)%len(metrics)]
+				got := make([]float64, 0, len(m.values))
+				blob.ForEachValues(m.id, func(_ int, v float64) bool {
+					got = append(got, v)
+
+					return true
+				})
+				if !assert.ObjectsAreEqual(alpRLETestBits(m.values), alpRLETestBits(got)) {
+					errs <- fmt.Sprintf("goroutine %d round %d metric %d: values differ", g, r, m.id)
+
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
+	}
 }
