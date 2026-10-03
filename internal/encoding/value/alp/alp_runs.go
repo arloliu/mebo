@@ -364,7 +364,9 @@ func (e *NumericALPEncoder) encodeColumnRuns(values []float64) {
 	}
 	e.runScratch = runVals
 	e.engine.PutUint32(e.buf.B[mid+1:mid+1+alpRunsHeaderSize], uint32(len(runVals))) //nolint:gosec // len(runVals) <= n, and counts fit uint32 on the wire
+	e.seeded = true
 	e.encodeColumn(runVals)
+	e.seeded = false
 
 	runsLen := len(e.buf.B) - mid
 	if runsLen < mid-start {

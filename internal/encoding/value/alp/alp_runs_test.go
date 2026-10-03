@@ -476,3 +476,139 @@ func TestNumericALPRuns_GoldenBytes(t *testing.T) {
 		})
 	}
 }
+
+// alpEFTestColumns returns columns of many shapes and lengths for the (e,f) search tests:
+// decimals at several magnitudes and precisions, integers, full precision, special values,
+// random bit patterns, constants, and the run values of hold columns (the nested encoder's real input).
+func alpEFTestColumns(rng *rand.Rand) [][]float64 {
+	var cols [][]float64
+	for _, n := range []int{1, 2, 3, 7, 31, 32, 33, 64, 75, 150, 151, 1000, 2017} {
+		for dec := -1; dec <= 6; dec++ {
+			col := make([]float64, n)
+			scale := math.Pow(10, float64(dec))
+			cur := math.Pow(10, float64(rng.Intn(10)-3)) * (rng.Float64() + 0.5)
+			if rng.Intn(2) == 0 {
+				cur = -cur
+			}
+			for i := range col {
+				cur += cur * (rng.Float64()*2 - 1) * 0.01
+				col[i] = cur
+				if dec >= 0 {
+					col[i] = math.Round(cur*scale) / scale
+				}
+			}
+			cols = append(cols, col)
+		}
+		specials := []float64{math.Copysign(0, -1), 0, math.Inf(1), math.NaN(), math.SmallestNonzeroFloat64, math.MaxFloat64, 1e300}
+		mixed := genALPColumns(1, n, 2, rng.Int63())[0]
+		for i := range mixed {
+			if rng.Intn(5) == 0 {
+				mixed[i] = specials[rng.Intn(len(specials))]
+			}
+		}
+		bitsCol := make([]float64, n)
+		for i := range bitsCol {
+			bitsCol[i] = math.Float64frombits(rng.Uint64())
+		}
+		ints := make([]float64, n)
+		for i := range ints {
+			ints[i] = float64(rng.Int63n(1 << 40))
+		}
+		constant := make([]float64, n)
+		for i := range constant {
+			constant[i] = 123.45
+		}
+		runVals, _ := alpRunValues(alpRunsHold(n, 0.5, rng.Int63()))
+		cols = append(cols, mixed, bitsCol, ints, constant, runVals)
+	}
+
+	return cols
+}
+
+// alpRunValues returns the distinct consecutive values of col (one per run) and the run count.
+func alpRunValues(col []float64) ([]float64, int) {
+	out := make([]float64, 0, len(col))
+	for i, v := range col {
+		if i == 0 || math.Float64bits(v) != math.Float64bits(col[i-1]) {
+			out = append(out, v)
+		}
+	}
+
+	return out, len(out)
+}
+
+// alpEFSample is the strided sample alpBestEF searches over.
+func alpEFSample(values []float64, stride int) []float64 {
+	var sample []float64
+	for i := 0; i < len(values); i += stride {
+		sample = append(sample, values[i])
+	}
+
+	return sample
+}
+
+// TestAlpEFEstimate_MirrorsBestEF is the differential test for the duplicated (e,f) estimator:
+// alpBestEF's choice must be the first (e,f), in its search order, that minimizes alpEFEstimate,
+// so the seeded search used for nested run values ranks candidates exactly like the plain search.
+// It also checks that a pruned estimate is never one that could have beaten the bound.
+func TestAlpEFEstimate_MirrorsBestEF(t *testing.T) {
+	rng := rand.New(rand.NewSource(20261004))
+	for c, values := range alpEFTestColumns(rng) {
+		stride := alpSampleStride(len(values))
+		sample := alpEFSample(values, stride)
+		fullCnt := (len(values) + stride - 1) / stride
+
+		minEst, firstE, firstF := math.MaxFloat64, -1, -1
+		for e := 0; e <= alpMaxExponent; e++ {
+			for f := 0; f <= e; f++ {
+				est, ok := alpEFEstimate(sample, e, f, fullCnt, math.MaxFloat64)
+				require.Truef(t, ok, "column %d: unbounded estimate must not prune", c)
+				if est < minEst {
+					minEst, firstE, firstF = est, e, f
+				}
+				// Pruning against a bound is only allowed when the full estimate reaches that bound.
+				bound := est * (0.5 + rng.Float64())
+				if _, ok := alpEFEstimate(sample, e, f, fullCnt, bound); !ok {
+					require.GreaterOrEqualf(t, est, bound, "column %d (e=%d,f=%d): pruned below the bound", c, e, f)
+				}
+			}
+		}
+		e0, f0 := alpBestEF(values, stride)
+		require.Equalf(t, [2]int{firstE, firstF}, [2]int{e0, f0}, "column %d (n=%d): alpBestEF and alpEFEstimate disagree", c, len(values))
+	}
+}
+
+// TestAlpBestEFSeeded_FindsMinimum checks the seeded search for every seed:
+// it returns a minimum-estimate (e,f), the seed itself when the seed is a minimum,
+// and otherwise the first minimum in search order, which is what alpBestEF returns.
+func TestAlpBestEFSeeded_FindsMinimum(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	for c, values := range alpEFTestColumns(rng) {
+		if c%3 != 0 {
+			continue // every seed below is checked, so a third of the columns keeps the test fast
+		}
+		stride := alpSampleStride(len(values))
+		sample := alpEFSample(values, stride)
+		fullCnt := (len(values) + stride - 1) / stride
+		est := func(e, f int) float64 {
+			v, ok := alpEFEstimate(sample, e, f, fullCnt, math.MaxFloat64)
+			require.True(t, ok)
+
+			return v
+		}
+		e0, f0 := alpBestEF(values, stride)
+		minEst := est(e0, f0)
+		for se := 0; se <= alpMaxExponent; se++ {
+			for sf := 0; sf <= se; sf++ {
+				e1, f1 := alpBestEFSeeded(values, stride, se, sf)
+				require.Equalf(t, minEst, est(e1, f1), "column %d seed (%d,%d): not a minimum", c, se, sf)
+				switch {
+				case est(se, sf) == minEst:
+					require.Equalf(t, [2]int{se, sf}, [2]int{e1, f1}, "column %d: a minimal seed must win ties", c)
+				default:
+					require.Equalf(t, [2]int{e0, f0}, [2]int{e1, f1}, "column %d seed (%d,%d): must match the unseeded search", c, se, sf)
+				}
+			}
+		}
+	}
+}
