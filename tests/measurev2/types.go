@@ -96,18 +96,31 @@ type Profile struct {
 	ValueKind  string // "gauge" | "counter" | "sparse"
 	IntervalMs int64  // scrape interval
 	BurstyGaps bool   // inject periodic gaps (large dod spikes)
+	// Hold is the probability that a gauge point repeats the previous value (0 = never).
+	Hold float64
+	// StepPct is a gauge's maximum step in percent of the current value (0 = the default 0.5).
+	StepPct float64
 }
 
 // Profiles returns the catalog of realistic generator profiles.
 func Profiles() []Profile {
 	return []Profile{
-		{"decimal_gauge_2dp", 2, "gauge", 15000, false},
-		{"decimal_gauge_4dp", 4, "gauge", 15000, false},
-		{"counter", 0, "counter", 15000, false},
-		{"sparse_constant", 2, "sparse", 60000, false},
-		{"regular_scrape_60s", 2, "gauge", 60000, false},
-		{"bursty_scrape", 2, "gauge", 15000, true},
-		{"worst_case", -1, "gauge", 1000, false}, // full-precision random walk (old default)
+		{Name: "decimal_gauge_2dp", Decimals: 2, ValueKind: "gauge", IntervalMs: 15000},
+		{Name: "decimal_gauge_4dp", Decimals: 4, ValueKind: "gauge", IntervalMs: 15000},
+		{Name: "counter", Decimals: 0, ValueKind: "counter", IntervalMs: 15000},
+		{Name: "sparse_constant", Decimals: 2, ValueKind: "sparse", IntervalMs: 60000},
+		{Name: "regular_scrape_60s", Decimals: 2, ValueKind: "gauge", IntervalMs: 60000},
+		{Name: "bursty_scrape", Decimals: 2, ValueKind: "gauge", IntervalMs: 15000, BurstyGaps: true},
+		{Name: "worst_case", Decimals: -1, ValueKind: "gauge", IntervalMs: 1000}, // full-precision random walk (old default)
+		// Calibrated production-like shapes (docs/specs/alp-rle-design.md):
+		// under the production encoder options, Chimp costs about 2-4.5 B/point on these,
+		// bracketing the ~3.3 B/point production figure.
+		{Name: "cal_2dp_hold30", Decimals: 2, ValueKind: "gauge", IntervalMs: 15000, Hold: 0.3},
+		{Name: "cal_2dp_hold50", Decimals: 2, ValueKind: "gauge", IntervalMs: 15000, Hold: 0.5},
+		{Name: "cal_2dp_hold70", Decimals: 2, ValueKind: "gauge", IntervalMs: 15000, Hold: 0.7},
+		{Name: "cal_2dp_step0.005", Decimals: 2, ValueKind: "gauge", IntervalMs: 15000, StepPct: 0.005},
+		{Name: "cal_1dp_step0.03", Decimals: 1, ValueKind: "gauge", IntervalMs: 15000, StepPct: 0.03},
+		{Name: "cal_1dp_step0.01", Decimals: 1, ValueKind: "gauge", IntervalMs: 15000, StepPct: 0.01},
 	}
 }
 
