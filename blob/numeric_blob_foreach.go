@@ -249,15 +249,16 @@ func forEachDeltaChimp(tsBytes, valBytes []byte, count int, yield func(int, Nume
 // ForEachValues is the callback (push) equivalent of AllValues and yields
 // identical data. Prefer it in hot read paths: AllValues must return a
 // heap-allocated iterator and makes the caller's range loop body escape to the
-// heap, while ForEachValues dispatches straight to a static decode loop that
-// keeps the callback and decoder cursor on the stack — allocation-free per
-// call. For the stateful value codecs (Gorilla/Chimp) it is also faster because
-// the XOR decode state stays in registers instead of a heap closure.
-// ALP and ALP-RLE columns of up to pool.MaxPooledDecodeFloat64s points are bulk-decoded
-// into a pooled buffer first, which is faster than per-value decoding
-// and does not allocate when the pool has a buffer to reuse.
+// heap, while ForEachValues avoids that iterator.
+// For Raw, Gorilla and Chimp values it dispatches straight to a static decode loop
+// that keeps the callback and decoder cursor on the stack, so a call does not allocate;
+// for Gorilla and Chimp it is also faster because the XOR decode state stays in registers.
+// ALP and ALP-RLE columns of up to 8192 points (pool.MaxPooledDecodeFloat64s) are bulk-decoded
+// into a pooled buffer first: a full traversal is faster than per-value decoding,
+// and a call does not allocate when the pool holds a large enough buffer.
 // The whole column is decoded before the first callback, even if yield stops early.
-// Longer ALP columns stream through the codec iterator instead, keeping memory bounded.
+// Longer ALP and ALP-RLE columns stream through the codec iterator instead,
+// which allocates the iterator but keeps memory independent of the column length.
 //
 // Parameters:
 //   - metricID: The metric ID to iterate over.
