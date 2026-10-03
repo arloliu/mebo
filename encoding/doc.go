@@ -63,7 +63,8 @@
 //   - ALP (format.TypeALP): Adaptive Lossless floating-Point for decimal-quantized data (SIGMOD 2024).
 //     Random access is O(1) plus O(log k) over the column's k exceptions.
 //   - ALP-RLE (format.TypeALPRLE): ALP with a run-length front end for columns where many points repeat the previous value.
-//     Each column is never larger than under ALP.
+//     Each uncompressed column is never larger than under ALP;
+//     with value compression the compressed payload is not guaranteed to shrink.
 //     Random access adds a popcount over the column's run-start bitmap.
 //
 // Text values and tags:
