@@ -55,11 +55,12 @@ func alprleCorruptionScenarios(indir string) []corruptScenario {
 
 	return []corruptScenario{
 		{
-			// Every 5th byte of the value payload inverted: hits run counts, bitmaps and nested columns.
+			// Every 5th byte of the value payload inverted, starting after the first column's scheme byte,
+			// so validation reaches that runs column's count, bitmap and nested column.
 			id: "alprle-corrupt-flipped-values",
 			generate: func(outdir string) error {
 				return damage(outdir, "alprle-corrupt-flipped-values", func(data []byte, valStart int) []byte {
-					for i := valStart; i < len(data); i += 5 {
+					for i := valStart + 1; i < len(data); i += 5 {
 						data[i] ^= 0xFF
 					}
 

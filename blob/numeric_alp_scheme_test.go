@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"math/rand"
 	"testing"
 	"time"
 
@@ -261,4 +262,77 @@ func TestNumericDecoder_ALPRLEScheme_Errors(t *testing.T) {
 		}
 		require.ErrorIs(t, decode(corrupted), errs.ErrInvalidALPColumn)
 	})
+}
+
+// TestNumericDecoder_ALPRLECorruptPayload_NoPanic mutates random value-payload bytes of an ALP-RLE blob
+// that holds runs columns of every nested scheme.
+// Each mutation must either fail at open or decode through every read path without panicking:
+// open-time validation is the only guard in front of the trusted-column decoders.
+func TestNumericDecoder_ALPRLECorruptPayload_NoPanic(t *testing.T) {
+	start := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	encoder, err := NewNumericEncoder(start,
+		WithTimestampEncoding(format.TypeRaw),
+		WithValueEncoding(format.TypeALPRLE),
+		WithValueCompression(format.CompressionNone))
+	require.NoError(t, err)
+	metrics := alpRLETestMetrics()
+	for _, m := range metrics {
+		require.NoError(t, encoder.StartMetricID(m.id, len(m.values)))
+		for i, v := range m.values {
+			require.NoError(t, encoder.AddDataPoint(start.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+	}
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+	header, err := section.ParseNumericHeader(data)
+	require.NoError(t, err)
+	valStart, valEnd := int(header.ValuePayloadOffset), int(header.TagPayloadOffset)
+	if valEnd <= valStart {
+		valEnd = len(data)
+	}
+
+	var sink float64
+	traverse := func(blob NumericBlob) {
+		for _, m := range metrics {
+			for v := range blob.AllValues(m.id) {
+				sink += v
+			}
+			for _, dp := range blob.All(m.id) {
+				sink += dp.Val
+			}
+			for i := range len(m.values) + 1 {
+				_, _ = blob.ValueAt(m.id, i)
+			}
+			blob.ForEach(m.id, func(int, NumericDataPoint) bool { return true })
+			blob.ForEachValues(m.id, func(int, float64) bool { return true })
+			_, _ = blob.MaterializeMetric(m.id)
+		}
+		_ = blob.Materialize()
+	}
+
+	rng := rand.New(rand.NewSource(7))
+	iterations := 3000
+	if testing.Short() {
+		iterations = 300
+	}
+	opened := 0
+	for it := range iterations {
+		corrupted := append([]byte(nil), data...)
+		for range 1 + it%4 {
+			pos := valStart + rng.Intn(valEnd-valStart)
+			corrupted[pos] ^= byte(1 + rng.Intn(255))
+		}
+		decoder, err := NewNumericDecoder(corrupted)
+		if err != nil {
+			continue
+		}
+		blob, err := decoder.Decode()
+		if err != nil {
+			continue
+		}
+		opened++
+		traverse(blob)
+	}
+	t.Logf("%d of %d corrupted blobs passed open-time validation and were traversed (checksum %g)", opened, iterations, sink)
 }
