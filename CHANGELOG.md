@@ -112,7 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tag length near 2^63 overflowed the tag bounds check;
   a corrupt text length byte pushed reads past the metric's data;
   `ValueAt`, `TagAt` and `AllTags` now read only the metric's own byte range;
-  and on 32-bit platforms the index size, ALP column sizes, ALP exception counts and exception positions
+  and on 32-bit platforms the index size, metric name lengths, ALP column sizes, ALP exception counts and exception positions
   no longer overflow `int`.
 - Further decode hardening:
   `Decode` rejects payload sections that overlap the header or index,
