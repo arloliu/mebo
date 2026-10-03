@@ -3,7 +3,6 @@ package blob
 import (
 	"slices"
 
-	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
 )
 
@@ -326,22 +325,9 @@ func (m MaterializedTextBlobSet) metricByID(metricID uint64) (materializedTextMe
 	return m.metrics[slot], true
 }
 
-// slotByName resolves a metric name to its logical slot. A named slot matches
-// exactly. Otherwise the name can only refer to data from names-free members,
-// whose slots are keyed by ID alone, so the query is hashed and accepted when it
-// lands on an id-only slot — the same hash fallback the raw set and a
-// single-blob Materialize() use when no names payload exists.
+// slotByName resolves a metric name to its logical slot; see slotForName.
 func (m MaterializedTextBlobSet) slotByName(metricName string) (int, bool) {
-	if slot, ok := m.byName[metricName]; ok {
-		return slot, true
-	}
-
-	slot, ok := m.byID[hash.ID(metricName)]
-	if !ok || m.names[slot] != "" {
-		return -1, false
-	}
-
-	return slot, true
+	return slotForName(m.names, m.byName, m.byID, metricName)
 }
 
 func (m MaterializedTextBlobSet) metricByName(metricName string) (materializedTextMetricSet, bool) {

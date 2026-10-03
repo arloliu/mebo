@@ -483,11 +483,9 @@ func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
 				// carry tags, pad with one empty tag per point so indexes stay
 				// aligned with TimestampAt and TagAt; otherwise yield nothing.
 				if numPad {
-					for range entry.Count {
-						if !yield(index, "") {
-							return
-						}
-						index++
+					var ok bool
+					if index, ok = yieldEmptyIndexedTags(index, entry.Count, yield); !ok {
+						return
 					}
 				}
 
@@ -512,11 +510,9 @@ func (bs BlobSet) AllTags(metricID uint64) iter.Seq2[int, string] {
 			}
 			if !blob.HasTag() {
 				if txtPad {
-					for range int(entry.Count) {
-						if !yield(index, "") {
-							return
-						}
-						index++
+					var ok bool
+					if index, ok = yieldEmptyIndexedTags(index, int(entry.Count), yield); !ok {
+						return
 					}
 				}
 
@@ -553,11 +549,9 @@ func (bs BlobSet) AllTagsByName(metricName string) iter.Seq2[int, string] {
 				// carry tags, pad with one empty tag per point so indexes stay
 				// aligned with TimestampAt and TagAt; otherwise yield nothing.
 				if numPad {
-					for range entry.Count {
-						if !yield(index, "") {
-							return
-						}
-						index++
+					var ok bool
+					if index, ok = yieldEmptyIndexedTags(index, entry.Count, yield); !ok {
+						return
 					}
 				}
 
@@ -582,11 +576,9 @@ func (bs BlobSet) AllTagsByName(metricName string) iter.Seq2[int, string] {
 			}
 			if !blob.HasTag() {
 				if txtPad {
-					for range int(entry.Count) {
-						if !yield(index, "") {
-							return
-						}
-						index++
+					var ok bool
+					if index, ok = yieldEmptyIndexedTags(index, int(entry.Count), yield); !ok {
+						return
 					}
 				}
 

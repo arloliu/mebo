@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -462,4 +463,15 @@ func (m indexMaps[T]) At(i int) T {
 // IsEmpty returns whether the index contains no entries.
 func (m indexMaps[T]) IsEmpty() bool {
 	return len(m.sorted) == 0
+}
+
+// metricIDForName hashes a metric name to its ID. ID 0 marks "no metric open"
+// in the encoders, so a name hashing to it cannot be tracked and is rejected.
+func metricIDForName(metricName string) (uint64, error) {
+	metricID := hash.ID(metricName)
+	if metricID == 0 {
+		return 0, fmt.Errorf("%w: metric name %q hashes to the reserved metric ID 0", errs.ErrInvalidMetricName, metricName)
+	}
+
+	return metricID, nil
 }
