@@ -3214,3 +3214,157 @@ func TestNumericBlob_AllYieldsOnlyCompleteRows(t *testing.T) {
 	}
 	require.Equal(t, []NumericDataPoint{{Ts: 10, Val: 5}}, got)
 }
+
+// TestNumericBlob_TimestampAt_SharedCache checks that TimestampAt on a metric
+// with shared timestamps reads the pre-decoded shared cache instead of
+// re-decoding the payload, through every route that resolves a timestamp by
+// index: NumericBlob by ID and by name, NumericBlobSet and BlobSet (which map a
+// global index onto one member blob). The timestamp payloads are zeroed after
+// decoding: only cache-backed lookups can still return the original
+// timestamps, while the metric with its own timestamps must now decode the
+// zeroed payload and stop returning them.
+func TestNumericBlob_TimestampAt_SharedCache(t *testing.T) {
+	const points = 70 // spans more than one DeltaPacked group
+	names := []string{"cache.a", "cache.b", "cache.unique", "cache.c"}
+	const uniqueName = "cache.unique"
+
+	series := func(start time.Time, name string) []int64 {
+		ts := make([]int64, points)
+		for i := range points {
+			if name == uniqueName {
+				ts[i] = start.Add(time.Duration(i*7+3) * time.Second).UnixMicro()
+			} else {
+				ts[i] = start.Add(time.Duration(i*15) * time.Second).UnixMicro()
+			}
+		}
+
+		return ts
+	}
+
+	for _, tsEnc := range []format.EncodingType{format.TypeDelta, format.TypeDeltaPacked, format.TypeRaw} {
+		t.Run(tsEnc.String(), func(t *testing.T) {
+			starts := []time.Time{
+				time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+				time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+			}
+			blobs := make([]NumericBlob, 0, len(starts))
+			for _, start := range starts {
+				encoder, err := NewNumericEncoder(start,
+					WithTimestampEncoding(tsEnc), WithValueEncoding(format.TypeALP), WithSharedTimestamps())
+				require.NoError(t, err)
+				for _, name := range names {
+					require.NoError(t, encoder.StartMetricName(name, points))
+					for i, ts := range series(start, name) {
+						require.NoError(t, encoder.AddDataPoint(ts, float64(i)*0.5, ""))
+					}
+					require.NoError(t, encoder.EndMetric())
+				}
+				data, err := encoder.Finish()
+				require.NoError(t, err)
+				decoder, err := NewNumericDecoder(data)
+				require.NoError(t, err)
+				blob, err := decoder.Decode()
+				require.NoError(t, err)
+				blobs = append(blobs, blob)
+			}
+			numericSet, err := NewNumericBlobSet(blobs)
+			require.NoError(t, err)
+			blobSet := NewBlobSet(blobs, nil)
+
+			// lookups returns every route's answer for a metric at index i of blob b.
+			lookups := func(name string, b, i int) map[string][2]any {
+				id := hash.ID(name)
+				out := make(map[string][2]any, 6)
+				add := func(route string, ts int64, ok bool) { out[route] = [2]any{ts, ok} }
+				ts, ok := blobs[b].TimestampAt(id, i)
+				add("NumericBlob.TimestampAt", ts, ok)
+				ts, ok = blobs[b].TimestampAtByName(name, i)
+				add("NumericBlob.TimestampAtByName", ts, ok)
+				ts, ok = numericSet.TimestampAt(id, b*points+i)
+				add("NumericBlobSet.TimestampAt", ts, ok)
+				ts, ok = blobSet.TimestampAt(id, b*points+i)
+				add("BlobSet.TimestampAt", ts, ok)
+				ts, ok = blobSet.TimestampAtByName(name, b*points+i)
+				add("BlobSet.TimestampAtByName", ts, ok)
+
+				return out
+			}
+
+			for b, start := range starts {
+				for _, name := range names {
+					for i, want := range series(start, name) {
+						for route, got := range lookups(name, b, i) {
+							require.Equal(t, [2]any{want, true}, got, "%s %s blob %d index %d", route, name, b, i)
+						}
+					}
+					ts, ok := blobs[b].TimestampAt(hash.ID(name), points)
+					require.False(t, ok, "index past the end: got %d", ts)
+					_, ok = blobs[b].TimestampAt(hash.ID(name), -1)
+					require.False(t, ok)
+				}
+			}
+
+			for _, blob := range blobs {
+				clear(blob.tsPayload)
+			}
+			for b, start := range starts {
+				for _, name := range names {
+					want := series(start, name)
+					if name == uniqueName {
+						// The payload fallback now decodes zeroes: the original timestamps are gone.
+						got, ok := blobs[b].TimestampAt(hash.ID(name), points-1)
+						require.False(t, ok && got == want[points-1], "unique metric must decode its (zeroed) payload")
+
+						continue
+					}
+					for i := range want {
+						for route, got := range lookups(name, b, i) {
+							require.Equal(t, [2]any{want[i], true}, got, "%s %s blob %d index %d must come from the cache", route, name, b, i)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestNumericBlob_TimestampAt_ShortSharedCacheFallsBack covers the guard on the
+// shared-cache fast path: an index past a cached slice that is shorter than the
+// metric's count must fall back to decoding the payload. A validated blob never
+// has such a cache (count mismatches are rejected at open), so the cache is
+// truncated by hand.
+func TestNumericBlob_TimestampAt_ShortSharedCacheFallsBack(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	const points = 20
+	encoder, err := NewNumericEncoder(start, WithTimestampEncoding(format.TypeDeltaPacked), WithSharedTimestamps())
+	require.NoError(t, err)
+	want := make([]int64, points)
+	for i := range want {
+		want[i] = start.Add(time.Duration(i*15) * time.Second).UnixMicro()
+	}
+	for _, id := range []uint64{8101, 8102} {
+		require.NoError(t, encoder.StartMetricID(id, points))
+		for i, ts := range want {
+			require.NoError(t, encoder.AddDataPoint(ts, float64(i), ""))
+		}
+		require.NoError(t, encoder.EndMetric())
+	}
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+	decoder, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+	blob, err := decoder.Decode()
+	require.NoError(t, err)
+
+	entry, ok := blob.index.GetByID(8101)
+	require.True(t, ok)
+	cached, ok := blob.sharedTsCache[entry.TimestampOffset]
+	require.True(t, ok, "metrics with identical timestamps must share a cached sequence")
+	blob.sharedTsCache[entry.TimestampOffset] = cached[:5]
+
+	for i := range points {
+		got, ok := blob.TimestampAt(8101, i)
+		require.True(t, ok)
+		require.Equal(t, want[i], got, "index %d", i)
+	}
+}
