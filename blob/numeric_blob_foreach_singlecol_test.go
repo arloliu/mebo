@@ -2,6 +2,9 @@ package blob
 
 import (
 	"fmt"
+	"math"
+	"math/rand"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
+	"github.com/arloliu/mebo/internal/pool"
 )
 
 // TestNumericBlob_ForEachValues_MatchesAll verifies ForEachValues yields exactly
@@ -340,11 +344,14 @@ func TestNumericBlob_ForEachValues_ALPBulkDecode(t *testing.T) {
 					}
 				}
 
-				// A nested call from inside yield gets its own pooled buffer.
+				// A nested call from inside yield gets its own pooled buffer,
+				// and must not disturb the outer iteration's remaining values.
 				outer, inner := metrics[0], metrics[4]
-				var nestedOK bool
-				blob.ForEachValues(outer.id, func(i int, _ float64) bool {
-					if i != 10 {
+				var outerGot []float64
+				nestedOK := true
+				blob.ForEachValues(outer.id, func(i int, v float64) bool {
+					outerGot = append(outerGot, v)
+					if i%10 != 0 {
 						return true
 					}
 					var got []float64
@@ -353,11 +360,30 @@ func TestNumericBlob_ForEachValues_ALPBulkDecode(t *testing.T) {
 
 						return true
 					})
-					nestedOK = assert.ObjectsAreEqual(alpRLETestBits(inner.values), alpRLETestBits(got))
+					nestedOK = nestedOK && assert.ObjectsAreEqual(alpRLETestBits(inner.values), alpRLETestBits(got))
 
 					return true
 				})
 				require.True(t, nestedOK, "nested ForEachValues must see the inner metric's values")
+				require.Equal(t, alpRLETestBits(outer.values), alpRLETestBits(outerGot), "nested calls must not change the outer values")
+
+				// A panicking yield must leave later calls correct.
+				require.Panics(t, func() {
+					blob.ForEachValues(outer.id, func(i int, _ float64) bool {
+						if i == 3 {
+							panic("yield failed")
+						}
+
+						return true
+					})
+				})
+				var after []float64
+				blob.ForEachValues(outer.id, func(_ int, v float64) bool {
+					after = append(after, v)
+
+					return true
+				})
+				require.Equal(t, alpRLETestBits(outer.values), alpRLETestBits(after), "values after a panicking yield")
 			})
 		}
 	}
@@ -456,4 +482,88 @@ func TestNumericBlob_ForEachValues_ALPConcurrent(t *testing.T) {
 	for e := range errs {
 		t.Error(e)
 	}
+}
+
+// TestNumericBlob_ForEachValues_ALPLongColumns checks both sides of the bulk-decode cap:
+// a column of pool.MaxPooledDecodeFloat64s points takes the pooled bulk path and does not allocate,
+// a longer one streams through the iterator, and both yield the same values as AllValues.
+func TestNumericBlob_ForEachValues_ALPLongColumns(t *testing.T) {
+	start := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	for _, valEnc := range []format.EncodingType{format.TypeALP, format.TypeALPRLE} {
+		t.Run(valEnc.String(), func(t *testing.T) {
+			enc, err := NewNumericEncoder(start, WithValueEncoding(valEnc), WithTimestampEncoding(format.TypeDelta), WithBlobLayoutV2())
+			require.NoError(t, err)
+			sizes := map[uint64]int{1: pool.MaxPooledDecodeFloat64s, 2: pool.MaxPooledDecodeFloat64s + 1}
+			values := map[uint64][]float64{}
+			for id := uint64(1); id <= 2; id++ {
+				n := sizes[id]
+				values[id] = alpRunsHoldForTest(n, int64(id))
+				require.NoError(t, enc.StartMetricID(id, n))
+				for i, v := range values[id] {
+					require.NoError(t, enc.AddDataPoint(start.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+				}
+				require.NoError(t, enc.EndMetric())
+			}
+			data, err := enc.Finish()
+			require.NoError(t, err)
+			dec, err := NewNumericDecoder(data)
+			require.NoError(t, err)
+			blob, err := dec.Decode()
+			require.NoError(t, err)
+
+			var sink float64
+			yield := func(_ int, v float64) bool { sink += v; return true }
+			for id := uint64(1); id <= 2; id++ {
+				var got []float64
+				require.True(t, blob.ForEachValues(id, func(i int, v float64) bool {
+					require.Equal(t, len(got), i)
+					got = append(got, v)
+
+					return true
+				}))
+				require.Equalf(t, alpRLETestBits(values[id]), alpRLETestBits(got), "metric of %d points", sizes[id])
+
+				var prefix []float64
+				require.True(t, blob.ForEachValues(id, func(i int, v float64) bool {
+					prefix = append(prefix, v)
+
+					return i < 99
+				}))
+				require.Equalf(t, alpRLETestBits(values[id][:100]), alpRLETestBits(prefix), "early stop, metric of %d points", sizes[id])
+			}
+			if !raceEnabled {
+				blob.ForEachValues(1, yield)
+				require.Zero(t, testing.AllocsPerRun(20, func() { blob.ForEachValues(1, yield) }), "column at the cap takes the pooled path")
+				require.NotZero(t, sink)
+			}
+			// Above the cap, the iterator path allocates its closure but never a column-sized buffer.
+			const calls = 20
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			for range calls {
+				blob.ForEachValues(2, yield)
+			}
+			runtime.ReadMemStats(&after)
+			perCall := (after.TotalAlloc - before.TotalAlloc) / calls
+			require.Lessf(t, perCall, uint64(8*pool.MaxPooledDecodeFloat64s/4),
+				"column above the cap allocated %d bytes per call; it must stream, not decode into a buffer", perCall)
+		})
+	}
+}
+
+// alpRunsHoldForTest is a 2-decimal gauge of n points where about half the points repeat the previous one.
+func alpRunsHoldForTest(n int, seed int64) []float64 {
+	rng := rand.New(rand.NewSource(seed))
+	out := make([]float64, n)
+	cur := 100.0
+	for i := range out {
+		if i > 0 && rng.Float64() < 0.5 {
+			out[i] = out[i-1]
+			continue
+		}
+		cur += cur * (rng.Float64()*2 - 1) * 0.005
+		out[i] = math.Round(cur*100) / 100
+	}
+
+	return out
 }

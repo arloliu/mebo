@@ -96,58 +96,6 @@ func TestGetFloat64Slice(t *testing.T) {
 	})
 }
 
-func TestGetFloat64SlicePtr(t *testing.T) {
-	t.Run("returns slice with requested length", func(t *testing.T) {
-		ptr := GetFloat64SlicePtr(150)
-		defer PutFloat64SlicePtr(ptr)
-
-		require.Len(t, *ptr, 150)
-	})
-
-	t.Run("reuses pooled backing array when large enough", func(t *testing.T) {
-		if raceEnabled {
-			t.Skip("sync.Pool intentionally drops Puts under the race detector; reuse is not guaranteed")
-		}
-		ptr1 := GetFloat64SlicePtr(64)
-		first := &(*ptr1)[0]
-		PutFloat64SlicePtr(ptr1)
-
-		ptr2 := GetFloat64SlicePtr(32)
-		defer PutFloat64SlicePtr(ptr2)
-		require.Len(t, *ptr2, 32)
-		require.Same(t, first, &(*ptr2)[0])
-	})
-
-	t.Run("grows when the pooled array is too small", func(t *testing.T) {
-		ptr := GetFloat64SlicePtr(4)
-		PutFloat64SlicePtr(ptr)
-
-		big := GetFloat64SlicePtr(4096)
-		defer PutFloat64SlicePtr(big)
-		require.Len(t, *big, 4096)
-	})
-
-	t.Run("zero size and nil put", func(t *testing.T) {
-		ptr := GetFloat64SlicePtr(0)
-		require.Empty(t, *ptr)
-		PutFloat64SlicePtr(ptr)
-		require.NotPanics(t, func() { PutFloat64SlicePtr(nil) })
-	})
-
-	t.Run("warm Get+Put pair is allocation-free", func(t *testing.T) {
-		if raceEnabled {
-			t.Skip("sync.Pool intentionally drops Puts under the race detector; the zero-alloc invariant only holds without -race")
-		}
-		for range 10 {
-			PutFloat64SlicePtr(GetFloat64SlicePtr(1000))
-		}
-		allocs := testing.AllocsPerRun(1000, func() {
-			PutFloat64SlicePtr(GetFloat64SlicePtr(1000))
-		})
-		require.Zero(t, allocs)
-	})
-}
-
 func TestGetStringSlice(t *testing.T) {
 	t.Run("returns slice with correct size", func(t *testing.T) {
 		slice, cleanup := GetStringSlice(100)

@@ -114,37 +114,3 @@ func GetStringSlice(size int) ([]string, func()) {
 
 	return slice, func() { stringSlicePool.Put(ptr) }
 }
-
-// GetFloat64SlicePtr retrieves a *[]float64 from the float64 pool, resized to length size.
-//
-// Unlike GetFloat64Slice it returns no cleanup closure, which would escape to the heap on every call,
-// so a warm Get/Put pair does not allocate (the same reasoning as GetUint64Slice).
-// The contents are stale: callers must overwrite the entries they read.
-// Return the pointer with PutFloat64SlicePtr, typically via defer.
-//
-// Parameters:
-//   - size: The desired length of the slice
-//
-// Returns:
-//   - *[]float64: Pointer to a slice with length equal to size
-func GetFloat64SlicePtr(size int) *[]float64 {
-	ptr, _ := float64SlicePool.Get().(*[]float64)
-	if cap(*ptr) < size {
-		*ptr = make([]float64, size)
-	} else {
-		*ptr = (*ptr)[:size]
-	}
-
-	return ptr
-}
-
-// PutFloat64SlicePtr returns ptr (obtained from GetFloat64SlicePtr) to the pool.
-// A nil ptr is ignored.
-//
-// Parameters:
-//   - ptr: The pointer returned by GetFloat64SlicePtr
-func PutFloat64SlicePtr(ptr *[]float64) {
-	if ptr != nil {
-		float64SlicePool.Put(ptr)
-	}
-}
