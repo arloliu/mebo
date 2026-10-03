@@ -179,6 +179,22 @@ func TestNumericBlobSet_ForEach_EarlyStop(t *testing.T) {
 		return i < 3
 	}))
 	require.Equal(t, []float64{10, 11, 12, 20}, gotV)
+
+	// Timestamps early stop crossing the same boundary.
+	wantTs := make([]int64, 0, 4)
+	for ts := range set.AllTimestamps(id) {
+		wantTs = append(wantTs, ts)
+		if len(wantTs) == 4 {
+			break
+		}
+	}
+	var gotTs []int64
+	require.True(t, set.ForEachTimestamps(id, func(i int, ts int64) bool {
+		gotTs = append(gotTs, ts)
+
+		return i < 3
+	}))
+	require.Equal(t, wantTs, gotTs)
 }
 
 func TestNumericBlobSet_ForEach_NotFound(t *testing.T) {
@@ -370,4 +386,31 @@ func TestNumericBlobSet_ForEachHonorsSetIdentity(t *testing.T) {
 		set.ForEachTimestampsByName(name, func(int, int64) bool { n++; return true })
 		require.Equalf(t, set.MetricLenByName(name), n, "ForEachTimestampsByName(%s)", name)
 	}
+}
+
+// TestNumericBlobSet_ForEachColumnsDoNotAllocate pins that single-column set
+// and blob iteration chain members without an adapter closure: neither the
+// set nor a member allocates per call.
+func TestNumericBlobSet_ForEachColumnsDoNotAllocate(t *testing.T) {
+	if raceEnabled {
+		t.Skip("race detector adds allocations")
+	}
+
+	set, _, id := buildForEachTestSet(t)
+	var tsSink int64
+	var valSink float64
+	tsYield := func(_ int, ts int64) bool { tsSink += ts; return true }
+	valYield := func(_ int, v float64) bool { valSink += v; return true }
+
+	cases := map[string]func(){
+		"set timestamps":  func() { set.ForEachTimestamps(id, tsYield) },
+		"set values":      func() { set.ForEachValues(id, valYield) },
+		"blob timestamps": func() { set.blobs[0].ForEachTimestamps(id, tsYield) },
+		"blob values":     func() { set.blobs[0].ForEachValues(id, valYield) },
+	}
+	for name, fn := range cases {
+		require.Zero(t, testing.AllocsPerRun(100, fn), name)
+	}
+	require.NotZero(t, tsSink)
+	require.NotZero(t, valSink)
 }

@@ -21,27 +21,33 @@ func TestRawValuesEach(t *testing.T) {
 	for _, nativeByteOrder := range []bool{false, true} {
 		t.Run(map[bool]string{false: "safe", true: "native"}[nativeByteOrder], func(t *testing.T) {
 			var got []float64
-			RawValuesEach(encoder.Bytes(), encoder.Len(), engine, nativeByteOrder, func(_ int, value float64) bool {
+			var indexes []int
+			next := RawValuesEach(encoder.Bytes(), encoder.Len(), 10, engine, nativeByteOrder, func(index int, value float64) bool {
+				indexes = append(indexes, index)
 				got = append(got, value)
 				return true
 			})
 			require.Equal(t, values, got)
+			require.Equal(t, []int{10, 11, 12}, indexes, "indexes start at base")
+			require.Equal(t, 13, next, "returns the index after the last element")
 
 			var stopped []int
-			RawValuesEach(encoder.Bytes(), encoder.Len(), engine, nativeByteOrder, func(index int, _ float64) bool {
+			next = RawValuesEach(encoder.Bytes(), encoder.Len(), 0, engine, nativeByteOrder, func(index int, _ float64) bool {
 				stopped = append(stopped, index)
 				return index == 0
 			})
 			require.Equal(t, []int{0, 1}, stopped)
+			require.Equal(t, -1, next, "returns -1 when yield stops")
 		})
 	}
 
 	called := false
-	RawValuesEach(encoder.Bytes()[:len(encoder.Bytes())-1], encoder.Len(), engine, false, func(int, float64) bool {
+	next := RawValuesEach(encoder.Bytes()[:len(encoder.Bytes())-1], encoder.Len(), 7, engine, false, func(int, float64) bool {
 		called = true
 		return true
 	})
 	require.False(t, called)
+	require.Equal(t, 7, next, "malformed input yields nothing and returns base")
 }
 
 // === NumericRawEncoder Tests ===

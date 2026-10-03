@@ -21,27 +21,33 @@ func TestRawTimestampsEach(t *testing.T) {
 	for _, nativeByteOrder := range []bool{false, true} {
 		t.Run(map[bool]string{false: "safe", true: "native"}[nativeByteOrder], func(t *testing.T) {
 			var got []int64
-			RawTimestampsEach(encoder.Bytes(), encoder.Len(), engine, nativeByteOrder, func(_ int, timestamp int64) bool {
+			var indexes []int
+			next := RawTimestampsEach(encoder.Bytes(), encoder.Len(), 10, engine, nativeByteOrder, func(index int, timestamp int64) bool {
+				indexes = append(indexes, index)
 				got = append(got, timestamp)
 				return true
 			})
 			require.Equal(t, timestamps, got)
+			require.Equal(t, []int{10, 11, 12}, indexes, "indexes start at base")
+			require.Equal(t, 13, next, "returns the index after the last element")
 
 			var stopped []int
-			RawTimestampsEach(encoder.Bytes(), encoder.Len(), engine, nativeByteOrder, func(index int, _ int64) bool {
+			next = RawTimestampsEach(encoder.Bytes(), encoder.Len(), 0, engine, nativeByteOrder, func(index int, _ int64) bool {
 				stopped = append(stopped, index)
 				return index == 0
 			})
 			require.Equal(t, []int{0, 1}, stopped)
+			require.Equal(t, -1, next, "returns -1 when yield stops")
 		})
 	}
 
 	called := false
-	RawTimestampsEach(append(encoder.Bytes(), 0), encoder.Len(), engine, false, func(int, int64) bool {
+	next := RawTimestampsEach(append(encoder.Bytes(), 0), encoder.Len(), 7, engine, false, func(int, int64) bool {
 		called = true
 		return true
 	})
 	require.False(t, called)
+	require.Equal(t, 7, next, "malformed input yields nothing and returns base")
 }
 
 // === TimestampRawEncoder Tests ===

@@ -626,3 +626,95 @@ func BenchmarkFusedDeltaGorillaAll(b *testing.B) {
 		}
 	}
 }
+
+// TestSingleColumnEach_BaseAndNext pins the base-index contract that lets a
+// blob set chain members without an adapter closure: indexes start at base,
+// the result is the index after the last yielded element, a stop returns -1,
+// and a truncated stream returns base plus the number of elements yielded.
+func TestSingleColumnEach_BaseAndNext(t *testing.T) {
+	const n = 20
+	timestamps := make([]int64, n)
+	values := make([]float64, n)
+	for i := range n {
+		timestamps[i] = 1_000_000 + int64(i)*1_000_000 + int64(i%3)*250
+		values[i] = 100.0 + float64(i)*1.5
+	}
+
+	deltaEnc := delta.NewTimestampDeltaEncoder()
+	deltaEnc.WriteSlice(timestamps)
+	deltaData := append([]byte(nil), deltaEnc.Bytes()...)
+	deltaEnc.Finish()
+
+	packedEnc := deltapacked.NewTimestampDeltaPackedEncoder()
+	packedEnc.WriteSlice(timestamps)
+	packedData := append([]byte(nil), packedEnc.Bytes()...)
+	packedEnc.Finish()
+
+	gorillaEnc := gorilla.NewNumericGorillaEncoder()
+	gorillaEnc.WriteSlice(values)
+	gorillaData := append([]byte(nil), gorillaEnc.Bytes()...)
+	gorillaEnc.Finish()
+
+	chimpEnc := chimp.NewNumericChimpEncoder()
+	chimpEnc.WriteSlice(values)
+	chimpData := append([]byte(nil), chimpEnc.Bytes()...)
+	chimpEnc.Finish()
+
+	type eachFunc func(data []byte, base int, yield func(int) bool) int
+	tsEach := func(fn func([]byte, int, int, func(int, int64) bool) int) eachFunc {
+		return func(data []byte, base int, yield func(int) bool) int {
+			return fn(data, n, base, func(i int, _ int64) bool { return yield(i) })
+		}
+	}
+	valEach := func(fn func([]byte, int, int, func(int, float64) bool) int) eachFunc {
+		return func(data []byte, base int, yield func(int) bool) int {
+			return fn(data, n, base, func(i int, _ float64) bool { return yield(i) })
+		}
+	}
+
+	cases := []struct {
+		name string
+		data []byte
+		each eachFunc
+	}{
+		{"Delta", deltaData, tsEach(FusedDeltaEach)},
+		{"DeltaPacked", packedData, tsEach(FusedDeltaPackedEach)},
+		{"Gorilla", gorillaData, valEach(FusedGorillaEach)},
+		{"Chimp", chimpData, valEach(FusedChimpEach)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const base = 7
+			var indexes []int
+			next := tc.each(tc.data, base, func(i int) bool {
+				indexes = append(indexes, i)
+				return true
+			})
+			require.Len(t, indexes, n)
+			for k, i := range indexes {
+				require.Equal(t, base+k, i)
+			}
+			require.Equal(t, base+n, next)
+
+			calls := 0
+			next = tc.each(tc.data, base, func(int) bool {
+				calls++
+				return calls < 3
+			})
+			require.Equal(t, -1, next, "a stop returns -1")
+			require.Equal(t, 3, calls)
+
+			require.Equal(t, base, tc.each(nil, base, func(int) bool { return true }), "empty input returns base")
+
+			truncated := tc.data[:len(tc.data)/2]
+			yielded := 0
+			next = tc.each(truncated, base, func(int) bool {
+				yielded++
+				return true
+			})
+			require.Less(t, yielded, n, "fixture must truncate the stream")
+			require.Equal(t, base+yielded, next, "a truncated stream returns base plus the yielded count")
+		})
+	}
+}

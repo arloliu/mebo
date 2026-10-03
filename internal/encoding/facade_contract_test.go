@@ -58,7 +58,7 @@ func TestTimestampRawFacadeContracts(t *testing.T) {
 	require.Equal(t, int64(1), got)
 
 	var indexes []int
-	RawTimestampsEach(encoder.Bytes(), encoder.Len(), engine, false, func(index int, _ int64) bool {
+	RawTimestampsEach(encoder.Bytes(), encoder.Len(), 0, engine, false, func(index int, _ int64) bool {
 		indexes = append(indexes, index)
 		return true
 	})
@@ -142,7 +142,7 @@ func TestNumericRawFacadeContracts(t *testing.T) {
 	require.Equal(t, 1.5, got)
 
 	var indexes []int
-	RawValuesEach(encoder.Bytes(), encoder.Len(), engine, false, func(index int, _ float64) bool {
+	RawValuesEach(encoder.Bytes(), encoder.Len(), 0, engine, false, func(index int, _ float64) bool {
 		indexes = append(indexes, index)
 		return true
 	})
