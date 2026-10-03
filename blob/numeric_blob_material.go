@@ -110,44 +110,11 @@ func (b NumericBlob) Materialize() MaterializedNumericBlob {
 	// Decode all metrics in index order (one materialized metric per entry, so a
 	// within-blob collision keeps both entries instead of merging them).
 	b.index.ForEach(func(entry section.NumericIndexEntry) bool {
-		// Pre-allocate slices with exact size for direct indexing (no append overhead)
-		count := entry.Count
-		timestamps := make([]int64, count)
-		values := make([]float64, count)
-
-		// Fast path: use cached shared timestamps if available
-		if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
-			timestamps = timestamps[:copy(timestamps, cached)]
-		} else {
-			tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
-			tsProduced := b.decodeTimestampsSlice(tsBytes, count, timestamps)
-			timestamps = timestamps[:tsProduced]
-		}
-
-		valBytes := b.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-		valProduced := b.decodeValuesSlice(valBytes, count, values)
-		values = values[:valProduced]
-
-		var tags []string
-		if b.HasTag() {
-			tags = make([]string, count)
-			idx := 0
-			for tag := range b.allTagsFromEntry(entry) {
-				tags[idx] = tag
-				idx++
-			}
-
-			tags = tags[:idx]
-		}
-
-		// Keep only complete rows when a corrupt stream decoded short, so
-		// TimestampAt, ValueAt and TagAt agree on every index.
-		timestamps, values, tags = alignMemberRows(timestamps, values, tags, b.HasTag())
-
+		m := b.materializeEntry(entry)
 		material.metrics = append(material.metrics, materializedNumericMetric{
-			timestamps: timestamps,
-			values:     values,
-			tags:       tags,
+			timestamps: m.Timestamps,
+			values:     m.Values,
+			tags:       m.Tags,
 		})
 		material.ids = append(material.ids, entry.MetricID)
 
@@ -446,7 +413,8 @@ func (b NumericBlob) materializeEntry(entry section.NumericIndexEntry) Materiali
 		tags = tags[:idx]
 	}
 
-	// Keep only complete rows when a corrupt stream decoded short.
+	// Keep only complete rows when a corrupt stream decoded short, so
+	// TimestampAt, ValueAt and TagAt agree on every index.
 	timestamps, values, tags = alignMemberRows(timestamps, values, tags, b.HasTag())
 
 	return MaterializedNumericMetric{

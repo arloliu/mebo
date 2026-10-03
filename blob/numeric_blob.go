@@ -597,12 +597,11 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 
 		return decoder.At(valBytes, index, count)
 	case format.TypeChimp:
-		// Chimp encoding is also variable-length compressed like Gorilla.
 		decoder := ienc.NewNumericChimpDecoder()
 
 		return decoder.At(valBytes, index, count)
 	case format.TypeALP:
-		// ALP is also variable-length compressed; needs the endian engine.
+		// ALP needs the endian engine.
 		engine := b.Engine()
 		decoder := ienc.NewNumericALPDecoder(engine)
 

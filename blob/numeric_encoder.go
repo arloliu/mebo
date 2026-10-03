@@ -15,7 +15,6 @@ import (
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/collision"
 	ienc "github.com/arloliu/mebo/internal/encoding"
-	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/internal/options"
 	"github.com/arloliu/mebo/internal/pool"
 	"github.com/arloliu/mebo/section"
@@ -405,10 +404,9 @@ func (e *NumericEncoder) StartMetricName(metricName string, numOfDataPoints int)
 		return fmt.Errorf("%w: metric name length %d exceeds maximum %d bytes", errs.ErrInvalidMetricName, len(metricName), MaxMetricNameLength)
 	}
 
-	metricID := hash.ID(metricName)
-	// ID 0 marks "no metric open"; a name hashing to it cannot be tracked.
-	if metricID == 0 {
-		return fmt.Errorf("%w: metric name %q hashes to the reserved metric ID 0", errs.ErrInvalidMetricName, metricName)
+	metricID, err := metricIDForName(metricName)
+	if err != nil {
+		return err
 	}
 
 	// Read-only duplicate-name and prospective-collision detection.

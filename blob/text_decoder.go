@@ -266,11 +266,6 @@ func (d *TextDecoder) parseIndexEntries(startOffset int) ([]section.TextIndexEnt
 			errs.ErrInvalidTimestampPayloadOffset, d.header.DataOffset, endOffset)
 	}
 
-	if len(d.data) < endOffset {
-		return nil, nil, fmt.Errorf("%w: need %d bytes, have %d",
-			errs.ErrInvalidIndexEntrySize, expectedIndexSize, len(d.data)-startOffset)
-	}
-
 	indexEntries := make([]section.TextIndexEntry, d.metricCount)
 	metricIDs := make([]uint64, d.metricCount)
 

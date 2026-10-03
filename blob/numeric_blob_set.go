@@ -578,3 +578,16 @@ func yieldEmptyTags(n int, yield func(string) bool) bool {
 
 	return true
 }
+
+// yieldEmptyIndexedTags yields n empty tags at consecutive indexes starting at
+// index. It returns the next index and false if yield stopped early.
+func yieldEmptyIndexedTags(index, n int, yield func(int, string) bool) (int, bool) {
+	for range n {
+		if !yield(index, "") {
+			return index, false
+		}
+		index++
+	}
+
+	return index, true
+}

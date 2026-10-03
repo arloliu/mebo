@@ -121,6 +121,25 @@ type logicalPlan struct {
 	byID   map[uint64]int
 }
 
+// slotForName resolves a metric name to its logical slot in a plan's
+// names/byName/byID tables. A named slot matches exactly. Otherwise the name
+// can only refer to data from names-free members, whose slots are keyed by ID
+// alone, so the query is hashed and accepted when it lands on an id-only slot —
+// the same hash fallback the raw set and a single-blob Materialize() use when no
+// names payload exists.
+func slotForName(names []string, byName map[string]int, byID map[uint64]int, metricName string) (int, bool) {
+	if slot, ok := byName[metricName]; ok {
+		return slot, true
+	}
+
+	slot, ok := byID[hash.ID(metricName)]
+	if !ok || names[slot] != "" {
+		return -1, false
+	}
+
+	return slot, true
+}
+
 // setHasCollision is the collision probe run at set construction: it answers "does this
 // set need an identity table?" without building one.
 //

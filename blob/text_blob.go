@@ -760,11 +760,8 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 		return ts, n, nil
 
 	case format.TypeRaw:
-		// Raw encoding: timestamps are written as length-prefixed strings containing 8 bytes
-		// First read the length prefix
-		if len(data[offset:]) < 1 {
-			return 0, 0, fmt.Errorf("%w: insufficient data for timestamp length prefix", errs.ErrInvalidTimestampData)
-		}
+		// Raw encoding: timestamps are written as length-prefixed strings containing 8 bytes.
+		// The offset check above guarantees the length prefix byte exists.
 		length := int(data[offset])
 		offset++
 
