@@ -1,10 +1,10 @@
 # Design: ALP with run-length front end (`TypeALPRLE`, 0x7)
 
 **Date:** 2026-10-03
-**Status:** Draft — design proposed, pending review.
-The ratio gate is passed on calibrated synthetic data.
-A single-binary speed pre-check passes all three speed gates;
-the `DecodeAll` gate was restated against Chimp by the owner on 2026-10-03.
+**Status:** Phases 0–3 implemented on `feat/alp-rle` (2026-10-04); Phase 4 (docs) pending.
+The ratio gate and all three speed gates pass,
+measured layout-averaged through the real blob encoder in Phase 3.
+The `DecodeAll` gate was restated against Chimp by the owner on 2026-10-03.
 
 ## Goal
 
@@ -91,6 +91,25 @@ With the measured ~0.18 B/point of blob overhead added,
 the **estimated** whole-blob figure is about 1.15 B/point against Chimp's 3.35.
 That is an estimate on calibrated synthetic data, not a production measurement.
 
+Measured in Phase 3 through the real blob encoder (whole blob, bytes/point, 100 metrics × 150 points,
+shared DeltaPacked timestamps, no compression, no tags; `tests/measurev2` profiles):
+
+| profile | chimp | gorilla | alp | alp-rle | vs ALP | vs Chimp |
+|---|---|---|---|---|---|---|
+| decimal_gauge_2dp | 6.22 | 6.58 | 1.73 | 1.73 | +0.0% | −72.1% |
+| counter | 2.07 | 1.72 | 1.50 | 1.50 | +0.0% | −27.6% |
+| sparse_constant | 0.74 | 0.64 | 1.24 | 0.46 | −62.9% | −37.7% |
+| worst_case | 6.38 | 6.60 | 6.51 | 6.51 | +0.0% | +2.0% |
+| cal_2dp_hold30 | 4.52 | 4.69 | 1.73 | 1.44 | −16.9% | −68.2% |
+| cal_2dp_hold50 | 3.38 | 3.44 | 1.68 | 1.12 | −33.1% | −66.8% |
+| cal_2dp_hold70 | 2.18 | 2.17 | 1.62 | 0.82 | −49.6% | −62.6% |
+| cal_2dp_step0.005 | 4.42 | 4.47 | 0.95 | 0.90 | −4.7% | −79.6% |
+| cal_1dp_step0.03 | 4.01 | 4.08 | 0.83 | 0.79 | −4.8% | −80.3% |
+| cal_1dp_step0.01 | 2.07 | 2.01 | 0.63 | 0.53 | −15.7% | −74.2% |
+
+The hold-50% estimate holds: 1.12 B/point against Chimp's 3.38.
+No profile is larger than plain ALP, and `sparse_constant`, the one shape where ALP lost to Chimp and Gorilla, now beats both.
+
 ### Speed gates
 
 Final measurement is layout-averaged (4 layouts, n = 12) in Phase 3, against plain ALP on the same columns:
@@ -121,6 +140,24 @@ The decode benchmark also uses prebuilt `[]uint64` bitmaps and preallocated scra
 and the encode benchmark builds fresh ALP columns instead of reusing the blob encoder;
 header parsing, bitmap-tail handling and scratch acquisition are only measured in Phase 3.
 A fused decode kernel is out of scope for this design; it can follow if plain-ALP parity ever matters.
+
+Phase 3 result (2026-10-04): layout-averaged, 4 code layouts × 3 rounds, medians of n = 12,
+`taskset -c 6`, Ryzen 9 9950X3D, Go 1.26.7;
+`internal/encoding/value/alp/alp_runs_bench_test.go` and `blob/numeric_alp_bench_test.go`,
+100 metrics × 150 points, production blob options for the blob-level rows:
+
+| gate | judged at | measured | result |
+|---|---|---|---|
+| `DecodeAll` faster than Chimp | codec `DecodeAll` | runs 0.90 ns/pt, Chimp 2.70, plain ALP 0.56 | passes, 3.0× faster than Chimp |
+| `ValueAt` ≤ 2× plain ALP | `NumericBlob.ValueAt` | ALP-RLE 32.1 ns, ALP 28.3, Chimp 428 | passes, 1.14× |
+| run-free encode ≤ 1.1× plain ALP | codec and whole-blob encode | 1.009× and 1.008× | passes |
+
+At the codec level alone, runs `At` is 13.2 ns against 7.3 for plain ALP (1.81×), also within the gate.
+Two results outside the gates:
+`ForEachValues` on a runs column is 6.36 ns/pt against Chimp's 4.73, and allocates per metric under both ALP types;
+encoding a hold-50% column costs 2.03× plain ALP, because the (e, f) search dominates at 150 points
+and the nested column pays it again.
+Working report: `tmp/alp-rle-phase3-measurement.md` (gitignored).
 
 ## Key decisions
 
@@ -280,7 +317,7 @@ Tests: extend `blob/numeric_alp_wiring_test.go`
 so `AllValues`, `ValueAt`, `ForEach` and `Materialize` agree under the new type,
 and `blob/numeric_alp_scheme_test.go` so scheme 3 is rejected under 0x6 and accepted under 0x7.
 
-### Phase 3 — measurement
+### Phase 3 — measurement (done 2026-10-04)
 
 - Generators first:
   add the calibrated shapes (hold 30/50/70%, 1-decimal small steps) to `tests/measurev2` as named profiles.
@@ -290,7 +327,8 @@ and `blob/numeric_alp_scheme_test.go` so scheme 3 is rejected under 0x6 and acce
 ### Phase 4 — docs
 
 User docs say when to pick `TypeALPRLE` over `TypeALP`:
-each uncompressed column is never larger, and encoding costs one extra pass.
+each uncompressed column is never larger, and encoding costs one extra pass
+(about 1% on run-free data, about 2× plain ALP when half the points repeat).
 They also say that with value compression enabled the whole payload is not guaranteed to shrink.
 Add the performance numbers from Phase 3.
 
