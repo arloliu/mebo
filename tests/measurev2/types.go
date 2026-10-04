@@ -7,6 +7,18 @@ import (
 	"github.com/arloliu/mebo/format"
 )
 
+// DefaultProfile is the profile used when -profile is not given.
+const DefaultProfile = "mix_monitoring"
+
+// Mixed-blob timestamps: Gorilla (PVLDB 8(12), 2015, §4.1.1) found about 96% of production timestamps
+// on a regular delta-of-delta of zero, and Prometheus snaps scrape jitter within 2 ms to the schedule
+// (--scrape.timestamp-tolerance), so the remaining 4% miss the grid by 2-10 ms (the 10 ms bound is an assumption).
+const (
+	mixTSJitterShare = 0.04
+	mixTSJitterMinMs = 2
+	mixTSJitterMaxMs = 10
+)
+
 // EncodingCombo defines a timestamp+value encoding pair to benchmark.
 type EncodingCombo struct {
 	TSEncoding  format.EncodingType
@@ -91,15 +103,45 @@ func SharedTSCombos() []EncodingCombo {
 
 // Profile names a realistic generator combination.
 type Profile struct {
-	Name       string
-	Decimals   int    // value quantization (decimal places); <0 = full precision
-	ValueKind  string // "gauge" | "counter" | "sparse"
-	IntervalMs int64  // scrape interval
-	BurstyGaps bool   // inject periodic gaps (large dod spikes)
+	Name       string `json:"name"`
+	Decimals   int    `json:"decimals"`              // value quantization (decimal places); <0 = full precision
+	ValueKind  string `json:"value_kind,omitempty"`  // "gauge" | "counter" | "sparse"
+	IntervalMs int64  `json:"interval_ms,omitempty"` // scrape interval
+	BurstyGaps bool   `json:"bursty_gaps,omitempty"` // inject periodic gaps (large dod spikes)
 	// Hold is the probability that a gauge point repeats the previous value (0 = never).
-	Hold float64
+	Hold float64 `json:"hold,omitempty"`
 	// StepPct is a gauge's maximum step in percent of the current value (0 = the default 0.5).
-	StepPct float64
+	StepPct float64 `json:"step_pct,omitempty"`
+	// Parts makes this a mixed blob: each part generates its share of the metrics' values,
+	// and every metric gets aligned timestamps (see TSJitterShare).
+	Parts []ProfilePart `json:"parts,omitempty"`
+	// TSJitterShare is the share of a mixed blob's timestamps that miss the scrape grid;
+	// each miss is offset by TSJitterMinMs..TSJitterMaxMs in either direction, and every other point is exactly on the grid.
+	TSJitterShare float64 `json:"ts_jitter_share,omitempty"`
+	TSJitterMinMs float64 `json:"ts_jitter_min_ms,omitempty"`
+	TSJitterMaxMs float64 `json:"ts_jitter_max_ms,omitempty"`
+	// Legacy selects the original full-precision random walk (GenerateTestData),
+	// the only generator that the -value-jitter and -ts-jitter flags affect.
+	Legacy bool `json:"legacy,omitempty"`
+}
+
+// ProfilePart is one component of a mixed profile.
+type ProfilePart struct {
+	Share   float64 `json:"share"` // share of the blob's metrics
+	Profile Profile `json:"profile"`
+}
+
+// mixGauge is a 15 s gauge component for the mixed profiles.
+func mixGauge(decimals int, hold, stepPct float64) Profile {
+	return Profile{Name: "gauge", Decimals: decimals, ValueKind: "gauge", IntervalMs: 15000, Hold: hold, StepPct: stepPct}
+}
+
+// mixProfile builds a 15 s mixed profile with aligned timestamps.
+func mixProfile(name string, parts ...ProfilePart) Profile {
+	return Profile{
+		Name: name, IntervalMs: 15000, Parts: parts,
+		TSJitterShare: mixTSJitterShare, TSJitterMinMs: mixTSJitterMinMs, TSJitterMaxMs: mixTSJitterMaxMs,
+	}
 }
 
 // Profiles returns the catalog of realistic generator profiles.
@@ -121,6 +163,37 @@ func Profiles() []Profile {
 		{Name: "cal_2dp_step0.005", Decimals: 2, ValueKind: "gauge", IntervalMs: 15000, StepPct: 0.005},
 		{Name: "cal_1dp_step0.03", Decimals: 1, ValueKind: "gauge", IntervalMs: 15000, StepPct: 0.03},
 		{Name: "cal_1dp_step0.01", Decimals: 1, ValueKind: "gauge", IntervalMs: 15000, StepPct: 0.01},
+		// The pre-2026-10 default: a full-precision ±0.5% random walk at 1 s with ±0.1% timestamp jitter.
+		{Name: "legacy_random_walk", Decimals: -1, Legacy: true},
+		// Mixed blobs calibrated to the owner's target of about 3.8 B/point for Chimp,
+		// measured at 100 metrics × 150 points with shared DeltaPacked timestamps and no compression.
+		// The shares are assumptions: one aggregate figure cannot pin them down,
+		// so the four mixes differ in structure and each lands near the target.
+		mixProfile("mix_monitoring",
+			ProfilePart{0.35, mixGauge(2, 0.3, 0)},
+			ProfilePart{0.20, Profile{Name: "counter", Decimals: 0, ValueKind: "counter", IntervalMs: 15000}},
+			ProfilePart{0.18, Profile{Name: "sparse", Decimals: 2, ValueKind: "sparse", IntervalMs: 15000}},
+			ProfilePart{0.27, mixGauge(-1, 0, 0)},
+		),
+		mixProfile("mix_sensor",
+			ProfilePart{0.50, mixGauge(2, 0.3, 0)},
+			ProfilePart{0.20, mixGauge(1, 0.5, 0.03)},
+			ProfilePart{0.11, Profile{Name: "sparse", Decimals: 2, ValueKind: "sparse", IntervalMs: 15000}},
+			ProfilePart{0.19, mixGauge(-1, 0, 0)},
+		),
+		mixProfile("mix_integer",
+			ProfilePart{0.30, Profile{Name: "counter", Decimals: 0, ValueKind: "counter", IntervalMs: 15000}},
+			ProfilePart{0.21, Profile{Name: "sparse", Decimals: 2, ValueKind: "sparse", IntervalMs: 15000}},
+			ProfilePart{0.35, mixGauge(2, 0, 0)},
+			ProfilePart{0.14, mixGauge(-1, 0, 0)},
+		),
+		mixProfile("mix_fullprec",
+			ProfilePart{0.20, mixGauge(2, 0.5, 0)},
+			ProfilePart{0.10, Profile{Name: "counter", Decimals: 0, ValueKind: "counter", IntervalMs: 15000}},
+			ProfilePart{0.05, Profile{Name: "sparse", Decimals: 2, ValueKind: "sparse", IntervalMs: 15000}},
+			ProfilePart{0.40, mixGauge(-1, 0.5, 0)},
+			ProfilePart{0.25, mixGauge(-1, 0, 0)},
+		),
 	}
 }
 
@@ -131,7 +204,7 @@ type DataConfig struct {
 	ValueJitterPct  float64 `json:"value_jitter_pct"`
 	TSJitterPct     float64 `json:"ts_jitter_pct"`
 	Seed            int64   `json:"seed"`
-	Profile         string  `json:"profile,omitempty"` // realistic profile name; empty = legacy generators
+	Profile         string  `json:"profile,omitempty"` // profile name; empty or legacy_random_walk = legacy generators
 }
 
 // findProfile returns the named profile from the catalog.
@@ -163,6 +236,8 @@ type ReportMetadata struct {
 	NumCPU    int        `json:"num_cpu"`
 	Timestamp time.Time  `json:"timestamp"`
 	Data      DataConfig `json:"data_config"`
+	// ProfileSpec is the full definition of the profile the data came from, mixed parts included.
+	ProfileSpec *Profile `json:"profile_spec,omitempty"`
 }
 
 // BenchMetrics holds standard Go benchmark metrics.

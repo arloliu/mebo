@@ -17,14 +17,14 @@ func logf(format string, args ...any) {
 
 func main() {
 	// CLI flags
-	numMetrics := flag.Int("metrics", 200, "Number of metrics to generate")
-	pointsPerMetric := flag.Int("points", 200, "Points per metric for matrix benchmarks")
-	valueJitter := flag.Float64("value-jitter", 0.5, "Value jitter percentage (e.g., 0.5 = ±0.5% random walk per point; semiconductor sensors: 0.01-0.5%)")
-	tsJitter := flag.Float64("ts-jitter", 0.1, "Timestamp jitter percentage (e.g., 0.1 = ±0.1% of interval; industrial protocols: <0.1%)")
+	numMetrics := flag.Int("metrics", 100, "Number of metrics to generate")
+	pointsPerMetric := flag.Int("points", 150, "Points per metric for matrix benchmarks")
+	valueJitter := flag.Float64("value-jitter", 0.5, "legacy_random_walk only: value jitter percentage (0.5 = ±0.5% random walk per point)")
+	tsJitter := flag.Float64("ts-jitter", 0.1, "legacy_random_walk only: timestamp jitter percentage (0.1 = ±0.1% of the 1 s interval)")
 	outputFile := flag.String("output", "", "Output JSON file path (default: stdout)")
 	pretty := flag.Bool("pretty", false, "Pretty-print JSON output")
 	verbose := flag.Bool("verbose", false, "Print progress to stderr")
-	profileName := flag.String("profile", "", "Realistic data profile (empty = legacy full-precision random walk). Available: "+profileNames())
+	profileName := flag.String("profile", DefaultProfile, "Data profile (empty = legacy_random_walk). Available: "+profileNames())
 
 	flag.Parse()
 
@@ -49,27 +49,19 @@ func main() {
 	}
 
 	// Generate test data
+	if config.Profile == "" {
+		config.Profile = "legacy_random_walk"
+	}
+	profile, ok := findProfile(config.Profile)
+	if !ok {
+		logf("Error: unknown -profile %q; available: %s\n", config.Profile, profileNames())
+		os.Exit(1)
+	}
 	if *verbose {
-		src := "legacy full-precision random walk"
-		if config.Profile != "" {
-			src = "profile " + config.Profile
-		}
-		logf("Generating test data (%s): %d metrics × %d points...\n", src, config.NumMetrics, config.PointsPerMetric)
+		logf("Generating test data (profile %s): %d metrics × %d points...\n", config.Profile, config.NumMetrics, config.PointsPerMetric)
 	}
 
-	var data, sharedData *TestData
-	if config.Profile != "" {
-		p, ok := findProfile(config.Profile)
-		if !ok {
-			logf("Error: unknown -profile %q; available: %s\n", config.Profile, profileNames())
-			os.Exit(1)
-		}
-		data = GenerateProfile(p, config)
-		sharedData = data.shareTimestamps()
-	} else {
-		data = GenerateTestData(config)
-		sharedData = GenerateSharedTimestampData(config)
-	}
+	data, sharedData := generateDatasets(profile, config)
 
 	combos := AllCombos()
 	sharedCombos := SharedTSCombos()
@@ -77,12 +69,13 @@ func main() {
 
 	// Build metadata
 	metadata := ReportMetadata{
-		GoVersion: runtime.Version(),
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
-		NumCPU:    runtime.NumCPU(),
-		Timestamp: time.Now(),
-		Data:      config,
+		GoVersion:   runtime.Version(),
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
+		NumCPU:      runtime.NumCPU(),
+		Timestamp:   time.Now(),
+		Data:        config,
+		ProfileSpec: &profile,
 	}
 
 	// First, get the raw-raw baseline size for ratio calculations.

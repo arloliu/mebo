@@ -66,10 +66,12 @@ Fixed per-metric overhead (index entry, header flags, metadata) totals ~34–44 
 | Points/Metric | Approx BPP (Delta+Gorilla) | Efficiency |
 |---------------|---------------------------|------------|
 | 1             | ~32                       | Poor — overhead dominates |
-| 10            | ~11.0                     | Acceptable |
-| 50            | ~8.9                      | Good |
-| 100           | ~8.6                      | Excellent |
-| 200           | ~8.5                      | Optimal — diminishing returns beyond this |
+| 10            | ~8.1                      | Acceptable |
+| 50            | ~5.5                      | Good |
+| 100           | ~5.2                      | Excellent |
+| 150           | ~5.1                      | Optimal — the longest columns measured; still falling slowly |
+
+These are bytes/point for the default encoder on the Performance Guide's benchmark mix (100 metrics).
 
 For full scaling data, see [Performance Guide — Scaling Analysis](performance.md#scaling-analysis).
 
@@ -78,17 +80,22 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 | Data pattern | Recommended encoding | Why |
 |---|---|---|
 | Regular 1-second intervals | Delta or DeltaPacked timestamp | ~1 byte/ts on regular data vs 8 bytes raw (worst case 10 bytes for Delta, ~8.25 for DeltaPacked) |
-| Slowly changing floats (CPU, memory) | Gorilla or Chimp value | XOR compression; ~2–5 bytes/val |
+| Full-precision floats that rarely repeat (computed rates, ratios) | Chimp or Gorilla value | XOR compression; on a full-precision gauge, Chimp is 2% smaller than ALP and ALP-RLE and encodes about 5× faster |
 | Rapidly changing or discontinuous values | Raw value | No decompression overhead |
-| Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; ~20–25% additional savings at 200 metrics |
-| Decimal-quantized sensor data (2–4 dp) | ALP value | 1.9–2.7× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles; costs more to encode |
-| Decimal data where many points repeat the previous value | ALP-RLE value | Stores each run of repeats once; see [ALP or ALP-RLE?](#alp-or-alp-rle) |
+| Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; saves about 1.2 bytes/point on the 100-metric benchmark mix, 24% with Chimp and 32% with ALP-RLE |
+| Decimal-quantized sensor data (2–4 dp) | ALP value | 2.4–3.8× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles with shared timestamps; costs more to encode |
+| Decimal data where many points repeat the previous value, or gauges, counters and held values mixed in one blob | ALP-RLE value | Stores each run of repeats once; smallest on all four benchmark mixes, 12.8–47.5% below Chimp; see [ALP or ALP-RLE?](#alp-or-alp-rle) |
 | Frequent random-access timestamps | Raw timestamp | O(1) `TimestampAt`; Delta/DeltaPacked must sequentially decode from the start (O(index)) |
 | Frequent random-access values | Raw, ALP or ALP-RLE value | Raw is O(1); ALP is O(1) + O(log k) (k = exceptions in the column); ALP-RLE adds a bitmap rank of O(index/64) on columns with runs — all far ahead of Gorilla/Chimp, which must sequentially decode the XOR chain from the start (O(index)) |
 
-DeltaPacked vs Delta: DeltaPacked uses Group Varint for **faster decode/iteration**, not better compression. Size difference is marginal (~2%). Choose DeltaPacked when iteration throughput matters more than encoding speed.
+DeltaPacked vs Delta: DeltaPacked uses Group Varint, meant for **faster decode/iteration**, not better compression.
+Size difference is marginal: about 0.2 bytes/point per metric on the benchmark mix, and 0.002 with shared timestamps.
+The 2026-10-04 benchmark run measured DeltaPacked iterating slower than Delta with Gorilla and Chimp, in a single build;
+measure your own workload before choosing it for throughput.
 
-Chimp vs Gorilla: Chimp achieves ~2.9% better compression ratio. Both use XOR-based encoding. Choose based on whether the marginal size reduction justifies the slightly different algorithm.
+Chimp vs Gorilla: Chimp is 0.8–2.6% smaller on the benchmark mixes, but Gorilla is smaller on counters and mostly-constant values.
+Both use XOR-based encoding.
+Choose based on whether the marginal size reduction justifies the slightly different algorithm.
 
 Random access is not just a timestamp-encoding question — the *value* encoding matters just as
 much, and Gorilla/Chimp are the slow axis there (see
@@ -116,11 +123,12 @@ such as held gauges, status values, or slow sensors scraped faster than they cha
   and `ForEachValues` is about 3.2 ns/point against Chimp's 4.8.
 - **Compatibility:** readers older than this encoding reject the blob; see [ALP-RLE: upgrade consumers before producers](#alp-rle-upgrade-consumers-before-producers).
 
-The measurements and their method are in the [Performance Guide](performance.md#alp-rle-on-repeat-heavy-data).
+The measurements and their method are in the [Performance Guide](performance.md#alp-rle-speed-layout-averaged).
 
 ### Codec compression is optional
 
-Mebo's encoding algorithms (Delta + Chimp) already achieve 48–61% space savings without any codec layer. Codec compression (Zstd, S2, LZ4) adds CPU cost on encode and decode for marginal additional savings on already-compressed numeric data.
+Mebo's encoding algorithms already save 68–84% on the benchmark mix without any codec layer, from Delta + Gorilla to Shared DeltaPacked + ALP-RLE.
+Codec compression (Zstd, S2, LZ4) adds CPU cost on encode and decode for marginal additional savings on already-compressed numeric data.
 
 The default (`NewDefaultNumericEncoder`) uses no codec compression and is the recommended choice for most workloads. Add a codec only when storage cost outweighs CPU budget — typically for cold storage of historical data.
 
