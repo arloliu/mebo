@@ -10,3 +10,8 @@ package alp
 func alpMainStatsSIMD(values []float64, ee, ff int, dst []uint64, excPos []uint32) (alpMainCand, []uint32) {
 	return alpMainStatsScalar(values, ee, ff, dst, excPos)
 }
+
+// alpBestEFSIMD has no vectorized implementation off amd64: ok is always false, and the caller runs the scalar search.
+func alpBestEFSIMD(_ []float64, _, _ int) (bestE, bestF int, ok bool) {
+	return 0, 0, false
+}
