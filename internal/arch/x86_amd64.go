@@ -25,6 +25,11 @@ func X86HasAVX512DQ() bool {
 	return cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ
 }
 
+// X86HasPOPCNT reports whether the current x86 CPU supports the POPCNT instruction.
+func X86HasPOPCNT() bool {
+	return cpu.X86.HasPOPCNT
+}
+
 // X86HasAVX512VBMI reports whether the current x86 CPU supports the AVX-512
 // baseline plus the VBMI extension (VPERMB byte-granular cross-lane permute).
 func X86HasAVX512VBMI() bool {

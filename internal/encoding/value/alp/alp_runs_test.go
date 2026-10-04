@@ -22,7 +22,7 @@ func alpRunsHold(n int, hold float64, seed int64) []float64 {
 			out[i] = out[i-1]
 			continue
 		}
-		cur += cur * (rng.Float64()*2 - 1) * 0.005
+		cur += float64(float64(cur*float64(float64(rng.Float64()*2)-1)) * 0.005) // rounded explicitly: no FMA
 		out[i] = math.Round(cur*100) / 100
 	}
 
@@ -491,7 +491,7 @@ func alpEFTestColumns(rng *rand.Rand) [][]float64 {
 				cur = -cur
 			}
 			for i := range col {
-				cur += cur * (rng.Float64()*2 - 1) * 0.01
+				cur += float64(float64(cur*float64(float64(rng.Float64()*2)-1)) * 0.01) // rounded explicitly: no FMA
 				col[i] = cur
 				if dec >= 0 {
 					col[i] = math.Round(cur*scale) / scale

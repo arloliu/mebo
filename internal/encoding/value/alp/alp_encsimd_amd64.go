@@ -10,157 +10,99 @@ import (
 	"github.com/arloliu/mebo/internal/pool"
 )
 
-// alpMainStatsAVX512 is the hand-written AVX-512DQ verify kernel backing the
-// ALP-main encode pass. It processes exactly nBlock 8-lane blocks (the first
-// nBlock*8 values); the Go caller finishes the <8-value tail scalar.
-//
-// Per lane it computes scaled = v*pe*iff (two separate multiplies, never
-// fused), a domain guard |scaled| < 2^51, the magic-number fast round, the
-// int64 digit, and the bit-exact verify-back digit*pf*ie == v. Multiply order
-// and the round magic match alpEncodeDigit's fast path exactly, so every
-// in-domain lane's result is bit-identical to the scalar path.
-//
-// Outputs, per block g, into blockMask[g]: bits 0..7 = the exception mask
-// (in-domain lanes whose verify-back failed) and bits 8..15 = the guard-fail
-// mask (lanes with |scaled| >= 2^51, or NaN/Inf, where the vectorized fast
-// round is invalid and the scalar legacy fallback must decide). Good lanes
-// (in-domain AND verify-back matched) have their int64 digit masked-stored into
-// dst and folded into the per-lane min/max accumulators returned via minOut and
-// maxOut (each an 8-int64 vector the caller reduces). The return value is the
-// OR of every block's (exception|guard) byte: zero means every processed lane
-// was good, so the caller can skip the mask scan entirely.
+// alpMainStatsMinN is the shortest column the stats kernel handles:
+// below it the kernel's fixed cost (about 15 ns for the pooled mask buffer) loses to the scalar loop
+// (measured 2026-10-04: scalar 16.6 vs kernel 15.3 ns at n = 7, and 4.2 vs 16.1 ns at n = 1).
+const alpMainStatsMinN = 8
+
+// alpEFSearchMinSamples is the smallest strided sample the search kernel handles:
+// a one-value sample is faster scalar (measured 2026-10-04: 335–384 ns scalar vs 451–473 ns kernel),
+// while from two values on the kernel wins (456–460 vs 498–595 ns, and 980–1005 vs 3330–7340 ns at 150 points).
+const alpEFSearchMinSamples = 2
+
+// alpHasPOPCNT gates the search kernel, which counts good lanes with POPCNT.
+var alpHasPOPCNT = arch.X86HasPOPCNT()
+
+// The search kernel hardcodes the candidate grid: e runs from 0 to 18, there are 190 candidates,
+// and a candidate's rank (index + 1) fits in 9 bits.
+// These fail to compile if alpMaxExponent or alpEFCandidates change without the kernel.
+const (
+	_ = uint(alpMaxExponent - 18)
+	_ = uint(18 - alpMaxExponent)
+	_ = uint(alpEFCandidates - 190)
+	_ = uint(190 - alpEFCandidates)
+)
+
+// alpEFSearchAVX512 evaluates every (e, f) candidate on sample[0:ns] and returns the index of the winner:
+// the first strictly smaller estimate in candidate order, with candidate seed (or none, for -1) winning every tie.
+// Lanes ns..ceil(ns/8)*8-1 of sample must be NaN.
+// ns must be in 1..63: the kernel returns -1 for any other ns, before touching memory,
+// so a caller that indexes alpEFPairs with the result panics instead of reading past the sample.
+// See alp_encsimd_amd64.s for the per-lane rules that make it select exactly as alpBestEF and alpBestEFSeeded do.
 //
 //go:noescape
-func alpMainStatsAVX512(values *float64, nBlock int, factors *[4]float64,
-	dst *uint64, blockMask *uint64, minOut *int64, maxOut *int64) uint64
+func alpEFSearchAVX512(sample *[64]float64, ns int, factors *[alpEFCandidates][4]float64, seed int) int
 
-// alpMainStatsSIMD dispatches to the AVX-512 verify kernel when the CPU
-// supports AVX-512DQ and there is at least one full 8-lane block, then rescues
-// the rare guard-fail lanes and finishes the tail in Go so its output is
-// byte-identical to alpMainStatsScalar. Off the fast path (no AVX-512DQ, or
-// n < 8) it is exactly the scalar loop.
+// alpMainStatsAVX512 is the AVX-512DQ kernel behind the ALP-main encode pass:
+// alpEncodeDigit for all n values (n >= 1),
+// including the lanes where |scaled| >= 2^51 and the n mod 8 tail, so no lane needs a scalar rescue.
+// See alp_encsimd_amd64.s for the per-lane rules that keep it bit-identical to alpEncodeDigit.
 //
-// Rescue/tail scalar work reuses alpEncodeDigit, the same primitive
-// alpMainStatsScalar uses, so digits, exception positions (ascending), min/max,
-// and the derived width are identical to the scalar reference for every input.
+// Good digits are stored to dst, and exception slots are left untouched.
+// blockMask[g] receives block g's exception lanes in its low 8 bits;
+// the result is the OR of all block masks, so zero means no exception.
+// mnmx receives {min, max} over the good digits ({MaxInt64, MinInt64} if none).
+//
+//go:noescape
+func alpMainStatsAVX512(values *float64, n int, factors *[4]float64,
+	dst *uint64, blockMask *uint64, mnmx *[2]int64) uint64
+
+// alpMainStatsSIMD runs the AVX-512 kernel when alpEncAVX512 is set and the column has at least alpMainStatsMinN values,
+// and is alpMainStatsScalar otherwise.
+// Both produce identical digits, exception positions (ascending), min, width and nExc for every input.
 func alpMainStatsSIMD(values []float64, ee, ff int, dst []uint64, excPos []uint32) (alpMainCand, []uint32) {
-	n := len(values)
-	if n < 8 || !arch.X86HasAVX512DQ() {
+	if len(values) < alpMainStatsMinN || !alpEncAVX512 {
 		return alpMainStatsScalar(values, ee, ff, dst, excPos)
 	}
 
-	nBlock := n >> 3
-	blkVals := nBlock << 3
+	return alpMainStatsKernel(values, ee, ff, dst, excPos)
+}
 
-	// Multiply factors {pe, iff, pf, ie}, precomputed once (bit-identical to
-	// alpEncodeDigit's alpPow10[ee]*alpInvPow10[ff] scaling and
-	// alpPow10[ff]*alpInvPow10[ee] verify-back): the kernel broadcasts each into
-	// a ZMM. Binding to locals does not reorder anything — FP is not
-	// associative, and the two-multiply order is preserved in the asm. Passed as
-	// a stack array (the //go:noescape kernel does not retain the pointer).
+// alpMainStatsKernel is alpMainStatsSIMD's kernel path for len(values) >= 1 and len(dst) >= len(values),
+// callable directly so tests reach it regardless of the dispatch rule.
+func alpMainStatsKernel(values []float64, ee, ff int, dst []uint64, excPos []uint32) (alpMainCand, []uint32) {
+	n := len(values)
+	nBlock := (n + 7) >> 3
+	// The kernel writes dst[0:n] through a raw pointer: check the bound here, as the scalar loop would.
+	_ = dst[n-1]
+
+	// {pe, iff, pf, ie}: the same table values alpEncodeDigit multiplies by, in the same order.
+	// A stack array: the //go:noescape kernel does not retain the pointer.
 	factors := [4]float64{alpPow10[ee], alpInvPow10[ff], alpPow10[ff], alpInvPow10[ee]}
 
-	// Pooled per-block mask scratch (one uint64 per block). Pooled — not a
-	// per-call make — so the zero-exception fast path stays allocation-free
-	// even though the kernel writes every block's mask word unconditionally;
-	// the sync.Pool is reused across short-lived encoders (see
-	// internal/pool/uint64_slice_pool.go). defer Put so a panic mid-pass cannot
-	// leak the buffer.
+	// One mask word per block, pooled so the call stays allocation-free;
+	// defer, so a panic cannot leak the buffer.
 	maskPtr := pool.GetUint64Slice(nBlock)
 	defer pool.PutUint64Slice(maskPtr)
 	blockMask := *maskPtr
 
-	// Per-lane min/max accumulators; the kernel writes the raw 8-lane vectors
-	// here and Go reduces them. Stack-resident (the //go:noescape kernel does
-	// not retain the pointers), so no heap allocation.
-	var minOut, maxOut [8]int64
+	var mnmx [2]int64
+	anyExc := alpMainStatsAVX512(&values[0], n, &factors, &dst[0], &blockMask[0], &mnmx)
 
-	anyBad := alpMainStatsAVX512(&values[0], nBlock, &factors,
-		&dst[0], &blockMask[0], &minOut[0], &maxOut[0])
-
-	// Reduce the kernel's good-lane min/max. Lanes that never saw a good value
-	// hold the sentinels (MaxInt64 / MinInt64) the kernel initialized them to,
-	// so they never corrupt the reduction.
-	mn := int64(math.MaxInt64)
-	mx := int64(math.MinInt64)
-	for i := 0; i < 8; i++ {
-		if minOut[i] < mn {
-			mn = minOut[i]
-		}
-		if maxOut[i] > mx {
-			mx = maxOut[i]
-		}
-	}
-
-	// Rescue bad lanes (rare on real data). Walking blocks then lanes in
-	// ascending order keeps excPos ascending — the invariant the decoder's
-	// binary search relies on. Every exception in the column comes from a bad
-	// lane (good lanes verify by construction), so this single ascending walk
-	// appends them in the same order the scalar loop would.
-	if anyBad != 0 {
-		for g := 0; g < nBlock; g++ {
-			m := blockMask[g]
-			if m == 0 {
-				continue
-			}
-			base := g << 3
-			if (m>>8)&0xFF != 0 {
-				// Dirty block (contains a guard-fail lane): the vectorized fast
-				// round was invalid for at least one lane, so re-derive all 8
-				// lanes scalar. The kernel's good-lane stores/min-max for this
-				// block are idempotently reproduced (same digits, same min/max),
-				// and its guard-fail lanes — which it left untouched — are
-				// resolved here to either a digit or an exception.
-				for j := 0; j < 8; j++ {
-					i := base + j
-					d, good := alpEncodeDigit(values[i], ee, ff)
-					if !good {
-						excPos = append(excPos, uint32(i))
-						continue
-					}
-					dst[i] = uint64(d) //nolint:gosec
-					if d < mn {
-						mn = d
-					}
-					if d > mx {
-						mx = d
-					}
-				}
-
-				continue
-			}
-			// Clean block with in-domain verify-fail exceptions: the kernel
-			// already stored/min-maxed the good lanes, so only the exception
-			// positions remain to append (ascending lane order).
-			exc := byte(m & 0xFF)
-			b := uint32(base)
-			if exc == 0xFF {
-				// All-exception block (the full-precision column shape): one
-				// bulk append instead of eight, avoiding per-element grow checks.
+	// Walking blocks, then lanes, in ascending order keeps excPos ascending,
+	// the invariant the decoder's binary search relies on.
+	if anyExc != 0 {
+		for g, m := range blockMask {
+			b := uint32(g << 3)
+			if m == 0xFF {
+				// All-exception block (the full-precision column shape): one bulk append.
 				excPos = append(excPos, b, b+1, b+2, b+3, b+4, b+5, b+6, b+7)
-			} else {
-				for exc != 0 {
-					j := bits.TrailingZeros8(exc)
-					excPos = append(excPos, b+uint32(j)) //nolint:gosec
-					exc &= exc - 1
-				}
+				continue
 			}
-		}
-	}
-
-	// Tail: the <8-value remainder the kernel did not process, scalar.
-	for i := blkVals; i < n; i++ {
-		d, good := alpEncodeDigit(values[i], ee, ff)
-		if !good {
-			excPos = append(excPos, uint32(i)) //nolint:gosec
-			continue
-		}
-		dst[i] = uint64(d) //nolint:gosec
-		if d < mn {
-			mn = d
-		}
-		if d > mx {
-			mx = d
+			for m != 0 {
+				excPos = append(excPos, b+uint32(bits.TrailingZeros64(m))) //nolint:gosec // lane index < 8
+				m &= m - 1
+			}
 		}
 	}
 
@@ -168,10 +110,36 @@ func alpMainStatsSIMD(values []float64, ee, ff int, dst []uint64, excPos []uint3
 	if nExc == n {
 		return alpMainCand{nExc: nExc, ok: false}, excPos
 	}
+	mn, mx := mnmx[0], mnmx[1]
 	width := 0
 	if mx >= mn {
-		width = bits.Len64(uint64(mx - mn))
+		width = bits.Len64(uint64(mx - mn)) //nolint:gosec // the range is taken modulo 2^64, as in alpMainStatsScalar
 	}
 
 	return alpMainCand{mn: mn, width: width, nExc: nExc, ok: true}, excPos
+}
+
+// alpBestEFSIMD runs the (e, f) search with the AVX-512 kernel.
+// seed is the candidate index e(e+1)/2 + f that wins ties, or -1 for the plain search.
+// ok is false when the kernel is switched off or unsupported, and the caller runs the scalar search instead.
+func alpBestEFSIMD(values []float64, stride, seed int) (bestE, bestF int, ok bool) {
+	if !alpEncAVX512 || !alpHasPOPCNT {
+		return 0, 0, false
+	}
+	ns := (len(values) + stride - 1) / stride
+	if ns < alpEFSearchMinSamples || ns > 63 {
+		return 0, 0, false
+	}
+	// The strided sample, NaN-padded to whole vectors.
+	// A stack array: the //go:noescape kernel does not retain it, and it is passed directly, never through a func value.
+	var sbuf [64]float64
+	for i, k := 0, 0; k < ns; i, k = i+stride, k+1 {
+		sbuf[k] = values[i]
+	}
+	for k := ns; k < (ns+7)&^7; k++ {
+		sbuf[k] = math.NaN()
+	}
+	c := alpEFSearchAVX512(&sbuf, ns, &alpEFFactors, seed)
+
+	return int(alpEFPairs[c][0]), int(alpEFPairs[c][1]), true
 }

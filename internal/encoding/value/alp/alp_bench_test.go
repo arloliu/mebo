@@ -5,9 +5,11 @@ import (
 	"math"
 	"math/rand"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/arloliu/mebo/endian"
+	"github.com/arloliu/mebo/internal/encoding/value/chimp"
 )
 
 // Decode regression guards for the streaming bit reader (alpReadBitsFast). They
@@ -238,5 +240,77 @@ func addALPMixedExceptions(columns [][]float64) {
 				column[i] = math.Pi * 1e17
 			}
 		}
+	}
+}
+
+// BenchmarkALPValueEncode measures the value codecs alone, driven the way the blob encoder drives them:
+// one encoder per blob, and WriteSlice + Bytes + Reset per metric, on the four mixed profiles (100 × 150).
+// Chimp is the reference; run with GODEBUG=cpu.avx512dq=off for the scalar ALP paths.
+func BenchmarkALPValueEncode(b *testing.B) {
+	eng := endian.GetLittleEndianEngine()
+	for _, g := range alpIdentMixes() {
+		name := strings.TrimPrefix(g.name, "profile/")
+		pts := float64(len(g.cols) * len(g.cols[0]))
+		b.Run(name+"/chimp", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				enc := chimp.NewNumericChimpEncoder()
+				for _, c := range g.cols {
+					enc.WriteSlice(c)
+					_ = enc.Bytes()
+					enc.Reset()
+				}
+				enc.Finish()
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/pts, "ns/pt")
+		})
+		for _, runs := range []bool{false, true} {
+			codec := "alp"
+			if runs {
+				codec = "alprle"
+			}
+			b.Run(name+"/"+codec, func(b *testing.B) {
+				b.ReportAllocs()
+				newEnc := NewNumericALPEncoder
+				if runs {
+					newEnc = NewNumericALPRLEEncoder
+				}
+				for b.Loop() {
+					enc := newEnc(eng)
+					for _, c := range g.cols {
+						enc.WriteSlice(c)
+						_ = enc.Bytes()
+						enc.Reset()
+					}
+					enc.Finish()
+				}
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/pts, "ns/pt")
+			})
+		}
+	}
+}
+
+// BenchmarkALPBestEF measures the (e, f) search alone on the four mixed profiles (100 × 150):
+// the scalar search, and the dispatched search (the AVX-512 kernel where it runs).
+func BenchmarkALPBestEF(b *testing.B) {
+	for _, g := range alpIdentMixes() {
+		name := strings.TrimPrefix(g.name, "profile/")
+		pts := float64(len(g.cols) * len(g.cols[0]))
+		b.Run(name+"/scalar", func(b *testing.B) {
+			for b.Loop() {
+				for _, c := range g.cols {
+					alpBestEF(c, alpSampleStride(len(c)))
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/pts, "ns/pt")
+		})
+		b.Run(name+"/dispatch", func(b *testing.B) {
+			for b.Loop() {
+				for _, c := range g.cols {
+					alpSearchEF(c, alpSampleStride(len(c)), false, 0, 0)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/pts, "ns/pt")
+		})
 	}
 }

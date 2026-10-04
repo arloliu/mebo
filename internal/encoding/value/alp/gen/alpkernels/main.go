@@ -88,6 +88,63 @@ func generate() string {
 		p(genUnpackKernel(w))
 	}
 
+	p("\n// alpPackBlock[w] packs exactly 64 codes at width w, LSB-first, into the\n")
+	p("// first 8*w bytes of out as w little-endian words, masking each code to w\n")
+	p("// bits. 64 codes fill exactly w words, so these are the bytes alpPackBits'\n")
+	p("// word-at-a-time loop writes for a block that starts with an empty\n")
+	p("// accumulator. Index 0 is nil: width 0 writes nothing.\n")
+	p("var alpPackBlock = [65]func(out []byte, codes *[64]uint64){\n")
+	for w := minWidth; w <= maxWidth; w++ {
+		p(fmt.Sprintf("\t%d: alpPackBlockW%d,\n", w, w))
+	}
+	p("}\n")
+
+	for w := minWidth; w <= maxWidth; w++ {
+		p("\n")
+		p(genPackKernel(w))
+	}
+
+	return sb.String()
+}
+
+// genPackKernel emits one width-w pack kernel:
+// each of the w output words is a single OR of the masked codes that overlap it, shifted into place with constant shifts.
+// A code straddling two words contributes its low bits (shifted left) to the first
+// and its high bits (shifted right) to the second.
+func genPackKernel(w int) string {
+	var sb strings.Builder
+	p := func(s string) { sb.WriteString(s) }
+
+	masked := func(k int) string {
+		if w == 64 {
+			return fmt.Sprintf("c[%d]", k)
+		}
+
+		return fmt.Sprintf("(c[%d]&0x%x)", k, (uint64(1)<<uint(w))-1)
+	}
+
+	p(fmt.Sprintf("func alpPackBlockW%d(out []byte, c *[64]uint64) {\n", w))
+	// One bounds check at the array-pointer conversion;
+	// every store below is a constant index into the fixed-size array.
+	p(fmt.Sprintf("\to := (*[%d]byte)(out)\n", 8*w))
+	for j := 0; j < w; j++ {
+		lo, hi := 64*j, 64*j+63
+		var terms []string
+		for k := lo / w; k <= hi/w && k < 64; k++ {
+			start := k * w
+			switch {
+			case start < lo:
+				terms = append(terms, fmt.Sprintf("%s>>%d", masked(k), lo-start))
+			case start == lo:
+				terms = append(terms, masked(k))
+			default:
+				terms = append(terms, fmt.Sprintf("%s<<%d", masked(k), start-lo))
+			}
+		}
+		p(fmt.Sprintf("\tbinary.LittleEndian.PutUint64(o[%d:], %s)\n", 8*j, strings.Join(terms, "|")))
+	}
+	p("}\n")
+
 	return sb.String()
 }
 

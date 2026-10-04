@@ -9,6 +9,7 @@ import (
 
 	"github.com/arloliu/mebo/encoding"
 	"github.com/arloliu/mebo/endian"
+	"github.com/arloliu/mebo/internal/arch"
 	"github.com/arloliu/mebo/internal/pool"
 )
 
@@ -79,6 +80,9 @@ const (
 	alpRDCutLimit    = 16 // left part is 1..16 bits
 	alpRDMaxDictSize = 8  // ≤8 dictionary entries
 
+	// alpEFCandidates is the number of (e, f) pairs the search tries: 0 ≤ f ≤ e ≤ alpMaxExponent.
+	alpEFCandidates = (alpMaxExponent + 1) * (alpMaxExponent + 2) / 2
+
 	// alpRDLeftTableSize is the counting-table length alpRDBuildDict always
 	// requests from the pool: the widest possible left part is alpRDCutLimit=16
 	// bits (rbw as low as 48), i.e. 1<<16 = 65536 distinct values. Requesting a
@@ -89,6 +93,11 @@ const (
 	alpRDLeftTableSize = 1 << alpRDCutLimit
 )
 
+// alpEncAVX512 enables the AVX-512 encode kernels (alp_encsimd_amd64.s) where the CPU supports them.
+// Tests clear it to force the scalar paths on the same machine; they must not run in parallel while they do.
+// A whole process turns the kernels off with GODEBUG=cpu.avx512dq=off.
+var alpEncAVX512 = arch.X86HasAVX512DQ()
+
 var alpPow10 = [...]float64{
 	1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9,
 	1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
@@ -98,6 +107,22 @@ var alpInvPow10 = [...]float64{
 	1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9,
 	1e-10, 1e-11, 1e-12, 1e-13, 1e-14, 1e-15, 1e-16, 1e-17, 1e-18,
 }
+
+// alpEFFactors[c] holds {10^e, 10^-f, 10^f, 10^-e} for the c-th (e, f) in search order
+// (e ascending, then f), the same table values the scalar search multiplies by;
+// alpEFPairs[c] is that (e, f), and c = e(e+1)/2 + f.
+var alpEFFactors, alpEFPairs = func() (fs [alpEFCandidates][4]float64, ps [alpEFCandidates][2]uint8) {
+	c := 0
+	for e := 0; e <= alpMaxExponent; e++ {
+		for f := 0; f <= e; f++ {
+			fs[c] = [4]float64{alpPow10[e], alpInvPow10[f], alpPow10[f], alpInvPow10[e]}
+			ps[c] = [2]uint8{uint8(e), uint8(f)}
+			c++
+		}
+	}
+
+	return fs, ps
+}()
 
 // alpFastRoundMagic is 2^52 + 2^51. Adding then subtracting it forces IEEE
 // round-to-nearest-even at the ones place for |x| < 2^51 — the standard ALP
@@ -113,7 +138,11 @@ func alpFastRound(x float64) float64 {
 // alpEncodeDigit computes i = round(v·10^e·10^-f); ok is false if v does not
 // round-trip bit-exactly (an exception).
 func alpEncodeDigit(v float64, e, f int) (int64, bool) {
-	scaled := v * alpPow10[e] * alpInvPow10[f]
+	// The explicit conversion rounds the product before alpFastRound adds its magic constant.
+	// Without it the compiler may fuse that multiply and add into one FMA
+	// (GOAMD64=v3 and later, arm64, ppc64x, s390x, riscv64, loong64),
+	// which rounds once and can pick a different digit than an unfused build or the SIMD kernels.
+	scaled := float64(v * alpPow10[e] * alpInvPow10[f])
 	var i int64
 	if math.Abs(scaled) < 1<<51 {
 		// Hot path: magic-number fast round (branch-free, vectorizable).
@@ -251,11 +280,7 @@ func (e *NumericALPEncoder) encodeColumn(values []float64) {
 	stride := alpSampleStride(n)
 
 	var ee, ff int
-	if e.seeded {
-		ee, ff = alpBestEFSeeded(values, stride, e.lastE, e.lastF)
-	} else {
-		ee, ff = alpBestEF(values, stride)
-	}
+	ee, ff = alpSearchEF(values, stride, e.seeded, e.lastE, e.lastF)
 	e.lastE, e.lastF = ee, ff
 
 	// Reusable digit scratch: alpMainStats records each value's ALP-main digit
@@ -331,6 +356,24 @@ func (e *NumericALPEncoder) encodeRaw(values []float64) {
 
 // ---- ALP main ----
 
+// alpSearchEF picks a column's (e, f): with the AVX-512 kernel where it runs, otherwise with the scalar search.
+// seeded selects the nested-column variant, in which (seedE, seedF) wins every tie;
+// both paths return the same (e, f).
+func alpSearchEF(values []float64, stride int, seeded bool, seedE, seedF int) (bestE, bestF int) {
+	seed := -1
+	if seeded {
+		seed = seedE*(seedE+1)/2 + seedF
+	}
+	if e, f, ok := alpBestEFSIMD(values, stride, seed); ok {
+		return e, f
+	}
+	if seeded {
+		return alpBestEFSeeded(values, stride, seedE, seedF)
+	}
+
+	return alpBestEF(values, stride)
+}
+
 // alpBestEF searches (e,f), f<=e, minimizing estimated size over a strided sample.
 func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 	// Copy the strided sample into a contiguous stack array ONCE, then run all
@@ -364,7 +407,8 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 			for _, v := range sample {
 				// Fast estimate: plain float compare (the bit-exact check is only
 				// needed in the final encode; this only steers (e,f) selection).
-				scaled := v * pe * iff
+				// The conversion keeps the product unfused, as in alpEncodeDigit.
+				scaled := float64(v * pe * iff)
 				var d int64
 				if math.Abs(scaled) < 1<<51 {
 					// Hot path: magic-number fast round (see alpEncodeDigit).
@@ -412,7 +456,7 @@ func alpBestEF(values []float64, stride int) (bestE, bestF int) {
 				// est uses fullCnt at loop end when not pruned, so selection is exact.
 				if upd {
 					wcur := bits.Len64(uint64(mx - mn))
-					if float64(fullCnt*wcur)+float64(nExc)*96 >= best {
+					if float64(fullCnt*wcur+nExc*96) >= best {
 						pruned = true
 
 						break
@@ -487,7 +531,7 @@ func alpEFEstimate(sample []float64, e, f, fullCnt int, best float64) (float64, 
 	mn := int64(math.MaxInt64)
 	mx := int64(math.MinInt64)
 	for _, v := range sample {
-		scaled := v * pe * iff
+		scaled := float64(v * pe * iff) // unfused, as in alpEncodeDigit
 		var d int64
 		if math.Abs(scaled) < 1<<51 {
 			d = int64(alpFastRound(scaled))
@@ -522,7 +566,7 @@ func alpEFEstimate(sample []float64, e, f, fullCnt int, best float64) (float64, 
 		}
 		if upd {
 			wcur := bits.Len64(uint64(mx - mn))
-			if float64(fullCnt*wcur)+float64(nExc)*96 >= best {
+			if float64(fullCnt*wcur+nExc*96) >= best {
 				return 0, false
 			}
 		}
@@ -535,13 +579,11 @@ func alpEFEstimate(sample []float64, e, f, fullCnt int, best float64) (float64, 
 	return float64(len(sample)*width + nExc*96), true
 }
 
-// alpMainStats computes the FOR minimum, bit width, and exception positions for
-// the chosen (e,f) over ALL values, dispatching to the AVX-512 verify kernel
-// (with a scalar rescue pass for guard-failed blocks and a scalar tail for the
-// n%8 remainder) or the plain scalar loop, depending on CPU support — see
-// alpMainStatsSIMD/alpMainStatsScalar below. Either path records each good
-// value's digit into dst (sized >= len(values)) and each exception's index
-// into excPos, so encodeMain/encodeMainFast never need to recompute a digit.
+// alpMainStats computes the FOR minimum, bit width, and exception positions for the chosen (e,f) over all values,
+// with the AVX-512 kernel (every lane, the n mod 8 tail included) or the scalar loop, depending on CPU support;
+// see alpMainStatsSIMD and alpMainStatsScalar below.
+// Either path records each good value's digit into dst (sized >= len(values)) and each exception's index into excPos,
+// so encodeMain/encodeMainFast never need to recompute a digit.
 // ok is false if every value is an exception (nExc == n; the caller falls
 // back to ALP-RD/raw and the returned excPos is discarded).
 //
@@ -557,11 +599,10 @@ func alpEFEstimate(sample []float64, e, f, fullCnt int, best float64) (float64, 
 // columns); since append may reallocate, the caller MUST store the returned
 // slice back.
 func alpMainStats(values []float64, ee, ff int, dst []uint64, excPos []uint32) (alpMainCand, []uint32) {
-	// alpMainStatsSIMD runs the AVX-512 verify kernel over the n/8*8 block
-	// region when the CPU supports AVX-512DQ (finishing tail/exception lanes in
-	// Go), and is the plain scalar loop everywhere else. It is guaranteed to
-	// produce byte-identical (digits, excPos, min, width, nExc, ok) output to
-	// alpMainStatsScalar — see alp_encsimd_test.go's differential test.
+	// alpMainStatsSIMD runs the AVX-512 kernel over every value when the CPU supports AVX-512DQ,
+	// and is the plain scalar loop everywhere else.
+	// Both produce identical (digits, excPos, min, width, nExc, ok):
+	// see TestALPMainStatsAVX512_Differential and the kernel tests in alp_encsimd_amd64_test.go.
 	return alpMainStatsSIMD(values, ee, ff, dst, excPos)
 }
 
@@ -778,13 +819,25 @@ func alpRDBestCut(patterns []uint64) (rbw, totalBits int) {
 	var lefts [64]uint64
 	var cnts [64]int32
 	var top [alpRDMaxDictSize]uint64
+	// diff has a bit set wherever some pattern differs from the first one.
+	// A cut whose left part covers none of those bits has a single distinct left,
+	// so its histogram is {patterns[0]>>r: n}, exactly what the scan would build.
+	var diff uint64
+	for _, p := range patterns {
+		diff |= p ^ patterns[0]
+	}
 	for i := 1; i <= alpRDCutLimit; i++ {
 		r := 64 - i
 		// Accumulate distinct lefts (first-seen order) with their counts. Only
 		// entries [0:m) are read, so stale array slots from a prior cut are
 		// never observed.
 		m := 0
-		for _, p := range patterns {
+		scan := patterns
+		if n > 0 && diff>>uint(r) == 0 {
+			lefts[0], cnts[0] = patterns[0]>>uint(r), int32(n) //nolint:gosec // n ≤ 63 (TestAlpRDSampleBound)
+			m, scan = 1, nil
+		}
+		for _, p := range scan {
 			l := p >> uint(r)
 			k := 0
 			for ; k < m; k++ {
@@ -952,6 +1005,15 @@ func alpPackBits(dst []byte, codes []uint64, width int) []byte {
 		mask = (uint64(1) << width) - 1
 	}
 	pos := start
+	// Whole 64-code blocks fill exactly width words,
+	// so each block ends on a word boundary and the loop below starts from an empty accumulator, as it would have.
+	if pack := alpPackBlock[width]; pack != nil {
+		for len(codes) >= 64 {
+			pack(dst[pos:], (*[64]uint64)(codes))
+			pos += 8 * width
+			codes = codes[64:]
+		}
+	}
 	var acc uint64
 	nbits := 0 // invariant: < 64 at loop top
 	for _, c := range codes {
