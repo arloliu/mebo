@@ -616,7 +616,8 @@ The time-series data is organized into two separate, columnar payloads to maximi
   - **Pros:** Can shrink columns where many consecutive points repeat, full-precision values included;
     a column the runs layout does not shrink (for example a constant one, which plain ALP already packs at width 0) stays a plain ALP column;
     `ValueAt` stays a bitmap rank plus an ALP lookup
-  - **Cons:** About 1.5× ALP's encode cost on columns where half the points repeat;
+  - **Cons:** About 1.8× ALP's encode cost on columns where half the points repeat
+    (with the AVX-512 (e, f) search; about 1.5× with the scalar one);
     readers older than this encoding reject the blob
   - **Use Case:** Decimal data that often holds the previous value, such as held gauges and status values
   - **Spec:** [`docs/specs/alp-rle-design.md`](specs/alp-rle-design.md)

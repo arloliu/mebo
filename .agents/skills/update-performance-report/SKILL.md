@@ -144,12 +144,19 @@ When a codec is added, verify its `At()` complexity in the decoder source before
 - **ALP** (`format.TypeALP`): wins on decimal-quantized values and integers.
   On full-precision values it is about Chimp's size,
   and on full-precision values with frequent repeats it is much larger, because XOR codecs store a repeat in one bit.
-  Its per-column (e,f) search makes encoding several times slower than Chimp.
+  Its per-column (e,f) search is most of its encode cost.
+  On amd64 with AVX-512DQ and POPCNT an AVX-512 kernel runs that search,
+  and on the four mixes a blob encodes in about 1.1–1.2× Chimp's time (ALP-RLE 1.3–1.6×),
+  up to 1.8× (ALP-RLE 2.3×) on `sparse_constant` (layout-averaged, 2026-10-04, `docs/specs/alp-simd-ef-search-design.md`).
+  Elsewhere the scalar search runs; on the same machine with `GODEBUG=cpu.avx512dq=off`,
+  ALP took about 3.5–4.3× Chimp's time on the four mixes (ALP-RLE 3.7–6.6×), and other targets will differ.
+  Say which machine the report ran on when quoting encode ratios.
 - **ALP-RLE** (`format.TypeALPRLE`): ALP with a run-length front end.
   Each column keeps the runs layout only when it is smaller than the plain ALP column,
   so it is never larger than ALP per uncompressed column and pays off where many consecutive points repeat;
   with value compression the compressed payload is not guaranteed to shrink.
-  Encoding costs about 1% over ALP on data without repeats and about 1.5× ALP when half the points repeat.
+  Encoding costs about 4% over ALP on data without repeats and about 1.8× ALP when half the points repeat
+  (layout-averaged with the AVX-512 search; about 1% and 1.5× with the scalar search).
 - **Shared timestamps**: `WithSharedTimestamps()` stores identical timestamp columns once; savings grow with the number of metrics.
   Opening a shared-TS blob also decodes the shared columns into `sharedTsCache`,
   so a smaller blob does not mean a faster open; don't claim shared-TS decodes faster unless the data shows it.

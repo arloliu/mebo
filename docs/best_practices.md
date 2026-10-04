@@ -80,7 +80,7 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 | Data pattern | Recommended encoding | Why |
 |---|---|---|
 | Regular 1-second intervals | Delta or DeltaPacked timestamp | ~1 byte/ts on regular data vs 8 bytes raw (worst case 10 bytes for Delta, ~8.25 for DeltaPacked) |
-| Full-precision floats that rarely repeat (computed rates, ratios) | Chimp or Gorilla value | XOR compression; on a full-precision gauge, Chimp is 2% smaller than ALP and ALP-RLE and encodes about 5× faster |
+| Full-precision floats that rarely repeat (computed rates, ratios) | Chimp or Gorilla value | XOR compression; on a full-precision gauge, Chimp is 2% smaller than ALP and ALP-RLE and encodes about 1.4× faster (several times faster on CPUs without AVX-512DQ) |
 | Rapidly changing or discontinuous values | Raw value | No decompression overhead |
 | Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; saves about 1.2 bytes/point on the 100-metric benchmark mix, 24% with Chimp and 32% with ALP-RLE |
 | Decimal-quantized sensor data (2–4 dp) | ALP value | 2.4–3.8× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles with shared timestamps; costs more to encode |
@@ -117,10 +117,13 @@ such as held gauges, status values, or slow sensors scraped faster than they cha
   Columns without enough repeats stay plain ALP columns, byte for byte.
 - **Value compression:** with Zstd, S2 or LZ4 the codec compresses the whole value payload,
   and a smaller input is not guaranteed to compress smaller, so the compressed payload is not guaranteed to shrink.
-- **Encode cost:** one extra pass counts the runs, about 1% on data without repeats.
-  When half the points repeat, encoding is about 1.5× ALP, because the run values get their own ALP column.
+- **Encode cost:** one extra pass counts the runs, about 4% on data without repeats.
+  When half the points repeat, encoding is about 1.8× ALP, because the run values get their own ALP column.
+  Both ratios come from a CPU with AVX-512DQ;
+  with the scalar (e, f) search both codecs encode several times slower,
+  and the overhead measured before the AVX-512 search was about 1% and 1.5×.
 - **Read cost:** on that half-repeated gauge, `DecodeAll` is 3× faster than Chimp, `ValueAt` is 1.14× ALP,
-  and `ForEachValues` is about 3.2 ns/point against Chimp's 4.8.
+  and `ForEachValues` is about 3.2 ns/point against Chimp's 4.9.
 - **Compatibility:** readers older than this encoding reject the blob; see [ALP-RLE: upgrade consumers before producers](#alp-rle-upgrade-consumers-before-producers).
 
 The measurements and their method are in the [Performance Guide](performance.md#alp-rle-speed-layout-averaged).
