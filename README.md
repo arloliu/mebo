@@ -133,11 +133,11 @@ in shares calibrated so that Chimp costs about 3.8 bytes/point.
 
 | Configuration | Bytes/Point | Space Savings | Notes |
 |---------------|------------:|:-------------:|-------|
-| Shared DeltaPacked + ALP-RLE | 2.593 | 83.9% | Smallest; needs readers that know ALP-RLE and shared timestamps; encodes 5.1× slower than Chimp |
+| Shared DeltaPacked + ALP-RLE | 2.593 | 83.9% | Smallest; needs readers that know ALP-RLE and shared timestamps; encodes 1.7× slower than Chimp with AVX-512 |
 | Delta + ALP-RLE | 3.797 | 76.4% | Smallest without shared timestamps |
 | Shared DeltaPacked + Chimp | 3.846 | 76.1% | Smallest with an XOR codec |
 | Delta + Gorilla | 5.096 | 68.4% | Default (`NewDefaultNumericEncoder`) |
-| Raw + Raw | 16.109 | 0% | Baseline; fastest encode (120,033 ns/op) |
+| Raw + Raw | 16.109 | 0% | Baseline; encode 134,343 ns/op, within noise of the fastest |
 
 How much ALP-RLE saves depends on the data:
 12.8–47.5% against Chimp across four calibrated mixes, up to 80% on a single decimal gauge,
@@ -204,7 +204,8 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 ```
 
 **Result**: 2.593 bytes/point (83.9% savings) on the benchmark mix, when metrics share the same sampling schedule.
-Encoding takes about 5× as long as with Chimp.
+Encoding takes about 1.7× as long as with Chimp on CPUs with AVX-512DQ,
+and several times as long without it.
 For full-precision values that never repeat, `format.TypeChimp` is 2% smaller.
 
 All consumers must be upgraded to a Mebo version that decodes V2 blobs and ALP-RLE **before** enabling this on producers.
@@ -230,10 +231,11 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 9.540 bytes/point (40.8% savings), 106,493 ns/op sequential iteration on the benchmark mix.
+**Result**: 9.540 bytes/point (40.8% savings), 106,407 ns/op sequential iteration on the benchmark mix.
 DeltaPacked's Group Varint batch decoding is optimized for read throughput, not encode speed;
-if encode speed is the priority, plain Raw + Raw is fastest to encode (120,033 ns/op) at the cost of no compression.
-In the 2026-10-04 run, the ALP and ALP-RLE combos iterate faster at under half the size (Delta + ALP: 79,941 ns/op, 4.026 bytes/point);
+if encode speed is the priority,
+plain Raw + Raw encodes about as fast as any combination (134,343 ns/op) at the cost of no compression.
+In the 2026-10-04 run, the ALP and ALP-RLE combos iterate faster at under half the size (Delta + ALP: 81,851 ns/op, 4.026 bytes/point);
 see [Performance Guide § Iteration Performance](docs/performance.md#iteration-performance).
 
 ### Query-Optimized (Raw + Raw)
