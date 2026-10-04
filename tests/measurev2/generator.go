@@ -153,6 +153,13 @@ func quantize(v float64, decimals int) float64 {
 // When p.BurstyGaps is true, a periodic +5 s gap is injected every ~50 points to
 // simulate scrape misses.
 func GenerateProfile(p Profile, cfg DataConfig) *TestData {
+	if p.Legacy {
+		return GenerateTestData(cfg)
+	}
+	if len(p.Parts) > 0 {
+		return generateMix(p, cfg)
+	}
+
 	totalPoints := cfg.NumMetrics * cfg.PointsPerMetric
 	rng := rand.New(rand.NewSource(cfg.Seed)) //nolint:gosec // seeded PRNG for reproducible test data
 
@@ -239,8 +246,80 @@ func GenerateProfile(p Profile, cfg DataConfig) *TestData {
 	return data
 }
 
-// shareTimestamps returns a copy of td where every metric reuses the first
-// metric's timestamp series, for the shared-timestamp benchmark matrix.
+// generateDatasets returns the per-metric and shared-timestamp data sets for a profile.
+// The legacy profile keeps its own shared-timestamp generator; every other profile copies the first metric's timestamps.
+func generateDatasets(p Profile, cfg DataConfig) (data, shared *TestData) {
+	if p.Legacy {
+		return GenerateTestData(cfg), GenerateSharedTimestampData(cfg)
+	}
+	data = GenerateProfile(p, cfg)
+
+	return data, data.shareTimestamps()
+}
+
+// generateMix creates a mixed blob: each part generates its share of the metrics' values with its own seed,
+// metric IDs are numbered across the whole blob, and every metric gets aligned timestamps.
+func generateMix(p Profile, cfg DataConfig) *TestData {
+	ppm := cfg.PointsPerMetric
+	data := &TestData{
+		MetricIDs:  make([]uint64, 0, cfg.NumMetrics),
+		Timestamps: make([]int64, 0, cfg.NumMetrics*ppm),
+		Values:     make([]float64, 0, cfg.NumMetrics*ppm),
+		StartTime:  time.Unix(1700000000, 0),
+		Config:     cfg,
+	}
+
+	for k, n := range mixPartCounts(p.Parts, cfg.NumMetrics) {
+		if n == 0 {
+			continue
+		}
+
+		part := p.Parts[k]
+		partCfg := cfg
+		partCfg.NumMetrics = n
+		partCfg.Seed = cfg.Seed + int64(k+1)*7919
+		data.Values = append(data.Values, GenerateProfile(part.Profile, partCfg).Values...)
+	}
+
+	rng := rand.New(rand.NewSource(cfg.Seed)) //nolint:gosec // seeded PRNG for reproducible test data
+	interval := time.Duration(p.IntervalMs) * time.Millisecond
+	for i := range cfg.NumMetrics {
+		data.MetricIDs = append(data.MetricIDs, hash.ID(fmt.Sprintf("metric.%d", i+1000)))
+		for j := range ppm {
+			ts := data.StartTime.Add(time.Duration(j+1) * interval)
+			if rng.Float64() < p.TSJitterShare {
+				offMs := p.TSJitterMinMs + rng.Float64()*(p.TSJitterMaxMs-p.TSJitterMinMs)
+				if rng.Float64() < 0.5 {
+					offMs = -offMs
+				}
+				ts = ts.Add(time.Duration(offMs * float64(time.Millisecond)))
+			}
+			data.Timestamps = append(data.Timestamps, ts.UnixMicro())
+		}
+	}
+
+	return data
+}
+
+// mixPartCounts splits n metrics among a mixed profile's parts by rounding each share.
+// The last part takes the metrics left after rounding the others, so the counts always sum to n.
+func mixPartCounts(parts []ProfilePart, n int) []int {
+	counts := make([]int, len(parts))
+	remaining := n
+	for k, part := range parts {
+		c := min(int(math.Round(part.Share*float64(n))), remaining)
+		if k == len(parts)-1 {
+			c = remaining
+		}
+		counts[k] = c
+		remaining -= c
+	}
+
+	return counts
+}
+
+// shareTimestamps returns a copy of td where every metric reuses the first metric's timestamp series,
+// for the shared-timestamp benchmark matrix.
 func (td *TestData) shareTimestamps() *TestData {
 	ppm := td.Config.PointsPerMetric
 	ts := make([]int64, len(td.Timestamps))

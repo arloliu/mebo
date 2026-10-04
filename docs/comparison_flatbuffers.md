@@ -91,7 +91,7 @@ Key observations:
 - **Numeric time-series data with regular intervals**: Delta+Gorilla encoding achieves better compression than FlatBuffers+Zstd without codec overhead.
 - **Sequential read workloads**: Mebo's in-memory iteration is significantly faster for full-scan patterns.
 - **High-frequency random access**: O(1) access with zero allocations (Raw value encoding for `ValueAt`, Raw timestamp encoding for `TimestampAt`).
-- **Advanced compression needs**: Chimp encoding and shared timestamps (no FlatBuffers equivalent) can achieve up to 60.5% space savings; see [Performance Guide](performance.md).
+- **Advanced compression needs**: ALP-RLE encoding and shared timestamps (no FlatBuffers equivalent) save 84% on the Performance Guide's benchmark mix; see [Performance Guide](performance.md).
 
 ### When FlatBuffers may be preferable
 

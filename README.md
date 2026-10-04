@@ -8,7 +8,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/arloliu/mebo)](https://goreportcard.com/report/github.com/arloliu/mebo)
 [![License: Apache](https://img.shields.io/badge/License-Apache-blue.svg)](LICENSE)
 
-A high-performance, space-efficient binary format for storing time-series metric data in Go, achieving up to 60.5% space savings through columnar encoding without codec compression.
+A high-performance, space-efficient binary format for storing time-series metric data in Go.
+Through columnar encoding alone, without codec compression,
+it stores a calibrated mix of monitoring metrics in 2.59 bytes/point, 84% less than raw timestamps and values.
 
 ## Design Philosophy
 
@@ -125,20 +127,21 @@ For bulk insertion, buffer reuse with `FinishInto`, callback iteration with `For
 
 ## Performance
 
-Benchmark: 200 metrics × 200 points (40,000 total data points), AMD Ryzen 9 9950X3D, Go go1.26.7.
+Benchmark: the `mix_monitoring` profile, 100 metrics × 150 points (15,000 data points), AMD Ryzen 9 9950X3D, Go go1.26.7.
+The mix holds 2-decimal gauges, counters, mostly-constant values and full-precision gauges,
+in shares calibrated so that Chimp costs about 3.8 bytes/point.
 
 | Configuration | Bytes/Point | Space Savings | Notes |
 |---------------|------------:|:-------------:|-------|
-| Shared Delta + Chimp | 6.349 | 60.5% | Best compression; requires shared timestamps |
-| Delta + Chimp | 8.297 | 48.4% | Best without shared timestamps |
-| Delta + Gorilla | 8.544 | 46.9% | Default; well-tested XOR encoding |
-| Raw + Raw | 16.081 | 0% | Baseline; fastest encode (330,719 ns/op) |
+| Shared DeltaPacked + ALP-RLE | 2.593 | 83.9% | Smallest; needs readers that know ALP-RLE and shared timestamps; encodes 5.1× slower than Chimp |
+| Delta + ALP-RLE | 3.797 | 76.4% | Smallest without shared timestamps |
+| Shared DeltaPacked + Chimp | 3.846 | 76.1% | Smallest with an XOR codec |
+| Delta + Gorilla | 5.096 | 68.4% | Default (`NewDefaultNumericEncoder`) |
+| Raw + Raw | 16.109 | 0% | Baseline; fastest encode (120,033 ns/op) |
 
-That table uses general-shape random-walk data. On **decimal-quantized data** — sensor readings
-rounded to a fixed number of decimal places, a very common real-world shape — ALP does
-dramatically better: **2.854 bytes/point (5.6× smaller than raw)** on a 2-decimal-place gauge profile.
-Where many points also repeat the previous value, ALP-RLE goes further:
-2.138 bytes/point when half the points repeat, against 2.761 for ALP and 4.346 for Chimp.
+How much ALP-RLE saves depends on the data:
+12.8–47.5% against Chimp across four calibrated mixes, up to 80% on a single decimal gauge,
+and 2% more than Chimp on full-precision values that never repeat.
 See [Performance Guide § Codec Selection by Data Shape](docs/performance.md#codec-selection-by-data-shape)
 for the full breakdown across data shapes (decimals, counters, sparse data, repeated values, full-precision noise).
 
@@ -153,9 +156,12 @@ for the full breakdown across data shapes (decimals, counters, sparse data, repe
 |----------|------|----------------|----------|
 | Raw | 8 bytes fixed | O(1) | Irregular timestamps, random access needed |
 | Delta | ~1 byte typical, 10 bytes worst case | O(index) | Regular intervals (monitoring, 1-second cadence) |
-| DeltaPacked | ~1.25 bytes typical, ~8.25 bytes worst case | O(index) | Regular intervals; faster bulk decode via Group Varint |
+| DeltaPacked | ~1.25 bytes typical, ~8.25 bytes worst case | O(index) | Regular intervals; Group Varint batch layout |
 
-Delta and DeltaPacked produce similar compression ratios (~2% difference). Use DeltaPacked when iteration throughput matters more than encoding speed.
+Delta and DeltaPacked differ little in size: on the benchmark mix DeltaPacked costs 0.2 bytes/point more per metric, and 0.002 more with shared timestamps.
+DeltaPacked's Group Varint layout is meant for faster decode,
+but the 2026-10-04 benchmark run measured it iterating slower than Delta with Gorilla and Chimp;
+measure your own workload before choosing it for throughput.
 
 ### Value Encodings
 
@@ -163,19 +169,20 @@ Delta and DeltaPacked produce similar compression ratios (~2% difference). Use D
 |----------|------|----------------|----------|
 | Raw | 8 bytes fixed | O(1) | Rapidly changing values, random access |
 | Gorilla | 1–8 bytes | O(index) | Slowly changing values (CPU, memory); XOR-based, VLDB 2015 |
-| Chimp | 1–8 bytes | O(index) | Same as Gorilla; ~2.9% better compression; VLDB 2022 |
-| ALP | Variable | O(1) + O(log k)* | Decimal-quantized sensor data (2–4 dp): 4–6× smaller than raw, 1–2.5× smaller than the next-best codec. No guaranteed win on genuinely full-precision data — costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
+| Chimp | 1–8 bytes | O(index) | Same as Gorilla; 0.8–2.6% smaller on the benchmark mixes, larger on counters; VLDB 2022 |
+| ALP | Variable | O(1) + O(log k)* | Decimal-quantized data (2–4 dp) and counters: 2.4–3.6× smaller than Chimp on 2- and 4-dp gauges. Larger than Chimp on full-precision values that repeat, and costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
 | ALP-RLE | Variable | O(index/64) + O(log k)† | Columns where many points repeat the previous value: each uncompressed column is never larger than ALP; a 2-dp gauge where half the points repeat is 1.12 B/pt vs 3.38 for Chimp (100 × 150 blob). Older readers reject it; see [ALP or ALP-RLE?](docs/best_practices.md#alp-or-alp-rle) |
 
-\* k = exceptions in that column, not its length — measured 21–32× faster than Gorilla/Chimp's
-`ValueAt` on the main benchmark's 200-point columns; see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance).
+\* k = exceptions in that column, not its length — measured 4.8–23× faster than Gorilla/Chimp's
+`ValueAt` on the benchmark profiles' 150-point columns, least on mostly-constant data; see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance).
 
 † A column with runs first ranks its run-start bitmap, one 64-bit word at a time (at most 3 words at 150 points);
 a column without enough repeats is stored and read exactly like ALP.
 
 ### Compression Algorithms
 
-Mebo's encoding algorithms achieve 46–60% savings without any codec. Codec compression adds CPU overhead on both encode and decode for minimal additional benefit on already-compressed numeric data.
+Mebo's encoding algorithms save 68–84% on the benchmark mix without any codec, from Delta + Gorilla to Shared DeltaPacked + ALP-RLE.
+Codec compression adds CPU overhead on both encode and decode for minimal additional benefit on already-compressed numeric data.
 
 | Algorithm | Additional ratio | Best for |
 |-----------|-----------------|----------|
@@ -186,19 +193,23 @@ Mebo's encoding algorithms achieve 46–60% savings without any codec. Codec com
 
 ## Configuration Examples
 
-### Best Compression (Shared Timestamps + Delta + Chimp)
+### Best Compression (Shared Timestamps + DeltaPacked + ALP-RLE)
 
 ```go
 encoder, _ := mebo.NewNumericEncoder(time.Now(),
-    blob.WithTimestampEncoding(format.TypeDelta),
-    blob.WithValueEncoding(format.TypeChimp),
+    blob.WithTimestampEncoding(format.TypeDeltaPacked),
+    blob.WithValueEncoding(format.TypeALPRLE),
     blob.WithSharedTimestamps(),
 )
 ```
 
-**Result**: 6.349 bytes/point (60.5% savings) when metrics share the same sampling schedule.
+**Result**: 2.593 bytes/point (83.9% savings) on the benchmark mix, when metrics share the same sampling schedule.
+Encoding takes about 5× as long as with Chimp.
+For full-precision values that never repeat, `format.TypeChimp` is 2% smaller.
 
-All consumers must be upgraded to a Mebo version that supports V2 decoding **before** enabling this on producers. See [Best Practices](docs/best_practices.md#shared-timestamps-upgrade-consumers-before-producers).
+All consumers must be upgraded to a Mebo version that decodes V2 blobs and ALP-RLE **before** enabling this on producers.
+See [Best Practices](docs/best_practices.md#shared-timestamps-upgrade-consumers-before-producers)
+and [ALP-RLE: upgrade consumers before producers](docs/best_practices.md#alp-rle-upgrade-consumers-before-producers).
 
 ### Balanced Default (Delta + Gorilla)
 
@@ -207,7 +218,8 @@ encoder, _ := mebo.NewDefaultNumericEncoder(time.Now())
 ```
 
 **Configuration**: Delta timestamps, Gorilla values, no codec compression.
-**Result**: 8.544 bytes/point (46.9% savings). Recommended for most workloads.
+**Result**: 5.096 bytes/point (68.4% savings) on the benchmark mix.
+Readers need no shared-timestamp or ALP-RLE support.
 
 ### Fast Iteration Without a Value Codec (DeltaPacked + Raw)
 
@@ -218,10 +230,10 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 10.244 bytes/point (36.3% savings), 269,766 ns/op sequential iteration for the 200×200 dataset.
+**Result**: 9.540 bytes/point (40.8% savings), 106,493 ns/op sequential iteration on the benchmark mix.
 DeltaPacked's Group Varint batch decoding is optimized for read throughput, not encode speed;
-if encode speed is the priority, plain Raw + Raw is fastest to encode (330,719 ns/op) at the cost of no compression.
-In the 2026-10 run, the ALP and ALP-RLE combos iterate faster (Raw + ALP at 198,948 ns/op);
+if encode speed is the priority, plain Raw + Raw is fastest to encode (120,033 ns/op) at the cost of no compression.
+In the 2026-10-04 run, the ALP and ALP-RLE combos iterate faster at under half the size (Delta + ALP: 79,941 ns/op, 4.026 bytes/point);
 see [Performance Guide § Iteration Performance](docs/performance.md#iteration-performance).
 
 ### Query-Optimized (Raw + Raw)
@@ -233,7 +245,7 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 16.081 bytes/point, O(1) random access to both timestamps and values.
+**Result**: 16.109 bytes/point, O(1) random access to both timestamps and values.
 
 ### Text Metrics
 

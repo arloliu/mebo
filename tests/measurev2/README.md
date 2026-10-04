@@ -10,25 +10,48 @@ cd tests/measurev2
 # Quick run with small data
 go run . -metrics 50 -points 100 -pretty -verbose
 
-# Full benchmark (default: 200 metrics × 200 points)
+# Full benchmark (default: mix_monitoring, 100 metrics × 150 points)
 go run . -pretty -verbose -output results.json
+
+# One data shape, or the pre-2026-10 default
+go run . -profile cal_2dp_hold50 -pretty -output results_hold50.json
+go run . -profile legacy_random_walk -metrics 200 -points 200 -pretty -output results_legacy.json
 ```
+
+## Data profiles
+
+The default profile, `mix_monitoring`, is a mixed blob:
+35% 2-decimal gauges (30% of points repeat the previous value), 20% integer counters,
+18% mostly-constant values and 27% full-precision gauges.
+The mixed profiles (`mix_monitoring`, `mix_sensor`, `mix_integer`, `mix_fullprec`) are calibrated to about 3.8 B/point for Chimp,
+measured at 100 metrics × 150 points with shared DeltaPacked timestamps and no compression.
+Their shares are assumptions; one aggregate figure cannot pin them down,
+so the four mixes differ in structure and each lands near that target (`TestMixCalibration`).
+Mixed blobs use aligned timestamps: 96% of points land exactly on the 15 s grid
+and the rest miss it by 2–10 ms (Gorilla, PVLDB 2015, §4.1.1; Prometheus `--scrape.timestamp-tolerance`).
+
+The single-shape profiles (`decimal_gauge_2dp`, `counter`, `sparse_constant`, `worst_case`, the `cal_*` set and others)
+keep one kind of metric per blob; `go run . -help` lists them all.
+`legacy_random_walk` is the pre-2026-10 default: a full-precision ±0.5% random walk at 1 s with ±0.1% timestamp jitter.
+`TestProfilesByteIdentical` pins every profile's data, so published numbers stay reproducible.
 
 ## CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-metrics` | 200 | Number of metrics to generate |
-| `-points` | 200 | Points per metric |
-| `-value-jitter` | 0.5 | Value jitter % (±0.5% random walk; semiconductor sensors: 0.01-0.5%) |
-| `-ts-jitter` | 0.1 | Timestamp jitter % (±0.1% of interval; industrial protocols: <0.1%) |
+| `-profile` | `mix_monitoring` | Data profile; empty selects `legacy_random_walk` |
+| `-metrics` | 100 | Number of metrics to generate |
+| `-points` | 150 | Points per metric |
+| `-value-jitter` | 0.5 | `legacy_random_walk` only: value jitter % (±0.5% random walk) |
+| `-ts-jitter` | 0.1 | `legacy_random_walk` only: timestamp jitter % (±0.1% of the 1 s interval) |
 | `-output` | stdout | Output JSON file path |
 | `-pretty` | false | Pretty-print JSON |
 | `-verbose` | false | Progress output on stderr |
 
 ## Encoding Matrix
 
-All 9 valid timestamp × value encoding combinations:
+Every timestamp × value encoding combination, each also measured with shared timestamps (`shared-` labels).
+The table below shows the original nine; ALP (`alp`) and ALP-RLE (`alprle`) value encodings are measured the same way.
 
 | Timestamp | Value | Label |
 |-----------|-------|-------|
@@ -57,7 +80,7 @@ For each encoding combo, benchmarks:
 ### `scaling` — Bytes/point vs points-per-metric curves
 
 For each encoding combo, measures encoded size at point counts
-`[1, 2, 5, 10, 20, 50, 100, 150, 200]` (capped by `-points`).
+`[1, 2, 5, 10, 20, 50, 100, 150, 200]` (capped by `-points`, so 150 by default).
 Shows how overhead amortizes differently per encoding.
 
 ## Using with the Agent Skill
