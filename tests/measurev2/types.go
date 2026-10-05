@@ -247,8 +247,9 @@ type BenchMetrics struct {
 	AllocsPerOp int64   `json:"allocs_per_op"`
 }
 
-// MatrixResult holds all benchmark results for one encoding combo at a fixed data size.
-type MatrixResult struct {
+// MatrixSizes holds one encoding combo's identity and encoded size at the fixed matrix data size.
+// It is deterministic and measured for every combo in every mode.
+type MatrixSizes struct {
 	Label           string `json:"label"`
 	TSEncoding      string `json:"ts_encoding"`
 	ValEncoding     string `json:"val_encoding"`
@@ -261,6 +262,12 @@ type MatrixResult struct {
 	BytesPerPoint   float64 `json:"bytes_per_point"`
 	VsRawRatio      float64 `json:"vs_raw_ratio"`
 	SpaceSavingsPct float64 `json:"space_savings_pct"`
+}
+
+// MatrixResult holds all benchmark results for one encoding combo at a fixed data size,
+// in the legacy schema that a run without -profiles writes.
+type MatrixResult struct {
+	MatrixSizes
 
 	// Benchmark results
 	Encode  BenchMetrics `json:"encode"`

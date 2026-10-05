@@ -1,0 +1,2669 @@
+{
+  "format_version": 1,
+  "method": "testing.Benchmark",
+  "run_id": "golden",
+  "common": {
+    "run_id": "golden",
+    "source": "head=0 status=0 tree=0",
+    "tools": "sha256=0",
+    "goos": "linux",
+    "goarch": "amd64",
+    "cpu_model": "Test CPU",
+    "go_version": "go1.26.7",
+    "build_settings": [
+      {
+        "key": "-buildmode",
+        "value": "exe"
+      }
+    ],
+    "gomaxprocs": 1,
+    "cpu_affinity": [
+      6
+    ],
+    "gogc": "100",
+    "gomemlimit": "",
+    "godebug": "",
+    "benchtime": "50ms",
+    "rounds": 2,
+    "cells": "report",
+    "cells_sha256": "1839ad9de62fb28299c12643f258289903876b1ff489cb029a52591f8ce0c427",
+    "profiles": [
+      "mix_monitoring"
+    ],
+    "data_configs": [
+      {
+        "num_metrics": 4,
+        "points_per_metric": 12,
+        "value_jitter_pct": 0.5,
+        "ts_jitter_pct": 0.1,
+        "seed": 42,
+        "profile": "mix_monitoring"
+      }
+    ]
+  },
+  "invocation": {
+    "layout": 0,
+    "round": 1,
+    "order": "forward",
+    "start": "2026-10-05T10:00:00Z",
+    "end": "2026-10-05T10:00:01Z",
+    "timestamp": "2026-10-05T10:00:00Z"
+  },
+  "raw_raw_bytes": 864,
+  "metadata": {
+    "go_version": "go1.26.7",
+    "os": "linux",
+    "arch": "amd64",
+    "num_cpu": 1,
+    "timestamp": "2026-10-05T10:00:00Z",
+    "data_config": {
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "value_jitter_pct": 0.5,
+      "ts_jitter_pct": 0.1,
+      "seed": 42,
+      "profile": "mix_monitoring"
+    },
+    "profile_spec": {
+      "name": "mix_monitoring",
+      "decimals": 0,
+      "interval_ms": 15000,
+      "parts": [
+        {
+          "share": 0.35,
+          "profile": {
+            "name": "gauge",
+            "decimals": 2,
+            "value_kind": "gauge",
+            "interval_ms": 15000,
+            "hold": 0.3
+          }
+        },
+        {
+          "share": 0.2,
+          "profile": {
+            "name": "counter",
+            "decimals": 0,
+            "value_kind": "counter",
+            "interval_ms": 15000
+          }
+        },
+        {
+          "share": 0.18,
+          "profile": {
+            "name": "sparse",
+            "decimals": 2,
+            "value_kind": "sparse",
+            "interval_ms": 15000
+          }
+        },
+        {
+          "share": 0.27,
+          "profile": {
+            "name": "gauge",
+            "decimals": -1,
+            "value_kind": "gauge",
+            "interval_ms": 15000
+          }
+        }
+      ],
+      "ts_jitter_share": 0.04,
+      "ts_jitter_min_ms": 2,
+      "ts_jitter_max_ms": 10
+    }
+  },
+  "matrix": [
+    {
+      "label": "raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 864,
+      "bytes_per_point": 18,
+      "vs_raw_ratio": 1,
+      "space_savings_pct": 0,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 654,
+      "bytes_per_point": 13.625,
+      "vs_raw_ratio": 1.3211009174311927,
+      "space_savings_pct": 24.305555555555557,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 654,
+      "bytes_per_point": 13.625,
+      "vs_raw_ratio": 1.3211009174311927,
+      "space_savings_pct": 24.305555555555557,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 634,
+      "bytes_per_point": 13.208333333333334,
+      "vs_raw_ratio": 1.362776025236593,
+      "space_savings_pct": 26.620370370370374,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "raw-alprle",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 634,
+      "bytes_per_point": 13.208333333333334,
+      "vs_raw_ratio": 1.362776025236593,
+      "space_savings_pct": 26.620370370370374,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 568,
+      "bytes_per_point": 11.833333333333334,
+      "vs_raw_ratio": 1.5211267605633803,
+      "space_savings_pct": 34.25925925925925,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 358,
+      "bytes_per_point": 7.458333333333333,
+      "vs_raw_ratio": 2.4134078212290504,
+      "space_savings_pct": 58.56481481481482,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 358,
+      "bytes_per_point": 7.458333333333333,
+      "vs_raw_ratio": 2.4134078212290504,
+      "space_savings_pct": 58.56481481481482,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 338,
+      "bytes_per_point": 7.041666666666667,
+      "vs_raw_ratio": 2.5562130177514795,
+      "space_savings_pct": 60.879629629629626,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "delta-alprle",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 338,
+      "bytes_per_point": 7.041666666666667,
+      "vs_raw_ratio": 2.5562130177514795,
+      "space_savings_pct": 60.879629629629626,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 580,
+      "bytes_per_point": 12.083333333333334,
+      "vs_raw_ratio": 1.4896551724137932,
+      "space_savings_pct": 32.870370370370374,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 370,
+      "bytes_per_point": 7.708333333333333,
+      "vs_raw_ratio": 2.3351351351351353,
+      "space_savings_pct": 57.17592592592593,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 370,
+      "bytes_per_point": 7.708333333333333,
+      "vs_raw_ratio": 2.3351351351351353,
+      "space_savings_pct": 57.17592592592593,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 350,
+      "bytes_per_point": 7.291666666666667,
+      "vs_raw_ratio": 2.4685714285714284,
+      "space_savings_pct": 59.49074074074075,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "deltapacked-alprle",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 350,
+      "bytes_per_point": 7.291666666666667,
+      "vs_raw_ratio": 2.4685714285714284,
+      "space_savings_pct": 59.49074074074075,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 588,
+      "bytes_per_point": 12.25,
+      "vs_raw_ratio": 1.469387755102041,
+      "space_savings_pct": 31.944444444444443,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 378,
+      "bytes_per_point": 7.875,
+      "vs_raw_ratio": 2.2857142857142856,
+      "space_savings_pct": 56.25,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 378,
+      "bytes_per_point": 7.875,
+      "vs_raw_ratio": 2.2857142857142856,
+      "space_savings_pct": 56.25,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 358,
+      "bytes_per_point": 7.458333333333333,
+      "vs_raw_ratio": 2.4134078212290504,
+      "space_savings_pct": 58.56481481481482,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-raw-alprle",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 358,
+      "bytes_per_point": 7.458333333333333,
+      "vs_raw_ratio": 2.4134078212290504,
+      "space_savings_pct": 58.56481481481482,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 514,
+      "bytes_per_point": 10.708333333333334,
+      "vs_raw_ratio": 1.6809338521400778,
+      "space_savings_pct": 40.50925925925925,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 304,
+      "bytes_per_point": 6.333333333333333,
+      "vs_raw_ratio": 2.8421052631578947,
+      "space_savings_pct": 64.81481481481481,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 304,
+      "bytes_per_point": 6.333333333333333,
+      "vs_raw_ratio": 2.8421052631578947,
+      "space_savings_pct": 64.81481481481481,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 284,
+      "bytes_per_point": 5.916666666666667,
+      "vs_raw_ratio": 3.0422535211267605,
+      "space_savings_pct": 67.12962962962963,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-delta-alprle",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 284,
+      "bytes_per_point": 5.916666666666667,
+      "vs_raw_ratio": 3.0422535211267605,
+      "space_savings_pct": 67.12962962962963,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 517,
+      "bytes_per_point": 10.770833333333334,
+      "vs_raw_ratio": 1.6711798839458414,
+      "space_savings_pct": 40.16203703703704,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 307,
+      "bytes_per_point": 6.395833333333333,
+      "vs_raw_ratio": 2.814332247557003,
+      "space_savings_pct": 64.4675925925926,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 307,
+      "bytes_per_point": 6.395833333333333,
+      "vs_raw_ratio": 2.814332247557003,
+      "space_savings_pct": 64.4675925925926,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 287,
+      "bytes_per_point": 5.979166666666667,
+      "vs_raw_ratio": 3.010452961672474,
+      "space_savings_pct": 66.7824074074074,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    },
+    {
+      "label": "shared-deltapacked-alprle",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_per_metric": 12,
+      "total_points": 48,
+      "encoded_bytes": 287,
+      "bytes_per_point": 5.979166666666667,
+      "vs_raw_ratio": 3.010452961672474,
+      "space_savings_pct": 66.7824074074074,
+      "encode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "decode": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "iter_seq": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_value_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      },
+      "random_timestamp_at": {
+        "ns_per_op": 2500.5,
+        "bytes_per_op": 96,
+        "allocs_per_op": 3,
+        "n": 2,
+        "t_ns": 5001,
+        "mem_allocs": 7,
+        "mem_bytes": 193
+      }
+    }
+  ],
+  "scaling": [
+    {
+      "label": "raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 224,
+          "bytes_per_point": 28
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 416,
+          "bytes_per_point": 20.8
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 736,
+          "bytes_per_point": 18.4
+        }
+      ]
+    },
+    {
+      "label": "raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 212,
+          "bytes_per_point": 26.5
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 347,
+          "bytes_per_point": 17.35
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 567,
+          "bytes_per_point": 14.175
+        }
+      ]
+    },
+    {
+      "label": "raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 210,
+          "bytes_per_point": 26.25
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 343,
+          "bytes_per_point": 17.15
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 567,
+          "bytes_per_point": 14.175
+        }
+      ]
+    },
+    {
+      "label": "raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 164,
+          "bytes_per_point": 41
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 227,
+          "bytes_per_point": 28.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 353,
+          "bytes_per_point": 17.65
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 555,
+          "bytes_per_point": 13.875
+        }
+      ]
+    },
+    {
+      "label": "raw-alprle",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 164,
+          "bytes_per_point": 41
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 227,
+          "bytes_per_point": 28.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 353,
+          "bytes_per_point": 17.65
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 555,
+          "bytes_per_point": 13.875
+        }
+      ]
+    },
+    {
+      "label": "delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 208,
+          "bytes_per_point": 26
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 316,
+          "bytes_per_point": 15.8
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 496,
+          "bytes_per_point": 12.4
+        }
+      ]
+    },
+    {
+      "label": "delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 196,
+          "bytes_per_point": 24.5
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 247,
+          "bytes_per_point": 12.35
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 327,
+          "bytes_per_point": 8.175
+        }
+      ]
+    },
+    {
+      "label": "delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 194,
+          "bytes_per_point": 24.25
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 243,
+          "bytes_per_point": 12.15
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 327,
+          "bytes_per_point": 8.175
+        }
+      ]
+    },
+    {
+      "label": "delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 164,
+          "bytes_per_point": 41
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 211,
+          "bytes_per_point": 26.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 253,
+          "bytes_per_point": 12.65
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 315,
+          "bytes_per_point": 7.875
+        }
+      ]
+    },
+    {
+      "label": "delta-alprle",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 164,
+          "bytes_per_point": 41
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 211,
+          "bytes_per_point": 26.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 253,
+          "bytes_per_point": 12.65
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 315,
+          "bytes_per_point": 7.875
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 208,
+          "bytes_per_point": 26
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 320,
+          "bytes_per_point": 16
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 504,
+          "bytes_per_point": 12.6
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 196,
+          "bytes_per_point": 24.5
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 251,
+          "bytes_per_point": 12.55
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 335,
+          "bytes_per_point": 8.375
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 160,
+          "bytes_per_point": 40
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 194,
+          "bytes_per_point": 24.25
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 247,
+          "bytes_per_point": 12.35
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 335,
+          "bytes_per_point": 8.375
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 164,
+          "bytes_per_point": 41
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 211,
+          "bytes_per_point": 26.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 257,
+          "bytes_per_point": 12.85
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 323,
+          "bytes_per_point": 8.075
+        }
+      ]
+    },
+    {
+      "label": "deltapacked-alprle",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 164,
+          "bytes_per_point": 41
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 211,
+          "bytes_per_point": 26.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 257,
+          "bytes_per_point": 12.85
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 323,
+          "bytes_per_point": 8.075
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-raw",
+      "ts_encoding": "Raw",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 188,
+          "bytes_per_point": 23.5
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 308,
+          "bytes_per_point": 15.4
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 508,
+          "bytes_per_point": 12.7
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-gorilla",
+      "ts_encoding": "Raw",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 176,
+          "bytes_per_point": 22
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 239,
+          "bytes_per_point": 11.95
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 339,
+          "bytes_per_point": 8.475
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-chimp",
+      "ts_encoding": "Raw",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 174,
+          "bytes_per_point": 21.75
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 235,
+          "bytes_per_point": 11.75
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 339,
+          "bytes_per_point": 8.475
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-alp",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 152,
+          "bytes_per_point": 38
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 191,
+          "bytes_per_point": 23.875
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 245,
+          "bytes_per_point": 12.25
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 327,
+          "bytes_per_point": 8.175
+        }
+      ]
+    },
+    {
+      "label": "shared-raw-alprle",
+      "ts_encoding": "Raw",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 152,
+          "bytes_per_point": 38
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 191,
+          "bytes_per_point": 23.875
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 245,
+          "bytes_per_point": 12.25
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 327,
+          "bytes_per_point": 8.175
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-raw",
+      "ts_encoding": "Delta",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 184,
+          "bytes_per_point": 23
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 283,
+          "bytes_per_point": 14.15
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 448,
+          "bytes_per_point": 11.2
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-gorilla",
+      "ts_encoding": "Delta",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 172,
+          "bytes_per_point": 21.5
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 214,
+          "bytes_per_point": 10.7
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 279,
+          "bytes_per_point": 6.975
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-chimp",
+      "ts_encoding": "Delta",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 170,
+          "bytes_per_point": 21.25
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 210,
+          "bytes_per_point": 10.5
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 279,
+          "bytes_per_point": 6.975
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-alp",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 152,
+          "bytes_per_point": 38
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 187,
+          "bytes_per_point": 23.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 220,
+          "bytes_per_point": 11
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 267,
+          "bytes_per_point": 6.675
+        }
+      ]
+    },
+    {
+      "label": "shared-delta-alprle",
+      "ts_encoding": "Delta",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 152,
+          "bytes_per_point": 38
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 187,
+          "bytes_per_point": 23.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 220,
+          "bytes_per_point": 11
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 267,
+          "bytes_per_point": 6.675
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-raw",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Raw",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 184,
+          "bytes_per_point": 23
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 284,
+          "bytes_per_point": 14.2
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 450,
+          "bytes_per_point": 11.25
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-gorilla",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Gorilla",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 172,
+          "bytes_per_point": 21.5
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 215,
+          "bytes_per_point": 10.75
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 281,
+          "bytes_per_point": 7.025
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-chimp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "Chimp",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 148,
+          "bytes_per_point": 37
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 170,
+          "bytes_per_point": 21.25
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 211,
+          "bytes_per_point": 10.55
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 281,
+          "bytes_per_point": 7.025
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-alp",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALP",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 152,
+          "bytes_per_point": 38
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 187,
+          "bytes_per_point": 23.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 221,
+          "bytes_per_point": 11.05
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 269,
+          "bytes_per_point": 6.725
+        }
+      ]
+    },
+    {
+      "label": "shared-deltapacked-alprle",
+      "ts_encoding": "DeltaPacked",
+      "val_encoding": "ALPRLE",
+      "num_metrics": 4,
+      "points_series": [
+        {
+          "points_per_metric": 1,
+          "encoded_bytes": 152,
+          "bytes_per_point": 38
+        },
+        {
+          "points_per_metric": 2,
+          "encoded_bytes": 187,
+          "bytes_per_point": 23.375
+        },
+        {
+          "points_per_metric": 5,
+          "encoded_bytes": 221,
+          "bytes_per_point": 11.05
+        },
+        {
+          "points_per_metric": 10,
+          "encoded_bytes": 269,
+          "bytes_per_point": 6.725
+        }
+      ]
+    }
+  ]
+}
