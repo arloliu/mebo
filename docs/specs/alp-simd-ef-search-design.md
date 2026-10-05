@@ -6,7 +6,7 @@ Spec v4 passed Codex review; the owner confirmed the gates.
 v1 and v2 (a stats-returning kernel with Go-side selection) were Codex-reviewed twice;
 v3 rewrote the kernel contract around the prototype that selects inside the kernel
 and added three exact changes to the encode work outside the search.
-v4 addresses the v3 review (`tmp/reviews/alp-simd-ef-search-spec-codex-review-v3.md`):
+v4 addresses the v3 review (`tmp/reviews/alp-simd-ef-search-spec-codex-review-v3.md`, not committed):
 compiler fusion, CPU prerequisites, a portable framed corpus, memory-contract tests, and the forced-off benchmark mode.
 Research notes and prototypes: `tmp/alp-encode-perf-research/` (not committed).
 
@@ -374,7 +374,7 @@ Each side is built in 4 layouts by a padding function in `internal/pool` (0, 1, 
 ## Results
 
 Measured 2026-10-04 after Phases 0–3, with the procedure under Gates
-(raw data and scripts in `tmp/alp-simd-ef-search-measure/`).
+(raw data and scripts in `tmp/alp-simd-ef-search-measure/`, not committed).
 Blob encode in ns/point, median of n = 12 per side:
 
 | Mix | Codec | `e7965cf` | new | speedup | new vs Chimp | AVX-512 off: `e7965cf` → new |
@@ -404,7 +404,7 @@ The (e, f) search alone (`BenchmarkALPBestEF`, single binary) went from 34–52 
 The generated pack kernels add about 189 KB of text to a binary that links the encoder (110 KB of code plus tables).
 
 The 12 single-kind profiles, measured the same way in Phase 4
-(benchmark file kept outside the repository, `tmp/alp-simd-ef-search-measure/profiles_run.sh`), outside the gates:
+(benchmark file kept outside the repository, `tmp/alp-simd-ef-search-measure/profiles_run.sh`, not committed), outside the gates:
 
 | Profile | ALP `e7965cf` → new | speedup | ALP-RLE `e7965cf` → new | speedup | new vs Chimp, ALP / ALP-RLE |
 |---|---:|---:|---:|---:|---:|

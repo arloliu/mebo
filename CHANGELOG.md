@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release adds ALP-RLE, a value encoding for metrics that often hold their previous value,
+and makes ALP and ALP-RLE encoding several times faster on CPUs with AVX-512.
+
+ALP-RLE blobs cannot be read by v1.11.0 or earlier: upgrade consumers before producers write them.
+ALP output is unchanged on most builds;
+on builds where Go fuses multiply-add, it can differ from v1.9.0–v1.11.0 for rare values, and every build now writes the same bytes.
+Decoded values are unchanged.
+
+See [API_STABILITY.md](API_STABILITY.md#additions-and-behaviour-changes-v1120) for the details.
+
+### Added
+
+- **ALP-RLE value encoding** (`format.TypeALPRLE = 0x7`), selected with `WithValueEncoding(format.TypeALPRLE)`.
+  It is ALP with a run-length front end:
+  each column keeps a runs layout (a run-start bitmap and one ALP value per run) only when that is smaller than the plain ALP column,
+  so an uncompressed column is never larger than under ALP.
+  With shared DeltaPacked timestamps it is 12.8–47.5% smaller than Chimp on the four benchmark mixes.
+  **Forward-incompatible addition:** readers up to v1.11.0 reject these blobs;
+  blobs written with other encodings are unaffected.
+  See [Best Practices § ALP or ALP-RLE?](docs/best_practices.md#alp-or-alp-rle).
+
+### Changed
+
+- ALP encodes faster.
+  On amd64 CPUs with AVX-512DQ and POPCNT, vector kernels search ALP's exponents and check every value,
+  and bit-packing and the ALP-RD cut search are faster on every target.
+  On the benchmark mixes (100 metrics × 150 points), an ALP blob encodes 2.9–3.7× faster with the kernels
+  and about 1–2% faster without them.
+- ALP writes the same bytes on every platform.
+  From v1.9.0 to v1.11.0, the compiler could fuse a multiply and an add into one FMA instruction in some builds:
+  arm64, ppc64x, s390x, riscv64, loong64, and amd64 with `GOAMD64=v3` or later.
+  Those builds could pick a different exponent or digit for rare values than other builds.
+  Blobs written by those builds stay readable and decode to the same values;
+  only the bytes written for such values change.
+- `TimestampAt` on shared timestamps reads the cache built when the blob is opened,
+  so it is O(1) instead of O(index) for Delta and DeltaPacked:
+  at index 149 of a 150-point column it takes 21 ns instead of 168 ns.
+- `ForEachValues` on ALP columns decodes each column in bulk instead of draining an iterator.
+  It no longer allocates per metric, as its documentation already promised,
+  and it takes 25.9% less time in the layout-averaged benchmark (100 metrics × 150 points).
+  The decode buffers come from their own pool, capped at 8,192 points per buffer,
+  and longer columns stream through the iterator, so memory stays bounded.
+
+### Documentation
+
+- `docs/performance.md` is rebuilt on calibrated mixed-metric data (four mixes calibrated to about 3.8 bytes/point for Chimp)
+  and 16 data-shape profiles (the four mixes and 12 single-kind shapes), with ALP-RLE throughout;
+  its encode costs reflect the AVX-512 search and say where they need AVX-512DQ.
+- Best practices explain when to choose ALP-RLE and how to roll it out.
+- Design specs for the ALP run-length front end and the AVX-512 (e, f) search are in `docs/specs/`.
+
 ## [1.11.0] - 2026-10-03
 
 This release hardens every decoder against corrupt and crafted input,

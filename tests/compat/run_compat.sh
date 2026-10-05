@@ -156,11 +156,9 @@ needs_metricnames_tag() {
     [[ "$major" -gt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -ge 10 ]]; }
 }
 
-# needs_alprle_tag returns true if $1 >= v1.12.0, the first release planned to
-# ship format.TypeALPRLE (value encoding 0x7); the ALP-RLE scenarios
-# (scenarios_alprle.go) reference it, so they live behind this tag (mirrors
-# needs_alp_tag). Branch refs pass every gate, like the other tags. Update the
-# version here if ALP-RLE ships in a different release.
+# needs_alprle_tag returns true if $1 >= v1.12.0, the first release that ships format.TypeALPRLE (value encoding 0x7).
+# The ALP-RLE scenarios (scenarios_alprle.go) reference it, so they live behind this tag (mirrors needs_alp_tag).
+# Branch refs pass every gate, like the other tags.
 needs_alprle_tag() {
     local ref="$1"
     if ! is_semver_ref "$ref"; then

@@ -39,7 +39,7 @@ Report issues to the project maintainers via GitHub Issues.
 
 - **Go**: Version 1.25 or later (matches `go.mod`) ([download](https://go.dev/dl/))
 - **Git**: For version control
-- **golangci-lint**: Version 2.5.0 for code quality checks
+- **golangci-lint**: Version 2.12.2 for code quality checks (pinned in `Makefile` and `linter.go.mod`)
 - **Make**: For build automation (optional but recommended)
 
 ### Quick Start
@@ -77,7 +77,7 @@ git remote add upstream https://github.com/arloliu/mebo.git
 
 ### 2. Install Tools
 
-#### golangci-lint v2.5.0
+#### golangci-lint v2.12.2
 
 **macOS/Linux:**
 ```bash
@@ -86,13 +86,13 @@ make linter-update
 
 **Manual Installation:**
 ```bash
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.5.0
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 ```
 
 **Verify Installation:**
 ```bash
 make linter-version
-# Should output: golangci-lint has version 2.5.0
+# Should output: golangci-lint has version 2.12.2
 ```
 
 ### 3. Create a Branch
