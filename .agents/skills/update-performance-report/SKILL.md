@@ -18,39 +18,44 @@ description: Run the tests/measurev2 benchmarks and regenerate docs/performance.
 ## Prerequisites
 
 - Run from the mebo repository root.
-- Run nothing else CPU-heavy while benchmarks run (other benchmarks, `make test`, an outside review);
-  timings are single-run and shift with load.
+- Run nothing else CPU-heavy while benchmarks run (other benchmarks, `make test`, an outside review):
+  every invocation is pinned to one core, and other load on the machine still moves its timings.
 
-## Step 1: Run the benchmarks
-
-Run the main data set and every profile, one after another, into a directory outside the repository:
+## Step 1: Check the tools, then run the benchmarks
 
 ```bash
-OUT=$TMPDIR/perf && mkdir -p $OUT/profiles && cd tests/measurev2 && go build -o $OUT/measurev2 . && \
-$OUT/measurev2 -pretty -verbose -output $OUT/main.json && \
-for p in decimal_gauge_2dp decimal_gauge_4dp counter sparse_constant worst_case \
-         cal_2dp_hold30 cal_2dp_hold50 cal_2dp_hold70 cal_2dp_step0.005 cal_1dp_step0.03 cal_1dp_step0.01 \
-         mix_monitoring mix_sensor mix_integer mix_fullprec legacy_random_walk; do
-  $OUT/measurev2 -profile "$p" -pretty -output "$OUT/profiles/matrix_$p.json" || echo "FAIL $p"
-done
+python3 .agents/skills/update-performance-report/scripts/check_report_tools.py && \
+OUT=$TMPDIR/perf && tests/measurev2/layouts.sh -o $OUT
 ```
 
-Each run takes about 3 minutes (30 combos × encode, decode, iterate, `ValueAt`, `TimestampAt`, plus scaling).
-The main data set is the default profile, `mix_monitoring`, at 100 metrics × 150 points;
-`go run . -help` lists the profiles, and `tests/measurev2/README.md` describes them.
+`make bench-report` runs the same two commands.
+The tool check comes first, so a broken merge or renderer stops the report before any benchmark runs.
+`layouts.sh` builds `tests/measurev2` in four code layouts and runs each layout four times,
+pinned to CPU 6 with `GOMAXPROCS=1`, with every report data set in one process per run;
+then it merges the 16 runs into `$OUT/merged/` (about 10 minutes in all).
+The data sets are the report manifest, `reportProfiles` in `tests/measurev2/manifest.go`:
+the main data set, `mix_monitoring` at 100 metrics × 150 points, and 15 data-shape profiles.
+The main data set times all 30 combos × 5 operations;
+the other profiles time encode, iterate and `ValueAt` for the five Shared DeltaPacked combos and Delta + Gorilla.
+Sizes and scaling are measured for every combo of every data set.
+`tests/measurev2/README.md` describes the flags, the output and the validation script.
 
 ## Step 2: Render the tables
 
 ```bash
 python3 .agents/skills/update-performance-report/scripts/generate_report.py \
-  --main $OUT/main.json --profiles $OUT/profiles \
+  --main $OUT/merged/main.json --profiles $OUT/merged/profiles \
   --template .agents/skills/update-performance-report/PERFORMANCE_TEMPLATE.md \
   --out docs/performance.md --digest $OUT/digest.md
 ```
 
-The script fills every table placeholder, leaves the `{{LLM:...}}` placeholders, and lists them.
+The script validates the input set before writing anything:
+it accepts only a merged `layouts.sh` run or a complete legacy set,
+and rejects raw invocations, `-sizes-only` output, mixtures, and any file whose sizes disagree with their identities.
+It fills every table placeholder, leaves the `{{LLM:...}}` placeholders, and lists them.
 The digest ranks every combo per data set (smallest, fastest encode/decode/iterate/`ValueAt`/`TimestampAt`,
-the size/iterate Pareto front, and the change against Shared DeltaPacked + Chimp and against the default encoder).
+the size/iterate Pareto fronts, and the change against Shared DeltaPacked + Chimp and against the default encoder),
+each speed comparison labelled with its outcome under the comparison rule below.
 Keep the digest out of the repository.
 
 ## Step 3: Write the judgment sections
@@ -83,9 +88,20 @@ Rules:
   plain ALP is much larger than Chimp on full-precision data with repeats.
 - **Recommend only configurations someone would run.**
   Raw timestamps with a compressed value codec, or Raw values chosen only for speed, are not "best balance" answers.
-- **Separate deterministic sizes from single-run timings.**
-  Sizes are exact; timings move by 20–40% with code placement, so treat gaps under about 20% as ties.
+- **Separate deterministic sizes from timings, and quote timings by their comparison outcome.**
+  Sizes are exact.
+  A speed comparison between two cells is one of three outcomes (`compare` in `scripts/report_schema.py`):
+  **decided** when the gap is at least 20% and, for layout-averaged data, every layout's median puts the same combo ahead;
+  **equivalent** when the gap is under 20%;
+  **inconclusive** when the gap is at least 20% but not every layout agrees.
+  A speed claim ("faster", "slower", "N× the encode time") needs a decided outcome;
+  never write an equivalent or inconclusive comparison as "same speed" or "faster".
+  The digest labels every ranking and reference comparison with its outcome.
   Where two codecs encode identical columns (ALP and ALP-RLE on data without repeats), any timing gap is noise.
+- **Say how the timings were taken.**
+  The numbers are pinned to one core with `GOMAXPROCS=1`, so the garbage collector shares the measured core
+  and allocation-heavy operations read slower than in reports measured before 2026-10;
+  the first report on this method says so, and none compares its timings with an older report's.
 - **Do not change** the template's static text to fit a conclusion; change the template itself if it is wrong.
 
 ## Step 4: Verify
@@ -104,11 +120,22 @@ Rules:
 
 ```
 {
-  "metadata": { "go_version", "os", "arch", "num_cpu", "timestamp", "data_config", "profile_spec" },
-  "matrix":   [ per-combo results: label, bytes_per_point, encode, decode, iter_seq, random_value_at, random_timestamp_at ],
+  "format_version": 1, "method": "testing.Benchmark, layout-averaged", "run_id",
+  "common":      { provenance, platform, runtime environment, benchtime, rounds, cells, profiles, data configs },
+  "invocations": [ one per (round, layout): layout, round, order, start, end, binary_sha256, peak_rss_kb ],
+  "layouts":     { layout number: binary SHA-256 },
+  "allocation_disagreements": [ cell ids whose allocs/op differed between runs ],
+  "raw_raw_bytes", "metadata": { "go_version", "os", "arch", "num_cpu", "timestamp", "data_config", "profile_spec" },
+  "matrix":   [ per-combo results: label, sizes, and each timed operation (encode, decode, iter_seq, random_value_at,
+                random_timestamp_at) as { ns_per_op, bytes_per_op, allocs_per_op, runs, layout_ns_per_op, iqr_rel } ],
   "scaling":  [ per-combo bytes/point at 1, 2, 5, 10, 20, 50, 100, 150 points per metric ]
 }
 ```
+
+An untimed operation's key is absent.
+Legacy files (before 2026-10-05) have only `metadata`, `matrix` and `scaling`,
+with every operation as `{ ns_per_op, bytes_per_op, allocs_per_op }`;
+the renderer still accepts a complete legacy set and describes it as single runs.
 
 Labels are `<ts>-<val>` with `shared-` prepended for shared timestamps (for example `shared-deltapacked-alprle`).
 `profile_spec` is the full profile definition, mixed parts included; the script describes the data from it.
@@ -131,6 +158,9 @@ verified against the decoder implementations, not inferred from names or numbers
 - Shared timestamps (any timestamp encoding): O(1).
   The shared columns are decoded once into `sharedTsCache` when the blob is opened (`blob/numeric_decoder.go`),
   and `TimestampAt` reads the cache; the script's `ts_complexity()` applies this to every `shared-*` label.
+  Their measured times are bimodal per binary file (about 1,630 or 2,105 ns on the main data set),
+  set by the binary file (most likely where the kernel placed its pages), not by the code:
+  don't read a change in them between reports as a speed-up or regression.
 
 When a codec is added, verify its `At()` complexity in the decoder source before adding it to `AT_COMPLEXITY`.
 
@@ -138,8 +168,8 @@ When a codec is added, verify its `At()` complexity in the decoder source before
 
 - **DeltaPacked vs Delta**: DeltaPacked's Group Varint layout is meant for faster decode and iteration, not size; the size difference is small.
   Check the iterate columns before repeating the speed claim:
-  the 2026-10-04 run measured DeltaPacked iterating 1.1–1.8× slower than Delta with Gorilla and Chimp,
-  in one binary, so code placement may explain it.
+  the 2026-10-05 layout-averaged run measured DeltaPacked iterating 1.25–1.32× slower than Delta with Gorilla and Chimp,
+  decided in every layout, and equivalent to it with ALP and ALP-RLE.
 - **Chimp vs Gorilla**: both XOR-based; Chimp is usually slightly smaller.
 - **ALP** (`format.TypeALP`): wins on decimal-quantized values and integers.
   On full-precision values it is about Chimp's size,
