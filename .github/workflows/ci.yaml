@@ -44,3 +44,5 @@ jobs:
       run: go version
     - name: Test
       run: make test
+    - name: ALP byte identity with fused multiply-add (GOAMD64=v3)
+      run: make test-fusion
