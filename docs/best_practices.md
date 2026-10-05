@@ -80,7 +80,7 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 | Data pattern | Recommended encoding | Why |
 |---|---|---|
 | Regular 1-second intervals | Delta or DeltaPacked timestamp | ~1 byte/ts on regular data vs 8 bytes raw (worst case 10 bytes for Delta, ~8.25 for DeltaPacked) |
-| Full-precision floats that rarely repeat (computed rates, ratios) | Chimp or Gorilla value | XOR compression; on a full-precision gauge, Chimp is 2% smaller than ALP and ALP-RLE and encodes about 1.4× faster (several times faster on CPUs without AVX-512DQ) |
+| Full-precision floats that rarely repeat (computed rates, ratios) | Chimp or Gorilla value | XOR compression; on a full-precision gauge, Chimp is 2% smaller than ALP and ALP-RLE, and ALP-RLE takes 1.2× its encode time (several times longer on CPUs without AVX-512DQ) |
 | Rapidly changing or discontinuous values | Raw value | No decompression overhead |
 | Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; saves about 1.2 bytes/point on the 100-metric benchmark mix, 24% with Chimp and 32% with ALP-RLE |
 | Decimal-quantized sensor data (2–4 dp) | ALP value | 2.4–3.8× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles with shared timestamps; costs more to encode |
@@ -90,8 +90,9 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 
 DeltaPacked vs Delta: DeltaPacked uses Group Varint, meant for **faster decode/iteration**, not better compression.
 Size difference is marginal: about 0.2 bytes/point per metric on the benchmark mix, and 0.002 with shared timestamps.
-The 2026-10-04 benchmark run measured DeltaPacked iterating slower than Delta with Gorilla and Chimp, in a single build;
-measure your own workload before choosing it for throughput.
+The 2026-10-05 layout-averaged benchmark run measured DeltaPacked iterating 1.25–1.32× slower than Delta with Gorilla and Chimp,
+in every code layout, while with ALP and ALP-RLE the gap stays under the 20% that the report counts as a difference;
+prefer Delta unless your own measurements show otherwise.
 
 Chimp vs Gorilla: Chimp is 0.8–2.6% smaller on the benchmark mixes, but Gorilla is smaller on counters and mostly-constant values.
 Both use XOR-based encoding.
