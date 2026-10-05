@@ -1,12 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"runtime"
+	"testing"
 	"time"
 )
 
@@ -16,280 +16,62 @@ func logf(format string, args ...any) {
 }
 
 func main() {
-	// CLI flags
-	numMetrics := flag.Int("metrics", 100, "Number of metrics to generate")
-	pointsPerMetric := flag.Int("points", 150, "Points per metric for matrix benchmarks")
-	valueJitter := flag.Float64("value-jitter", 0.5, "legacy_random_walk only: value jitter percentage (0.5 = ±0.5% random walk per point)")
-	tsJitter := flag.Float64("ts-jitter", 0.1, "legacy_random_walk only: timestamp jitter percentage (0.1 = ±0.1% of the 1 s interval)")
-	outputFile := flag.String("output", "", "Output JSON file path (default: stdout)")
-	pretty := flag.Bool("pretty", false, "Pretty-print JSON output")
-	verbose := flag.Bool("verbose", false, "Print progress to stderr")
-	profileName := flag.String("profile", DefaultProfile, "Data profile (empty = legacy_random_walk). Available: "+profileNames())
+	// testing.Init registers -test.benchtime, which -benchtime sets before any benchmark runs.
+	testing.Init()
 
-	flag.Parse()
-
-	config := DataConfig{
-		NumMetrics:      *numMetrics,
-		PointsPerMetric: *pointsPerMetric,
-		ValueJitterPct:  *valueJitter,
-		TSJitterPct:     *tsJitter,
-		Seed:            42,
-		Profile:         *profileName,
+	opts, err := parseOptions(os.Args[1:], os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return
 	}
-
-	// Validate
-	if config.NumMetrics <= 0 {
-		logf("Error: -metrics must be positive\n")
+	if err != nil {
+		logf("Error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := applyBenchtime(opts.benchtime); err != nil {
+		logf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if config.PointsPerMetric <= 0 {
-		logf("Error: -points must be positive\n")
+	if opts.profiles != nil {
+		err = runProfiles(opts, benchmarkRunner{})
+	} else {
+		err = runLegacy(opts, benchmarkRunner{})
+	}
+	if err != nil {
+		logf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Generate test data
-	if config.Profile == "" {
-		config.Profile = "legacy_random_walk"
+	if opts.verbose {
+		logf("\nBenchmark complete! ✅\n")
 	}
-	profile, ok := findProfile(config.Profile)
+}
+
+// runLegacy measures one -profile data set with every cell timed and writes the legacy schema,
+// as measurev2 did before -profiles existed.
+func runLegacy(o *options, runner timingRunner) error {
+	profile, ok := findProfile(o.profile)
 	if !ok {
-		logf("Error: unknown -profile %q; available: %s\n", config.Profile, profileNames())
-		os.Exit(1)
+		return fmt.Errorf("unknown -profile %q", o.profile)
 	}
-	if *verbose {
-		logf("Generating test data (profile %s): %d metrics × %d points...\n", config.Profile, config.NumMetrics, config.PointsPerMetric)
-	}
-
-	data, sharedData := generateDatasets(profile, config)
-
-	combos := AllCombos()
-	sharedCombos := SharedTSCombos()
-	totalPoints := config.NumMetrics * config.PointsPerMetric
-
-	// Build metadata
 	metadata := ReportMetadata{
 		GoVersion:   runtime.Version(),
 		OS:          runtime.GOOS,
 		Arch:        runtime.GOARCH,
 		NumCPU:      runtime.NumCPU(),
 		Timestamp:   time.Now(),
-		Data:        config,
+		Data:        o.dataConfig(o.profile),
 		ProfileSpec: &profile,
 	}
 
-	// First, get the raw-raw baseline size for ratio calculations.
-	rawRawSize, err := rawRawBaseline(combos, data)
+	res, err := measureDataset(o.profile, o.plan(runner))
 	if err != nil {
-		logf("Error measuring raw-raw baseline: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-
-	// Phase 1: Matrix benchmarks (regular + shared-TS).
-	if *verbose {
-		logf("\n=== Matrix Benchmarks (%d combos + %d shared-TS combos) ===\n", len(combos), len(sharedCombos))
-	}
-
-	matrixResults := make([]MatrixResult, 0, len(combos)+len(sharedCombos))
-
-	regularMatrix, err := runMatrixBench(combos, data, rawRawSize, totalPoints, *verbose)
+	report, err := legacyReport(res, metadata)
 	if err != nil {
-		logf("Error in matrix benchmark: %v\n", err)
-		os.Exit(1)
-	}
-	matrixResults = append(matrixResults, regularMatrix...)
-
-	sharedMatrix, err := runMatrixBench(sharedCombos, sharedData, rawRawSize, totalPoints, *verbose)
-	if err != nil {
-		logf("Error in shared-TS matrix benchmark: %v\n", err)
-		os.Exit(1)
-	}
-	matrixResults = append(matrixResults, sharedMatrix...)
-
-	// Phase 2: Scaling analysis (regular + shared-TS).
-	if *verbose {
-		logf("\n=== Scaling Analysis (%d combos + %d shared-TS combos) ===\n", len(combos), len(sharedCombos))
+		return err
 	}
 
-	scalingResults := make([]ScalingResult, 0, len(combos)+len(sharedCombos))
-
-	regularScaling, err := runScalingBench(combos, data, *verbose)
-	if err != nil {
-		logf("Error in scaling: %v\n", err)
-		os.Exit(1)
-	}
-	scalingResults = append(scalingResults, regularScaling...)
-
-	sharedScaling, err := runScalingBench(sharedCombos, sharedData, *verbose)
-	if err != nil {
-		logf("Error in shared-TS scaling: %v\n", err)
-		os.Exit(1)
-	}
-	scalingResults = append(scalingResults, sharedScaling...)
-
-	// Build and emit the report.
-	report := FullReport{
-		Metadata: metadata,
-		Matrix:   matrixResults,
-		Scaling:  scalingResults,
-	}
-
-	if err := writeReport(report, *outputFile, *pretty, *verbose); err != nil {
-		logf("Error writing report: %v\n", err)
-		os.Exit(1)
-	}
-
-	if *verbose {
-		logf("\nBenchmark complete! ✅\n")
-	}
-}
-
-// rawRawBaseline returns the encoded size of the raw-raw combo, used as the
-// denominator for the compression-ratio columns.
-func rawRawBaseline(combos []EncodingCombo, data *TestData) (int, error) {
-	for _, combo := range combos {
-		if combo.Label == "raw-raw" {
-			return measureEncodedSize(combo, data)
-		}
-	}
-
-	return 0, errors.New("raw-raw combo not found in matrix")
-}
-
-// runMatrixBench benchmarks every combo against data at the fixed matrix size,
-// returning one MatrixResult per combo.
-func runMatrixBench(combos []EncodingCombo, data *TestData, rawRawSize, totalPoints int, verbose bool) ([]MatrixResult, error) {
-	results := make([]MatrixResult, 0, len(combos))
-
-	for i, combo := range combos {
-		if verbose {
-			logf("  [%d/%d] Benchmarking %s...\n", i+1, len(combos), combo.Label)
-		}
-
-		encodedSize, err := measureEncodedSize(combo, data)
-		if err != nil {
-			return nil, fmt.Errorf("encoding %s: %w", combo.Label, err)
-		}
-
-		bpp := float64(encodedSize) / float64(totalPoints)
-		vsRaw := float64(rawRawSize) / float64(encodedSize)
-		savings := (1.0 - float64(encodedSize)/float64(rawRawSize)) * 100.0
-
-		if verbose {
-			logf("    encode...")
-		}
-
-		encMetrics := benchEncode(combo, data)
-
-		if verbose {
-			logf(" decode...")
-		}
-
-		decMetrics, err := benchDecode(combo, data)
-		if err != nil {
-			return nil, fmt.Errorf("decoding %s: %w", combo.Label, err)
-		}
-
-		if verbose {
-			logf(" iterate...")
-		}
-
-		iterMetrics, err := benchIterSeq(combo, data)
-		if err != nil {
-			return nil, fmt.Errorf("iterating %s: %w", combo.Label, err)
-		}
-
-		if verbose {
-			logf(" random-access...")
-		}
-
-		randValMetrics, err := benchRandomAccessValue(combo, data)
-		if err != nil {
-			return nil, fmt.Errorf("random ValueAt %s: %w", combo.Label, err)
-		}
-
-		randTSMetrics, err := benchRandomAccessTimestamp(combo, data)
-		if err != nil {
-			return nil, fmt.Errorf("random TimestampAt %s: %w", combo.Label, err)
-		}
-
-		if verbose {
-			logf(" done (%.1f bytes/point)\n", bpp)
-		}
-
-		results = append(results, MatrixResult{
-			Label:             combo.Label,
-			TSEncoding:        combo.TSEncoding.String(),
-			ValEncoding:       combo.ValEncoding.String(),
-			NumMetrics:        data.Config.NumMetrics,
-			PointsPerMetric:   data.Config.PointsPerMetric,
-			TotalPoints:       totalPoints,
-			EncodedBytes:      encodedSize,
-			BytesPerPoint:     bpp,
-			VsRawRatio:        vsRaw,
-			SpaceSavingsPct:   savings,
-			Encode:            encMetrics,
-			Decode:            decMetrics,
-			IterSeq:           iterMetrics,
-			RandomValueAt:     randValMetrics,
-			RandomTimestampAt: randTSMetrics,
-		})
-	}
-
-	return results, nil
-}
-
-// runScalingBench runs the scaling analysis for every combo against data.
-func runScalingBench(combos []EncodingCombo, data *TestData, verbose bool) ([]ScalingResult, error) {
-	results := make([]ScalingResult, 0, len(combos))
-
-	for i, combo := range combos {
-		if verbose {
-			logf("  [%d/%d] Scaling %s...\n", i+1, len(combos), combo.Label)
-		}
-
-		scalingResult, err := runScaling(combo, data)
-		if err != nil {
-			return nil, fmt.Errorf("scaling %s: %w", combo.Label, err)
-		}
-
-		results = append(results, scalingResult)
-	}
-
-	return results, nil
-}
-
-// writeReport serializes report as JSON and writes it to outputFile, or to
-// stdout when outputFile is empty.
-func writeReport(report FullReport, outputFile string, pretty, verbose bool) error {
-	var (
-		jsonData []byte
-		err      error
-	)
-
-	if pretty {
-		jsonData, err = json.MarshalIndent(report, "", "  ")
-	} else {
-		jsonData, err = json.Marshal(report)
-	}
-
-	if err != nil {
-		return fmt.Errorf("serializing JSON: %w", err)
-	}
-
-	if outputFile == "" {
-		fmt.Println(string(jsonData))
-
-		return nil
-	}
-
-	if err := os.WriteFile(outputFile, jsonData, 0o600); err != nil {
-		return fmt.Errorf("writing output file: %w", err)
-	}
-
-	if verbose {
-		logf("\nResults written to %s\n", outputFile)
-	}
-
-	return nil
+	return writeReport(report, o.output, o.pretty, o.verbose)
 }

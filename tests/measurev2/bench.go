@@ -1,12 +1,23 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"math/rand"
-	"testing"
 
 	"github.com/arloliu/mebo/blob"
 	"github.com/arloliu/mebo/format"
 )
+
+// opFixtures holds what one timed operation prepared, and the checksum its body writes on every call.
+// The body is the only reference to them, so they are released when the runner returns.
+type opFixtures struct {
+	blob       []byte
+	decoded    blob.NumericBlob
+	indices    []int
+	checksum   float64
+	tsChecksum int64
+}
 
 // encodeBlob encodes test data with the given combo and returns raw blob bytes.
 // This is the shared encoding logic used by both benchmark and size measurement functions.
@@ -73,92 +84,6 @@ func measureEncodedSize(combo EncodingCombo, data *TestData) (int, error) {
 	return len(blobData), nil
 }
 
-// benchEncode runs a Go benchmark measuring encode speed and memory.
-func benchEncode(combo EncodingCombo, data *TestData) BenchMetrics {
-	result := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-
-		for b.Loop() {
-			blobData, err := encodeBlob(combo, data)
-			if err != nil {
-				b.Fatal(err)
-			}
-
-			// Prevent compiler from optimizing away
-			if len(blobData) == 0 {
-				b.Fatal("empty blob")
-			}
-		}
-	})
-
-	return toBenchMetrics(result)
-}
-
-// benchDecode runs a Go benchmark measuring decode speed and memory.
-// It pre-encodes the data, then benchmarks only the decode path.
-func benchDecode(combo EncodingCombo, data *TestData) (BenchMetrics, error) {
-	blobData, err := encodeBlob(combo, data)
-	if err != nil {
-		return BenchMetrics{}, err
-	}
-
-	result := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-
-		for b.Loop() {
-			numericBlob, err := decodeBlob(blobData)
-			if err != nil {
-				b.Fatal(err)
-			}
-
-			if numericBlob.MetricCount() != len(data.MetricIDs) {
-				b.Fatalf("metric count mismatch: got %d, want %d", numericBlob.MetricCount(), len(data.MetricIDs))
-			}
-		}
-	})
-
-	return toBenchMetrics(result), nil
-}
-
-// benchIterSeq runs a Go benchmark measuring sequential iteration speed and memory.
-// It pre-encodes and pre-decodes, then benchmarks only the iteration.
-func benchIterSeq(combo EncodingCombo, data *TestData) (BenchMetrics, error) {
-	blobData, err := encodeBlob(combo, data)
-	if err != nil {
-		return BenchMetrics{}, err
-	}
-
-	numericBlob, err := decodeBlob(blobData)
-	if err != nil {
-		return BenchMetrics{}, err
-	}
-
-	metricIDs := data.MetricIDs
-
-	result := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-
-		for b.Loop() {
-			totalValue := 0.0
-			for _, metricID := range metricIDs {
-				for _, dp := range numericBlob.All(metricID) {
-					totalValue += dp.Val
-				}
-			}
-
-			// Prevent compiler from optimizing away
-			if totalValue == -1 {
-				b.Fatal("unreachable")
-			}
-		}
-	})
-
-	return toBenchMetrics(result), nil
-}
-
 // randomAccessPattern returns one uniformly random point index per metric,
 // using a seed derived from the data's own seed so the pattern is reproducible
 // across runs but distinct from the data-generation RNG stream.
@@ -181,99 +106,146 @@ func randomAccessPattern(data *TestData) []int {
 	return indices
 }
 
-// benchRandomAccessValue runs a Go benchmark measuring ValueAt at a random
-// index per metric. It pre-encodes and pre-decodes, then benchmarks only the
-// lookup. See randomAccessPattern for why the index is randomized per metric
-// rather than fixed.
-func benchRandomAccessValue(combo EncodingCombo, data *TestData) (BenchMetrics, error) {
-	blobData, err := encodeBlob(combo, data)
-	if err != nil {
-		return BenchMetrics{}, err
+// prepareOp builds one operation's fixtures outside any timing and returns the body to time.
+// As before the runner interface, encode prepares nothing (its body builds the blob),
+// decode pre-encodes the blob, and iterate, ValueAt and TimestampAt pre-encode and pre-decode it.
+// The body keeps the checks the benchmarks always had and writes a checksum into the fixtures on every call,
+// so tests can confirm it did the complete work without timing it.
+func prepareOp(op operation, combo EncodingCombo, data *TestData) (*opFixtures, func() error, error) {
+	fx := &opFixtures{}
+	if op == opEncode {
+		return fx, encodeBody(fx, combo, data), nil
 	}
 
-	numericBlob, err := decodeBlob(blobData)
-	if err != nil {
-		return BenchMetrics{}, err
+	var err error
+	if fx.blob, err = encodeBlob(combo, data); err != nil {
+		return nil, nil, fmt.Errorf("encoding %s: %w", combo.Label, err)
+	}
+	if op == opDecode {
+		return fx, decodeBody(fx, data), nil
 	}
 
-	metricIDs := data.MetricIDs
-	indices := randomAccessPattern(data)
+	if fx.decoded, err = decodeBlob(fx.blob); err != nil {
+		return nil, nil, fmt.Errorf("decoding %s: %w", combo.Label, err)
+	}
 
-	result := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
+	switch op {
+	case opIterSeq:
+		return fx, iterBody(fx, data), nil
+	case opValueAt:
+		fx.indices = randomAccessPattern(data)
 
-		for b.Loop() {
-			var total float64
-			for i, metricID := range metricIDs {
-				val, ok := numericBlob.ValueAt(metricID, indices[i])
-				if !ok {
-					b.Fatalf("ValueAt failed for metric %d index %d", metricID, indices[i])
-				}
-				total += val
-			}
+		return fx, valueAtBody(fx, data), nil
+	case opTimestampAt:
+		fx.indices = randomAccessPattern(data)
 
-			// Prevent compiler from optimizing away
-			if total == -1 {
-				b.Fatal("unreachable")
-			}
-		}
-	})
-
-	return toBenchMetrics(result), nil
+		return fx, timestampAtBody(fx, data), nil
+	case opEncode, opDecode:
+		return nil, nil, fmt.Errorf("operation %s already handled", op)
+	default:
+		return nil, nil, fmt.Errorf("unknown operation %s", op)
+	}
 }
 
-// benchRandomAccessTimestamp runs a Go benchmark measuring TimestampAt at a
-// random index per metric, using the same access pattern as
-// benchRandomAccessValue so the two are directly comparable.
-func benchRandomAccessTimestamp(combo EncodingCombo, data *TestData) (BenchMetrics, error) {
-	blobData, err := encodeBlob(combo, data)
-	if err != nil {
-		return BenchMetrics{}, err
-	}
-
-	numericBlob, err := decodeBlob(blobData)
-	if err != nil {
-		return BenchMetrics{}, err
-	}
-
-	metricIDs := data.MetricIDs
-	indices := randomAccessPattern(data)
-
-	result := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-
-		for b.Loop() {
-			var total int64
-			for i, metricID := range metricIDs {
-				ts, ok := numericBlob.TimestampAt(metricID, indices[i])
-				if !ok {
-					b.Fatalf("TimestampAt failed for metric %d index %d", metricID, indices[i])
-				}
-				total += ts
-			}
-
-			// Prevent compiler from optimizing away
-			if total == -1 {
-				b.Fatal("unreachable")
-			}
+// encodeBody encodes the whole data set into a new blob.
+func encodeBody(fx *opFixtures, combo EncodingCombo, data *TestData) func() error {
+	return func() error {
+		blobData, err := encodeBlob(combo, data)
+		if err != nil {
+			return err
 		}
-	})
 
-	return toBenchMetrics(result), nil
+		// Prevent compiler from optimizing away
+		if len(blobData) == 0 {
+			return errors.New("empty blob")
+		}
+		fx.checksum = float64(len(blobData))
+
+		return nil
+	}
 }
 
-// toBenchMetrics converts a testing.BenchmarkResult to BenchMetrics.
-func toBenchMetrics(r testing.BenchmarkResult) BenchMetrics {
-	n := int64(r.N)
-	if n == 0 {
-		n = 1
-	}
+// decodeBody opens the pre-encoded blob and checks its metric count.
+func decodeBody(fx *opFixtures, data *TestData) func() error {
+	blobData := fx.blob
 
-	return BenchMetrics{
-		NsPerOp:     float64(r.T.Nanoseconds()) / float64(n),
-		BytesPerOp:  r.AllocedBytesPerOp(),
-		AllocsPerOp: r.AllocsPerOp(),
+	return func() error {
+		numericBlob, err := decodeBlob(blobData)
+		if err != nil {
+			return err
+		}
+
+		if numericBlob.MetricCount() != len(data.MetricIDs) {
+			return fmt.Errorf("metric count mismatch: got %d, want %d", numericBlob.MetricCount(), len(data.MetricIDs))
+		}
+		fx.checksum = float64(numericBlob.MetricCount())
+
+		return nil
+	}
+}
+
+// iterBody iterates every point of every metric of the pre-decoded blob, summing the values.
+func iterBody(fx *opFixtures, data *TestData) func() error {
+	numericBlob := fx.decoded
+	metricIDs := data.MetricIDs
+
+	return func() error {
+		totalValue := 0.0
+		for _, metricID := range metricIDs {
+			for _, dp := range numericBlob.All(metricID) {
+				totalValue += dp.Val
+			}
+		}
+
+		// Prevent compiler from optimizing away
+		fx.checksum = totalValue
+
+		return nil
+	}
+}
+
+// valueAtBody looks up one value per metric at the fixed random indices.
+func valueAtBody(fx *opFixtures, data *TestData) func() error {
+	numericBlob := fx.decoded
+	metricIDs := data.MetricIDs
+	indices := fx.indices
+
+	return func() error {
+		var total float64
+		for i, metricID := range metricIDs {
+			val, ok := numericBlob.ValueAt(metricID, indices[i])
+			if !ok {
+				return fmt.Errorf("ValueAt failed for metric %d index %d", metricID, indices[i])
+			}
+			total += val
+		}
+
+		// Prevent compiler from optimizing away
+		fx.checksum = total
+
+		return nil
+	}
+}
+
+// timestampAtBody looks up one timestamp per metric at the same indices as valueAtBody.
+func timestampAtBody(fx *opFixtures, data *TestData) func() error {
+	numericBlob := fx.decoded
+	metricIDs := data.MetricIDs
+	indices := fx.indices
+
+	return func() error {
+		var total int64
+		for i, metricID := range metricIDs {
+			ts, ok := numericBlob.TimestampAt(metricID, indices[i])
+			if !ok {
+				return fmt.Errorf("TimestampAt failed for metric %d index %d", metricID, indices[i])
+			}
+			total += ts
+		}
+
+		// Prevent compiler from optimizing away
+		fx.tsChecksum = total
+
+		return nil
 	}
 }
