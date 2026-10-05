@@ -29,7 +29,7 @@ GO_MINOR        := $(shell go version | sed 's/.*go[0-9][0-9]*\.\([0-9][0-9]*\).
 # Default target
 .DEFAULT_GOAL := help
 
-.PHONY: fix test test-encoding-simd test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
+.PHONY: fix test test-encoding-simd test-fusion test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
 
 fix:
 	@echo "Running go fmt and goimports..."
@@ -56,6 +56,13 @@ test: clean-test-results
 		(cd $$mod && CGO_ENABLED=1 go test ./... -short -timeout=$(TEST_TIMEOUT) -race) || (echo "Tests failed for $$mod" && exit 1); \
 	done
 	@echo "All tests passed!"
+
+## test-fusion: Run the ALP byte-identity tests on a build where Go fuses multiply-add (GOAMD64=v3; needs an FMA CPU)
+test-fusion: clean-test-results
+	@echo "Running ALP byte-identity tests with GOAMD64=v3..."
+	@GOAMD64=v3 go test ./internal/encoding/value/alp/ -count=1 -timeout=$(TEST_TIMEOUT) \
+		-run 'TestALPIdentityDigest|GoldenBytes|TestAlpBestEF_Differential|TestALPBestEFSIMD_Selection' \
+		|| (echo "ALP byte-identity tests failed with GOAMD64=v3" && exit 1)
 
 ## test-encoding-simd: Run internal/encoding tests with GOEXPERIMENT=simd (requires Go >= 1.26)
 test-encoding-simd: clean-test-results
