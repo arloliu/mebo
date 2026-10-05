@@ -268,6 +268,28 @@ Callers that relied on the previous behaviour should apply the listed migration.
   now fail `Decode` with a wrapped `errs` sentinel instead of panicking or returning wrong data.
   mebo's own encoders never produce such blobs.
 
+## Additions and Behaviour Changes (v1.12.0)
+
+These additions are purely additive; no existing signature changed.
+
+- **`format.TypeALPRLE`** (`EncodingType` 0x7): the ALP-RLE value encoding.
+  `EncodingType(7).String()` now returns `"ALPRLE"` (it returned `"Unknown"` before),
+  and numeric blob headers accept 0x7 as a value encoding.
+  Readers up to v1.11.0 reject blobs that use it, so upgrade every consumer before any producer selects it
+  ([Best Practices](docs/best_practices.md#alp-rle-upgrade-consumers-before-producers)).
+
+Behaviour changes:
+
+- **ALP output on fusing builds.**
+  On arm64, ppc64x, s390x, riscv64, loong64, and amd64 with `GOAMD64=v3` or later,
+  v1.9.0–v1.11.0 could encode rare values with a different exponent or digit than other builds,
+  because the compiler fused a multiply and an add.
+  v1.12.0 writes the same bytes on every build, matching `GOAMD64=v1` output, which is unchanged.
+  Decoding is unchanged, so every existing blob reads back to the same values;
+  only callers that compare encoded bytes (content hashes, deduplication) can see a difference, for those rare values.
+- **`TimestampAt` on shared timestamps** is O(1) for every timestamp encoding.
+- **`ForEachValues` on ALP columns** no longer allocates per metric.
+
 ## Go Version Compatibility
 
 ### Minimum Go Version
@@ -276,7 +298,7 @@ Callers that relied on the previous behaviour should apply the listed migration.
 
 ### Go Version Policy
 
-- We support the **last 2 major Go releases** (currently 1.25 and 1.26)
+- We support the **last 2 major Go releases**; CI currently tests 1.25 and 1.26
 - Minimum Go version may increase in **minor versions** (e.g., v1.6.0 raised it from Go 1.24 to Go 1.25)
 - We test against latest stable Go versions in CI
 
