@@ -39,14 +39,61 @@ keep one kind of metric per blob; `go run . -help` lists them all.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-profile` | `mix_monitoring` | Data profile; empty selects `legacy_random_walk` |
+| `-profile` | `mix_monitoring` | Data profile; empty selects `legacy_random_walk`; an error with `-profiles` |
 | `-metrics` | 100 | Number of metrics to generate |
 | `-points` | 150 | Points per metric |
 | `-value-jitter` | 0.5 | `legacy_random_walk` only: value jitter % (±0.5% random walk) |
 | `-ts-jitter` | 0.1 | `legacy_random_walk` only: timestamp jitter % (±0.1% of the 1 s interval) |
-| `-output` | stdout | Output JSON file path |
+| `-output` | stdout | Output JSON file path; an error with `-profiles` |
 | `-pretty` | false | Pretty-print JSON |
 | `-verbose` | false | Progress output on stderr |
+| `-benchtime` | `1s` | Target time of each `testing.Benchmark` call, 10ms to 10s |
+
+Without `-profiles` the tool measures one data set with every cell timed and writes the legacy schema, as it always has.
+
+### Several data sets in one process (`-profiles`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-profiles` | — | `report` (the frozen report manifest, `reportProfiles` in `manifest.go`), `all`, or a comma list |
+| `-outdir` | — | Required; must not exist. Gets `profiles/matrix_<profile>.json`, and `main.json` when `mix_monitoring` is listed |
+| `-cells` | `full` | `full` (30 combos × 5 operations everywhere), `report` (420 cells) or `wide` (780 cells) |
+| `-order` | `forward` | `reverse` runs data sets, combos and operations backwards |
+| `-sizes-only` | false | Sizes and scaling only; nothing is timed |
+| `-run-id`, `-source`, `-tools`, `-layout`, `-round`, `-rounds` | generated, empty, empty, -1, -1, 0 | Provenance that `layouts.sh` sets |
+
+With `-cells report` the main data set times every combo and operation,
+and every other profile times encode, iterate and `ValueAt` for the five Shared DeltaPacked combos and Delta + Gorilla;
+`-cells wide` adds iterate for the other 24 combos.
+Sizes and scaling are measured for every combo in every mode.
+These files use the version-1 schema (`format_version: 1`), described in `docs/specs/measurev2-fast-report-runs-design.md`.
+
+## Layout-averaged report runs
+
+```bash
+# From the repository root: check the report tools, then about 10 minutes of pinned benchmarks.
+make bench-report
+# or
+tests/measurev2/layouts.sh -o $TMPDIR/perf [-cpu 6] [-benchtime 50ms] [-cells report] [-rounds 4|2]
+```
+
+`layouts.sh` (implemented in `layouts.py`) stages the source the repository reports with `git ls-files`,
+builds four binaries whose repository code sits at different addresses (a padding function of 0, 1, 2 or 4 steps),
+checks that every repository function moved, and runs the schedule:
+each layout once per round, pinned to one verified CPU with `GOMAXPROCS=1`, alternating forward and reverse order.
+It then merges the runs with `merge_layouts.py`:
+
+| Path | Content |
+|------|---------|
+| `OUTDIR/merged/` | `main.json` and `profiles/`: medians, per-layout medians and every run of each cell |
+| `OUTDIR/raw/r<R>_L<K>/` | One invocation's output plus `wrapper.json` (binary SHA-256, peak RSS) |
+| `OUTDIR/layouts/` | Each binary's symbol table and `go version -m`, and the movement check |
+| `OUTDIR/provenance.json` | Source and tool hashes, stage times, skipped files, invocations |
+
+A failure in any step leaves no `merged/` directory.
+`validate.sh -o DIR` runs the acceptance gates (sizes, short benchtime, one process, reproducibility, movement, time);
+`validate.sh --calibrate` prints the distributions the thresholds in `acceptance_thresholds.json` are set from.
+Run either with nothing else heavy on the machine.
 
 ## Encoding Matrix
 
@@ -85,21 +132,12 @@ Shows how overhead amortizes differently per encoding.
 
 ## Using with the Agent Skill
 
-An agent skill at `.agents/skills/update-performance-report/` can consume
-this tool's JSON output to auto-update `docs/performance.md`:
-
-```bash
-# Step 1: Run benchmarks
-cd tests/measurev2 && go run . -pretty -output /tmp/mebo_bench_results.json -verbose
-
-# Step 2: Use the agent skill to update docs/performance.md
-# (Ask the agent: "use the update-performance-report skill")
-```
+Ask the agent to "use the update-performance-report skill":
+the skill at `.agents/skills/update-performance-report/` renders `docs/performance.md` from a `layouts.sh` run's `merged/` directory.
 
 ## Makefile Integration
 
 ```bash
-make bench-measure
+make bench-measure   # one legacy run of the default profile, to .benchmarks/measure_results.json
+make bench-report    # the layout-averaged report run, to .benchmarks/report-<time>/ (or REPORT_OUT=dir)
 ```
-
-Runs the benchmark and saves results to `.benchmarks/measure_results.json`.

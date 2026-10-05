@@ -110,6 +110,11 @@ bench-measure:
 	@echo "Results saved to .benchmarks/measure_results.json"
 
 
+## bench-report: Check the report tools, then run the layout-averaged report benchmarks (about 10 min; REPORT_OUT=dir)
+bench-report:
+	@python3 .agents/skills/update-performance-report/scripts/check_report_tools.py
+	@tests/measurev2/layouts.sh -o "$(or $(REPORT_OUT),.benchmarks/report-$(shell date +%Y%m%d-%H%M%S))"
+
 ## bench-gorilla-decoder: Compare Numeric Gorilla decoder benchmarks against a baseline commit
 bench-gorilla-decoder:
 	@if [ -z "$(BASELINE)" ]; then \

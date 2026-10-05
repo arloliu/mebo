@@ -48,18 +48,13 @@ so [Codec Selection by Data Shape](#codec-selection-by-data-shape) also measures
 and the single-kind profiles behind them.
 Replace the shares with real proportions when they are known (`tests/measurev2/types.go`).
 
+### Timing Method
+
+{{TIMING_METHOD}}
+
 ### Running Benchmarks
 
-```bash
-# Main data set (mix_monitoring, 100 metrics × 150 points)
-cd tests/measurev2 && go run . -pretty -verbose -output results.json
-
-# One data-shape profile
-cd tests/measurev2 && go run . -profile cal_2dp_hold50 -pretty -output results_hold50.json
-
-# Via Makefile
-make bench-measure
-```
+{{RUNNING_BENCHMARKS}}
 
 ## Encoding Comparison
 
@@ -114,6 +109,12 @@ not a best case (index 0) or worst case (last index).
 
 {{RANDOM_ACCESS_PERFORMANCE}}
 
+Shared-timestamp `TimestampAt` timings can read up to about 29% high.
+Each process runs them at one of two speeds, set by the benchmark binary file rather than by the code
+(most likely by where the kernel placed its pages in memory),
+so their absolute values vary between runs; in validation, comparisons within a run were unaffected
+(see the reproducibility check in `docs/specs/measurev2-fast-report-runs-design.md`, "Acceptance gates").
+
 ## Scaling Analysis
 
 How bytes per point change with points per metric, for each combination.
@@ -134,14 +135,13 @@ The fixed per-metric overhead amortizes differently depending on the encoding.
 ## Codec Selection by Data Shape
 
 The main tables use one calibrated mix.
-This section measures 16 data-shape profiles in `tests/measurev2` to show where each value codec wins,
+This section measures the 16 data-shape profiles of the report manifest
+(`reportProfiles` in `tests/measurev2/manifest.go`) to show where each value codec wins,
 and how stable that is across mixes.
 It leaves out `regular_scrape_60s` and `bursty_scrape`, 2-decimal gauges that vary the scrape timing.
 All profiles use 100 metrics × 150 points and seed 42, in the same environment as the main tables.
 
 {{PROFILE_DESCRIPTIONS}}
-
-Reproduce with (the JSON is gitignored):
 
 {{PROFILE_REPRODUCE}}
 
@@ -165,10 +165,7 @@ Whole-blob bytes/point with shared DeltaPacked timestamps and no compression;
 
 Shared DeltaPacked timestamps; ns per point for encode and a full `All()` iteration,
 and ns/op for `ValueAt`, where one op looks up a random point in each of the 100 metrics.
-This table comes from the profile runs, separate from the main tables' run.
-**Bold** marks the fastest iteration for each profile.
-These are single-run numbers, which can move by 20–40% with code placement alone;
-where two codecs produce identical columns (for example ALP and ALP-RLE on a profile without repeats), a gap between them is noise.
+{{PROFILE_SPEED_NOTE}}
 
 {{PROFILE_SPEED}}
 

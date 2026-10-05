@@ -1,0 +1,17 @@
+{
+  "status": "approved",
+  "note": "Approved by the owner on 2026-10-05 after the calibration pass (tmp/measurev2-calibration-2026-10-05/): the spec's values, with cell_max raised to 11% by the calibration rule (gate 2's worst cell was 8.4%) and the B/op tolerance widened to max(3%, 64 B); after the recalibration (tmp/measurev2-recalibration-2026-10-05/), gates 2 and 3 allow allocs/op to differ by allocs_abs (the truncated mean of a rate near an integer boundary); after the validation (tmp/measurev2-validation-2026-10-05/), bytes_rel widened to 4% because reverse-order runs start each encode benchmark with a one-off allocation (up to 3.3% of B/op at 50 ms). A change to this file is a reviewed change.",
+  "stable_control": 0.05,
+  "stable_share_min": 0.80,
+  "stable_share_per_op_min": 0.50,
+  "cell_within": 0.05,
+  "cell_within_share_min": 0.95,
+  "cell_max": 0.11,
+  "op_median_within": 0.03,
+  "bytes_rel": 0.04,
+  "bytes_abs": 64,
+  "allocs_abs": 1,
+  "benchtime_t_min": 0.95,
+  "benchtime_t_max": 2.0,
+  "max_minutes": 15
+}
