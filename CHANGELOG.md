@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-05
+
 This release adds ALP-RLE, a value encoding for metrics that often hold their previous value,
 and makes ALP and ALP-RLE encoding several times faster on CPUs with AVX-512.
 
@@ -658,7 +660,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/arloliu/mebo/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/arloliu/mebo/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/arloliu/mebo/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/arloliu/mebo/compare/v1.8.0...v1.9.0
