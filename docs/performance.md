@@ -750,10 +750,12 @@ When to pick it, and its compatibility cost, are in [Best Practices § ALP or AL
 **Provenance:** these speeds come from codec- and blob-level Go benchmarks, not from `tests/measurev2`,
 with shared DeltaPacked timestamps, no compression and no tags.
 They are layout-averaged to remove code-placement noise: 4 code layouts × 3 rounds, medians of n = 12,
-`taskset -c 6`, `-test.cpu 1`, AMD Ryzen 9 9950X3D, Go 1.26.7, 2026-10-04;
+`taskset -c 6`, `-test.cpu 1`, AMD Ryzen 9 9950X3D, Go 1.26.7, 2026-10-06;
 benchmarks `BenchmarkALPRuns_*` in `internal/encoding/value/alp/alp_runs_bench_test.go`
 and `BenchmarkALPRLEGate_*` in `blob/numeric_alp_bench_test.go`.
 The encoder searched ALP's exponents with the AVX-512 kernels of [`specs/alp-simd-ef-search-design.md`](specs/alp-simd-ef-search-design.md).
+The encode rows add each metric with one `AddDataPoints` call, while `tests/measurev2` adds one point at a time,
+so their ratios against Chimp are not the profile tables' ratios.
 The design, the gates these numbers were judged against, and the method are in
 [`specs/alp-rle-design.md`](specs/alp-rle-design.md).
 
@@ -762,20 +764,23 @@ The encode row without forced repeats uses the same gauge with no holds; no colu
 
 | measurement | level | Chimp | ALP | ALP-RLE | ALP-RLE vs ALP | ALP-RLE vs Chimp |
 |---|---|---:|---:|---:|---:|---:|
-| `DecodeAll`, ns/point | codec | 2.68 | 0.55 | 0.93 | 1.67× | 2.9× faster |
-| `At`, ns/lookup | codec | 415 | 7.3 | 13.2 | 1.82× | 31× faster |
-| `ValueAt`, ns/lookup | blob | 432 | 28.1 | 32.0 | 1.14× | 13× faster |
-| `ForEachValues`, ns/point | blob | 4.85 | 2.93 | 3.21 | 1.09× | 1.5× faster |
-| `Materialize`, ns/point | blob | 4.48 | 2.23 | 2.63 | 1.18× | 1.7× faster |
-| encode, half the points repeat, µs/blob | blob | 139 | 187 | 330 | 1.76× | 2.4× slower |
-| encode, no forced repeats, µs/blob | blob | 177 | 189 | 196 | 1.04× | 1.1× slower |
+| `DecodeAll`, ns/point | codec | 2.68 | 0.55 | 0.93 | 1.68× | 2.9× faster |
+| `At`, ns/lookup | codec | 415 | 7.3 | 13.2 | 1.80× | 31× faster |
+| `ValueAt`, ns/lookup | blob | 433 | 28.2 | 32.2 | 1.14× | 13× faster |
+| `ForEachValues`, ns/point | blob | 4.73 | 2.93 | 3.21 | 1.10× | 1.5× faster |
+| `Materialize`, ns/point | blob | 4.47 | 2.21 | 2.59 | 1.17× | 1.7× faster |
+| encode, half the points repeat, µs/blob | blob | 94 | 186 | 327 | 1.76× | 3.5× slower |
+| encode, no forced repeats, µs/blob | blob | 115 | 188 | 196 | 1.04× | 1.7× slower |
 
 - Every read path is faster than Chimp's.
   ALP-RLE decodes in two passes (the nested ALP column, then the run expansion),
-  so its `DecodeAll` takes 1.67× plain ALP's time.
+  so its `DecodeAll` takes 1.68× plain ALP's time.
 - Encoding costs more: a runs column needs a second ALP encode of the run values,
   so with half the points repeating ALP-RLE takes 1.76× plain ALP's time.
   On data without repeats, the encoder skips that attempt and the cost is about 4% over ALP.
+- Against Chimp, ALP-RLE's encode takes 3.5× the time with half the points repeating and 1.7× without forced repeats.
+  The profile tables above, which add one point at a time, measure 2.0× on `cal_2dp_hold50`
+  and an equivalent encode time on `decimal_gauge_2dp`.
 - With value compression (Zstd, S2, LZ4) the codec runs over the whole value payload,
   and a smaller input is not guaranteed to compress smaller.
 
