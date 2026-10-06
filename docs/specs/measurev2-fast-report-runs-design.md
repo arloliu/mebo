@@ -380,6 +380,10 @@ the owner approved them after the calibration pass with `cell_max` at 11% and th
 (2026-10-05, `tests/measurev2/acceptance_thresholds.json`),
 after the recalibration with the allocation tolerance of gates 2 and 3 and the gate-4 exemption below,
 and after the validation with the B/op tolerance at max(4%, 64 bytes).
+On 2026-10-06 the owner approved gate-3-only limits of 7% and 15% for one validation,
+then, once the Gorilla/Chimp spill write barriers were gone and a per-cell warm-up was in place,
+removed them and returned the B/op tolerance to max(2%, 64 bytes)
+(`docs/specs/encoder-write-barriers-design.md`).
 Phase 2 starts with one calibration pass of gates 2, 3 and 4 on the target machine;
 it records the per-operation distributions, proposes thresholds with margins over them, and the owner approves them.
 They are then frozen in `tests/measurev2/acceptance_thresholds.json`, which the checker reads, and the validation runs against them.
@@ -400,7 +404,7 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    and the median r of each operation (encode, decode, iterate, `ValueAt`, `TimestampAt`) is within ±3%.
    Allocations: allocs/op of B↑ and B↓ each lie within one of A↑'s,
    or, where A↑ and A↓ disagree, within one of the range between them;
-   B/op within max(4% of A↑'s, 64 bytes), which also covers a zero baseline.
+   B/op within max(2% of A↑'s, 64 bytes), which also covers a zero baseline (4% from 2026-10-05 to 2026-10-06).
    Reverse order used to start each encode benchmark with a one-off allocation
    (0.35–1.3 MiB; forward order about 1 KiB), so B↓ read up to 3.3% high at 50 ms
    and published B/op of about 60 encode cells read about 1.5% high.
@@ -418,7 +422,7 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    For every report cell, the median of its three combined runs over the median of its three isolated runs, c, must satisfy
    |c − 1| ≤ 5% for at least 95% of cells, |c − 1| ≤ 10% for every cell, and a median c within ±3% for each operation.
    Allocations: for every cell, combined allocs/op lie within one of the isolated runs' range (the gate-2 tolerance),
-   and B/op is within max(4%, 64 bytes).
+   and B/op is within max(2%, 64 bytes).
    The gate takes about 3 minutes.
    A lifecycle test (outside `make test`) holds `weak.Pointer`s to one data set's data and fixtures,
    forces a GC after the next data set starts, and requires them all to be collected.
@@ -427,7 +431,7 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    Over the 420 cells, d = |run 2 / run 1 − 1| of `ns_per_op`:
    d ≤ 5% for at least 95% of cells and ≤ 10% for every cell
    except `TimestampAt` on shared timestamps, which counts toward the 95% but has no per-cell limit;
-   allocs/op is equal between the two runs for every cell, and B/op within max(4%, 64 bytes).
+   allocs/op is equal between the two runs for every cell, and B/op within max(2%, 64 bytes).
    Those 15 cells run at one of two speeds about 29% apart (about 1,630 and 2,105 ns on the main data set),
    chosen per binary file, not by its bytes or path:
    a byte-identical copy of a slow binary runs fast, about one fresh copy in three is slow,
@@ -607,7 +611,8 @@ What the passes found, and what changed because of it:
 - **Shared-timestamp `TimestampAt` is bimodal per binary file** (gate 4),
   and gate 4 exempts those 15 cells from `cell_max`.
 - **allocs/op truncates a mean** (gate 3), and gates 2 and 3 allow a difference of one.
-- **Reverse order adds a one-off allocation to encode** (gate 2): the B/op tolerance is max(4%, 64 bytes),
+- **Reverse order adds a one-off allocation to encode** (gate 2): the B/op tolerance became max(4%, 64 bytes),
   and the report said that B/op of some encode cells reads up to about 1.5% high.
-  A per-cell warm-up removed the allocation on 2026-10-06, and the report no longer says so
+  A per-cell warm-up removed the allocation on 2026-10-06;
+  the tolerance is back to max(2%, 64 bytes), and the report no longer says so
   (`docs/specs/encoder-write-barriers-design.md`).
