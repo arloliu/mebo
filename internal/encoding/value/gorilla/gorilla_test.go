@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/arloliu/mebo/internal/encoding/internal/bitstream"
+	"github.com/arloliu/mebo/internal/pool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1060,6 +1061,7 @@ func TestNumericGorillaEncoder_ReferenceParity(t *testing.T) {
 		math.MaxFloat64,
 		math.SmallestNonzeroFloat64,
 	}
+	maxSpill := gorillaMaxSpillValues(4096)
 
 	tests := []struct {
 		name       string
@@ -1090,6 +1092,8 @@ func TestNumericGorillaEncoder_ReferenceParity(t *testing.T) {
 		{name: "single value", operations: []writeOperation{{values: randomValues[:1]}}},
 		{name: "two values", operations: []writeOperation{{values: randomValues[:2], bulk: true}}},
 		{name: "deterministic random sequence", operations: []writeOperation{{values: randomValues, bulk: true}}},
+		{name: "max spill density bulk", operations: []writeOperation{{values: maxSpill, bulk: true}}},
+		{name: "max spill density scalar", operations: []writeOperation{{values: maxSpill[:1024]}}},
 	}
 
 	for _, tc := range tests {
@@ -1129,6 +1133,78 @@ func TestNumericGorillaEncoder_ReferenceParity(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNumericGorillaEncoder_TightCapacity holds the capacity invariant with no spare room:
+// a bulk write into an empty buffer reserves exactly len(values)*10+16 bytes,
+// and each scalar write starts with exactly the 16 bytes Write reserves.
+// Spilling past the reservation would panic on the bounds check.
+func TestNumericGorillaEncoder_TightCapacity(t *testing.T) {
+	values := gorillaMaxSpillValues(4096)
+
+	t.Run("bulk", func(t *testing.T) {
+		encoder := NewNumericGorillaEncoder()
+		t.Cleanup(encoder.Finish)
+		encoder.buf = pool.NewByteBuffer(0)
+		reference := gorillaReferenceEncoder{}
+
+		encoder.WriteSlice(values)
+		reference.writeSlice(values)
+		reserved := len(values)*10 + 16
+		require.Equal(t, reserved, encoder.buf.Cap(), "WriteSlice reserves exactly len*10+16 bytes")
+
+		got := encoder.Bytes()
+		require.Equal(t, reserved, encoder.buf.Cap(), "no growth while spilling or flushing")
+		require.Len(t, got, (64+(len(values)-1)*76+7)/8, "every value after the first writes a 76-bit record")
+		require.Equal(t, reference.bytes(), got)
+	})
+
+	t.Run("scalar", func(t *testing.T) {
+		encoder := NewNumericGorillaEncoder()
+		t.Cleanup(encoder.Finish)
+		reference := gorillaReferenceEncoder{}
+
+		twoSpills := 0
+		for _, value := range values[:1024] {
+			tightenGorillaBuffer(encoder, 16)
+			before := encoder.buf.Len()
+			encoder.Write(value)
+			reference.write(value)
+			if encoder.buf.Len()-before == 16 {
+				twoSpills++
+			}
+		}
+
+		require.Positive(t, twoSpills, "some values spill twice into exactly 16 bytes")
+		require.Equal(t, reference.bytes(), encoder.Bytes())
+	})
+}
+
+// tightenGorillaBuffer copies the encoder's buffer into one with exactly avail bytes of spare capacity.
+func tightenGorillaBuffer(e *NumericGorillaEncoder, avail int) {
+	b := make([]byte, len(e.buf.B), len(e.buf.B)+avail)
+	copy(b, e.buf.B)
+	e.buf.B = b
+}
+
+// gorillaMaxSpillValues returns n values whose XORs alternate between (leading 0, trailing 1) and (leading 1, trailing 0),
+// so neither fits the previous block and every value after the first writes a new 76-bit block record.
+// A 77-bit record (leading and trailing 0) cannot repeat, because any XOR fits its block afterwards,
+// so this is Gorilla's densest sustained stream.
+func gorillaMaxSpillValues(n int) []float64 {
+	rng := rand.New(rand.NewSource(0x9071))
+	values := make([]float64, n)
+	prev := rng.Uint64()
+	for i := range values {
+		values[i] = math.Float64frombits(prev)
+		if i%2 == 0 {
+			prev ^= rng.Uint64()&^3 | 1<<63 | 1<<1
+		} else {
+			prev ^= rng.Uint64()&^(1<<63) | 1<<62 | 1
+		}
+	}
+
+	return values
 }
 
 func (e *gorillaReferenceEncoder) writeSlice(values []float64) {
