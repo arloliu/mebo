@@ -401,11 +401,13 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    Allocations: allocs/op of B↑ and B↓ each lie within one of A↑'s,
    or, where A↑ and A↓ disagree, within one of the range between them;
    B/op within max(4% of A↑'s, 64 bytes), which also covers a zero baseline.
-   Reverse order starts each encode benchmark with a one-off allocation that the preceding decode cell leaves behind
-   (0.35–1.3 MiB, the same in every pass; forward order about 1 KiB), so B↓ reads up to 3.3% high at 50 ms
-   while the steady-state B/op of both orders is identical;
-   since half of a layouts.sh run's invocations are reverse,
-   published B/op of about 60 encode cells reads about 1.5% high.
+   Reverse order used to start each encode benchmark with a one-off allocation
+   (0.35–1.3 MiB; forward order about 1 KiB), so B↓ read up to 3.3% high at 50 ms
+   and published B/op of about 60 encode cells read about 1.5% high.
+   The cause was cold `sync.Pool` buffers two GCs after the last encode, not the decode cell;
+   since 2026-10-06 the runner calls each body twice, untimed, before timing it,
+   and the reverse-order excess is at most 0.87% (median 0)
+   (`docs/specs/encoder-write-barriers-design.md`, Part 2).
    The tolerance of one allocation (`allocs_abs`) exists because allocs/op truncates a mean:
    in gate 3 of the recalibration, two worst_case encode cells averaged 145.09–145.11 allocations in the combined process
    and 144.95–144.99 in the isolated one, a 0.1% difference that truncation turns into 145 against 144.
@@ -606,4 +608,6 @@ What the passes found, and what changed because of it:
   and gate 4 exempts those 15 cells from `cell_max`.
 - **allocs/op truncates a mean** (gate 3), and gates 2 and 3 allow a difference of one.
 - **Reverse order adds a one-off allocation to encode** (gate 2): the B/op tolerance is max(4%, 64 bytes),
-  and the report says that B/op of some encode cells reads up to about 1.5% high.
+  and the report said that B/op of some encode cells reads up to about 1.5% high.
+  A per-cell warm-up removed the allocation on 2026-10-06, and the report no longer says so
+  (`docs/specs/encoder-write-barriers-design.md`).

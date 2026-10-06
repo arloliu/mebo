@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"testing"
 	"time"
 
@@ -52,6 +54,53 @@ func TestToRawOpZeroIterationsIsAnError(t *testing.T) {
 func TestRefusingRunner(t *testing.T) {
 	_, err := refusingRunner{}.run("mix_monitoring/raw-raw/encode", func() error { return nil })
 	require.ErrorIs(t, err, errRefusedTiming)
+}
+
+// TestBenchmarkRunnerWarmUp checks that the body runs warmUpCalls times before timing
+// and that neither those calls' allocations nor their count reach the result.
+func TestBenchmarkRunnerWarmUp(t *testing.T) {
+	require.Equal(t, 2, warmUpCalls, "one call leaves role-swapped pool buffers; the spec measured two")
+	setBenchtime(t, "10ms")
+	calls := 0
+	var sink []byte
+	body := func() error {
+		calls++
+		if calls <= warmUpCalls {
+			sink = make([]byte, 1<<20) // only the untimed calls allocate
+		}
+
+		return nil
+	}
+
+	op, err := benchmarkRunner{}.run("counter/raw-raw/encode", body)
+	require.NoError(t, err)
+	require.NotNil(t, sink)
+	require.Equal(t, int64(calls-warmUpCalls), op.N, "timed iterations exclude the warm-up calls")
+	require.Less(t, op.MemBytes, uint64(1<<20), "warm-up allocations are excluded")
+}
+
+func TestBenchmarkRunnerWarmUpError(t *testing.T) {
+	setBenchtime(t, "10ms")
+	errBody := errors.New("broken body")
+	calls := 0
+	_, err := benchmarkRunner{}.run("counter/raw-raw/encode", func() error {
+		calls++
+		return errBody
+	})
+	require.ErrorIs(t, err, errBody)
+	require.ErrorContains(t, err, "counter/raw-raw/encode")
+	require.Equal(t, 1, calls, "the first failing warm-up call stops the benchmark")
+}
+
+// setBenchtime sets -test.benchtime for one test and restores it afterwards.
+func setBenchtime(t *testing.T, benchtime string) {
+	t.Helper()
+	testing.Init()
+	f := flag.Lookup("test.benchtime")
+	require.NotNil(t, f)
+	old := f.Value.String()
+	t.Cleanup(func() { _ = flag.Set("test.benchtime", old) })
+	require.NoError(t, applyBenchtime(benchtime))
 }
 
 func TestLegacyMetrics(t *testing.T) {

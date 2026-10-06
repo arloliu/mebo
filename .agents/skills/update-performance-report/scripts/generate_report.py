@@ -276,8 +276,6 @@ def gen_timing_method(main, profiles):
         f'a gap under {DECIDE_GAP:.0%} is **equivalent**, and a larger gap that not every layout supports is **inconclusive**.',
         'Pinning one core with GOMAXPROCS=1 puts the garbage collector on the measured core,',
         'so allocation-heavy operations read slower than in reports measured without pinning.',
-        'Half of the runs go through the data sets in reverse order, where an encode benchmark starts with a one-off allocation,',
-        'so B/op of some encode cells reads up to about 1.5% above the steady state.',
     ]
     if disagreements:
         lines.append(f'{ALLOC_MARK} marks a cell whose allocs/op differed between runs; the median is shown.')

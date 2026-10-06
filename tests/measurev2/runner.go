@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+// warmUpCalls is how many times benchmarkRunner calls a body, untimed, before timing it.
+// testing.Benchmark runs runtime.GC first, and in this configuration a sync.Pool entry left untouched survives one GC
+// but not two (the pool contract promises neither),
+// so a cell measured two or more GCs after the last encode would otherwise start with cold pool buffers
+// and regrow them from 16 KiB in its first iterations (0.2–0.8 MiB per encode on mix_monitoring);
+// the blob encoder's timestamp and value buffers can also swap roles, so one call is not enough
+// (docs/specs/encoder-write-barriers-design.md, Part 2).
+const warmUpCalls = 2
+
 // errRefusedTiming is returned by refusingRunner, which -sizes-only installs.
 var errRefusedTiming = errors.New("timing runner called in -sizes-only mode")
 
@@ -45,11 +54,19 @@ func legacyMetrics(op *RawOp) BenchMetrics {
 }
 
 // run calls testing.Benchmark, which runs runtime.GC before the benchmark function, as it always has.
-// A body error stops the benchmark and is returned with the cell id.
+// Inside the function, after that GC, it calls the body warmUpCalls times before b.ResetTimer,
+// which excludes their time and allocations.
+// A body error, in the warm-up or the timed loop, stops the benchmark and is returned with the cell id.
 func (benchmarkRunner) run(cell string, body func() error) (RawOp, error) {
 	var bodyErr error
 	result := testing.Benchmark(func(b *testing.B) {
 		b.ReportAllocs()
+		for range warmUpCalls {
+			if err := body(); err != nil {
+				bodyErr = err
+				b.FailNow()
+			}
+		}
 		b.ResetTimer()
 
 		for b.Loop() {

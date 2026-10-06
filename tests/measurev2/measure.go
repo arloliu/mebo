@@ -116,8 +116,9 @@ func measureDataset(name string, plan *measurePlan) (*datasetResult, error) {
 
 // warmUp encodes every combo of the main data set once, untimed, before the first timed cell.
 // A fresh process spends its first ~100 ms of allocation-heavy work in a runtime GC state
-// in which encodes overlap GC marking, and so pay write barriers, less often than in steady state;
-// without the warm-up, the first data set a process measures encoded up to 16% faster than the same cells later on.
+// in which encodes overlap GC marking less often than in steady state;
+// without the warm-up, the first data set a process measured encoded up to 16% faster than the same cells later on
+// (measured while Gorilla and Chimp spills still took write barriers, which made them the most GC-sensitive encodes).
 func warmUp(plan *measurePlan) error {
 	spec, ok := findProfile(mainProfile)
 	if !ok {
