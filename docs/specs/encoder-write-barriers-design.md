@@ -1,7 +1,9 @@
 # Design: encoder write barriers, measurev2 encode warm-up, and gate 3 thresholds
 
 **Date:** 2026-10-06
-**Status:** approved v2.1 (owner, 2026-10-06: the gate-3 limits and the order of work); implementation in progress.
+**Status:** implemented (Parts 1 and 2, each Codex-reviewed); validation passed 2026-10-06 (see Results).
+Part 3's gate-3 limits served one validation and were then removed, with `bytes_rel` back at 2% (owner, 2026-10-06).
+Approved v2.1 by the owner on 2026-10-06 (the gate-3 limits and the order of work).
 v2.1 addresses the confirmatory review of v2 (`tmp/reviews/encoder-write-barriers-spec-codex-review-v2.md`):
 diagnostics for every inline variant, and the stale Chimp capacity comments.
 v2 addresses the Codex review of v1 (`tmp/reviews/encoder-write-barriers-spec-codex-review-v1.md`, not committed):
@@ -272,6 +274,14 @@ On the two passes with the warm-up, 7% holds 97.9% of cells,
 and 15% is 1.4 times the worst cell.
 Re-evaluating the stored validation data needs no new benchmark run.
 
+**Outcome (2026-10-06).**
+The limits were frozen and used for the validation of Parts 1 and 2,
+which put gate 3 at 99.8% within 5% with a worst cell of 6.32%, inside the shared limits.
+With the tail gone, a 15% gate-3 limit would only hide a regression such as the spill barrier coming back,
+so the owner had the `gate3` limits and their `acceptance.py` support removed
+and `bytes_rel` returned to 2% (worst B/op deviation in that validation: 0.87%).
+That validation counts as calibration evidence, and an independent `validate.sh` run validates the tightened values.
+
 ## Order of work
 
 1. **Part 3.**
@@ -291,3 +301,75 @@ Re-evaluating the stored validation data needs no new benchmark run.
    the owner approves the new values, they are frozen, and an independent `validate.sh` run validates them.
 6. **Report.**
    `make bench-report` on the final configuration and a regenerated `docs/performance.md`.
+
+## Results
+
+### Part 1 alone (2026-10-06)
+
+Measured on the 9950X3D, pinned to CPU 6, with the harness of 902850b (before Part 2),
+baseline 902850b against the Part 1 encoder commit in one session, machine otherwise idle.
+Raw data: `tmp/encoder-write-barriers-research-2026-10-06/part1-measure/`
+(`part1-measure.log`, `part1-report-comparison.txt`).
+
+Gate 3 (three combined and three isolated invocations, layout 0):
+
+| | Baseline | Part 1 |
+|---|---:|---:|
+| cells within 5% | 96.2% | 100.0% |
+| worst cell | 13.69% | 3.55% |
+| cells beyond 5% | 16, all Gorilla/Chimp encode | 0 |
+| Gorilla/Chimp encode median ratio | 1.0360 | 1.0082 |
+| all encode median ratio | 1.0131 | 1.0079 |
+
+The baseline's worst cell was beyond the shared 11% limit,
+so on this run the old gate 3 would have failed and the gate-3 limits of Part 3 were needed.
+
+Layout-averaged report runs (`make bench-report`, 570 cells), Part 1 against baseline:
+
+| Cells | n | Median | Range |
+|---|---:|---:|---|
+| Gorilla/Chimp encode | 69 | −14.0% | −20.8% to −2.0% |
+| other encode | 81 | −0.2% | −1.0% to +1.3% |
+| Gorilla/Chimp non-encode | 186 | −0.1% | −3.4% to +28.1% |
+| other non-encode | 234 | +0.3% | −2.0% to +28.4% |
+
+On mix_monitoring every Gorilla/Chimp encode combo is 10.9–15.1% faster.
+The only non-encode cells beyond ±4% are the 15 shared-timestamp `TimestampAt` cells, all +28%,
+which is the per-binary-file bimodality the measurev2 spec describes, on every value codec.
+allocs/op is unchanged on every Gorilla/Chimp encode cell, and B/op within 0.35%.
+
+### Validation of Parts 1 and 2 (2026-10-06)
+
+`validate.sh` with Parts 1 and 2 against the thresholds then frozen (gate 3 with its 7%/15% limits), machine otherwise idle;
+raw artifacts in `tmp/measurev2-validation-2026-10-06/` (`validate.log`, `followup-analysis.txt`).
+Every gate passed.
+
+| | Validation 2026-10-05 | Validation 2026-10-06 |
+|---|---|---|
+| gate 2 stable / within 5% / worst | 95.0% / 100.0% / 5.23% | 96.7% / 99.8% / 8.91% |
+| gate 2 reverse-order encode B/op excess, median / worst | +1.03% / +3.02% | +0.00% / +0.87% |
+| gate 3 within 5% / within 7% / worst | 95.5% / 97.9% / 10.72% | 99.8% / 100.0% / 6.32% |
+| gate 4 within 5% / worst / exempt worst | 96.4% / 4.50% / 14.59% | 100.0% / 2.46% / 0.28% |
+| gate 4 pairs decided / opposite | 1,869 / 0 | 1,872 / 0 |
+| gate 6 wall time | 6.87 min | 6.89 min |
+
+Reverse-order encode B/op now agrees with forward order over all report profiles,
+so the report's note that B/op of some encode cells reads about 1.5% high is removed.
+Gate 3 would also pass the shared limits (5% for 95% of cells, 11% for every cell).
+Gate 4 lists four ALP encode cells whose allocs/op differed between runs (for example 145 and 144 around a mean of 145.03):
+the truncated mean on an integer boundary that `allocs_abs` already allows for, not a failure.
+
+### Independent validation of the tightened thresholds (2026-10-06)
+
+`validate.sh` with the gate-3 limits removed and `bytes_rel` at 2%, machine otherwise idle;
+raw artifacts in `tmp/measurev2-validation-2026-10-06b/`.
+Gates 1, 3, 4, 5 and 6 passed: gate 3 had every cell within 5% (worst 4.88%),
+gate 4 every cell within 5% (worst 2.27%, exempt worst 0.31%), 1,876 pairs decided and none in opposite directions.
+**Gate 2 failed** on six cells beyond 11%, all shared-timestamp `TimestampAt` on `mix_monitoring`:
+in the first run (A↑, 1 s) shared-delta-raw and the five shared-raw combos ran at about 2,105 ns,
+then the binary switched to about 1,665 ns for the rest of that run and for the other three runs.
+That is the per-binary-file bimodality the measurev2 spec describes for gate 4, which exempts these 15 cells from `cell_max`;
+gate 2 has no such exemption.
+The other 390 cells were within 4.96%, and the B/op tolerance was never the limit (worst deviation 0.87% in the previous validation).
+The first validation's gate 2 saw these cells move too (63% of its `TimestampAt` cells stable) but stayed under 11% (worst 8.91%).
+
