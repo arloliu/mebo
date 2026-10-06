@@ -213,8 +213,8 @@ func (b TextBlob) LenByName(metricName string) int {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) ValueAt(metricID uint64, index int) (string, bool) {
-	entry, ok := b.index.GetByID(metricID)
-	if !ok {
+	entry := b.index.entryByID(metricID)
+	if entry == nil {
 		return "", false
 	}
 
@@ -231,8 +231,8 @@ func (b TextBlob) ValueAt(metricID uint64, index int) (string, bool) {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) ValueAtByName(metricName string, index int) (string, bool) {
-	entry, ok := b.lookupMetricEntry(metricName)
-	if !ok {
+	entry := b.index.entryByName(metricName)
+	if entry == nil {
 		return "", false
 	}
 
@@ -249,8 +249,8 @@ func (b TextBlob) ValueAtByName(metricName string, index int) (string, bool) {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
-	entry, ok := b.index.GetByID(metricID)
-	if !ok {
+	entry := b.index.entryByID(metricID)
+	if entry == nil {
 		return 0, false
 	}
 
@@ -267,8 +267,8 @@ func (b TextBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TimestampAtByName(metricName string, index int) (int64, bool) {
-	entry, ok := b.lookupMetricEntry(metricName)
-	if !ok {
+	entry := b.index.entryByName(metricName)
+	if entry == nil {
 		return 0, false
 	}
 
@@ -287,8 +287,8 @@ func (b TextBlob) TimestampAtByName(metricName string, index int) (int64, bool) 
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TagAt(metricID uint64, index int) (string, bool) {
-	entry, ok := b.index.GetByID(metricID)
-	if !ok {
+	entry := b.index.entryByID(metricID)
+	if entry == nil {
 		return "", false
 	}
 
@@ -311,8 +311,8 @@ func (b TextBlob) TagAt(metricID uint64, index int) (string, bool) {
 // Performance: O(n) where n is the index, as we need to skip through row-based data.
 // For frequent random access, consider using iterators instead.
 func (b TextBlob) TagAtByName(metricName string, index int) (string, bool) {
-	entry, ok := b.lookupMetricEntry(metricName)
-	if !ok {
+	entry := b.index.entryByName(metricName)
+	if entry == nil {
 		return "", false
 	}
 
@@ -389,7 +389,7 @@ func (b TextBlob) allTagsFromEntry(entry section.TextIndexEntry) iter.Seq[string
 }
 
 // valueAtFromEntry returns the value at the specified index for the given entry.
-func (b TextBlob) valueAtFromEntry(entry section.TextIndexEntry, index int) (string, bool) {
+func (b TextBlob) valueAtFromEntry(entry *section.TextIndexEntry, index int) (string, bool) {
 	count := int(entry.Count)
 	if index < 0 || index >= count {
 		return "", false
@@ -447,7 +447,7 @@ func (b TextBlob) valueAtFromEntry(entry section.TextIndexEntry, index int) (str
 }
 
 // timestampAtFromEntry returns the timestamp at the specified index for the given entry.
-func (b TextBlob) timestampAtFromEntry(entry section.TextIndexEntry, index int) (int64, bool) {
+func (b TextBlob) timestampAtFromEntry(entry *section.TextIndexEntry, index int) (int64, bool) {
 	count := int(entry.Count)
 	if index < 0 || index >= count {
 		return 0, false
@@ -499,7 +499,7 @@ func (b TextBlob) timestampAtFromEntry(entry section.TextIndexEntry, index int) 
 }
 
 // tagAtFromEntry returns the tag at the specified index for the given entry.
-func (b TextBlob) tagAtFromEntry(entry section.TextIndexEntry, index int) (string, bool) {
+func (b TextBlob) tagAtFromEntry(entry *section.TextIndexEntry, index int) (string, bool) {
 	count := int(entry.Count)
 	if index < 0 || index >= count {
 		return "", false

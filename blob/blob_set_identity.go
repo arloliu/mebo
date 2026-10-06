@@ -84,11 +84,24 @@ func (idt *setLogicalIdentity) excludesStripped(metricName string) bool {
 //   - stripped member (names == nil) → falls back to GetByID(hash.ID(targetName)), which
 //     is §5.4.2's "the stripped member attaches to the first colliding name".
 func (m indexMaps[T]) resolveEntry(metricID uint64, targetName string, collided bool) (T, bool) {
-	if !collided {
-		return m.GetByID(metricID)
+	if entry := m.entryFor(metricID, targetName, collided); entry != nil {
+		return *entry, true
 	}
 
-	return m.GetByName(targetName)
+	var zero T
+
+	return zero, false
+}
+
+// entryFor is resolveEntry returning a pointer into the index, or nil when the member does not contribute.
+// The set point accessors use it for the reason given on entryByID;
+// the entry must not be modified or retained.
+func (m *indexMaps[T]) entryFor(metricID uint64, targetName string, collided bool) *T {
+	if !collided {
+		return m.entryByID(metricID)
+	}
+
+	return m.entryByName(targetName)
 }
 
 // resolveEntryByName returns the index entry a NAME-keyed set accessor must read from
@@ -97,13 +110,24 @@ func (m indexMaps[T]) resolveEntry(metricID uint64, targetName string, collided 
 // A names-bearing member matches the name exactly. A stripped member is gated by
 // skipStripped, computed once per query by setLogicalIdentity.excludesStripped.
 func (m indexMaps[T]) resolveEntryByName(metricName string, skipStripped bool) (T, bool) {
-	if skipStripped && m.names == nil {
-		var zero T
-
-		return zero, false
+	if entry := m.entryForName(metricName, skipStripped); entry != nil {
+		return *entry, true
 	}
 
-	return m.GetByName(metricName)
+	var zero T
+
+	return zero, false
+}
+
+// entryForName is resolveEntryByName returning a pointer into the index, or nil when the member does not contribute.
+// The set point accessors use it for the reason given on entryByID;
+// the entry must not be modified or retained.
+func (m *indexMaps[T]) entryForName(metricName string, skipStripped bool) *T {
+	if skipStripped && m.names == nil {
+		return nil
+	}
+
+	return m.entryByName(metricName)
 }
 
 // logicalPlan is the ordered logical-identity enumeration of a blob set in canonical

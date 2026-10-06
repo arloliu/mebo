@@ -274,8 +274,8 @@ func (s NumericBlobSet) ValueAt(metricID uint64, index int) (float64, bool) {
 	currentOffset := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, targetName, collided)
+		if entry == nil {
 			continue
 		}
 		blobLen := entry.Count
@@ -322,8 +322,8 @@ func (s NumericBlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	currentOffset := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, targetName, collided)
+		if entry == nil {
 			continue
 		}
 		blobLen := entry.Count
@@ -369,8 +369,8 @@ func (s NumericBlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	currentOffset := 0
 	for i := range s.blobs {
 		blob := &s.blobs[i]
-		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, targetName, collided)
+		if entry == nil {
 			continue
 		}
 		blobLen := entry.Count

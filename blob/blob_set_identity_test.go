@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/arloliu/mebo/internal/hash"
+	"github.com/arloliu/mebo/section"
 )
 
 // Blob-set logical identity under collisions: metrics are grouped by logical
@@ -1121,4 +1124,258 @@ func TestBlobSet_SeparatedCollision_ThreeOrMoreMembers(t *testing.T) {
 		require.Nil(t, set.identity, "one id bound to ONE name across members is today's merge")
 		require.Equal(t, 8, set.MetricLen(cnH), "A merges across all four windows")
 	})
+}
+
+// TestIndexMapsSetEntryLookups pins entryFor and entryForName, the pointer forms of
+// resolveEntry and resolveEntryByName, for each kind of set member.
+func TestIndexMapsSetEntryLookups(t *testing.T) {
+	entry := func(id uint64, count int) section.NumericIndexEntry {
+		return section.NumericIndexEntry{MetricID: id, Count: count}
+	}
+
+	// An internally collided member, a names-bearing member that binds cnB only,
+	// and a stripped member (no names payload).
+	collided := newNumericTestIndex(entry(cnH, 1), entry(cnH, 2))
+	collided.names = []string{cnA, cnB}
+	collided.byName = map[string]int{cnA: 0, cnB: 1}
+	named := newNumericTestIndex(entry(cnH, 1))
+	named.names = []string{cnB}
+	stripped := newNumericTestIndex(entry(cnH, 1))
+
+	const absent = -1
+	tests := []struct {
+		name         string
+		index        *indexMaps[section.NumericIndexEntry]
+		byName       bool // entryForName(target, skipStripped) instead of entryFor(id, target, collided)
+		id           uint64
+		target       string
+		collided     bool
+		skipStripped bool
+		wantOrd      int
+	}{
+		{name: "non-collided id uses the id lookup", index: &collided, id: cnH, wantOrd: 0},
+		{name: "collided id resolves by name inside a collided member", index: &collided, id: cnH, target: cnB, collided: true, wantOrd: 1},
+		{name: "collided id excludes a member that binds the other name", index: &named, id: cnH, target: cnA, collided: true, wantOrd: absent},
+		{name: "collided id attaches a stripped member by hash", index: &stripped, id: cnH, target: cnA, collided: true, wantOrd: 0},
+		{name: "absent id", index: &stripped, id: 42, wantOrd: absent},
+		{name: "names-bearing member matches its name", index: &named, byName: true, target: cnB, wantOrd: 0},
+		{name: "names-bearing member ignores skipStripped", index: &named, byName: true, target: cnB, skipStripped: true, wantOrd: 0},
+		{name: "names-bearing member rejects a hash-only match", index: &named, byName: true, target: cnA, wantOrd: absent},
+		{name: "stripped member matches by hash", index: &stripped, byName: true, target: cnA, wantOrd: 0},
+		{name: "stripped member is skipped on request", index: &stripped, byName: true, target: cnA, skipStripped: true, wantOrd: absent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				got    *section.NumericIndexEntry
+				copied section.NumericIndexEntry
+				ok     bool
+			)
+			if tt.byName {
+				got = tt.index.entryForName(tt.target, tt.skipStripped)
+				copied, ok = tt.index.resolveEntryByName(tt.target, tt.skipStripped)
+			} else {
+				got = tt.index.entryFor(tt.id, tt.target, tt.collided)
+				copied, ok = tt.index.resolveEntry(tt.id, tt.target, tt.collided)
+			}
+
+			if tt.wantOrd == absent {
+				require.Nil(t, got)
+				require.False(t, ok)
+				require.Zero(t, copied)
+
+				return
+			}
+
+			require.Same(t, &tt.index.sorted[tt.wantOrd], got)
+			require.True(t, ok)
+			require.Equal(t, tt.index.sorted[tt.wantOrd], copied)
+		})
+	}
+}
+
+// TestPointAccessorsMatchIterators pins that the point accessors, which look an entry up by pointer,
+// read the same entry as the iterators, which look it up by value, on decoded blobs and sets:
+// V1 and V2 indexes, a collided ID, a retained name that only hash-matches, and stripped members.
+func TestPointAccessorsMatchIterators(t *testing.T) {
+	start := time.Unix(1700000000, 0)
+	hour := func(n int) time.Time { return start.Add(time.Duration(n) * time.Hour) }
+	numericPoint := func(ts int64, val float64, tag string) NumericDataPoint {
+		return NumericDataPoint{Ts: ts, Val: val, Tag: tag}
+	}
+	textPoint := func(ts int64, val string, tag string) TextDataPoint {
+		return TextDataPoint{Ts: ts, Val: val, Tag: tag}
+	}
+
+	// cnB sits before cnA, so the collided ID resolves to cnB's entry and cnA to a later one.
+	collided := encodeNumericSeries(t, hour(0), nil,
+		numericSeries{name: cnB, vals: []float64{1, 2, 3}}, numericSeries{name: cnA, vals: []float64{4, 5}})
+	shared := encodeNumericSeries(t, hour(1), []NumericEncoderOption{WithSharedTimestamps()},
+		numericSeries{name: "cpu", vals: []float64{6, 7, 8}}, numericSeries{name: "mem", vals: []float64{9, 10, 11}})
+	namedA := encodeNamedNumeric(t, hour(2), cnA, 12, 13)
+	stripped := encodeStrippedNumeric(t, hour(3), 14, 15, 16)
+	require.True(t, shared.IsV2Layout())
+	require.False(t, collided.IsV2Layout())
+
+	textCollided := encodeTextSeries(t, hour(0),
+		textSeries{name: cnB, vals: []string{"a", "b"}}, textSeries{name: cnA, vals: []string{"c"}})
+	textNamedA := encodeNamedText(t, hour(1), cnA, "d", "e")
+	textStripped := encodeStrippedText(t, hour(2), "f")
+
+	ids := []uint64{cnH, hash.ID("cpu"), hash.ID("mem"), 42}
+	names := []string{cnA, cnB, "cpu", "mem", "absent"}
+
+	numericBlobs := map[string]NumericBlob{"collided": collided, "shared V2": shared, "named": namedA, "stripped": stripped}
+	for label, b := range numericBlobs {
+		t.Run("numeric blob/"+label, func(t *testing.T) {
+			total := 0
+			for _, id := range ids {
+				total += requirePointsMatch(t, b.All(id), pointAt(t,
+					func(i int) (int64, bool) { return b.TimestampAt(id, i) },
+					func(i int) (float64, bool) { return b.ValueAt(id, i) },
+					func(i int) (string, bool) { return b.TagAt(id, i) }, numericPoint))
+			}
+			for _, name := range names {
+				total += requirePointsMatch(t, b.AllByName(name), pointAt(t,
+					func(i int) (int64, bool) { return b.TimestampAtByName(name, i) },
+					func(i int) (float64, bool) { return b.ValueAtByName(name, i) },
+					func(i int) (string, bool) { return b.TagAtByName(name, i) }, numericPoint))
+			}
+			require.Positive(t, total)
+		})
+	}
+
+	// The fixtures' own shape: first entry by ID, exact entry by name, no hash-only match.
+	require.Equal(t, 3, requirePointsMatch(t, collided.All(cnH), func(i int) (NumericDataPoint, bool) {
+		ts, _ := collided.TimestampAt(cnH, i)
+		val, ok := collided.ValueAt(cnH, i)
+		tag, _ := collided.TagAt(cnH, i)
+
+		return numericPoint(ts, val, tag), ok
+	}))
+	_, ok := collided.ValueAtByName(cnA, 1)
+	require.True(t, ok)
+	_, ok = collided.ValueAtByName(cnA, 2)
+	require.False(t, ok)
+	_, ok = namedA.ValueAtByName(cnB, 0)
+	require.False(t, ok, "cnB only hash-matches the retained name cnA")
+
+	textBlobs := map[string]TextBlob{"collided": textCollided, "named": textNamedA, "stripped": textStripped}
+	for label, b := range textBlobs {
+		t.Run("text blob/"+label, func(t *testing.T) {
+			total := 0
+			for _, id := range ids {
+				total += requirePointsMatch(t, b.All(id), pointAt(t,
+					func(i int) (int64, bool) { return b.TimestampAt(id, i) },
+					func(i int) (string, bool) { return b.ValueAt(id, i) },
+					func(i int) (string, bool) { return b.TagAt(id, i) }, textPoint))
+			}
+			for _, name := range names {
+				total += requirePointsMatch(t, b.AllByName(name), pointAt(t,
+					func(i int) (int64, bool) { return b.TimestampAtByName(name, i) },
+					func(i int) (string, bool) { return b.ValueAtByName(name, i) },
+					func(i int) (string, bool) { return b.TagAtByName(name, i) }, textPoint))
+			}
+			require.Positive(t, total)
+		})
+	}
+
+	t.Run("numeric blob set", func(t *testing.T) {
+		set, err := NewNumericBlobSet([]NumericBlob{collided, shared, namedA, stripped})
+		require.NoError(t, err)
+		total := 0
+		for _, id := range ids {
+			total += requirePointsMatch(t, set.All(id), pointAt(t,
+				func(i int) (int64, bool) { return set.TimestampAt(id, i) },
+				func(i int) (float64, bool) { return set.ValueAt(id, i) },
+				func(i int) (string, bool) { return set.TagAt(id, i) }, numericPoint))
+		}
+		require.Positive(t, total)
+	})
+
+	t.Run("text blob set", func(t *testing.T) {
+		set, err := NewTextBlobSet([]TextBlob{textCollided, textNamedA, textStripped})
+		require.NoError(t, err)
+		total := 0
+		for _, id := range ids {
+			total += requirePointsMatch(t, set.All(id), pointAt(t,
+				func(i int) (int64, bool) { return set.TimestampAt(id, i) },
+				func(i int) (string, bool) { return set.ValueAt(id, i) },
+				func(i int) (string, bool) { return set.TagAt(id, i) }, textPoint))
+		}
+		require.Positive(t, total)
+	})
+
+	t.Run("blob set", func(t *testing.T) {
+		// Numeric members alone serve a metric they hold, so the text side is checked on a text-only set.
+		numericSet := NewBlobSet([]NumericBlob{collided, shared, namedA, stripped}, []TextBlob{textCollided, textNamedA, textStripped})
+		textSet := NewBlobSet(nil, []TextBlob{textCollided, textNamedA, textStripped})
+		total := 0
+		for _, id := range ids {
+			total += requirePointsMatch(t, numericSet.AllNumerics(id), func(i int) (NumericDataPoint, bool) { return numericSet.NumericAt(id, i) })
+			total += requirePointsMatch(t, numericSet.AllNumerics(id), pointAt(t,
+				func(i int) (int64, bool) { return numericSet.TimestampAt(id, i) },
+				func(i int) (float64, bool) { return numericSet.NumericValueAt(id, i) },
+				func(i int) (string, bool) { return numericSet.TagAt(id, i) }, numericPoint))
+			total += requirePointsMatch(t, numericSet.AllTexts(id), func(i int) (TextDataPoint, bool) { return numericSet.TextAt(id, i) })
+			total += requirePointsMatch(t, textSet.AllTexts(id), pointAt(t,
+				func(i int) (int64, bool) { return textSet.TimestampAt(id, i) },
+				func(i int) (string, bool) { return textSet.TextValueAt(id, i) },
+				func(i int) (string, bool) { return textSet.TagAt(id, i) }, textPoint))
+		}
+		for _, name := range names {
+			total += requirePointsMatch(t, numericSet.AllNumericsByName(name), func(i int) (NumericDataPoint, bool) { return numericSet.NumericAtByName(name, i) })
+			total += requirePointsMatch(t, numericSet.AllNumericsByName(name), pointAt(t,
+				func(i int) (int64, bool) { return numericSet.TimestampAtByName(name, i) },
+				func(i int) (float64, bool) { return numericSet.NumericValueAtByName(name, i) },
+				func(i int) (string, bool) { return numericSet.TagAtByName(name, i) }, numericPoint))
+			total += requirePointsMatch(t, numericSet.AllTextsByName(name), func(i int) (TextDataPoint, bool) { return numericSet.TextAtByName(name, i) })
+			total += requirePointsMatch(t, textSet.AllTextsByName(name), pointAt(t,
+				func(i int) (int64, bool) { return textSet.TimestampAtByName(name, i) },
+				func(i int) (string, bool) { return textSet.TextValueAtByName(name, i) },
+				func(i int) (string, bool) { return textSet.TagAtByName(name, i) }, textPoint))
+		}
+		require.Positive(t, total)
+	})
+}
+
+// requirePointsMatch checks that a point accessor returns, index by index,
+// what the iterator over the same metric yields,
+// and reports absence one past the end and at a negative index.
+// It returns the number of points.
+func requirePointsMatch[P comparable](t *testing.T, all iter.Seq2[int, P], at func(int) (P, bool)) int {
+	t.Helper()
+	n := 0
+	for i, want := range all {
+		got, ok := at(i)
+		require.True(t, ok, "index %d", i)
+		require.Equal(t, want, got, "index %d", i)
+		n++
+	}
+	_, ok := at(n)
+	require.False(t, ok, "index %d is past the end", n)
+	_, ok = at(-1)
+	require.False(t, ok, "a negative index")
+
+	return n
+}
+
+// pointAt assembles a point accessor from three single-field accessors, which must agree on presence.
+func pointAt[V, P any](
+	t *testing.T,
+	tsAt func(int) (int64, bool), valAt func(int) (V, bool), tagAt func(int) (string, bool),
+	build func(ts int64, val V, tag string) P,
+) func(int) (P, bool) {
+	t.Helper()
+
+	return func(i int) (P, bool) {
+		ts, tsOk := tsAt(i)
+		val, valOk := valAt(i)
+		tag, tagOk := tagAt(i)
+		require.Equal(t, tsOk, valOk, "index %d", i)
+		require.Equal(t, tsOk, tagOk, "index %d", i)
+
+		return build(ts, val, tag), tsOk
+	}
 }

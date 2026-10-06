@@ -316,7 +316,7 @@ func (b blobBase) HasMetricNames() bool {
 // getOrdinal returns the ordinal (index into `sorted`) of the FIRST entry with
 // the given MetricID, or (-1, false) if absent. On V2 this is the leftmost
 // binary-search result; on V1/text it is the first-wins byID map.
-func (m indexMaps[T]) getOrdinal(metricID uint64) (int, bool) {
+func (m *indexMaps[T]) getOrdinal(metricID uint64) (int, bool) {
 	if m.sortedIDs != nil {
 		i, found := slices.BinarySearch(m.sortedIDs, metricID)
 		if !found {
@@ -394,48 +394,30 @@ func (m indexMaps[T]) MetricNames() []string {
 // GetByID returns the index entry for the given metric ID, resolving a collided
 // ID to the FIRST entry in index order.
 // Returns (entry, true) if found, or (zero-value, false) if not found.
+//
+// It copies the entry; code that reads one point per call uses entryByID.
 func (m indexMaps[T]) GetByID(metricID uint64) (T, bool) {
-	ord, ok := m.getOrdinal(metricID)
-	if !ok {
-		var zero T
-
-		return zero, false
+	if entry := m.entryByID(metricID); entry != nil {
+		return *entry, true
 	}
 
-	return m.sorted[ord], true
+	var zero T
+
+	return zero, false
 }
 
-// GetByName returns the index entry for the given metric name.
-//
-// Behavior mirrors HasMetricName: byName map on collision; hash + string-compare
-// on a retained-names no-collision blob; hash + ID lookup when the blob carries
-// no names payload.
-//
+// GetByName returns the index entry for the given metric name, by the rules of entryByName.
 // Returns (entry, true) if found, or (zero-value, false) if not found.
+//
+// It copies the entry; code that reads one point per call uses entryByName.
 func (m indexMaps[T]) GetByName(metricName string) (T, bool) {
-	if m.byName != nil {
-		ord, ok := m.byName[metricName]
-		if !ok {
-			var zero T
-
-			return zero, false
-		}
-
-		return m.sorted[ord], true
+	if entry := m.entryByName(metricName); entry != nil {
+		return *entry, true
 	}
 
-	if m.names != nil {
-		ord, ok := m.getOrdinal(hash.ID(metricName))
-		if ok && m.names[ord] == metricName {
-			return m.sorted[ord], true
-		}
+	var zero T
 
-		var zero T
-
-		return zero, false
-	}
-
-	return m.GetByID(hash.ID(metricName))
+	return zero, false
 }
 
 // Len returns the number of data points for the given metric ID.
@@ -481,6 +463,53 @@ func (m indexMaps[T]) At(i int) T {
 // IsEmpty returns whether the index contains no entries.
 func (m indexMaps[T]) IsEmpty() bool {
 	return len(m.sorted) == 0
+}
+
+// entryByID returns a pointer to the index entry for the given metric ID, resolving a
+// collided ID to the FIRST entry in index order, or nil if the ID is absent.
+//
+// The point accessors use it instead of GetByID.
+// An entry returned by value arrives in registers, is spilled one field at a time
+// and is then copied with wider loads, which the CPU cannot forward from the narrower stores
+// (docs/specs/index-entry-by-pointer-design.md).
+//
+// The pointer aliases the index: the entry must not be modified or retained.
+func (m *indexMaps[T]) entryByID(metricID uint64) *T {
+	ord, ok := m.getOrdinal(metricID)
+	if !ok {
+		return nil
+	}
+
+	return &m.sorted[ord]
+}
+
+// entryByName returns a pointer to the index entry for the given metric name, or nil if absent.
+//
+// Behavior mirrors HasMetricName: byName map on collision;
+// hash + string-compare on a retained-names no-collision blob;
+// hash + ID lookup when the blob carries no names payload.
+//
+// The pointer aliases the index: the entry must not be modified or retained.
+func (m *indexMaps[T]) entryByName(metricName string) *T {
+	if m.byName != nil {
+		ord, ok := m.byName[metricName]
+		if !ok {
+			return nil
+		}
+
+		return &m.sorted[ord]
+	}
+
+	if m.names != nil {
+		ord, ok := m.getOrdinal(hash.ID(metricName))
+		if ok && m.names[ord] == metricName {
+			return &m.sorted[ord]
+		}
+
+		return nil
+	}
+
+	return m.entryByID(hash.ID(metricName))
 }
 
 // metricIDForName hashes a metric name to its ID. ID 0 marks "no metric open"
