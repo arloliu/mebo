@@ -248,7 +248,9 @@ func (e *NumericGorillaEncoder) writeValue(valBits uint64) {
 		// count advances; the bit itself is already zero.
 		e.bitCount++
 		if e.bitCount == 64 {
-			e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
+			n := len(e.buf.B)
+			e.buf.B = e.buf.B[:n+8]
+			binary.BigEndian.PutUint64(e.buf.B[n:], e.bitBuf)
 			e.bitBuf = 0
 			e.bitCount = 0
 		}
@@ -301,7 +303,7 @@ func (e *NumericGorillaEncoder) writeValue(valBits uint64) {
 // This is the single hot-path bit append primitive: it OR-merges the bits into
 // the MSB-aligned accumulator and spills exactly one 8-byte big-endian word to
 // the byte buffer when the accumulator fills. The caller must ensure buffer
-// capacity (Write/WriteSlice pre-grow), so the append never reallocates.
+// capacity (Write/WriteSlice pre-grow); a spill beyond it panics on the bounds check.
 //
 // Parameters:
 //   - value: the bits to write (only the least significant numBits are used)
@@ -310,14 +312,15 @@ func (e *NumericGorillaEncoder) appendBits(value uint64, numBits int) {
 	m := value << (64 - uint(numBits))
 	e.bitBuf |= m >> uint(e.bitCount)
 
-	total := e.bitCount + numBits
-	if total >= 64 {
-		e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
-		spill := 64 - e.bitCount
-		e.bitBuf = m << uint(spill)
-		e.bitCount = total - 64
-	} else {
-		e.bitCount = total
+	e.bitCount += numBits
+	if e.bitCount >= 64 {
+		// Self-reslice and store in place: unlike e.buf.B = AppendUint64(e.buf.B, ...),
+		// this writes only the slice length, so a spill takes no GC write barrier.
+		e.bitCount -= 64
+		n := len(e.buf.B)
+		e.buf.B = e.buf.B[:n+8]
+		binary.BigEndian.PutUint64(e.buf.B[n:], e.bitBuf)
+		e.bitBuf = m << uint(numBits-e.bitCount) // numBits-e.bitCount is 64 minus the old bit count
 	}
 }
 

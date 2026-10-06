@@ -118,7 +118,7 @@ func (e *NumericChimpEncoder) Write(val float64) {
 	e.count++
 	valBits := math.Float64bits(val)
 
-	// Worst case per value: 11-bit header + 64 significant bits → two 8-byte spills.
+	// Worst case per value: 5-bit new-leading header + 64 bits → two 8-byte spills.
 	e.buf.Grow(16)
 
 	if e.firstValue {
@@ -145,7 +145,7 @@ func (e *NumericChimpEncoder) WriteSlice(values []float64) {
 		return
 	}
 
-	// Pre-grow once for the whole slice: worst case ~75 bits ≈ 10 bytes per value.
+	// Pre-grow once for the whole slice: worst case 69 bits ≈ 9 bytes per value.
 	e.buf.Grow(len(values)*10 + 16)
 
 	if e.firstValue {
@@ -238,7 +238,9 @@ func (e *NumericChimpEncoder) writeValue(valBits uint64) {
 		// advances; the two flag bits are already zero.
 		total := e.bitCount + 2
 		if total >= 64 {
-			e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
+			n := len(e.buf.B)
+			e.buf.B = e.buf.B[:n+8]
+			binary.BigEndian.PutUint64(e.buf.B[n:], e.bitBuf)
 			e.bitBuf = 0
 			e.bitCount = total - 64
 		} else {
@@ -291,7 +293,7 @@ func (e *NumericChimpEncoder) writeValue(valBits uint64) {
 //
 // Same hot-path primitive as NumericGorillaEncoder.appendBits: OR-merge into
 // the MSB-aligned accumulator, spill exactly one 8-byte big-endian word when
-// it fills. Callers pre-grow the buffer, so the append never reallocates.
+// it fills. Callers pre-grow the buffer; a spill beyond it panics on the bounds check.
 //
 // Parameters:
 //   - value: the bits to write (only the least significant numBits are used)
@@ -300,14 +302,15 @@ func (e *NumericChimpEncoder) appendBits(value uint64, numBits int) {
 	m := value << (64 - uint(numBits))
 	e.bitBuf |= m >> uint(e.bitCount)
 
-	total := e.bitCount + numBits
-	if total >= 64 {
-		e.buf.B = binary.BigEndian.AppendUint64(e.buf.B, e.bitBuf)
-		spill := 64 - e.bitCount
-		e.bitBuf = m << uint(spill)
-		e.bitCount = total - 64
-	} else {
-		e.bitCount = total
+	e.bitCount += numBits
+	if e.bitCount >= 64 {
+		// Self-reslice and store in place: unlike e.buf.B = AppendUint64(e.buf.B, ...),
+		// this writes only the slice length, so a spill takes no GC write barrier.
+		e.bitCount -= 64
+		n := len(e.buf.B)
+		e.buf.B = e.buf.B[:n+8]
+		binary.BigEndian.PutUint64(e.buf.B[n:], e.bitBuf)
+		e.bitBuf = m << uint(numBits-e.bitCount) // numBits-e.bitCount is 64 minus the old bit count
 	}
 }
 
