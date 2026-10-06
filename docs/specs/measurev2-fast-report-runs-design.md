@@ -402,6 +402,9 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    The gate is inconclusive, and counts as failed, unless the stable cells are at least 80% of all cells and at least 50% of each operation's cells.
    It passes when |r − 1| ≤ 5% for at least 95% of the stable cells, |r − 1| ≤ 10% for every cell,
    and the median r of each operation (encode, decode, iterate, `ValueAt`, `TimestampAt`) is within ±3%.
+   Since 2026-10-06 the 15 shared-timestamp `TimestampAt` cells are exempt from the 10% per-cell limit, as in gate 4,
+   because a binary file can switch between their two speeds during a run;
+   they still count toward the share and the per-operation median (`docs/specs/encoder-write-barriers-design.md`).
    Allocations: allocs/op of B↑ and B↓ each lie within one of A↑'s,
    or, where A↑ and A↓ disagree, within one of the range between them;
    B/op within max(2% of A↑'s, 64 bytes), which also covers a zero baseline (4% from 2026-10-05 to 2026-10-06).

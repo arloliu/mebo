@@ -3,6 +3,7 @@
 **Date:** 2026-10-06
 **Status:** implemented (Parts 1 and 2, each Codex-reviewed); validation passed 2026-10-06 (see Results).
 Part 3's gate-3 limits served one validation and were then removed, with `bytes_rel` back at 2% (owner, 2026-10-06).
+Gate 2 now exempts the shared-timestamp `TimestampAt` cells from its per-cell limit, as gate 4 does (owner, 2026-10-06).
 Approved v2.1 by the owner on 2026-10-06 (the gate-3 limits and the order of work).
 v2.1 addresses the confirmatory review of v2 (`tmp/reviews/encoder-write-barriers-spec-codex-review-v2.md`):
 diagnostics for every inline variant, and the stale Chimp capacity comments.
@@ -372,4 +373,9 @@ That is the per-binary-file bimodality the measurev2 spec describes for gate 4, 
 gate 2 has no such exemption.
 The other 390 cells were within 4.96%, and the B/op tolerance was never the limit (worst deviation 0.87% in the previous validation).
 The first validation's gate 2 saw these cells move too (63% of its `TimestampAt` cells stable) but stayed under 11% (worst 8.91%).
+The owner approved extending gate 4's exemption to gate 2 (2026-10-06):
+the 15 cells are exempt from gate 2's per-cell limit and still count toward its share and per-operation median.
+The mechanism is the documented one rather than a value fitted to this run, so the stored run was re-evaluated, not repeated:
+gate 2 passes with the cells held to the limit at worst 4.96% and the exempt cells at worst 11.62%,
+and gates 3, 4, 5 and 6 pass as before (`gate2-reevaluated-exemption.txt`).
 
