@@ -168,7 +168,7 @@ When a codec is added, verify its `At()` complexity in the decoder source before
 
 - **DeltaPacked vs Delta**: DeltaPacked's Group Varint layout is meant for faster decode and iteration, not size; the size difference is small.
   Check the iterate columns before repeating the speed claim:
-  the 2026-10-05 layout-averaged run measured DeltaPacked iterating 1.25–1.32× slower than Delta with Gorilla and Chimp,
+  the 2026-10-06 layout-averaged run measured DeltaPacked iterating 1.26–1.35× slower than Delta with Gorilla and Chimp,
   decided in every layout, and equivalent to it with ALP and ALP-RLE.
 - **Chimp vs Gorilla**: both XOR-based; Chimp is usually slightly smaller.
 - **ALP** (`format.TypeALP`): wins on decimal-quantized values and integers.
@@ -176,10 +176,16 @@ When a codec is added, verify its `At()` complexity in the decoder source before
   and on full-precision values with frequent repeats it is much larger, because XOR codecs store a repeat in one bit.
   Its per-column (e,f) search is most of its encode cost.
   On amd64 with AVX-512DQ and POPCNT an AVX-512 kernel runs that search,
-  and on the four mixes a blob encodes in about 1.1–1.2× Chimp's time (ALP-RLE 1.3–1.6×),
-  up to 1.8× (ALP-RLE 2.3×) on `sparse_constant` (layout-averaged, 2026-10-04, `docs/specs/alp-simd-ef-search-design.md`).
+  and on the four mixes a blob encodes in about 1.4–1.5× Chimp's time (ALP-RLE 1.6–2.0×),
+  up to 1.9× (ALP-RLE 2.6×) on `sparse_constant` (layout-averaged report run, 2026-10-06).
+  A controlled before/after run on 2026-10-06 measured Gorilla and Chimp encode about 14% faster (median of 69 cells)
+  once their spills stopped taking GC write barriers (`docs/specs/encoder-write-barriers-design.md`),
+  with the ALP family's encode unchanged;
+  the earlier figures of 1.1–1.2× (ALP-RLE 1.3–1.6×) came from `BenchmarkBlobEncodeMixes` on 2026-10-04,
+  a different harness, so don't read the whole difference as that one change.
   Elsewhere the scalar search runs; on the same machine with `GODEBUG=cpu.avx512dq=off`,
-  ALP took about 3.5–4.3× Chimp's time on the four mixes (ALP-RLE 3.7–6.6×), and other targets will differ.
+  ALP took about 3.5–4.3× Chimp's time on the four mixes (ALP-RLE 3.7–6.6×) before that Chimp speed-up,
+  and other targets will differ.
   Say which machine the report ran on when quoting encode ratios.
 - **ALP-RLE** (`format.TypeALPRLE`): ALP with a run-length front end.
   Each column keeps the runs layout only when it is smaller than the plain ALP column,
