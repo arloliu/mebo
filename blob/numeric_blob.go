@@ -285,8 +285,8 @@ func (b NumericBlob) AllTagsByName(metricName string) iter.Seq[string] {
 // sum, so both are O(index) (worst case O(n)) — prefer Raw or shared timestamps when
 // random access matters, or materialize the blob for O(1) access regardless of encoding.
 func (b NumericBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
-	entry, ok := b.index.GetByID(metricID)
-	if !ok {
+	entry := b.index.entryByID(metricID)
+	if entry == nil {
 		return 0, false
 	}
 
@@ -303,8 +303,8 @@ func (b NumericBlob) TimestampAt(metricID uint64, index int) (int64, bool) {
 //
 // Performance: see TimestampAt — same dispatch, same complexity per encoding.
 func (b NumericBlob) TimestampAtByName(metricName string, index int) (int64, bool) {
-	entry, ok := b.lookupMetricEntry(metricName)
-	if !ok {
+	entry := b.index.entryByName(metricName)
+	if entry == nil {
 		return 0, false
 	}
 
@@ -332,8 +332,8 @@ func (b NumericBlob) TimestampAtByName(metricName string, index int) (int64, boo
 // Prefer Raw, ALP or ALP-RLE values when random access matters, or materialize the blob
 // for O(1) access regardless of encoding.
 func (b NumericBlob) ValueAt(metricID uint64, index int) (float64, bool) {
-	entry, ok := b.index.GetByID(metricID)
-	if !ok {
+	entry := b.index.entryByID(metricID)
+	if entry == nil {
 		return 0, false
 	}
 
@@ -350,8 +350,8 @@ func (b NumericBlob) ValueAt(metricID uint64, index int) (float64, bool) {
 //
 // Performance: see ValueAt — same dispatch, same complexity per encoding.
 func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool) {
-	entry, ok := b.lookupMetricEntry(metricName)
-	if !ok {
+	entry := b.index.entryByName(metricName)
+	if entry == nil {
 		return 0, false
 	}
 
@@ -375,8 +375,8 @@ func (b NumericBlob) ValueAtByName(metricName string, index int) (float64, bool)
 //	    fmt.Printf("Tag at index 5: %s\n", tag)
 //	}
 func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
-	entry, ok := b.index.GetByID(metricID)
-	if !ok {
+	entry := b.index.entryByID(metricID)
+	if entry == nil {
 		return "", false
 	}
 
@@ -402,8 +402,8 @@ func (b NumericBlob) TagAt(metricID uint64, index int) (string, bool) {
 //
 // Returns ("", true) if tags are not enabled but the metric and index are valid.
 func (b NumericBlob) TagAtByName(metricName string, index int) (string, bool) {
-	entry, ok := b.lookupMetricEntry(metricName)
-	if !ok {
+	entry := b.index.entryByName(metricName)
+	if entry == nil {
 		return "", false
 	}
 
@@ -536,7 +536,7 @@ func (b NumericBlob) allTagsFromEntry(entry section.NumericIndexEntry) iter.Seq[
 }
 
 // timestampAtFromEntry returns the timestamp at the specified index for the given entry.
-func (b NumericBlob) timestampAtFromEntry(entry section.NumericIndexEntry, index int) (int64, bool) {
+func (b NumericBlob) timestampAtFromEntry(entry *section.NumericIndexEntry, index int) (int64, bool) {
 	count := entry.Count
 	if index < 0 || index >= count {
 		return 0, false
@@ -576,7 +576,7 @@ func (b NumericBlob) timestampAtFromEntry(entry section.NumericIndexEntry, index
 }
 
 // valueAtFromEntry returns the value at the specified index for the given entry.
-func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int) (float64, bool) {
+func (b NumericBlob) valueAtFromEntry(entry *section.NumericIndexEntry, index int) (float64, bool) {
 	count := entry.Count
 	if index < 0 || index >= count {
 		return 0, false
@@ -622,7 +622,7 @@ func (b NumericBlob) valueAtFromEntry(entry section.NumericIndexEntry, index int
 }
 
 // tagAtFromEntry returns the tag at the specified index for the given entry.
-func (b NumericBlob) tagAtFromEntry(entry section.NumericIndexEntry, index int) (string, bool) {
+func (b NumericBlob) tagAtFromEntry(entry *section.NumericIndexEntry, index int) (string, bool) {
 	count := entry.Count
 	if index < 0 || index >= count {
 		return "", false

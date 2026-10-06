@@ -606,8 +606,8 @@ func (bs BlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	foundInNumeric := false
 
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, numTarget, numCollided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, numTarget, numCollided)
+		if entry == nil {
 			continue
 		}
 		foundInNumeric = true
@@ -625,8 +625,8 @@ func (bs BlobSet) TimestampAt(metricID uint64, index int) (int64, bool) {
 	}
 
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, txtTarget, txtCollided)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -651,8 +651,8 @@ func (bs BlobSet) TimestampAtByName(metricName string, index int) (int64, bool) 
 	foundInNumeric := false
 
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, numSkipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, numSkipStripped)
+		if entry == nil {
 			continue
 		}
 		foundInNumeric = true
@@ -670,8 +670,8 @@ func (bs BlobSet) TimestampAtByName(metricName string, index int) (int64, bool) 
 	}
 
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, txtSkipStripped)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -697,8 +697,8 @@ func (bs BlobSet) TagAt(metricID uint64, index int) (string, bool) {
 
 	// Try numeric blobs first (95% case)
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, numTarget, numCollided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, numTarget, numCollided)
+		if entry == nil {
 			continue
 		}
 		foundInNumeric = true
@@ -720,8 +720,8 @@ func (bs BlobSet) TagAt(metricID uint64, index int) (string, bool) {
 	}
 
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, txtTarget, txtCollided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, txtTarget, txtCollided)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -751,8 +751,8 @@ func (bs BlobSet) TagAtByName(metricName string, index int) (string, bool) {
 
 	// Try numeric blobs first (95% case)
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, numSkipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, numSkipStripped)
+		if entry == nil {
 			continue
 		}
 		foundInNumeric = true
@@ -774,8 +774,8 @@ func (bs BlobSet) TagAtByName(metricName string, index int) (string, bool) {
 	}
 
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, txtSkipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, txtSkipStripped)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -801,8 +801,8 @@ func (bs BlobSet) NumericValueAt(metricID uint64, index int) (float64, bool) {
 
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, targetName, collided)
+		if entry == nil {
 			continue
 		}
 		length := entry.Count
@@ -824,8 +824,8 @@ func (bs BlobSet) NumericValueAtByName(metricName string, index int) (float64, b
 
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, skipStripped)
+		if entry == nil {
 			continue
 		}
 		length := entry.Count
@@ -847,8 +847,8 @@ func (bs BlobSet) TextValueAt(metricID uint64, index int) (string, bool) {
 
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, targetName, collided)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -870,8 +870,8 @@ func (bs BlobSet) TextValueAtByName(metricName string, index int) (string, bool)
 
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, skipStripped)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -893,8 +893,8 @@ func (bs BlobSet) NumericAt(metricID uint64, index int) (NumericDataPoint, bool)
 
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, targetName, collided)
+		if entry == nil {
 			continue
 		}
 		length := entry.Count
@@ -916,8 +916,8 @@ func (bs BlobSet) NumericAtByName(metricName string, index int) (NumericDataPoin
 
 	curIdx := 0
 	for _, blob := range bs.numericBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, skipStripped)
+		if entry == nil {
 			continue
 		}
 		length := entry.Count
@@ -939,8 +939,8 @@ func (bs BlobSet) TextAt(metricID uint64, index int) (TextDataPoint, bool) {
 
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntry(metricID, targetName, collided)
-		if !ok {
+		entry := blob.index.entryFor(metricID, targetName, collided)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -962,8 +962,8 @@ func (bs BlobSet) TextAtByName(metricName string, index int) (TextDataPoint, boo
 
 	curIdx := 0
 	for _, blob := range bs.textBlobs {
-		entry, ok := blob.index.resolveEntryByName(metricName, skipStripped)
-		if !ok {
+		entry := blob.index.entryForName(metricName, skipStripped)
+		if entry == nil {
 			continue
 		}
 		length := int(entry.Count)
@@ -1461,7 +1461,7 @@ func (bs BlobSet) MetricDurationByName(metricName string) int64 {
 // resolved index entry. They mirror the ByID/ByName point accessors they replaced,
 // including TagAt's contract that a tagless blob still reports a valid empty tag for an
 // in-range index.
-func numericPointFromEntry(blob NumericBlob, entry section.NumericIndexEntry, index int) (NumericDataPoint, bool) {
+func numericPointFromEntry(blob NumericBlob, entry *section.NumericIndexEntry, index int) (NumericDataPoint, bool) {
 	ts, tsOk := blob.timestampAtFromEntry(entry, index)
 	val, valOk := blob.valueAtFromEntry(entry, index)
 	tag, tagOk := "", index >= 0 && index < entry.Count
@@ -1475,7 +1475,7 @@ func numericPointFromEntry(blob NumericBlob, entry section.NumericIndexEntry, in
 	return NumericDataPoint{}, false
 }
 
-func textPointFromEntry(blob TextBlob, entry section.TextIndexEntry, index int) (TextDataPoint, bool) {
+func textPointFromEntry(blob TextBlob, entry *section.TextIndexEntry, index int) (TextDataPoint, bool) {
 	ts, tsOk := blob.timestampAtFromEntry(entry, index)
 	val, valOk := blob.valueAtFromEntry(entry, index)
 	tag, tagOk := "", index >= 0 && index < int(entry.Count)
