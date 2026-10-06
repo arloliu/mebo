@@ -169,10 +169,10 @@ def allocs_ok(got, lo, hi, t):
 
 
 def cell_max_exempt(cell):
-    """Gate 4 does not hold these cells to cell_max; they still count toward cell_within_share_min.
+    """Gates 2 and 4 do not hold these cells to cell_max; they still count toward the share and median rules.
     random_timestamp_at on shared timestamps runs at one of two speeds about 29% apart,
-    set per binary file, not by the code (suspected: where the kernel placed its page-cache pages)
-    (docs/specs/measurev2-fast-report-runs-design.md, gate 4)."""
+    set per binary file, not by the code (suspected: where the kernel placed its page-cache pages),
+    and a file can switch speed mid-run (docs/specs/measurev2-fast-report-runs-design.md, gates 2 and 4)."""
     _, combo, op = cell.split('/')
     return op == 'random_timestamp_at' and combo.startswith('shared-')
 
@@ -295,8 +295,13 @@ def gate2(a_up, b_down, b_up, a_down, t, target_a=1.0, target_b=0.05):
     lines.append(f'stable cells within ±{t["cell_within"]:.0%}: {within:.1%} (need {t["cell_within_share_min"]:.0%})')
     if within + EPS < t['cell_within_share_min']:
         failures.append(f'only {within:.1%} of stable cells within ±{t["cell_within"]:.0%}')
-    over = [r['cell'] for r in rows if abs(r['r'] - 1) > t['cell_max'] + EPS]
-    lines.append(f'worst |r - 1| over all cells: {max(abs(r["r"] - 1) for r in rows):.2%} (limit {t["cell_max"]:.0%})')
+    held = [r for r in rows if not cell_max_exempt(r['cell'])]
+    exempt = [r for r in rows if cell_max_exempt(r['cell'])]
+    over = [r['cell'] for r in held if abs(r['r'] - 1) > t['cell_max'] + EPS]
+    lines.append(f'worst |r - 1| over the cells held to the limit: {max(abs(r["r"] - 1) for r in held):.2%} '
+                 f'(limit {t["cell_max"]:.0%})')
+    if exempt:
+        lines.append(f'  {len(exempt)} cells exempt from the limit: worst {max(abs(r["r"] - 1) for r in exempt):.2%}')
     if over:
         failures.append(f'{len(over)} cells beyond ±{t["cell_max"]:.0%}, e.g. {over[:3]}')
     for op, op_rows in by_op_all.items():

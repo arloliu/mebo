@@ -1030,6 +1030,36 @@ def acceptance_gate2_allocations():
 
 
 @check
+def acceptance_gate2_exempts_shared_timestamp_at():
+    """Gate 2 holds every cell to cell_max except random_timestamp_at on shared timestamps,
+    whose binary can switch between its two speeds during a run; the others stay held."""
+    t = thresholds(cell_within=0.05, cell_within_share_min=0.95, cell_max=0.11)
+
+    def run(*moved):
+        a, a_down, b = {}, {}, {}
+        for i in range(20):
+            for combo in (f'shared-c{i}', f'c{i}'):
+                cell = f'mix_monitoring/{combo}/random_timestamp_at'
+                a[cell] = raw_op(1000.0 * (1.29 if cell in moved else 1.0))
+                a_down[cell] = raw_op(1000.0)
+                b[cell] = raw_op(1000.0)
+        for d, target in ((a, 1.0), (a_down, 1.0), (b, 0.05)):
+            for v in d.values():
+                v['t_ns'] = int(target * 1.1e9)
+        return acceptance.gate2(a, b, b, a_down, t)
+
+    _, out = quiet(run, 'mix_monitoring/shared-c0/random_timestamp_at')
+    ok('20 cells exempt from the limit: worst 12.66%' in out, out)
+    _, out = quiet(lambda: expect_error(run, 'mix_monitoring/c0/random_timestamp_at', exc=(acceptance.GateFailure,)))
+    ok('1 cells beyond ±11%' in out, out)
+    # Exempt cells still count toward the stability and median rules: moving all 20 fails both.
+    shared = [f'mix_monitoring/shared-c{i}/random_timestamp_at' for i in range(20)]
+    _, out = quiet(lambda: expect_error(run, *shared, exc=(acceptance.GateFailure,)))
+    ok('random_timestamp_at: median r 0.9367 is outside ±3%' in out and 'inconclusive' in out, out)
+    ok('beyond ±11%' not in out, f'exempt cells are not held to cell_max: {out}')
+
+
+@check
 def acceptance_gate4_exempts_shared_timestamp_at():
     """Gate 4 holds every cell to cell_max except random_timestamp_at on shared timestamps,
     which still counts toward the share within cell_within."""
