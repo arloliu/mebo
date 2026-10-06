@@ -61,9 +61,27 @@ func (p *FastProcessor) Process(data []byte) {
 }
 ```
 
-**Note**: Use interfaces where appropriate for testability. Only avoid them in proven hot paths.
+**Note**: Use interfaces where appropriate for testability.
+Only avoid them in proven hot paths.
 
-#### 4. Pass Small Structs by Value
+#### 4. Keep the Encoder Bit-Spill Path Inlined and Barrier-Free
+
+The Gorilla and Chimp encoders' `appendBits` must stay inlined,
+and its 8-byte spill must not take a GC write barrier.
+`appendBits` has little inline-budget headroom,
+so an edit or a Go release can undo either property without failing a test.
+After changing `internal/encoding/value/gorilla` or `internal/encoding/value/chimp`, run:
+
+```bash
+scripts/check-encoder-hotpath.sh
+```
+
+It is not part of `make test`.
+To inspect by hand with `-gcflags=-m` or `-gcflags=-S`, build with `-a` or a fresh `GOCACHE`;
+a cached build prints no compiler diagnostics.
+The design is in `docs/specs/encoder-write-barriers-design.md`.
+
+#### 5. Pass Small Structs by Value
 
 ```go
 // GOOD: Small struct passed by value
