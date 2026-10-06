@@ -2,14 +2,26 @@ package chimp
 
 import (
 	"math"
+	"math/bits"
 	"math/rand"
 	"testing"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
 	valraw "github.com/arloliu/mebo/internal/encoding/value/raw"
+	"github.com/arloliu/mebo/internal/pool"
 	"github.com/stretchr/testify/require"
 )
+
+// chimpReferenceEncoder is a bit-at-a-time Chimp encoder that the reference-parity tests
+// compare the production encoder against, byte for byte.
+type chimpReferenceEncoder struct {
+	data               []byte
+	bitOffset          int
+	prevValue          uint64
+	count              int
+	storedLeadingZeros int
+}
 
 func TestChimpCodecContract(t *testing.T) {
 	values := []float64{1.5, 1.5, 2.75, 3.25}
@@ -925,4 +937,313 @@ func TestChimpGorillaRaw_DecodedValueEquivalence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNumericChimpEncoder_ReferenceParity(t *testing.T) {
+	type writeOperation struct {
+		values []float64
+		bulk   bool
+	}
+
+	unchanged := make([]float64, 34)
+	for i := range unchanged {
+		unchanged[i] = 100.0
+	}
+
+	rng := rand.New(rand.NewSource(0x5eed))
+	randomValues := make([]float64, 257)
+	for i := range randomValues {
+		randomValues[i] = math.Float64frombits(rng.Uint64())
+	}
+
+	// Windows: new leading (11), reused leading (10), trailing-zero (01), unchanged (00), then a sign flip (01).
+	windowValues := []float64{
+		math.Float64frombits(0x3ff0000000000000),
+		math.Float64frombits(0x3ff0000000000001),
+		math.Float64frombits(0x3ff0000000000003),
+		math.Float64frombits(0x3ff0001000000003),
+		math.Float64frombits(0x3ff0001000000003),
+		math.Float64frombits(0xbff0001000000003),
+	}
+	specialValues := []float64{
+		0,
+		math.Copysign(0, -1),
+		math.Inf(1),
+		math.Inf(-1),
+		math.Float64frombits(0x7ff8000000000001),
+		math.Float64frombits(0xfff8000000000042),
+		math.MaxFloat64,
+		math.SmallestNonzeroFloat64,
+	}
+	bucketSwitch := chimpBucketSwitchValues(4096)
+	maxSpill := chimpMaxSpillValues(4096)
+
+	tests := []struct {
+		name    string
+		metrics [][]writeOperation
+	}{
+		{name: "unchanged count 32", metrics: [][]writeOperation{{{values: unchanged[:32], bulk: true}}}},
+		{name: "unchanged count 33", metrics: [][]writeOperation{{{values: unchanged[:33], bulk: true}}}},
+		{name: "unchanged count 34", metrics: [][]writeOperation{{{values: unchanged}}}},
+		{
+			name: "all flag windows",
+			metrics: [][]writeOperation{{
+				{values: windowValues[:2], bulk: true},
+				{values: windowValues[2:4]},
+				{values: windowValues[4:], bulk: true},
+			}},
+		},
+		{
+			name: "mixed scalar and bulk writes",
+			metrics: [][]writeOperation{{
+				{values: []float64{1.25}},
+				{values: []float64{1.25, 1.5, 1.75}, bulk: true},
+				{values: []float64{-4.5}},
+				{values: nil, bulk: true},
+				{values: []float64{-4.5, 1024.125}, bulk: true},
+			}},
+		},
+		{name: "special float bit patterns", metrics: [][]writeOperation{{{values: specialValues, bulk: true}}}},
+		{name: "single value", metrics: [][]writeOperation{{{values: randomValues[:1]}}}},
+		{name: "deterministic random sequence", metrics: [][]writeOperation{{{values: randomValues, bulk: true}}}},
+		{name: "leading bucket switches bulk", metrics: [][]writeOperation{{{values: bucketSwitch, bulk: true}}}},
+		{name: "leading bucket switches scalar", metrics: [][]writeOperation{{{values: bucketSwitch[:1024]}}}},
+		{name: "max spill density bulk", metrics: [][]writeOperation{{{values: maxSpill, bulk: true}}}},
+		{name: "max spill density scalar", metrics: [][]writeOperation{{{values: maxSpill[:1024]}}}},
+		{
+			name: "metrics separated by Bytes and Reset",
+			metrics: [][]writeOperation{
+				{{values: randomValues[:5], bulk: true}},
+				{{values: unchanged[:7]}, {values: windowValues, bulk: true}},
+				{{values: maxSpill[:33]}, {values: specialValues, bulk: true}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			encoder := NewNumericChimpEncoder()
+			t.Cleanup(encoder.Finish)
+			reference := chimpReferenceEncoder{storedLeadingZeros: 65}
+			decoder := NewNumericChimpDecoder()
+
+			for _, metric := range tc.metrics {
+				start := len(reference.data)
+				valueCount := 0
+				for _, operation := range metric {
+					valueCount += len(operation.values)
+				}
+				expected := make([]float64, 0, valueCount)
+				for _, operation := range metric {
+					expected = append(expected, operation.values...)
+					if operation.bulk {
+						encoder.WriteSlice(operation.values)
+						reference.writeSlice(operation.values)
+						continue
+					}
+
+					for _, value := range operation.values {
+						encoder.Write(value)
+						reference.write(value)
+					}
+				}
+
+				got := append([]byte(nil), encoder.Bytes()...)
+				require.Equal(t, reference.bytes(), got)
+				require.Equal(t, len(expected), encoder.Len())
+
+				decoded := make([]float64, len(expected))
+				require.Equal(t, len(expected), decoder.DecodeAll(got[start:], len(expected), decoded))
+				for i := range expected {
+					require.Equal(t, math.Float64bits(expected[i]), math.Float64bits(decoded[i]), "value %d", i)
+				}
+
+				encoder.Reset()
+				reference.reset()
+			}
+		})
+	}
+}
+
+// TestNumericChimpEncoder_TightCapacity holds the capacity invariant with no spare room:
+// a bulk write into an empty buffer reserves exactly len(values)*10+16 bytes,
+// and each scalar write starts with exactly the 16 bytes Write reserves.
+// Spilling past the reservation would panic on the bounds check.
+func TestNumericChimpEncoder_TightCapacity(t *testing.T) {
+	tests := []struct {
+		name     string
+		values   []float64
+		oddBits  int // record size of values 1, 3, 5, ...
+		evenBits int // record size of values 2, 4, 6, ...
+	}{
+		{name: "leading bucket switches", values: chimpBucketSwitchValues(4096), oddBits: 69, evenBits: 61},
+		{name: "max spill density", values: chimpMaxSpillValues(4096), oddBits: 68, evenBits: 69},
+	}
+
+	for _, tc := range tests {
+		wantBits := 64
+		for i := 1; i < len(tc.values); i++ {
+			if i%2 == 1 {
+				wantBits += tc.oddBits
+			} else {
+				wantBits += tc.evenBits
+			}
+		}
+
+		t.Run(tc.name+"/bulk", func(t *testing.T) {
+			encoder := NewNumericChimpEncoder()
+			t.Cleanup(encoder.Finish)
+			encoder.buf = pool.NewByteBuffer(0)
+			reference := chimpReferenceEncoder{storedLeadingZeros: 65}
+
+			encoder.WriteSlice(tc.values)
+			reference.writeSlice(tc.values)
+			reserved := len(tc.values)*10 + 16
+			require.Equal(t, reserved, encoder.buf.Cap(), "WriteSlice reserves exactly len*10+16 bytes")
+
+			got := encoder.Bytes()
+			require.Equal(t, reserved, encoder.buf.Cap(), "no growth while spilling or flushing")
+			require.Len(t, got, (wantBits+7)/8, "record sizes")
+			require.Equal(t, reference.bytes(), got)
+		})
+
+		t.Run(tc.name+"/scalar", func(t *testing.T) {
+			encoder := NewNumericChimpEncoder()
+			t.Cleanup(encoder.Finish)
+			reference := chimpReferenceEncoder{storedLeadingZeros: 65}
+			values := tc.values[:1024]
+
+			twoSpills := 0
+			for _, value := range values {
+				tightenChimpBuffer(encoder, 16)
+				before := encoder.buf.Len()
+				encoder.Write(value)
+				reference.write(value)
+				if encoder.buf.Len()-before == 16 {
+					twoSpills++
+				}
+			}
+
+			require.Positive(t, twoSpills, "some values spill twice into exactly 16 bytes")
+			require.Equal(t, reference.bytes(), encoder.Bytes())
+		})
+	}
+}
+
+// tightenChimpBuffer copies the encoder's buffer into one with exactly avail bytes of spare capacity.
+func tightenChimpBuffer(e *NumericChimpEncoder, avail int) {
+	b := make([]byte, len(e.buf.B), len(e.buf.B)+avail)
+	copy(b, e.buf.B)
+	e.buf.B = b
+}
+
+// chimpBucketSwitchValues returns n values whose XORs alternate between leading-zero buckets 0 and 8
+// with no trailing zeros, so every value after the first takes the new-leading branch: 69- and 61-bit records.
+func chimpBucketSwitchValues(n int) []float64 {
+	rng := rand.New(rand.NewSource(0xc417))
+	values := make([]float64, n)
+	prev := rng.Uint64()
+	for i := range values {
+		values[i] = math.Float64frombits(prev)
+		if i%2 == 0 {
+			prev ^= rng.Uint64() | 1<<63 | 1
+		} else {
+			prev ^= rng.Uint64()&0x00FFFFFFFFFFFFFF | 1<<55 | 1
+		}
+	}
+
+	return values
+}
+
+// chimpMaxSpillValues returns n values whose XORs alternate between (leading 0, trailing 7) and (leading 0, trailing 0):
+// a 68-bit trailing-zero record, which forgets the stored leading count, then a 69-bit new-leading record.
+// That is Chimp's densest attainable stream.
+func chimpMaxSpillValues(n int) []float64 {
+	rng := rand.New(rand.NewSource(0xc418))
+	values := make([]float64, n)
+	prev := rng.Uint64()
+	for i := range values {
+		values[i] = math.Float64frombits(prev)
+		if i%2 == 0 {
+			prev ^= rng.Uint64()&^0xFF | 1<<63 | 1<<7
+		} else {
+			prev ^= rng.Uint64() | 1<<63 | 1
+		}
+	}
+
+	return values
+}
+
+func (e *chimpReferenceEncoder) writeSlice(values []float64) {
+	for _, value := range values {
+		e.write(value)
+	}
+}
+
+func (e *chimpReferenceEncoder) write(value float64) {
+	e.count++
+	valueBits := math.Float64bits(value)
+	if e.count == 1 {
+		e.prevValue = valueBits
+		e.appendBits(valueBits, 64)
+
+		return
+	}
+
+	xor := valueBits ^ e.prevValue
+	e.prevValue = valueBits
+	if xor == 0 {
+		e.appendBits(0b00, 2)
+		e.storedLeadingZeros = 65
+
+		return
+	}
+
+	leading := bits.LeadingZeros64(xor)
+	trailing := bits.TrailingZeros64(xor)
+	rounded := chimpLeadingRound[leading]
+	bucket := chimpLeadingRepresentation[leading]
+	switch {
+	case trailing > chimpTrailingThreshold:
+		significant := max(64-rounded-trailing, 1)
+		e.appendBits(0b01, 2)
+		e.appendBits(bucket, 3)
+		e.appendBits(uint64(significant)&0x3F, 6)
+		e.appendBits(xor>>uint(trailing), significant)
+		e.storedLeadingZeros = 65
+	case rounded == e.storedLeadingZeros:
+		e.appendBits(0b10, 2)
+		e.appendBits(xor, 64-rounded)
+	default:
+		e.storedLeadingZeros = rounded
+		e.appendBits(0b11, 2)
+		e.appendBits(bucket, 3)
+		e.appendBits(xor, 64-rounded)
+	}
+}
+
+func (e *chimpReferenceEncoder) appendBits(value uint64, numBits int) {
+	for bitIndex := numBits - 1; bitIndex >= 0; bitIndex-- {
+		if e.bitOffset == 0 {
+			e.data = append(e.data, 0)
+		}
+
+		bit := byte(value>>uint(bitIndex)) & 1
+		e.data[len(e.data)-1] |= bit << uint(7-e.bitOffset)
+		e.bitOffset = (e.bitOffset + 1) & 7
+	}
+}
+
+// bytes returns the stream so far; like the encoder's Bytes, it pads the last byte, so the next bit starts a new one.
+func (e *chimpReferenceEncoder) bytes() []byte {
+	e.bitOffset = 0
+
+	return append([]byte(nil), e.data...)
+}
+
+// reset starts a new metric's stream after the bytes written so far, as the encoder's Reset does.
+func (e *chimpReferenceEncoder) reset() {
+	e.count = 0
+	e.prevValue = 0
+	e.storedLeadingZeros = 65
 }
