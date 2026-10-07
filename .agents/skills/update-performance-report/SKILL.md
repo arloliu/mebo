@@ -158,9 +158,9 @@ verified against the decoder implementations, not inferred from names or numbers
 - Shared timestamps (any timestamp encoding): O(1).
   The shared columns are decoded once into `sharedTsCache` when the blob is opened (`blob/numeric_decoder.go`),
   and `TimestampAt` reads the cache; the script's `ts_complexity()` applies this to every `shared-*` label.
-  Their measured times are bimodal per binary file (about 1,630 or 2,105 ns on the main data set),
-  set by the binary file (most likely where the kernel placed its pages), not by the code:
-  don't read a change in them between reports as a speed-up or regression.
+  Until 2026-10-07 their measured times were bimodal per binary file (about 1,630 or 2,105 ns on the main data set);
+  `docs/specs/index-entry-by-pointer-design.md` removed the cause, and they now measure about 1,065 ns,
+  so a report from before that change is not comparable on these cells.
 
 When a codec is added, verify its `At()` complexity in the decoder source before adding it to `AT_COMPLEXITY`.
 
@@ -168,7 +168,7 @@ When a codec is added, verify its `At()` complexity in the decoder source before
 
 - **DeltaPacked vs Delta**: DeltaPacked's Group Varint layout is meant for faster decode and iteration, not size; the size difference is small.
   Check the iterate columns before repeating the speed claim:
-  the 2026-10-06 layout-averaged run measured DeltaPacked iterating 1.26–1.35× slower than Delta with Gorilla and Chimp,
+  the 2026-10-07 layout-averaged run measured DeltaPacked iterating 1.28–1.35× slower than Delta with Gorilla and Chimp,
   decided in every layout, and equivalent to it with ALP and ALP-RLE.
 - **Chimp vs Gorilla**: both XOR-based; Chimp is usually slightly smaller.
 - **ALP** (`format.TypeALP`): wins on decimal-quantized values and integers.
