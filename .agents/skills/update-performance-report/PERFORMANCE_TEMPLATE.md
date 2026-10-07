@@ -109,12 +109,6 @@ not a best case (index 0) or worst case (last index).
 
 {{RANDOM_ACCESS_PERFORMANCE}}
 
-Shared-timestamp `TimestampAt` timings can read up to about 29% high.
-Each process runs them at one of two speeds, set by the benchmark binary file rather than by the code
-(most likely by where the kernel placed its pages in memory),
-so their absolute values vary between runs; in validation, comparisons within a run were unaffected
-(see the reproducibility check in `docs/specs/measurev2-fast-report-runs-design.md`, "Acceptance gates").
-
 ## Scaling Analysis
 
 How bytes per point change with points per metric, for each combination.

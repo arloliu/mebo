@@ -4,6 +4,7 @@
 **Status:** implemented (Parts 1 and 2, each Codex-reviewed); validation passed 2026-10-06 (see Results).
 Part 3's gate-3 limits served one validation and were then removed, with `bytes_rel` back at 2% (owner, 2026-10-06).
 Gate 2 now exempts the shared-timestamp `TimestampAt` cells from its per-cell limit, as gate 4 does (owner, 2026-10-06).
+Both exemptions were removed on 2026-10-07, after `docs/specs/index-entry-by-pointer-design.md` removed the two speeds.
 Approved v2.1 by the owner on 2026-10-06 (the gate-3 limits and the order of work).
 v2.1 addresses the confirmatory review of v2 (`tmp/reviews/encoder-write-barriers-spec-codex-review-v2.md`):
 diagnostics for every inline variant, and the stale Chimp capacity comments.

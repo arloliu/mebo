@@ -168,15 +168,6 @@ def allocs_ok(got, lo, hi, t):
     return lo - t['allocs_abs'] <= got <= hi + t['allocs_abs']
 
 
-def cell_max_exempt(cell):
-    """Gates 2 and 4 do not hold these cells to cell_max; they still count toward the share and median rules.
-    random_timestamp_at on shared timestamps runs at one of two speeds about 29% apart,
-    set per binary file, not by the code (suspected: where the kernel placed its page-cache pages),
-    and a file can switch speed mid-run (docs/specs/measurev2-fast-report-runs-design.md, gates 2 and 4)."""
-    _, combo, op = cell.split('/')
-    return op == 'random_timestamp_at' and combo.startswith('shared-')
-
-
 def share(values, pred):
     values = list(values)
     return sum(1 for v in values if pred(v)) / len(values) if values else 0.0
@@ -190,21 +181,17 @@ def per_op(cells, values):
     return {op: v for op, v in out.items() if v}
 
 
-def ratio_checks(name, cells, ratios, t, failures, lines, op_medians=True, exempt=None):
-    """The shared ratio rule: |x - 1| within cell_within for a share of cells and within cell_max for all
-    but the cells exempt(cell) names; with op_medians (gates 2 and 3, not gate 4), each operation's median within op_median_within."""
+def ratio_checks(name, cells, ratios, t, failures, lines, op_medians=True):
+    """The shared ratio rule: |x - 1| within cell_within for a share of cells and within cell_max for every cell;
+    with op_medians (gates 2 and 3, not gate 4), each operation's median within op_median_within."""
     dev = [abs(r - 1) for r in ratios]
     within = share(dev, lambda d: d <= t['cell_within'] + EPS)
-    held = [(c, d) for c, d in zip(cells, dev) if not (exempt and exempt(c))]
-    worst = max((d for _, d in held), default=0.0)
+    worst = max(dev, default=0.0)
     lines.append(f'{name}: {within:.1%} of {len(dev)} cells within ±{t["cell_within"]:.0%} '
                  f'(need {t["cell_within_share_min"]:.0%}); worst {worst:.2%} (limit {t["cell_max"]:.0%})')
-    if len(held) < len(dev):
-        lines.append(f'  {len(dev) - len(held)} cells exempt from the limit: worst '
-                     f'{max(d for c, d in zip(cells, dev) if exempt(c)):.2%}')
     if within + EPS < t['cell_within_share_min']:
         failures.append(f'{name}: only {within:.1%} of cells within ±{t["cell_within"]:.0%}')
-    over = [c for c, d in held if d > t['cell_max'] + EPS]
+    over = [c for c, d in zip(cells, dev) if d > t['cell_max'] + EPS]
     if over:
         failures.append(f'{name}: {len(over)} cells beyond ±{t["cell_max"]:.0%}, e.g. {over[:3]}')
     for op, vals in per_op(cells, ratios).items():
@@ -295,13 +282,8 @@ def gate2(a_up, b_down, b_up, a_down, t, target_a=1.0, target_b=0.05):
     lines.append(f'stable cells within ±{t["cell_within"]:.0%}: {within:.1%} (need {t["cell_within_share_min"]:.0%})')
     if within + EPS < t['cell_within_share_min']:
         failures.append(f'only {within:.1%} of stable cells within ±{t["cell_within"]:.0%}')
-    held = [r for r in rows if not cell_max_exempt(r['cell'])]
-    exempt = [r for r in rows if cell_max_exempt(r['cell'])]
-    over = [r['cell'] for r in held if abs(r['r'] - 1) > t['cell_max'] + EPS]
-    lines.append(f'worst |r - 1| over the cells held to the limit: {max(abs(r["r"] - 1) for r in held):.2%} '
-                 f'(limit {t["cell_max"]:.0%})')
-    if exempt:
-        lines.append(f'  {len(exempt)} cells exempt from the limit: worst {max(abs(r["r"] - 1) for r in exempt):.2%}')
+    over = [r['cell'] for r in rows if abs(r['r'] - 1) > t['cell_max'] + EPS]
+    lines.append(f'worst |r - 1| over all cells: {max(abs(r["r"] - 1) for r in rows):.2%} (limit {t["cell_max"]:.0%})')
     if over:
         failures.append(f'{len(over)} cells beyond ±{t["cell_max"]:.0%}, e.g. {over[:3]}')
     for op, op_rows in by_op_all.items():
@@ -369,7 +351,7 @@ def gate4(run1, run2, disagreements, t):
     cells = same_cells(run1, run2)
     ratios = [run2[c]['ns_per_op'] / run1[c]['ns_per_op'] for c in cells]
     lines, failures = [], []
-    ratio_checks('run 2 / run 1', cells, ratios, t, failures, lines, op_medians=False, exempt=cell_max_exempt)
+    ratio_checks('run 2 / run 1', cells, ratios, t, failures, lines, op_medians=False)
     for c in cells:
         if run1[c]['allocs_per_op'] != run2[c]['allocs_per_op']:
             failures.append(f'{c}: allocs/op {run1[c]["allocs_per_op"]} vs {run2[c]["allocs_per_op"]}')
