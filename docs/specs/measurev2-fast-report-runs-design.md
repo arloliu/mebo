@@ -402,9 +402,10 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    The gate is inconclusive, and counts as failed, unless the stable cells are at least 80% of all cells and at least 50% of each operation's cells.
    It passes when |r − 1| ≤ 5% for at least 95% of the stable cells, |r − 1| ≤ 10% for every cell,
    and the median r of each operation (encode, decode, iterate, `ValueAt`, `TimestampAt`) is within ±3%.
-   Since 2026-10-06 the 15 shared-timestamp `TimestampAt` cells are exempt from the 10% per-cell limit, as in gate 4,
-   because a binary file can switch between their two speeds during a run;
-   they still count toward the share and the per-operation median (`docs/specs/encoder-write-barriers-design.md`).
+   From 2026-10-06 to 2026-10-07 the 15 shared-timestamp `TimestampAt` cells were exempt from the 10% per-cell limit,
+   as in gate 4, because a binary file could switch between their two speeds during a run
+   (`docs/specs/encoder-write-barriers-design.md`);
+   `docs/specs/index-entry-by-pointer-design.md` removed the two speeds, and the exemption with them.
    Allocations: allocs/op of B↑ and B↓ each lie within one of A↑'s,
    or, where A↑ and A↓ disagree, within one of the range between them;
    B/op within max(2% of A↑'s, 64 bytes), which also covers a zero baseline (4% from 2026-10-05 to 2026-10-06).
@@ -441,6 +442,9 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    and a file can change state during a run.
    The suspected cause is where the kernel placed the file's page-cache pages;
    without hardware counters (`perf_event_paranoid` is 4) the mechanism is unconfirmed.
+   (Found on 2026-10-06 with counters:
+   the placement selected the rate of pipeline resyncs on a struct copy in `TimestampAt`, not a cache or TLB effect;
+   `docs/specs/index-entry-by-pointer-design.md` removed the copy and the two speeds.)
    All 15 cells move together in one process, and no comparison was decided in opposite directions in any pass,
    but a run with two or more slow layout files moves their pooled medians by 14.5% or more.
    The report notes that these absolute timings can read up to 29% high.
@@ -539,7 +543,7 @@ Decisions the design left open, recorded as implemented.
   all files of one directory must share one `run_id`, `common` and `invocation`,
   pinned to the gate's CPU with `GOMAXPROCS=1`, `GOGC=100` and no `GOMEMLIMIT` or `GODEBUG`;
   an isolated set needs one invocation per report profile.
-  Gate 4 applies the 95%/5% and 10% limits (with the exemption above),
+  Gate 4 applies the 95%/5% and 10% limits (with the exemption above, while it lasted),
   the allocation rules and the opposite-direction check,
   but no per-operation median limit, which belongs to gates 2 and 3.
   `VALIDATE_BENCHTIME_A` and `VALIDATE_BENCHTIME_B` shorten a smoke run of `validate.sh`; only the defaults count.
@@ -612,7 +616,8 @@ What the passes found, and what changed because of it:
   shared-timestamp Gorilla and Chimp encodes keep a residual of about 4% in later data sets.
   Keeping those buffers in locals inside the hot loops is a separate library follow-up, not part of this work.
 - **Shared-timestamp `TimestampAt` is bimodal per binary file** (gate 4),
-  and gate 4 exempts those 15 cells from `cell_max`.
+  and gate 4 exempts those 15 cells from `cell_max`
+  (until 2026-10-07; see `docs/specs/index-entry-by-pointer-design.md`).
 - **allocs/op truncates a mean** (gate 3), and gates 2 and 3 allow a difference of one.
 - **Reverse order adds a one-off allocation to encode** (gate 2): the B/op tolerance became max(4%, 64 bytes),
   and the report said that B/op of some encode cells reads up to about 1.5% high.

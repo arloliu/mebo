@@ -110,13 +110,18 @@ Out of scope:
 
 ## Consequences
 
-Decisions for the owner after the measurement, not part of this change:
+Decided by the owner on 2026-10-07, after the measurement:
 
-- `docs/performance.md` reports the old `TimestampAt` and `ValueAt` timings,
-  and says that shared `TimestampAt` can read up to 29% high.
-  Regenerating it needs a report run and the usual review.
-- Gates 2 and 4 exempt the shared `TimestampAt` cells from their per-cell limits.
-  Removing the exemptions needs a `validate.sh` run that passes without them.
+- Gates 2 and 4 no longer exempt the shared `TimestampAt` cells from their per-cell limits,
+  and the report template no longer says that those timings can read 29% high;
+  the `validate.sh` run that confirms it is recorded under Results.
+- `docs/performance.md` is regenerated from that validation's gate-4 run.
+- The shared buffer pool is left as it is.
+  A probe of the cold-pool cost (`tmp/pool-cold-encode-2026-10-06/`) found a cold encode 4–13 µs
+  and 0.4–0.5 MB over a warm one at 100 × 150 on one core,
+  and prototypes of separate pools, with and without a remembered capacity,
+  were no better overall: the remembered capacity helped only Gorilla and Chimp on one core,
+  and separate pools alone were slower after one GC with several cores.
 
 ## Results
 
