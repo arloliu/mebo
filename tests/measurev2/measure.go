@@ -255,6 +255,10 @@ func (p *measurePlan) timeCombo(profile string, c EncodingCombo, d *TestData, ro
 			return fmt.Errorf("%s: %w", id, err)
 		}
 		p.emit(traceEvent{kind: tracePrepare, profile: profile, cell: id, fixtures: fx})
+		if p.verbose {
+			// One line per timed cell, so a stamped stderr gives every cell's start (cellperf.py analyze).
+			logf("    cell %s\n", id)
+		}
 
 		res, err := p.runner.run(id, body)
 		if err != nil {
