@@ -125,8 +125,9 @@ def check_pinned(common, cpu, where):
 
 
 def isolated_cells(setdir, benchtime=None, order=None, cpu=None):
-    """Cells of an isolated set: exactly one -profiles <p> directory, named p, per report profile."""
-    if sorted(os.listdir(setdir)) != sorted(REPORT_PROFILES):
+    """Cells of an isolated set: exactly one -profiles <p> directory, named p, per report profile
+    (the instrumentation files validate.sh leaves beside each directory are not directories)."""
+    if sorted(d for d in os.listdir(setdir) if os.path.isdir(os.path.join(setdir, d))) != sorted(REPORT_PROFILES):
         raise SchemaError(f'{setdir}: want one directory per report profile')
     cells = {}
     for p in REPORT_PROFILES:
