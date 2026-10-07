@@ -1,8 +1,10 @@
 package blob
 
 import (
+	"cmp"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/arloliu/mebo/compress"
 	"github.com/arloliu/mebo/endian"
@@ -222,9 +224,9 @@ func (d *NumericDecoder) Decode() (NumericBlob, error) {
 	}
 
 	if hasShared {
-		// Build sharedTsCache: pre-decode timestamps for offsets used by multiple metrics.
+		// Pre-decode the timestamps of every offset used by more than one metric.
 		// After ApplySharedTimestampTable, shared metrics have identical TimestampOffset values.
-		d.buildSharedTsCache(&blob, indexEntries)
+		d.buildSharedTimestamps(&blob, indexEntries)
 	}
 
 	// Step 4: Build index — V2 uses sorted slice, V1 uses first-wins ordinal map
@@ -835,34 +837,38 @@ func (d *NumericDecoder) decompressPayloads(tsOffset, valOffset, tagOffset int) 
 	}, nil
 }
 
-// buildSharedTsCache pre-decodes timestamps for offsets shared by multiple metrics.
+// buildSharedTimestamps fills the blob's shared-timestamp groups, sorted by offset,
+// with the pre-decoded timestamps of every offset that several metrics share.
 // This avoids redundant decoding when iterating timestamps across many metrics
 // that share the same underlying timestamp data.
-func (d *NumericDecoder) buildSharedTsCache(blob *NumericBlob, indexEntries []section.NumericIndexEntry) {
+func (d *NumericDecoder) buildSharedTimestamps(blob *NumericBlob, indexEntries []section.NumericIndexEntry) {
 	// Count how many metrics reference each TimestampOffset
 	refCount := make(map[int]int, d.metricCount)
 	for i := range indexEntries[:d.metricCount] {
 		refCount[indexEntries[i].TimestampOffset]++
 	}
 
-	// Pre-decode only offsets used by more than one metric
-	cache := make(map[int][]int64)
+	// Pre-decode only offsets used by more than one metric, once each
+	var groups []sharedTimestampGroup
+	seen := make(map[int]struct{})
 	for i := range indexEntries[:d.metricCount] {
 		entry := &indexEntries[i]
 		if refCount[entry.TimestampOffset] <= 1 {
 			continue
 		}
-		if _, exists := cache[entry.TimestampOffset]; exists {
+		if _, exists := seen[entry.TimestampOffset]; exists {
 			continue
 		}
+		seen[entry.TimestampOffset] = struct{}{}
 
 		tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 		decoded := make([]int64, entry.Count)
 		produced := blob.decodeTimestampsSlice(tsBytes, entry.Count, decoded)
-		cache[entry.TimestampOffset] = decoded[:produced]
+		groups = append(groups, sharedTimestampGroup{offset: entry.TimestampOffset, ts: decoded[:produced]})
 	}
 
-	if len(cache) > 0 {
-		blob.sharedTsCache = cache
+	if len(groups) > 0 {
+		slices.SortFunc(groups, func(a, b sharedTimestampGroup) int { return cmp.Compare(a.offset, b.offset) })
+		blob.sharedTs = &sharedTimestamps{first: groups[0], groups: groups}
 	}
 }

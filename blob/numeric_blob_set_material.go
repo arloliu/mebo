@@ -134,7 +134,7 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 
 			// Decode timestamps: extend slice and decode directly into tail
 			tsOff := len(metricSet.timestamps)
-			if cached, ok := blob.sharedTsCache[entry.TimestampOffset]; ok {
+			if cached := blob.sharedTs.lookup(entry.TimestampOffset); cached != nil {
 				metricSet.timestamps = append(metricSet.timestamps, cached...)
 			} else {
 				tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
@@ -256,7 +256,7 @@ func (s *NumericBlobSet) materializeMetricCore(metricID uint64, resolve func(blo
 
 		// Decode timestamps: extend slice and decode directly into tail
 		tsOff := len(timestamps)
-		if cached, ok := blob.sharedTsCache[entry.TimestampOffset]; ok {
+		if cached := blob.sharedTs.lookup(entry.TimestampOffset); cached != nil {
 			timestamps = append(timestamps, cached...)
 		} else {
 			tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]

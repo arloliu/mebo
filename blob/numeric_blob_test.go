@@ -3358,9 +3358,16 @@ func TestNumericBlob_TimestampAt_ShortSharedCacheFallsBack(t *testing.T) {
 
 	entry, ok := blob.index.GetByID(8101)
 	require.True(t, ok)
-	cached, ok := blob.sharedTsCache[entry.TimestampOffset]
-	require.True(t, ok, "metrics with identical timestamps must share a cached sequence")
-	blob.sharedTsCache[entry.TimestampOffset] = cached[:5]
+	cached := blob.sharedTs.lookup(entry.TimestampOffset)
+	require.NotNil(t, cached, "metrics with identical timestamps must share a cached sequence")
+	for i := range blob.sharedTs.groups {
+		if blob.sharedTs.groups[i].offset == entry.TimestampOffset {
+			blob.sharedTs.groups[i].ts = cached[:5]
+		}
+	}
+	if blob.sharedTs.first.offset == entry.TimestampOffset {
+		blob.sharedTs.first.ts = cached[:5]
+	}
 
 	for i := range points {
 		got, ok := blob.TimestampAt(8101, i)
