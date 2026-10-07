@@ -176,11 +176,35 @@ its `validation/` holds the lint and test logs, the scans, the escape reports an
   with the neighbouring cells normal; a third A↓ run showed a 1.13× cell and two others none.
   This is not the two-speed state: it does not persist, the other 14 shared cells are normal,
   and no such cell appears in the forward-order 1 s runs or in any 50 ms run.
-  In reverse order the cell follows the previous combo's encode cell and starts with a cold branch predictor
-  on the binary search over 100 metric IDs, while in forward order `ValueAt` has just trained it on the same lookups;
-  that would fit a uniform slowdown with no change in frequency, resyncs or hot spots (`adown-perf2`),
-  but it is unverified: catching a slow cell with branch-miss samples (`perf record -e branch-misses:u`) would settle it.
-  The thresholds were not changed.
+  Both cells stopped at exactly 1,000,000 iterations,
+  the 100× cap that `predictN` applies at the 10,000-iteration checkpoint,
+  and it predicts that cap only when those first 10,000 iterations took at most 12 ms (1.2 × 10,000 × 1 s / t ≥ 1,000,000);
+  so each cell averaged at most 1.2 µs/op over its first 10 ms and 1.6–1.9 µs/op over the rest,
+  a cold branch predictor would slow the start of a cell, not its tail,
+  and the cells before and after are within 4% of A↑.
+  The same cell did not slow again in 300 instrumented shared cells on an idle machine
+  (`tmp/gate2-transient-2026-10-07/`: twelve mix_monitoring reverse runs, one exact gate-2 replay
+  and six more runs under `perf stat -I 100` with per-CPU, interrupt and sibling idle-state sampling beside them);
+  the afternoon's two failing runs had a load average near 2 from other processes.
+  The non-shared raw, ALP, Chimp and Gorilla `TimestampAt` cells, which run the same lookup loop, showed the mechanism:
+  8 of 540 cells had an episode of 0.5–0.8 s in which the loop ran a third slower
+  (instructions per 100 ms −32…34%, cell ratios 1.06–1.16×)
+  while cycles, clock, branch misses, context switches and the sibling CPU (asleep in C3, no wakeups) were unchanged;
+  inside an episode the ops fetched through the x86 decoders rose 50–100× (1 M to 54–104 M per 100 ms),
+  the dispatch slots with no ops from the front end rose 20× (81 M to 1.5–1.6 G), and `smt_contention` stayed at 0.
+  The core keeps executing the same loop, but for a while op-cache delivery falls to 94–97% of its ops,
+  decoder-sourced ops and front-end-empty dispatch slots rise sharply, and the dispatcher starves;
+  what starts an episode and what ends it are not known.
+  In the two episodes with cycle counts the loop held about 3.3 IPC;
+  a shared cell, at 6.1 IPC, held there for 1.8 s would show the 1.8× the gate saw,
+  and encode, decode and iterate, at 4.4–5.0 IPC and back-end bound, would barely move,
+  which fits all four afternoon anomalies landing on shared `TimestampAt` cells
+  (1.80× and 1.60× above, 1.27× on the rerun's `shared-deltapacked-raw`, 1.13× on adown-perf2's `shared-raw-gorilla`).
+  The attribution of the two failures rests on that signature match, not on a captured shared episode:
+  a competing load on the core or its sibling for 2 s reproduces the same N and T shape at 1.5–1.7×
+  (measured by injection), and that candidate is told apart by `smt_contention`, CPU 22 busy or task-clock below 100%,
+  which the captured episodes do not show.
+  The thresholds were not changed; the machine must be idle while the gates time.
 - **Earlier run.**
   The same change was first measured before `entryByID` and `entryByName` were moved below the exported methods
   (`pre-reorder-7c7f7ea/`); its median changes are within 1.5 points of the table's in every row.
