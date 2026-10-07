@@ -167,6 +167,20 @@ its `validation/` holds the lint and test logs, the scans, the escape reports an
   One `perf record` run counts 1.85 million resyncs in the process,
   against 3.3 million (fast) and 5.6 million (slow) before.
   `NumericBlob.ValueAt` holds 0.38% of the samples, and no sample falls in `NumericBlob.TimestampAt`.
+- **Validation without the exemptions** (`tmp/measurev2-validation-2026-10-07/`, at 7a30616, 2026-10-07).
+  Gate 4, the two complete layout-averaged runs, passes with every one of the 420 cells within 5% (worst 2.15%)
+  and the `TimestampAt` median ratio at 1.0006, so the shared cells no longer need the exemption.
+  Gates 1, 3, 5 and 6 pass.
+  Gate 2, 1 s against 50 ms on one binary, fails twice on one cell each time,
+  a shared `TimestampAt` cell of the reverse-order 1 s invocation (A↓) running 1.80× and then 1.60× slower,
+  with the neighbouring cells normal; a third A↓ run showed a 1.13× cell and two others none.
+  This is not the two-speed state: it does not persist, the other 14 shared cells are normal,
+  and no such cell appears in the forward-order 1 s runs or in any 50 ms run.
+  In reverse order the cell follows the previous combo's encode cell and starts with a cold branch predictor
+  on the binary search over 100 metric IDs, while in forward order `ValueAt` has just trained it on the same lookups;
+  that would fit a uniform slowdown with no change in frequency, resyncs or hot spots (`adown-perf2`),
+  but it is unverified: catching a slow cell with branch-miss samples (`perf record -e branch-misses:u`) would settle it.
+  The thresholds were not changed.
 - **Earlier run.**
   The same change was first measured before `entryByID` and `entryByName` were moved below the exported methods
   (`pre-reorder-7c7f7ea/`); its median changes are within 1.5 points of the table's in every row.
