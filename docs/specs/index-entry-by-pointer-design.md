@@ -212,3 +212,14 @@ its `validation/` holds the lint and test logs, the scans, the escape reports an
   the other 14, at 1,076–1,344 with fastest cells at 1,068–1,083, fell within 15 consecutive runs,
   and the same files ran at 1,061–1,068 in the two passes after that.
   That pattern points to a disturbance of the machine and not to a state of a file, but nothing recorded its cause.
+- **Follow-up: the shared-timestamp lookup** (2026-10-07 evening, `tmp/shared-ts-groups-2026-10-07/`).
+  `TimestampAt` on shared timestamps found the pre-decoded slice through a map keyed by `TimestampOffset`,
+  a hash and a probe per call for a map that `WithSharedTimestamps` fills with one entry.
+  The map became `sharedTimestamps`, the groups sorted by offset with the first one duplicated in a field,
+  looked up by a pointer method small enough to inline (a scan past the first group, a binary search past eight).
+  The first version, a value-receiver method on the blob that the compiler did not inline,
+  copied the whole blob on every call and made the 15 shared cells 8–9% slower (1,163 ns/op, layout-averaged);
+  the inlined version makes them 10–12% faster (943–961 ns/op against 1,063–1,078),
+  with every other operation's median within 1% and no cell past +3%.
+  The lookup's instruction count was not the point: the loop runs about 340 instructions per call
+  and the map was a small share of them, but the call it replaced carried the blob copy.

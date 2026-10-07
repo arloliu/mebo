@@ -371,8 +371,14 @@ It tests the Python tools with fixtures:
 
 ## Acceptance gates
 
-Run on the 9950X3D with nothing else heavy running, through `tests/measurev2/validate.sh`,
+Run on the 9950X3D with nothing else running, through `tests/measurev2/validate.sh`,
 which prints every gate's numbers and keeps the raw artifacts.
+Nothing else at all: a few seconds of a script on the SMT sibling of the pinned core cost its `TimestampAt` cells 10%
+(`docs/specs/index-entry-by-pointer-design.md`, "Validation without the exemptions").
+Since 2026-10-07 the script runs every pinned invocation of gates 2 and 3 under `perf stat -I 100`
+(five hardware events per 100 ms; `tests/measurev2/cellperf.py` picks them and samples the machine beside the run),
+and lists at the end the 1 s cells whose counters show a mid-cell episode or contention,
+so a failed cell is attributable from the log; `--no-instrument` turns that off.
 The candidate configuration is `-benchtime 50ms -rounds 4 -cells report`; every gate uses it.
 A failing gate is investigated, not retried until it passes.
 The numeric thresholds below (5%, 10%, ±3%, 80%, 95%) were **provisional**;
@@ -394,10 +400,17 @@ If the fallback configuration (`-benchtime 100ms -rounds 2`) is adopted instead,
    `-sizes-only -profiles report` reproduces every `encoded_bytes`, `bytes_per_point`, `vs_raw_ratio`, `space_savings_pct`,
    `total_points` and scaling value of the 2026-10-04 JSONs.
 2. **Short benchtime is accurate.**
-   One binary (layout 0), pinned, `GOMAXPROCS=1`, `-profiles report -cells report`, four runs in this order:
-   A↑ B↓ B↑ A↓, where A is `-benchtime 1s`, B is `-benchtime 50ms`, ↑ is `-order forward` and ↓ is `-order reverse`.
-   Per cell: A = mean of A↑ and A↓, B = mean of B↑ and B↓, r = B / A;
+   One binary (layout 0), pinned, `GOMAXPROCS=1`, `-profiles report -cells report`, six runs in this order:
+   A↑ B↓ B↑ A↓ A↑₂ B↓₂, where A is `-benchtime 1s`, B is `-benchtime 50ms`,
+   ↑ is `-order forward` and ↓ is `-order reverse`.
+   Per cell: A = median of A↑, A↓ and A↑₂, B = median of B↑, B↓ and B↓₂, r = B / A;
    the controls are cA = A↑ / A↓ and cB = B↑ / B↓.
+   Until 2026-10-07 there were four runs and A and B were means of two;
+   the third run of each benchtime was added because a cell can lose up to two seconds to the core's op-cache fetch episode
+   (`docs/specs/index-entry-by-pointer-design.md`),
+   which failed the gate twice on one shared `TimestampAt` cell at 1 s and once on a `ValueAt` cell at 50 ms,
+   and a mean of two cannot absorb one such cell while a median of three can;
+   two slowed runs of a cell still fail it, and systematic instability still fails the stable-share checks.
    A cell is **stable** when |cA − 1| ≤ 5% and |cB − 1| ≤ 5%.
    The gate is inconclusive, and counts as failed, unless the stable cells are at least 80% of all cells and at least 50% of each operation's cells.
    It passes when |r − 1| ≤ 5% for at least 95% of the stable cells, |r − 1| ≤ 10% for every cell,

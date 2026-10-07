@@ -93,7 +93,26 @@ It then merges the runs with `merge_layouts.py`:
 A failure in any step leaves no `merged/` directory.
 `validate.sh -o DIR` runs the acceptance gates (sizes, short benchtime, one process, reproducibility, movement, time);
 `validate.sh --calibrate` prints the distributions the thresholds in `acceptance_thresholds.json` are set from.
-Run either with nothing else heavy on the machine.
+Run either with nothing else on the machine at all:
+even a short script that the kernel places on the pinned core's SMT sibling costs the `TimestampAt` cells 10%.
+Gate 2 takes each side from the median of three runs (A↑ A↓ A↑₂ at 1 s, B↓ B↑ B↓₂ at 50 ms),
+because one cell can lose up to two seconds to the core's op-cache fetch episode
+(`docs/specs/index-entry-by-pointer-design.md`, "Validation without the exemptions").
+
+`validate.sh` instruments its pinned invocations (gates 2 and 3) unless `--no-instrument` is given:
+each runs under `perf stat -I 100`,
+leaving `DIR.perf.csv`, its stamped `-verbose` progress lines in `DIR.stderr.log` and its wall times in `DIR.times.txt`
+beside its output directory,
+while `cellperf.py monitor` samples the machine every 100 ms into `OUTDIR/monitor.csv`
+(busy shares of the pinned core, its sibling and the busiest other CPU,
+the core's clock, Tctl, its interrupt deltas, the sibling's idle states).
+`cellperf.py events` picks five hardware events (the NMI watchdog holds the sixth core counter):
+on Zen 5 cycles, instructions, branch misses, decoder-sourced ops and SMT-contention slots;
+elsewhere cycles, instructions, branches and branch misses; nothing when perf cannot count.
+At the end `cellperf.py analyze` lists, per 1 s invocation, the main-data-set cells whose 100 ms buckets show
+a mid-cell throughput episode or contention, with the bucket rows, so a failed cell is attributable from the log;
+`cellperf.py analyze DIR... --all` prints every cell's rows afterwards.
+The `layouts.sh` invocations of gate 4 and of report runs are not instrumented (50 ms cells, twenty times less exposed).
 
 ## Encoding Matrix
 
