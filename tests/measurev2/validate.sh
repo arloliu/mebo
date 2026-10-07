@@ -8,7 +8,7 @@
 #   gate 5  layouts.sh --build-only: four layouts and the movement check, before any timing;
 #   gate 1  -sizes-only -profiles report against the reference JSONs in -ref;
 #           the data-set lifecycle test (go test without -short);
-#   gate 2  layout 0, pinned: -benchtime 1s and 50ms, A↑ B↓ B↑ A↓;
+#   gate 2  layout 0, pinned: -benchtime 1s and 50ms, A↑ B↓ B↑ A↓ A↑₂ B↓₂ (A and B are medians of three);
 #   gate 3  layout 0, pinned: three alternations of one combined and one isolated set of invocations;
 #   gate 4  two complete layouts.sh runs (gate 6 reads their stage times).
 # With --calibrate it runs gates 5, 2, 3 and 4 and prints the per-operation distributions
@@ -59,12 +59,14 @@ if [[ $calibrate -eq 0 ]]; then
   (cd "$here" && go test -run '^TestDatasetLifecycle$' -count=1 -v .) || status=1
 fi
 
-stamp "gate 2: -benchtime $bt_a against $bt_b (A↑ B↓ B↑ A↓)"
+stamp "gate 2: -benchtime $bt_a against $bt_b (A↑ B↓ B↑ A↓ A↑₂ B↓₂)"
 mkdir -p "$out/gate2"
 pin -profiles report -benchtime "$bt_a" -order forward -outdir "$out/gate2/A_up"
 pin -profiles report -benchtime "$bt_b" -order reverse -outdir "$out/gate2/B_down"
 pin -profiles report -benchtime "$bt_b" -order forward -outdir "$out/gate2/B_up"
 pin -profiles report -benchtime "$bt_a" -order reverse -outdir "$out/gate2/A_down"
+pin -profiles report -benchtime "$bt_a" -order forward -outdir "$out/gate2/A_up2"
+pin -profiles report -benchtime "$bt_b" -order reverse -outdir "$out/gate2/B_down2"
 
 stamp "gate 3: one process for all data sets against one per data set"
 mkdir -p "$out/gate3"
@@ -93,7 +95,7 @@ fi
 
 stamp "evaluate"
 g2=$out/gate2 g3=$out/gate3
-"${acceptance[@]}" gate2 "$g2/A_up" "$g2/B_down" "$g2/B_up" "$g2/A_down" || status=1
+"${acceptance[@]}" gate2 "$g2/A_up" "$g2/B_down" "$g2/B_up" "$g2/A_down" "$g2/A_up2" "$g2/B_down2" || status=1
 "${acceptance[@]}" gate3 "$g3/combined1" "$g3/isolated1" "$g3/combined2" "$g3/isolated2" \
   "$g3/combined3" "$g3/isolated3" || status=1
 "${acceptance[@]}" gate4 "$out/gate4/run1" "$out/gate4/run2" || status=1

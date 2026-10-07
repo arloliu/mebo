@@ -544,7 +544,7 @@ def acceptance_operation_variance():
             v['t_ns'] = int(target * 1.1e9)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        expect_error(acceptance.gate2, a, b_down, b_up, a, thresholds(), exc=(acceptance.GateFailure,))
+        expect_error(acceptance.gate2, a, b_down, b_up, a, a, b_down, thresholds(), exc=(acceptance.GateFailure,))
     fails = [ln for ln in buf.getvalue().splitlines() if ln.startswith('FAIL')]
     ok(any('of iter_seq cells are stable' in f for f in fails), fails)
     ok(not any('encode' in f for f in fails), f'encode is not blamed: {fails}')
@@ -973,7 +973,7 @@ def acceptance_thresholds_and_boundaries():
             for v in d.values():
                 v['t_ns'] = int(target * 1.1e9)
                 v['n'] = max(1, int(v['t_ns'] / v['ns_per_op']))
-        return acceptance.gate2(a, b, b, a_down, thresholds(cell_max=0.2, stable_share_min=0.80, stable_control=0.05))
+        return acceptance.gate2(a, b, b, a_down, a, b, thresholds(cell_max=0.2, stable_share_min=0.80, stable_control=0.05))
 
     quiet(run2, 8)
     expect_error(quiet, run2, 7, exc=(acceptance.GateFailure,))
@@ -993,7 +993,7 @@ def acceptance_operation_specific_failure():
             v['t_ns'] = int(target * 1.1e9)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        expect_error(acceptance.gate2, a, b, b, a, t, exc=(acceptance.GateFailure,))
+        expect_error(acceptance.gate2, a, b, b, a, a, b, t, exc=(acceptance.GateFailure,))
     fails = [ln for ln in buf.getvalue().splitlines() if ln.startswith('FAIL')]
     ok(any('iter_seq: median r 1.0400 is outside ±3%' in f and 'biases iter_seq' in f for f in fails), fails)
     ok(not any(f.startswith('FAIL encode') for f in fails), f'encode is not blamed: {fails}')
@@ -1023,35 +1023,40 @@ def acceptance_gate2_allocations():
         for v in d.values():
             v['t_ns'] = int(target * 1.1e9)
     b['counter/c3/encode']['allocs_per_op'] = 9
-    quiet(acceptance.gate2, a, b, b, a, t)
+    quiet(acceptance.gate2, a, b, b, a, a, b, t)
     b['counter/c3/encode']['allocs_per_op'] = 8
-    _, out = quiet(lambda: expect_error(acceptance.gate2, a, b, b, a, t, exc=(acceptance.GateFailure,)))
+    _, out = quiet(lambda: expect_error(acceptance.gate2, a, b, b, a, a, b, t, exc=(acceptance.GateFailure,)))
     ok("allocs/op 8 outside A's [10, 10] ± 1" in out, out)
 
 
 @check
 def acceptance_gate2_holds_shared_timestamp_at():
-    """Gate 2 holds every cell to cell_max, random_timestamp_at on shared timestamps included:
-    the exemption for its two speeds ended with the pointer lookups of docs/specs/index-entry-by-pointer-design.md."""
+    """Gate 2 holds every cell to cell_max, random_timestamp_at on shared timestamps included
+    (the exemption for its two speeds ended with the pointer lookups of docs/specs/index-entry-by-pointer-design.md),
+    and A and B are medians of three runs: a cell slowed by 29% in one of them passes, in two of them it fails."""
     t = thresholds(cell_within=0.05, cell_within_share_min=0.95, cell_max=0.11)
 
-    def run(*moved):
-        a, a_down, b = {}, {}, {}
+    def run(moved=(), runs=1):
+        a, a_down, a_up2, b = {}, {}, {}, {}
         for i in range(20):
             for combo in (f'shared-c{i}', f'c{i}'):
                 cell = f'mix_monitoring/{combo}/random_timestamp_at'
-                a[cell] = raw_op(1000.0 * (1.29 if cell in moved else 1.0))
-                a_down[cell] = raw_op(1000.0)
+                slow = cell in moved
+                a[cell] = raw_op(1000.0 * (1.29 if slow else 1.0))
+                a_down[cell] = raw_op(1000.0 * (1.29 if slow and runs >= 2 else 1.0))
+                a_up2[cell] = raw_op(1000.0)
                 b[cell] = raw_op(1000.0)
-        for d, target in ((a, 1.0), (a_down, 1.0), (b, 0.05)):
+        for d, target in ((a, 1.0), (a_down, 1.0), (a_up2, 1.0), (b, 0.05)):
             for v in d.values():
                 v['t_ns'] = int(target * 1.1e9)
-        return acceptance.gate2(a, b, b, a_down, t)
+        return acceptance.gate2(a, b, b, a_down, a_up2, b, t)
 
     _, out = quiet(run)
     ok('worst |r - 1| over all cells: 0.00%' in out, out)
     for cell in ('mix_monitoring/shared-c0/random_timestamp_at', 'mix_monitoring/c0/random_timestamp_at'):
-        _, out = quiet(lambda: expect_error(run, cell, exc=(acceptance.GateFailure,)))
+        _, out = quiet(run, (cell,), 1)
+        ok('worst |r - 1| over all cells: 0.00%' in out and 'stable cells: 39 of 40' in out, out)
+        _, out = quiet(lambda: expect_error(run, (cell,), 2, exc=(acceptance.GateFailure,)))
         ok('1 cells beyond ±11%' in out and 'exempt' not in out, out)
 
 

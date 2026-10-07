@@ -3,7 +3,7 @@
 
 Usage:
     acceptance.py gate1 SIZES_DIR REFERENCE_DIR
-    acceptance.py gate2 A_UP B_DOWN B_UP A_DOWN
+    acceptance.py gate2 A_UP B_DOWN B_UP A_DOWN A_UP2 B_DOWN2
     acceptance.py gate3 COMBINED1 ISOLATED1 COMBINED2 ISOLATED2 COMBINED3 ISOLATED3
     acceptance.py gate4 RUN1 RUN2
     acceptance.py gate6 RUN1 [RUN2 ...]
@@ -41,11 +41,16 @@ OP_ORDER = OPS
 EPS = 1e-12
 # The candidate configuration every gate uses (spec, "Acceptance gates"); validate.sh may override the benchtimes for a smoke run.
 CANDIDATE = {'benchtime': os.environ.get('VALIDATE_BENCHTIME_B', '50ms'), 'rounds': 4, 'cells': 'report'}
-# Gate 2's four runs in order: (directory, -benchtime, -order).
+# Gate 2's six runs in order: (directory, -benchtime, -order).
+# The third run of each benchtime exists so that A and B are medians of three:
+# a cell can lose up to two seconds to the core's op-cache fetch episode
+# (docs/specs/index-entry-by-pointer-design.md), and a mean of two cannot absorb that.
 GATE2_RUNS = [('A_up', os.environ.get('VALIDATE_BENCHTIME_A', '1s'), 'forward'),
               ('B_down', CANDIDATE['benchtime'], 'reverse'),
               ('B_up', CANDIDATE['benchtime'], 'forward'),
-              ('A_down', os.environ.get('VALIDATE_BENCHTIME_A', '1s'), 'reverse')]
+              ('A_down', os.environ.get('VALIDATE_BENCHTIME_A', '1s'), 'reverse'),
+              ('A_up2', os.environ.get('VALIDATE_BENCHTIME_A', '1s'), 'forward'),
+              ('B_down2', CANDIDATE['benchtime'], 'reverse')]
 
 
 class GateFailure(Exception):
@@ -245,12 +250,12 @@ def gate1(sizes_dir, ref_dir):
 
 # ---------------------------------------------------------------- gate 2
 
-def gate2_numbers(a_up, b_down, b_up, a_down):
-    cells = same_cells(a_up, b_down, b_up, a_down)
+def gate2_numbers(a_up, b_down, b_up, a_down, a_up2, b_down2):
+    cells = same_cells(a_up, b_down, b_up, a_down, a_up2, b_down2)
     rows = []
     for c in cells:
-        a = (a_up[c]['ns_per_op'] + a_down[c]['ns_per_op']) / 2
-        b = (b_up[c]['ns_per_op'] + b_down[c]['ns_per_op']) / 2
+        a = median([a_up[c]['ns_per_op'], a_down[c]['ns_per_op'], a_up2[c]['ns_per_op']])
+        b = median([b_up[c]['ns_per_op'], b_down[c]['ns_per_op'], b_down2[c]['ns_per_op']])
         rows.append({
             'cell': c, 'r': b / a,
             'cA': a_up[c]['ns_per_op'] / a_down[c]['ns_per_op'],
@@ -259,9 +264,10 @@ def gate2_numbers(a_up, b_down, b_up, a_down):
     return cells, rows
 
 
-def gate2(a_up, b_down, b_up, a_down, t, target_a=1.0, target_b=0.05):
-    """Gate 2: the short benchtime against 1 s on one binary, with order controls."""
-    cells, rows = gate2_numbers(a_up, b_down, b_up, a_down)
+def gate2(a_up, b_down, b_up, a_down, a_up2, b_down2, t, target_a=1.0, target_b=0.05):
+    """Gate 2: the median of three short-benchtime runs against the median of three 1 s runs on one binary,
+    with order controls."""
+    cells, rows = gate2_numbers(a_up, b_down, b_up, a_down, a_up2, b_down2)
     lines, failures = [], []
     stable = [r for r in rows if abs(r['cA'] - 1) <= t['stable_control'] + EPS and abs(r['cB'] - 1) <= t['stable_control'] + EPS]
     stable_share = len(stable) / len(rows)
@@ -294,14 +300,16 @@ def gate2(a_up, b_down, b_up, a_down, t, target_a=1.0, target_b=0.05):
                             f'(the short benchtime biases {op})')
 
     for c in cells:
-        lo, hi = sorted((a_up[c]['allocs_per_op'], a_down[c]['allocs_per_op']))
-        for name, b in (('B↑', b_up[c]), ('B↓', b_down[c])):
+        allocs = sorted((a_up[c]['allocs_per_op'], a_down[c]['allocs_per_op'], a_up2[c]['allocs_per_op']))
+        lo, hi = allocs[0], allocs[-1]
+        for name, b in (('B↑', b_up[c]), ('B↓', b_down[c]), ('B↓₂', b_down2[c])):
             if not allocs_ok(b['allocs_per_op'], lo, hi, t):
                 failures.append(f'{c}: {name} allocs/op {b["allocs_per_op"]} outside A\'s [{lo}, {hi}] ± {t["allocs_abs"]}')
             if not bytes_ok(b['bytes_per_op'], a_up[c]['bytes_per_op'], t):
                 failures.append(f'{c}: {name} B/op {b["bytes_per_op"]} vs A↑ {a_up[c]["bytes_per_op"]}')
 
-    for name, run, target in (('A↑', a_up, target_a), ('A↓', a_down, target_a), ('B↑', b_up, target_b), ('B↓', b_down, target_b)):
+    for name, run, target in (('A↑', a_up, target_a), ('A↓', a_down, target_a), ('A↑₂', a_up2, target_a),
+                              ('B↑', b_up, target_b), ('B↓', b_down, target_b), ('B↓₂', b_down2, target_b)):
         ratios = [run[c]['t_ns'] / 1e9 / target for c in cells]
         lines.append(f'{name} t_ns / benchtime: min {min(ratios):.2f}, median {median(ratios):.2f}, max {max(ratios):.2f}')
         if min(ratios) < t['benchtime_t_min'] - EPS or max(ratios) > t['benchtime_t_max'] + EPS:
@@ -420,9 +428,9 @@ def dist(values):
 
 def calibrate(gate2dir, gate3dir, gate4dir, cpu=None):
     """Per-operation distributions of the gate statistics, and proposed thresholds with margins over them."""
-    a_up, b_down, b_up, a_down = (raw_cells(os.path.join(gate2dir, n), benchtime=bt, order=o, cpu=cpu)
-                                  for n, bt, o in GATE2_RUNS)
-    cells, rows = gate2_numbers(a_up, b_down, b_up, a_down)
+    a_up, b_down, b_up, a_down, a_up2, b_down2 = (raw_cells(os.path.join(gate2dir, n), benchtime=bt, order=o, cpu=cpu)
+                                                  for n, bt, o in GATE2_RUNS)
+    cells, rows = gate2_numbers(a_up, b_down, b_up, a_down, a_up2, b_down2)
     out = {'gate2': {}, 'gate3': {}, 'gate4': {}}
     print('== calibration: gate 2 (|cA - 1|, |cB - 1|, |r - 1| per operation)')
     for op, op_rows in per_op(cells, rows).items():
@@ -455,7 +463,7 @@ def calibrate(gate2dir, gate3dir, gate4dir, cpu=None):
         dev = [abs(v - 1) for v in vals]
         print(f'{op}: {dist(dev)} median {median(vals):.4f}')
         out['gate4'][op] = {'p95': percentile(dev, 0.95), 'max': max(dev), 'median': median(vals)}
-    out['proposal'] = propose(rows, cells, c3, cells3, d4, [a_up, a_down], [b_up, b_down])
+    out['proposal'] = propose(rows, cells, c3, cells3, d4, [a_up, a_down, a_up2], [b_up, b_down, b_down2])
     print('== proposed thresholds (observed statistic × margin, rounded up; see the rule printed with each)')
     print(json.dumps(out['proposal'], indent=2))
     print('== raw calibration statistics')
@@ -517,8 +525,8 @@ def main(argv=None):
             return 0
         t = load_thresholds(args.thresholds)
         if args.gate == 'gate2':
-            if len(args.dirs) != 4:
-                raise SchemaError('gate2 takes A_UP B_DOWN B_UP A_DOWN')
+            if len(args.dirs) != 6:
+                raise SchemaError('gate2 takes A_UP B_DOWN B_UP A_DOWN A_UP2 B_DOWN2')
             runs = [raw_cells(d, benchtime=bt, order=o, cpu=args.cpu) for d, (_, bt, o) in zip(args.dirs, GATE2_RUNS)]
             gate2(*runs, t, target_a=parse_seconds(GATE2_RUNS[0][1]), target_b=parse_seconds(CANDIDATE['benchtime']))
         elif args.gate == 'gate3':
