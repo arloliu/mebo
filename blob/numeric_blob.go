@@ -1,7 +1,9 @@
 package blob
 
 import (
+	"cmp"
 	"iter"
+	"slices"
 	"time"
 
 	"github.com/arloliu/mebo/encoding"
@@ -23,15 +25,75 @@ type NumericDataPoint struct {
 
 // NumericBlob represents a decoded blob of float values with associated timestamps and optional tags.
 type NumericBlob struct {
-	blobBase                                           // Embedded base: engine, startTime, tsEncType, sameByteOrder, flags
-	index         indexMaps[section.NumericIndexEntry] // Metric ID/name → IndexEntry mappings
-	tsPayload     []byte
-	valPayload    []byte
-	tagPayload    []byte
-	sharedTsCache map[int][]int64 // Pre-decoded shared timestamps keyed by TimestampOffset (nil if no shared TS)
+	blobBase                                        // Embedded base: engine, startTime, tsEncType, sameByteOrder, flags
+	index      indexMaps[section.NumericIndexEntry] // Metric ID/name → IndexEntry mappings
+	tsPayload  []byte
+	valPayload []byte
+	tagPayload []byte
+	sharedTs   *sharedTimestamps // Pre-decoded timestamps of the shared-timestamp groups (nil if no shared TS)
 }
 
-var _ BlobReader = NumericBlob{}
+// sharedTimestampGroup is one shared-timestamp group:
+// the TimestampOffset that several metrics reference and its timestamps, decoded once at open.
+type sharedTimestampGroup struct {
+	offset int
+	ts     []int64
+}
+
+// sharedTimestamps holds a blob's shared-timestamp groups sorted by offset,
+// with the first one duplicated in first so that the one-group case,
+// which is what WithSharedTimestamps produces, is a field compare.
+// A map lookup here cost the point accessors a hash and a probe per call.
+type sharedTimestamps struct {
+	first  sharedTimestampGroup
+	groups []sharedTimestampGroup
+}
+
+// sharedTimestampsLinearMax is the group count up to which lookups scan
+// the groups instead of binary-searching them.
+const sharedTimestampsLinearMax = 8
+
+// lookup returns the pre-decoded timestamps of the group at the given
+// TimestampOffset, or nil when no group has that offset
+// (a found group's slice is never nil, even when empty);
+// a nil receiver (a blob without shared timestamps) has no groups.
+// It is small enough for the point accessors to inline the common case,
+// and it takes a pointer:
+// a value-receiver method on the blob copied the whole blob on every call.
+func (s *sharedTimestamps) lookup(offset int) []int64 {
+	if s != nil && s.first.offset == offset {
+		return s.first.ts
+	}
+
+	return s.lookupRest(offset)
+}
+
+// lookupRest searches the groups after the first,
+// scanning up to sharedTimestampsLinearMax groups and binary-searching more (they are sorted by offset).
+func (s *sharedTimestamps) lookupRest(offset int) []int64 {
+	if s == nil {
+		return nil
+	}
+	groups := s.groups
+	if len(groups) <= sharedTimestampsLinearMax {
+		for i := 1; i < len(groups); i++ {
+			if groups[i].offset == offset {
+				return groups[i].ts
+			}
+		}
+
+		return nil
+	}
+
+	i, found := slices.BinarySearchFunc(groups, offset, func(g sharedTimestampGroup, o int) int {
+		return cmp.Compare(g.offset, o)
+	})
+	if !found {
+		return nil
+	}
+
+	return groups[i].ts
+}
 
 // IsNumeric returns true if it's a numeric blob.
 func (b NumericBlob) IsNumeric() bool {
@@ -477,7 +539,7 @@ func (b NumericBlob) allTimestampsFromEntry(entry section.NumericIndexEntry) ite
 	}
 
 	// Fast path: return cached pre-decoded timestamps for shared-TS metrics
-	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
+	if cached := b.sharedTs.lookup(entry.TimestampOffset); cached != nil {
 		return func(yield func(int64) bool) {
 			for _, ts := range cached {
 				if !yield(ts) {
@@ -543,7 +605,7 @@ func (b NumericBlob) timestampAtFromEntry(entry *section.NumericIndexEntry, inde
 	}
 
 	// Fast path: shared timestamps were pre-decoded when the blob was opened.
-	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok && index < len(cached) {
+	if cached := b.sharedTs.lookup(entry.TimestampOffset); index < len(cached) {
 		return cached[index], true
 	}
 

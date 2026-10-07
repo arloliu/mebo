@@ -404,7 +404,7 @@ func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry,
 	}
 
 	// Fast path: yield cached pre-decoded shared timestamps.
-	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
+	if cached := b.sharedTs.lookup(entry.TimestampOffset); cached != nil {
 		for i, ts := range cached {
 			if !yield(base+i, ts) {
 				return -1

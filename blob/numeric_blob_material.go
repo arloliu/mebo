@@ -389,7 +389,7 @@ func (b NumericBlob) materializeEntry(entry section.NumericIndexEntry) Materiali
 	values := make([]float64, count)
 
 	// Fast path: use cached shared timestamps if available
-	if cached, ok := b.sharedTsCache[entry.TimestampOffset]; ok {
+	if cached := b.sharedTs.lookup(entry.TimestampOffset); cached != nil {
 		timestamps = timestamps[:copy(timestamps, cached)]
 	} else {
 		tsBytes := b.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]

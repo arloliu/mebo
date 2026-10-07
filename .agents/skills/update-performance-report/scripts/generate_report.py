@@ -42,7 +42,7 @@ from report_schema import (  # noqa: E402
 # Gorilla/Chimp (values) and Delta/DeltaPacked (timestamps) must sequentially decode from the start of the column,
 # so they're O(index), worst-case O(n).
 # Shared timestamps (any encoding) are decoded once into a cache when the blob is opened
-# (sharedTsCache, built in blob/numeric_decoder.go),
+# (the shared-timestamp groups that buildSharedTimestamps in blob/numeric_decoder.go fills),
 # so TimestampAt is O(1) for every shared-* combo regardless of its timestamp encoding;
 # see ts_complexity().
 AT_COMPLEXITY = {
