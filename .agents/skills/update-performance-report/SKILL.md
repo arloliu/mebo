@@ -156,11 +156,13 @@ verified against the decoder implementations, not inferred from names or numbers
   whatever timestamp encoding the combo pairs it with.
 - Delta, DeltaPacked (timestamp): O(index), since each value depends on the accumulated sum before it.
 - Shared timestamps (any timestamp encoding): O(1).
-  The shared columns are decoded once into `sharedTsCache` when the blob is opened (`blob/numeric_decoder.go`),
-  and `TimestampAt` reads the cache; the script's `ts_complexity()` applies this to every `shared-*` label.
+  The shared columns are decoded once into the blob's shared-timestamp groups when the blob is opened
+  (`buildSharedTimestamps` in `blob/numeric_decoder.go`), and `TimestampAt` reads them;
+  the script's `ts_complexity()` applies this to every `shared-*` label.
   Until 2026-10-07 their measured times were bimodal per binary file (about 1,630 or 2,105 ns on the main data set);
-  `docs/specs/index-entry-by-pointer-design.md` removed the cause, and they now measure about 1,065 ns,
-  so a report from before that change is not comparable on these cells.
+  `docs/specs/index-entry-by-pointer-design.md` removed the cause (about 1,065 ns),
+  and its follow-up replaced the map that found the group with an inlined lookup (about 950 ns),
+  so a report from before those changes is not comparable on these cells.
 
 When a codec is added, verify its `At()` complexity in the decoder source before adding it to `AT_COMPLEXITY`.
 
@@ -194,7 +196,7 @@ When a codec is added, verify its `At()` complexity in the decoder source before
   Encoding costs about 4% over ALP on data without repeats and about 1.8× ALP when half the points repeat
   (layout-averaged with the AVX-512 search; about 1% and 1.5× with the scalar search).
 - **Shared timestamps**: `WithSharedTimestamps()` stores identical timestamp columns once; savings grow with the number of metrics.
-  Opening a shared-TS blob also decodes the shared columns into `sharedTsCache`,
+  Opening a shared-TS blob also decodes the shared columns into the blob's shared-timestamp groups,
   so a smaller blob does not mean a faster open; don't claim shared-TS decodes faster unless the data shows it.
 - **Scaling**: below about 10 points per metric, fixed per-metric overhead dominates.
 - **Iteration**: compressed data can iterate faster than raw, because less memory is read.
