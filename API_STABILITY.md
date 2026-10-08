@@ -287,8 +287,32 @@ Behaviour changes:
   v1.12.0 writes the same bytes on every build, matching `GOAMD64=v1` output, which is unchanged.
   Decoding is unchanged, so every existing blob reads back to the same values;
   only callers that compare encoded bytes (content hashes, deduplication) can see a difference, for those rare values.
-- **`TimestampAt` on shared timestamps** is O(1) for every timestamp encoding.
+- **`TimestampAt` on shared timestamps** is O(1) for every timestamp encoding,
+  for a metric whose timestamp sequence at least one other metric of the blob shares (its offset is referenced by two or more index entries);
+  a metric with a unique sequence still walks its Delta or DeltaPacked column from the start.
 - **`ForEachValues` on ALP columns** no longer allocates per metric.
+
+## Additions and Behaviour Changes (v1.13.0)
+
+These additions are purely additive; no existing signature changed.
+
+- **`blob.NumericMetric`**: a handle on one numeric metric, of a `NumericBlob` or across the numeric members of a `BlobSet`,
+  resolved once and then read by index without per-call name hashing, index search or decoder construction.
+  Constructors: **`NumericBlob.Metric(id)`** and **`NumericBlob.MetricByName(name)`**,
+  **`BlobSet.NumericMetric(id)`** and **`BlobSet.NumericMetricByName(name)`**, each returning `(NumericMetric, bool)`;
+  the set forms consult numeric members only.
+  Methods: `Len`, `Duration`, `At`, `ValueAt`, `TimestampAt`, `TagAt`, `ForEach`, `ForEachValues`, `ForEachTimestamps`,
+  `Materialize`, `TimestampAccess` and `ValueAccess`.
+  The handle aliases the blobs' bytes and is valid as long as they are;
+  it is safe for concurrent reads, and `Materialize` is a write the caller serializes.
+- **`blob.AccessClass`** with **`AccessDirect`**, **`AccessSequential`** and **`AccessUnsupported`**, and its `String` method:
+  how `TimestampAt` and `ValueAt` serve a random access on a handle.
+
+Behaviour changes:
+
+- **`ForEach` and `ForEachByName`** on `NumericBlob` and `NumericBlobSet` no longer move the caller's callback to the heap:
+  a callback literal that captures locals costs no allocation per call.
+  ALP and ALP-RLE values still decode both columns into two new slices, and a tagged blob still copies each tag string.
 
 ## Go Version Compatibility
 

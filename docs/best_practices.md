@@ -85,7 +85,7 @@ For full scaling data, see [Performance Guide — Scaling Analysis](performance.
 | Metrics that share the same sampling schedule | `WithSharedTimestamps()` | Deduplicate timestamp column across metrics; saves about 1.2 bytes/point on the 100-metric benchmark mix, 24% with Chimp and 32% with ALP-RLE |
 | Decimal-quantized sensor data (2–4 dp) | ALP value | 2.4–3.8× smaller than Chimp/Gorilla on the 2- and 4-dp gauge profiles with shared timestamps; costs more to encode |
 | Decimal data where many points repeat the previous value, or gauges, counters and held values mixed in one blob | ALP-RLE value | Stores each run of repeats once; smallest on all four benchmark mixes, 12.8–47.5% below Chimp; see [ALP or ALP-RLE?](#alp-or-alp-rle) |
-| Frequent random-access timestamps | Raw timestamp | O(1) `TimestampAt`; Delta/DeltaPacked must sequentially decode from the start (O(index)) |
+| Frequent random-access timestamps | Raw timestamp, or `WithSharedTimestamps()` | O(1) `TimestampAt`; Delta/DeltaPacked decode sequentially from the start (O(index)) unless the sequence is shared by at least two metrics of the blob, which the decoder pre-decodes at open |
 | Frequent random-access values | Raw, ALP or ALP-RLE value | Raw is O(1); ALP is O(1) + O(log k) (k = exceptions in the column); ALP-RLE adds a bitmap rank of O(index/64) on columns with runs — all far ahead of Gorilla/Chimp, which must sequentially decode the XOR chain from the start (O(index)) |
 
 DeltaPacked vs Delta: DeltaPacked uses Group Varint, meant for **faster decode/iteration**, not better compression.
@@ -157,11 +157,30 @@ so a decoder older than this encoding rejects the blob with an invalid-header-fl
 Upgrade every consumer before switching producers to ALP-RLE, as for shared timestamps above.
 Readers that support it decode ALP and ALP-RLE blobs alike.
 
-### Materialize only when random access is frequent
+### Resolve a metric once, materialize it only when lookups replay columns
 
-Materialization decodes all data into memory once (~100 µs per metric per blob; ~16 bytes/point memory). It enables O(1) random access (~5 ns/op).
+For repeated reads of one metric, resolve it once into a `NumericMetric` handle
+(`NumericBlob.Metric`/`MetricByName`, or `BlobSet.NumericMetric`/`NumericMetricByName` across a set)
+instead of calling the `ByName` accessors, which hash the name and search the index on every call:
 
-The break-even point is roughly 100 random accesses on a dataset: the one-time materialization cost is recovered after that many `ValueAt` or `TimestampAt` calls. For purely sequential workloads, skip materialization and use `blob.All()` directly.
+| access pattern | use |
+|---|---|
+| a few lookups or one pass over a metric | the handle as is |
+| many lookups, a binary search, or repeated passes over one metric | the handle, then `Materialize()` once |
+| a copy that must outlive the blobs | `MaterializeMetric` / `MaterializeNumericMetricByName` |
+| most metrics of a blob, repeatedly | `Materialize()` on the blob or set |
+
+The break-even is per metric, not per dataset: it depends on what a lookup costs before materializing.
+`TimestampAccess()` and `ValueAccess()` on the handle say it.
+A direct axis (Raw, ALP, ALP-RLE values; Raw timestamps or timestamps shared by at least two metrics) costs a few nanoseconds per lookup whatever the index,
+so materializing it gains nothing;
+a sequential axis (Gorilla and Chimp values, Delta and DeltaPacked timestamps of a metric's own) replays the column up to the index,
+about 4 ns per point for Chimp and 1 ns per point for the timestamp codecs.
+`Materialize()` on the handle decodes only the sequential axes and the tags, at about the cost of `MaterializeMetric`
+(about 12 µs for a 600-point metric over four blobs with Chimp values and tags, measured 2026-10),
+and allocates nothing when every axis is direct and the blobs have no tags, so calling it before a binary search is never the wrong choice.
+After it, `At` on that metric costs about 3 ns and a `ForEach` over the 600 points about 1.3 µs.
+For one pass over a metric, skip materialization and use the handle's `ForEach`, `ForEachValues` or `ForEachTimestamps`.
 
 ### Tags add overhead — enable them only when needed
 

@@ -22,7 +22,7 @@ import (
 // Example:
 //
 //	material := blob.Materialize()
-//	val, ok := material.ValueAt(metricID, 500)  // O(1), ~5ns
+//	val, ok := material.ValueAt(metricID, 500)  // O(1), slice indexing
 //	ts, ok := material.TimestampAt(metricID, 500)
 //
 // MaterializedNumericBlob uses an ordinal-keyed representation: metrics are stored
@@ -82,8 +82,10 @@ func (m MaterializedNumericBlob) ordinalByName(metricName string) (int, bool) {
 // that supports O(1) random access to all data points.
 //
 // Performance:
-//   - Materialization cost: ~100μs per metric (one-time)
-//   - Random access: ~5ns (O(1), array indexing)
+//   - Materialization cost: about 2–5 ns per point without tags (ALP to Chimp values),
+//     plus one string copy per point with tags
+//     (measured 2026-10 on 150-point metrics with shared DeltaPacked timestamps, uncompressed, little-endian)
+//   - Random access: about 1 ns per accessor (O(1), slice indexing)
 //   - Memory: ~16 bytes per data point
 //
 // Use this when:
@@ -349,14 +351,17 @@ type MaterializedNumericMetric struct {
 // MaterializeMetric decodes a single metric for O(1) random access.
 //
 // Performance:
-//   - Materialization cost: ~100μs (one-time)
-//   - Random access: ~5ns (O(1), array indexing)
+//   - Materialization cost: about 0.4 µs for a 150-point metric with ALP values and shared timestamps,
+//     about 2–5 ns per point without tags (ALP to Chimp values), plus one string copy per point with tags
+//     (measured 2026-10)
+//   - Random access: about 1 ns per accessor (O(1), slice indexing)
 //   - Memory: ~16 bytes per data point
 //
 // Use this when:
 //   - You only need to access one or few metrics
 //   - You want fine-grained control over memory usage
 //   - You want to materialize metrics on demand
+//   - The copy must outlive the blob; otherwise NumericBlob.Metric and its Materialize serve the same lookups
 //
 // For accessing many metrics, consider Materialize() instead for one-time decode overhead.
 //
@@ -367,7 +372,7 @@ type MaterializedNumericMetric struct {
 //	    // Metric not found
 //	    return
 //	}
-//	val, _ := metric.ValueAt(500)  // O(1), ~5ns
+//	val, _ := metric.ValueAt(500)  // O(1), slice indexing
 //	ts, _ := metric.TimestampAt(500)
 func (b NumericBlob) MaterializeMetric(metricID uint64) (MaterializedNumericMetric, bool) {
 	entry, ok := b.index.GetByID(metricID)
@@ -449,7 +454,7 @@ func (b NumericBlob) MaterializeMetricByName(metricName string) (MaterializedNum
 // ValueAt returns the value at the specified index.
 // Returns (0, false) if index is out of bounds.
 //
-// This is an O(1) operation (~5ns).
+// This is an O(1) operation (about 1 ns, slice indexing).
 func (m MaterializedNumericMetric) ValueAt(index int) (float64, bool) {
 	if index < 0 || index >= len(m.Values) {
 		return 0, false
@@ -461,7 +466,7 @@ func (m MaterializedNumericMetric) ValueAt(index int) (float64, bool) {
 // TimestampAt returns the timestamp at the specified index.
 // Returns (0, false) if index is out of bounds.
 //
-// This is an O(1) operation (~5ns).
+// This is an O(1) operation (about 1 ns, slice indexing).
 func (m MaterializedNumericMetric) TimestampAt(index int) (int64, bool) {
 	if index < 0 || index >= len(m.Timestamps) {
 		return 0, false
@@ -474,7 +479,7 @@ func (m MaterializedNumericMetric) TimestampAt(index int) (int64, bool) {
 // Returns ("", false) if index is out of bounds.
 // Returns ("", true) if tags are not enabled but the index is valid.
 //
-// This is an O(1) operation (~5ns).
+// This is an O(1) operation (about 1 ns, slice indexing).
 func (m MaterializedNumericMetric) TagAt(index int) (string, bool) {
 	// If tags weren't enabled, return empty string
 	if len(m.Tags) == 0 {
