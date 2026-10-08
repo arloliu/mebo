@@ -1,6 +1,8 @@
 package blob
 
 import (
+	"slices"
+
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
 	ienc "github.com/arloliu/mebo/internal/encoding"
@@ -18,7 +20,8 @@ type AccessClass uint8
 // The classes are ordered from best to worst, so the worst of several is their maximum.
 const (
 	// AccessDirect reads the point without walking the column.
-	// Timestamps: Raw, or a sequence pre-decoded at open because two or more metrics of the blob share it.
+	// Timestamps: Raw, a sequence pre-decoded at open because two or more metrics of the blob share it,
+	// or a sequence NumericMetric.Materialize decoded.
 	// Values: Raw, ALP and ALP-RLE, a bit unpack plus a search of the column's exceptions,
 	// and for the runs layout a popcount of one word per 64 points.
 	AccessDirect AccessClass = iota
@@ -45,11 +48,16 @@ const (
 // and TimestampAccess and ValueAccess return AccessUnsupported.
 //
 // A handle is safe for concurrent reads, like the NumericBlob.
+// Materialize is the one write: it must not run concurrently with any other method on the same handle.
 // Copying a handle copies slice headers over the same bytes, so a copy serves the same reads.
+// A copy made before Materialize is independent of it and may materialize on its own;
+// copies made after it share the decoded slices, which are never written again.
 //
 // TimestampAt and ValueAt read the point directly or replay the column up to it,
 // as the encodings and the metric's shared-timestamp group decide, not the encoder options alone;
 // TimestampAccess and ValueAccess report it.
+// Materialize decodes the columns a lookup would replay, and the tags, into slices the handle owns,
+// after which every lookup is direct.
 // On an encoding the accessors cannot read, every lookup on that axis returns false and the class is AccessUnsupported.
 //
 // Methods take a pointer receiver; the type is still used by value, as bytes.Buffer is:
@@ -79,6 +87,12 @@ type numericMetricPart struct {
 	tsOK     bool                // the entry's timestamp range lay inside the payload
 	valOK    bool                // the entry's value range lay inside the payload
 	tagOK    bool                // the entry's tag range lay inside the payload (false without tags)
+
+	// Owned by the handle and filled by Materialize, nil until then; never written again once set.
+	// Each holds what its decoder produced, count elements unless the stream ended early.
+	timestamps []int64   // the decoded timestamp column, for a sequential timestamp axis
+	values     []float64 // the decoded value column, for a sequential value axis
+	tags       []string  // the decoded tag column, for a blob with tags
 }
 
 // fillNumericMetricPart copies what the point accessors need for entry of b into p, a part whose points start at base.
@@ -137,6 +151,19 @@ func numericMetricAcrossBlobs(blobs []NumericBlob, r setEntryResolver) (h Numeri
 	}
 
 	return h, true
+}
+
+// forEachZipped yields the points of decoded columns of equal length; tags is nil on a blob without tags.
+func forEachZipped(ts []int64, vals []float64, tags []string, yield func(int, NumericDataPoint) bool) {
+	for i, val := range vals {
+		dp := NumericDataPoint{Ts: ts[i], Val: val}
+		if tags != nil {
+			dp.Tag = tags[i]
+		}
+		if !yield(i, dp) {
+			return
+		}
+	}
 }
 
 // Metric returns a handle on the metric with the given ID.
@@ -283,7 +310,8 @@ func (h *NumericMetric) Duration() int64 {
 //
 // The index is the handle's own, each blob's points starting at the count of the points before it,
 // not a running count of the points yielded.
-// It decodes each blob's column once on the stack, as NumericBlob.ForEach does.
+// It decodes each blob's column once on the stack, as NumericBlob.ForEach does,
+// or reads the slices Materialize decoded; decoded tags are not copied again.
 // It returns nothing: the metric's existence was settled when the handle was made, and the zero value yields nothing.
 //
 // Parameters:
@@ -324,7 +352,8 @@ func (h *NumericMetric) ForEach(yield func(index int, dp NumericDataPoint) bool)
 
 // ForEachValues calls yield for every value of the metric in index order, with the index At accepts.
 //
-// It decodes each blob's value column once on the stack, as NumericBlob.ForEachValues does.
+// It decodes each blob's value column once on the stack, as NumericBlob.ForEachValues does,
+// or ranges over the values Materialize decoded.
 // It returns nothing, and the zero value yields nothing.
 //
 // Parameters:
@@ -346,8 +375,8 @@ func (h *NumericMetric) ForEachValues(yield func(index int, value float64) bool)
 
 // ForEachTimestamps calls yield for every timestamp of the metric in index order, with the index At accepts.
 //
-// A blob's pre-decoded shared group is yielded as it is, as NumericBlob.ForEachTimestamps does;
-// any other column is decoded once on the stack.
+// A blob's pre-decoded shared group, or the timestamps Materialize decoded, are yielded as they are,
+// as NumericBlob.ForEachTimestamps yields the group; any other column is decoded once on the stack.
 // It returns nothing, and the zero value yields nothing.
 //
 // Parameters:
@@ -378,6 +407,18 @@ func (h *NumericMetric) ForEachTimestamps(yield func(index int, ts int64) bool) 
 //   - NumericDataPoint: The point, with an empty tag on a blob without tags.
 //   - bool: false if the index is out of bounds or an axis cannot be read.
 func (h *NumericMetric) At(index int) (NumericDataPoint, bool) {
+	// A materialized part serves the point from its slices after one placement.
+	if p, i := h.locate(index); i >= 0 && i < len(p.values) && (i < len(p.tags) || !p.HasTag()) {
+		if ts, ok := p.timestampFromSlices(i); ok {
+			dp := NumericDataPoint{Ts: ts, Val: p.values[i]}
+			if i < len(p.tags) {
+				dp.Tag = p.tags[i]
+			}
+
+			return dp, true
+		}
+	}
+
 	ts, ok := h.TimestampAt(index)
 	if !ok {
 		return NumericDataPoint{}, false
@@ -410,6 +451,11 @@ func (h *NumericMetric) ValueAt(index int) (float64, bool) {
 	count := p.count
 	if i < 0 || i >= count {
 		return 0, false
+	}
+
+	// The column Materialize decoded first; a short decode falls through to the payload for the rest.
+	if i < len(p.values) {
+		return p.values[i], true
 	}
 
 	// valueAtFromEntry over the part's own range.
@@ -448,7 +494,11 @@ func (h *NumericMetric) TimestampAt(index int) (int64, bool) {
 	if i < 0 || i >= count {
 		return 0, false
 	}
-	// The pre-decoded group first; a group shorter than count falls through to the payload, as timestampAtFromEntry does.
+	// The column Materialize decoded, then the pre-decoded group;
+	// either one shorter than count falls through to the payload, as timestampAtFromEntry does for a short group.
+	if i < len(p.timestamps) {
+		return p.timestamps[i], true
+	}
 	if i < len(p.shared) {
 		return p.shared[i], true
 	}
@@ -473,7 +523,8 @@ func (h *NumericMetric) TimestampAt(index int) (int64, bool) {
 
 // TagAt returns the tag at the given index.
 //
-// Tags are variable-length strings walked from the column start, so TagAt is sequential on every tagged blob.
+// Tags are variable-length strings walked from the column start,
+// so TagAt is sequential on every tagged blob until Materialize decodes them.
 // On a blob without tags it returns ("", true) for every valid index, as NumericBlob.TagAt does.
 //
 // Parameters:
@@ -491,8 +542,43 @@ func (h *NumericMetric) TagAt(index int) (string, bool) {
 	if !p.HasTag() {
 		return "", true
 	}
+	if i < len(p.tags) {
+		return p.tags[i], true
+	}
 
 	return ienc.NewTagDecoder(p.engine).At(p.tagBytes, i, count)
+}
+
+// Materialize decodes every axis the handle reads by replaying its column into slices the handle owns,
+// so that every later lookup is direct.
+//
+// Per blob it decodes the timestamps when they are sequential (Delta or DeltaPacked without a complete shared group),
+// the values when they are sequential (Gorilla or Chimp), and the tags whenever the blob has them,
+// each into one new slice; axes that are already direct are left alone,
+// so on a handle whose axes are all direct and whose blobs have no tags it allocates nothing.
+// An axis becomes direct only when its decode produced every point;
+// a stream that ends early keeps what was decoded, the axis keeps its class,
+// and lookups past the decoded points read the payload as before.
+// Afterwards TimestampAccess and ValueAccess report the outcome,
+// and At, ValueAt, TimestampAt, TagAt and the ForEach forms read the decoded slices.
+//
+// Materialize is idempotent: a second call decodes nothing and allocates nothing.
+// It is a write: it must not run concurrently with any other method on the same handle,
+// and the caller serializes it.
+// A copy made before it stays as it was and may materialize on its own;
+// copies made after it share the decoded slices, which are never written again.
+// The slices are the handle's own, but the handle still aliases the blobs' bytes for its other reads.
+func (h *NumericMetric) Materialize() {
+	h.first.materialize()
+	if !h.restNeedsDecode() {
+		return
+	}
+	// The parts after the first live in an array that copies of the handle share: write to a copy of it,
+	// so a copy made before this call keeps its parts as they were.
+	h.rest = slices.Clone(h.rest)
+	for k := range h.rest {
+		h.rest[k].materialize()
+	}
 }
 
 // TimestampAccess reports how TimestampAt reads a point: the worst class over the blobs the handle spans.
@@ -556,12 +642,51 @@ func (h *NumericMetric) locateRest(index int) (*numericMetricPart, int) {
 	return &h.first, -1
 }
 
+// restNeedsDecode reports whether any part after the first has an axis Materialize would decode.
+func (h *NumericMetric) restNeedsDecode() bool {
+	for k := range h.rest {
+		if h.rest[k].needsDecode() {
+			return true
+		}
+	}
+
+	return false
+}
+
 // forEachPoints is forEachFromEntry over the part's own ranges: nothing when a required range was invalid.
+// After a full Materialize it zips the decoded slices, and decoded tags are never decoded again.
 func (p *numericMetricPart) forEachPoints(yield func(int, NumericDataPoint) bool) {
 	if p.count == 0 || !p.tsOK || !p.valOK || (p.HasTag() && !p.tagOK) {
 		return
 	}
-	NumericBlob{blobBase: p.blobBase}.forEachDataPoint(p.tsBytes, p.valBytes, p.tagBytes, p.count, yield)
+	tags := p.tags
+	if len(tags) != p.count {
+		tags = nil
+	}
+	if p.HasTag() && tags == nil {
+		NumericBlob{blobBase: p.blobBase}.forEachDataPoint(p.tsBytes, p.valBytes, p.tagBytes, p.count, yield)
+		return
+	}
+	if ts := p.timestampColumn(); ts != nil && len(p.values) == p.count {
+		forEachZipped(ts, p.values, tags, yield)
+		return
+	}
+	if tags == nil {
+		NumericBlob{blobBase: p.blobBase}.forEachDataPoint(p.tsBytes, p.valBytes, nil, p.count, yield)
+		return
+	}
+
+	// Decoded tags with columns that are not: walk the columns as a tagless blob and attach the tags.
+	untagged := p.blobBase
+	untagged.flags &^= section.FlagTagEnabled
+	NumericBlob{blobBase: untagged}.forEachDataPoint(p.tsBytes, p.valBytes, nil, p.count, func(i int, dp NumericDataPoint) bool {
+		if i >= len(tags) {
+			return false
+		}
+		dp.Tag = tags[i]
+
+		return yield(i, dp)
+	})
 }
 
 // forEachValues is forEachValuesFromEntry over the part's own range, indexed from the part's base.
@@ -570,25 +695,39 @@ func (p *numericMetricPart) forEachValues(yield func(int, float64) bool) int {
 	if p.count == 0 || !p.valOK {
 		return p.base
 	}
+	if len(p.values) == p.count {
+		for i, v := range p.values {
+			if !yield(p.base+i, v) {
+				return -1
+			}
+		}
+
+		return p.base + p.count
+	}
 
 	return NumericBlob{blobBase: p.blobBase}.forEachValuesBytes(p.valBytes, p.count, p.base, yield)
 }
 
 // forEachTimestamps is forEachTimestampsFromEntry over the part's own range, indexed from the part's base:
-// the pre-decoded group when there is one, the column otherwise.
+// the pre-decoded group when there is one, even a short one, as NumericBlob.ForEachTimestamps yields it,
+// then the column Materialize decoded in full, the column otherwise.
 // It returns the index after the last timestamp, or -1 if yield stopped the walk.
 func (p *numericMetricPart) forEachTimestamps(yield func(int, int64) bool) int {
 	if p.count == 0 {
 		return p.base
 	}
-	if p.shared != nil {
-		for i, ts := range p.shared {
+	group := p.shared
+	if group == nil && len(p.timestamps) == p.count {
+		group = p.timestamps
+	}
+	if group != nil {
+		for i, ts := range group {
 			if !yield(p.base+i, ts) {
 				return -1
 			}
 		}
 
-		return p.base + len(p.shared)
+		return p.base + len(group)
 	}
 	if !p.tsOK {
 		return p.base
@@ -603,7 +742,7 @@ func (p *numericMetricPart) timestampAccess() AccessClass {
 	case format.TypeRaw:
 		return AccessDirect
 	case format.TypeDelta, format.TypeDeltaPacked:
-		if p.shared != nil {
+		if p.shared != nil || (p.timestamps != nil && len(p.timestamps) == p.count) {
 			return AccessDirect
 		}
 
@@ -613,14 +752,87 @@ func (p *numericMetricPart) timestampAccess() AccessClass {
 	}
 }
 
-// valueAccess classifies the part's value axis from its encoding; every ALP scheme is direct.
+// valueAccess classifies the part's value axis from its encoding and what Materialize decoded; every ALP scheme is direct.
 func (p *numericMetricPart) valueAccess() AccessClass {
 	switch p.valEncType { //nolint: exhaustive
 	case format.TypeRaw, format.TypeALP, format.TypeALPRLE:
 		return AccessDirect
 	case format.TypeGorilla, format.TypeChimp:
+		if p.values != nil && len(p.values) == p.count {
+			return AccessDirect
+		}
+
 		return AccessSequential
 	default:
 		return AccessUnsupported
+	}
+}
+
+// timestampFromSlices reads the timestamp at local index i from the decoded column or the pre-decoded group,
+// and returns false when neither holds it.
+func (p *numericMetricPart) timestampFromSlices(i int) (int64, bool) {
+	if i < len(p.timestamps) {
+		return p.timestamps[i], true
+	}
+	if i < len(p.shared) {
+		return p.shared[i], true
+	}
+
+	return 0, false
+}
+
+// timestampColumn returns the part's timestamps as a slice of count elements, decoded or pre-decoded, or nil.
+func (p *numericMetricPart) timestampColumn() []int64 {
+	if len(p.timestamps) == p.count {
+		return p.timestamps
+	}
+	if len(p.shared) == p.count {
+		return p.shared
+	}
+
+	return nil
+}
+
+// needsDecode reports whether Materialize has an axis of the part to decode:
+// a sequential timestamp or value axis, a timestamp axis whose shared group is short, or a tag column,
+// readable and not decoded yet.
+func (p *numericMetricPart) needsDecode() bool {
+	return p.timestampsNeedDecode() || p.valuesNeedDecode() || p.tagsNeedDecode()
+}
+
+func (p *numericMetricPart) timestampsNeedDecode() bool {
+	// A shared group shorter than count (malformed) leaves the rest to the payload, so it is decoded as well.
+	return (p.tsEncType == format.TypeDelta || p.tsEncType == format.TypeDeltaPacked) &&
+		(p.shared == nil || len(p.shared) < p.count) && p.timestamps == nil && p.tsOK
+}
+
+func (p *numericMetricPart) valuesNeedDecode() bool {
+	return (p.valEncType == format.TypeGorilla || p.valEncType == format.TypeChimp) && p.values == nil && p.valOK
+}
+
+func (p *numericMetricPart) tagsNeedDecode() bool {
+	return p.HasTag() && p.tags == nil && p.tagOK
+}
+
+// materialize decodes the part's axes that need it, each into one new slice cut to the points its decoder produced.
+func (p *numericMetricPart) materialize() {
+	b := NumericBlob{blobBase: p.blobBase}
+	if p.timestampsNeedDecode() {
+		ts := make([]int64, p.count)
+		p.timestamps = ts[:b.decodeTimestampsSlice(p.tsBytes, p.count, ts)]
+	}
+	if p.valuesNeedDecode() {
+		vals := make([]float64, p.count)
+		p.values = vals[:b.decodeValuesSlice(p.valBytes, p.count, vals)]
+	}
+	if p.tagsNeedDecode() {
+		tags := make([]string, p.count)
+		var decoder ienc.TagDecoder
+		n := decoder.Each(p.tagBytes, p.count, 0, func(i int, tag string) bool {
+			tags[i] = tag
+
+			return true
+		})
+		p.tags = tags[:n]
 	}
 }
