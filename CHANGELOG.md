@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Faster encoding with Gorilla and Chimp, and faster point accessors, with no change to the API or the encoded bytes.
+
+### Performance
+
+- **Gorilla and Chimp encoding is about 14% faster** (median over 69 layout-averaged cells, −2.0% to −20.8%).
+  Every 8-byte spill stored the whole slice header back into the encoder,
+  so while the garbage collector was marking each spill took a write barrier (about 7,000 per 100-metric blob);
+  spills now write only the slice length.
+  Output bytes are unchanged, pinned by a bit-at-a-time reference encoder in the tests.
+  Gorilla is the default value encoding, so `NewDefaultNumericEncoder` users get this without changing anything.
+  See `docs/specs/encoder-write-barriers-design.md`.
+- **Point accessors read index entries by pointer.**
+  `TimestampAt`, `ValueAt`, `TagAt`, their `ByName` forms and the `BlobSet`, `NumericBlobSet` and `TextBlobSet` forms
+  used to copy the index entry (64 bytes for numeric blobs), which the CPU spilled in 8-byte stores and re-read with 16-byte loads;
+  store forwarding cannot serve that, so shared-timestamp `TimestampAt` ran at one of two speeds per binary
+  (about 1,630 or 2,105 ns/op on the main benchmark set).
+  `ValueAt` is 42% faster on Raw, 36% on ALP and 31% on ALP-RLE; encode, decode and iterate are unchanged.
+  See `docs/specs/index-entry-by-pointer-design.md`.
+- **Shared-timestamp lookup is inlined.**
+  The per-blob map keyed by timestamp offset became groups sorted by offset, with the first one in a field,
+  so the common one-group case is a compare; shared `TimestampAt` is about 950 ns/op on the main benchmark set.
+
+### Changed
+
+- `make bench-report` checks the report tools and runs the layout-averaged performance report
+  (`tests/measurev2/layouts.sh`: four code layouts × four rounds, pinned to one core, about 10 minutes).
+- `scripts/check-encoder-hotpath.sh` verifies that the Gorilla and Chimp bit-spill path stays inlined and barrier-free;
+  run it after editing those encoders (it is not part of `make test`).
+
+### Documentation
+
+- `docs/performance.md` is regenerated with the layout-averaged method (run of 2026-10-07);
+  its speed comparisons are classified as decided, equivalent or inconclusive, and README and `docs/best_practices.md` follow it.
+- DeltaPacked timestamps measured iterating 1.28–1.35× slower than Delta with Gorilla and Chimp in every layout;
+  the best-practices table now says to prefer Delta unless your own measurements differ.
+- New design documents: `measurev2-fast-report-runs-design.md`, `encoder-write-barriers-design.md`
+  and `index-entry-by-pointer-design.md`.
+
 ## [1.12.0] - 2026-10-05
 
 This release adds ALP-RLE, a value encoding for metrics that often hold their previous value,
