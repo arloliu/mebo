@@ -373,22 +373,31 @@ func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, bas
 		return base
 	}
 
+	return b.forEachValuesBytes(valBytes, entry.Count, base, yield)
+}
+
+// forEachValuesBytes is the dispatch half of forEachValuesFromEntry,
+// over a column already cut from the payload,
+// so a caller that already holds the column, such as a NumericMetric part,
+// shares the same decode loops.
+// Indexes and the result follow forEachValuesFromEntry.
+func (b NumericBlob) forEachValuesBytes(valBytes []byte, count, base int, yield func(int, float64) bool) int {
 	switch b.ValueEncoding() { //nolint:exhaustive // default branch drains the remaining codecs
 	case format.TypeGorilla:
-		return ienc.FusedGorillaEach(valBytes, entry.Count, base, yield)
+		return ienc.FusedGorillaEach(valBytes, count, base, yield)
 	case format.TypeChimp:
-		return ienc.FusedChimpEach(valBytes, entry.Count, base, yield)
+		return ienc.FusedChimpEach(valBytes, count, base, yield)
 	case format.TypeRaw:
-		return ienc.RawValuesEach(valBytes, entry.Count, base, b.Engine(), b.sameByteOrder, yield)
+		return ienc.RawValuesEach(valBytes, count, base, b.Engine(), b.sameByteOrder, yield)
 	case format.TypeALP, format.TypeALPRLE:
-		if entry.Count <= pool.MaxPooledDecodeFloat64s {
-			return b.forEachALPValues(valBytes, entry.Count, base, yield)
+		if count <= pool.MaxPooledDecodeFloat64s {
+			return b.forEachALPValues(valBytes, count, base, yield)
 		}
 
-		return b.forEachValuesIter(valBytes, entry.Count, base, yield)
+		return b.forEachValuesIter(valBytes, count, base, yield)
 	default:
 		// Any future codec without a static Each or bulk path drains the iterator.
-		return b.forEachValuesIter(valBytes, entry.Count, base, yield)
+		return b.forEachValuesIter(valBytes, count, base, yield)
 	}
 }
 
@@ -419,18 +428,27 @@ func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry,
 		return base
 	}
 
+	return b.forEachTimestampsBytes(tsBytes, entry.Count, base, yield)
+}
+
+// forEachTimestampsBytes is the dispatch half of forEachTimestampsFromEntry,
+// over a column already cut from the payload and not served by a group,
+// so a caller that already holds the column, such as a NumericMetric part,
+// shares the same decode loops.
+// Indexes and the result follow forEachValuesFromEntry.
+func (b NumericBlob) forEachTimestampsBytes(tsBytes []byte, count, base int, yield func(int, int64) bool) int {
 	switch b.tsEncType { //nolint:exhaustive // default branch drains the remaining codecs
 	case format.TypeDelta:
-		return ienc.FusedDeltaEach(tsBytes, entry.Count, base, yield)
+		return ienc.FusedDeltaEach(tsBytes, count, base, yield)
 	case format.TypeDeltaPacked:
-		return ienc.FusedDeltaPackedEach(tsBytes, entry.Count, base, yield)
+		return ienc.FusedDeltaPackedEach(tsBytes, count, base, yield)
 	case format.TypeRaw:
-		return ienc.RawTimestampsEach(tsBytes, entry.Count, base, b.Engine(), b.sameByteOrder, yield)
+		return ienc.RawTimestampsEach(tsBytes, count, base, b.Engine(), b.sameByteOrder, yield)
 	default:
 		// Break rather than return inside the range-over-func body: a return
 		// there moves the result slot to the heap for every call.
 		idx := base
-		for ts := range b.decodeTimestamps(tsBytes, entry.Count) {
+		for ts := range b.decodeTimestamps(tsBytes, count) {
 			if !yield(idx, ts) {
 				idx = -1
 				break
