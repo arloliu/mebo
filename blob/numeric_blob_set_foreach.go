@@ -71,21 +71,16 @@ func (r setEntryResolver) resolve(blob *NumericBlob) (section.NumericIndexEntry,
 	return section.NumericIndexEntry{}, false
 }
 
-// forEachAcrossBlobs drives a push callback over every blob in chronological
-// order, remapping each blob's local index to a continuous global index. It is
-// the engine for ForEach and ForEachByName, whose data-point loops index from
-// zero; ForEachValues and ForEachTimestamps use forEachColumnAcrossBlobs.
+// forEachAcrossBlobs drives a push callback over every blob in chronological order,
+// remapping each blob's local index to a continuous global index.
+// It is the engine for ForEach and ForEachByName, whose data-point loops index from zero;
+// ForEachValues and ForEachTimestamps use the column helpers below.
 //
-// resolver selects each member's entry under the set's logical identity, and
-// fromEntry is the blob-level decode loop for that entry, supplied as a method
-// expression (e.g. NumericBlob.forEachFromEntry). Only the unavoidable
-// per-call adapter closure allocates.
-func forEachAcrossBlobs[T any](
-	blobs []NumericBlob,
-	resolver setEntryResolver,
-	yield func(int, T) bool,
-	fromEntry func(b NumericBlob, entry section.NumericIndexEntry, adapter func(int, T) bool),
-) bool {
+// resolver selects each member's entry under the set's logical identity.
+// The helpers call the blob-level loops by name:
+// a call through a func value is dynamic, escape analysis then treats yield as leaking,
+// and the adapter and every caller's capturing callback are moved to the heap.
+func forEachAcrossBlobs(blobs []NumericBlob, resolver setEntryResolver, yield func(int, NumericDataPoint) bool) bool {
 	if yield == nil {
 		return false
 	}
@@ -96,8 +91,8 @@ func forEachAcrossBlobs[T any](
 		stopped     bool
 	)
 
-	adapter := func(_ int, v T) bool {
-		if !yield(globalIndex, v) {
+	adapter := func(_ int, dp NumericDataPoint) bool {
+		if !yield(globalIndex, dp) {
 			stopped = true
 			return false
 		}
@@ -112,7 +107,7 @@ func forEachAcrossBlobs[T any](
 			continue
 		}
 		found = true
-		fromEntry(blobs[i], entry, adapter)
+		blobs[i].forEachFromEntry(entry, adapter)
 		if stopped {
 			break
 		}
@@ -121,16 +116,10 @@ func forEachAcrossBlobs[T any](
 	return found
 }
 
-// forEachColumnAcrossBlobs is the adapter-free engine for single-column
-// iteration. fromEntry (e.g. NumericBlob.forEachValuesFromEntry) starts its
-// indexes at base and returns the next base, or -1 once yield stops, so the
-// user's yield is called directly with continuous global indexes.
-func forEachColumnAcrossBlobs[T any](
-	blobs []NumericBlob,
-	resolver setEntryResolver,
-	yield func(int, T) bool,
-	fromEntry func(b NumericBlob, entry section.NumericIndexEntry, base int, yield func(int, T) bool) int,
-) bool {
+// forEachValuesAcrossBlobs is the adapter-free engine for value iteration:
+// forEachValuesFromEntry starts its indexes at base and returns the next base, or -1 once yield stops,
+// so the user's yield is called directly with continuous global indexes.
+func forEachValuesAcrossBlobs(blobs []NumericBlob, resolver setEntryResolver, yield func(int, float64) bool) bool {
 	if yield == nil {
 		return false
 	}
@@ -143,7 +132,30 @@ func forEachColumnAcrossBlobs[T any](
 			continue
 		}
 		found = true
-		next = fromEntry(blobs[i], entry, next, yield)
+		next = blobs[i].forEachValuesFromEntry(entry, next, yield)
+		if next < 0 {
+			break
+		}
+	}
+
+	return found
+}
+
+// forEachTimestampsAcrossBlobs is forEachValuesAcrossBlobs for the timestamp column.
+func forEachTimestampsAcrossBlobs(blobs []NumericBlob, resolver setEntryResolver, yield func(int, int64) bool) bool {
+	if yield == nil {
+		return false
+	}
+
+	found := false
+	next := 0
+	for i := range blobs {
+		entry, ok := resolver.resolve(&blobs[i])
+		if !ok {
+			continue
+		}
+		found = true
+		next = blobs[i].forEachTimestampsFromEntry(entry, next, yield)
 		if next < 0 {
 			break
 		}
@@ -158,7 +170,7 @@ func forEachColumnAcrossBlobs[T any](
 //
 // Returns false if the metric is absent from every blob, or if yield is nil.
 func (s NumericBlobSet) ForEach(metricID uint64, yield func(idx int, dp NumericDataPoint) bool) bool {
-	return forEachAcrossBlobs(s.blobs, s.resolverByID(metricID), yield, NumericBlob.forEachFromEntry)
+	return forEachAcrossBlobs(s.blobs, s.resolverByID(metricID), yield)
 }
 
 // ForEachByName calls yield for each data point of the given metric name across
@@ -168,7 +180,7 @@ func (s NumericBlobSet) ForEach(metricID uint64, yield func(idx int, dp NumericD
 //
 // Returns false if the metric is absent from every blob, or if yield is nil.
 func (s NumericBlobSet) ForEachByName(metricName string, yield func(idx int, dp NumericDataPoint) bool) bool {
-	return forEachAcrossBlobs(s.blobs, s.resolverByName(metricName), yield, NumericBlob.forEachFromEntry)
+	return forEachAcrossBlobs(s.blobs, s.resolverByName(metricName), yield)
 }
 
 // ForEachValues calls yield for each value of the given metric ID across all
@@ -177,7 +189,7 @@ func (s NumericBlobSet) ForEachByName(metricName string, yield func(idx int, dp 
 //
 // Returns false if the metric is absent from every blob, or if yield is nil.
 func (s NumericBlobSet) ForEachValues(metricID uint64, yield func(idx int, val float64) bool) bool {
-	return forEachColumnAcrossBlobs(s.blobs, s.resolverByID(metricID), yield, NumericBlob.forEachValuesFromEntry)
+	return forEachValuesAcrossBlobs(s.blobs, s.resolverByID(metricID), yield)
 }
 
 // ForEachValuesByName calls yield for each value of the given metric name across
@@ -187,7 +199,7 @@ func (s NumericBlobSet) ForEachValues(metricID uint64, yield func(idx int, val f
 //
 // Returns false if the metric is absent from every blob, or if yield is nil.
 func (s NumericBlobSet) ForEachValuesByName(metricName string, yield func(idx int, val float64) bool) bool {
-	return forEachColumnAcrossBlobs(s.blobs, s.resolverByName(metricName), yield, NumericBlob.forEachValuesFromEntry)
+	return forEachValuesAcrossBlobs(s.blobs, s.resolverByName(metricName), yield)
 }
 
 // ForEachTimestamps calls yield for each timestamp of the given metric ID across
@@ -196,7 +208,7 @@ func (s NumericBlobSet) ForEachValuesByName(metricName string, yield func(idx in
 //
 // Returns false if the metric is absent from every blob, or if yield is nil.
 func (s NumericBlobSet) ForEachTimestamps(metricID uint64, yield func(idx int, ts int64) bool) bool {
-	return forEachColumnAcrossBlobs(s.blobs, s.resolverByID(metricID), yield, NumericBlob.forEachTimestampsFromEntry)
+	return forEachTimestampsAcrossBlobs(s.blobs, s.resolverByID(metricID), yield)
 }
 
 // ForEachTimestampsByName calls yield for each timestamp of the given metric
@@ -207,5 +219,5 @@ func (s NumericBlobSet) ForEachTimestamps(metricID uint64, yield func(idx int, t
 //
 // Returns false if the metric is absent from every blob, or if yield is nil.
 func (s NumericBlobSet) ForEachTimestampsByName(metricName string, yield func(idx int, ts int64) bool) bool {
-	return forEachColumnAcrossBlobs(s.blobs, s.resolverByName(metricName), yield, NumericBlob.forEachTimestampsFromEntry)
+	return forEachTimestampsAcrossBlobs(s.blobs, s.resolverByName(metricName), yield)
 }

@@ -807,30 +807,19 @@ func (b NumericBlob) allDataPointsRaw(tsBytes, valBytes, tagBytes []byte, count 
 		}
 	}
 
-	// Tags enabled: Use tag iterator to avoid O(N²) cost of repeated At() calls
-	// Tag At() must scan from start each time due to varint encoding
+	// Tags enabled: walk the tag column once (At would rescan the varints from the start for every index).
+	// The tag loop calls back directly rather than through a range-over-func body,
+	// which would capture yield and force every caller's callback to the heap.
 	tagDecoder := ienc.NewTagDecoder(engine)
 
 	return func(yield func(int, NumericDataPoint) bool) {
-		tagIter := tagDecoder.All(tagBytes, count)
-
-		i := 0
-		for tag := range tagIter {
+		tagDecoder.Each(tagBytes, count, 0, func(i int, tag string) bool {
 			// Use At() for ts/val - O(1) direct memory access
 			ts, _ := tsDecoder.At(tsBytes, i, count)
 			val, _ := valDecoder.At(valBytes, i, count)
 
-			dp := NumericDataPoint{
-				Ts:  ts,
-				Val: val,
-				Tag: tag,
-			}
-
-			if !yield(i, dp) {
-				break
-			}
-			i++
-		}
+			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+		})
 	}
 }
 
@@ -960,9 +949,8 @@ func (b NumericBlob) allDataPointsDeltaChimp(tsBytes, valBytes, tagBytes []byte,
 }
 
 // allDataPointsDeltaPackedRaw handles Group Varint packed timestamps with raw values.
-// Uses All() for timestamps (sequential) and At() for values (O(1) random access).
+// Uses the fused Each loop for timestamps (sequential) and At() for values (O(1) random access).
 func (b NumericBlob) allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
-	var tsDecoder ienc.TimestampDeltaPackedDecoder
 	var valDecoder encoding.ColumnarDecoder[float64]
 
 	engine := b.Engine()
@@ -976,16 +964,11 @@ func (b NumericBlob) allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes []b
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			tsIter := tsDecoder.All(tsBytes, count)
-			i := 0
-			for ts := range tsIter {
+			ienc.FusedDeltaPackedEach(tsBytes, count, 0, func(i int, ts int64) bool {
 				val, _ := valDecoder.At(valBytes, i, count)
 
-				if !yield(i, NumericDataPoint{Ts: ts, Val: val}) {
-					break
-				}
-				i++
-			}
+				return yield(i, NumericDataPoint{Ts: ts, Val: val})
+			})
 		}
 	}
 
