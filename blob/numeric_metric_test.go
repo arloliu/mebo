@@ -1178,24 +1178,26 @@ func TestNumericMetric_SetResolveAllocations(t *testing.T) {
 	require.Positive(t, sink)
 }
 
-// TestNumericMetric_ForEachColumnsCapturingCallbacksStayOnStack pins the set handle's column loops:
-// ForEachValues and ForEachTimestamps keep a call-site callback literal that captures a local on the stack.
+// TestNumericMetric_ForEachCapturingCallbacksStayOnStack pins the set handle's loops:
+// ForEach, ForEachValues and ForEachTimestamps keep a call-site callback literal that captures a local on the stack.
 // It runs on a direct layout (shared group ranged directly, ALP through the pooled bulk decode)
 // and on a sequential one (fused Delta and Gorilla loops).
-func TestNumericMetric_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T) {
+func TestNumericMetric_ForEachCapturingCallbacksStayOnStack(t *testing.T) {
 	if raceEnabled {
 		t.Skip("allocation counts are not stable under the race detector")
 	}
 	layouts := []struct {
-		name string
-		opts []NumericEncoderOption
+		name        string
+		opts        []NumericEncoderOption
+		pointAllocs float64 // ForEach: ALP decodes both columns into two scratch buffers per member
+		tagged      bool    // ForEach also copies one tag string per point
 	}{
 		{"shared-deltapacked/alp", []NumericEncoderOption{
 			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
-		}},
+		}, 8, false},
 		{"delta/gorilla/tags", []NumericEncoderOption{
 			WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithTagsEnabled(true),
-		}},
+		}, 0, true},
 	}
 	for _, layout := range layouts {
 		t.Run(layout.name, func(t *testing.T) {
@@ -1217,6 +1219,16 @@ func TestNumericMetric_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T)
 				sinkV += sum
 			})
 			require.Zero(t, allocs, "ForEachValues")
+			allocs = testing.AllocsPerRun(50, func() {
+				var sum float64
+				h.ForEach(func(_ int, dp NumericDataPoint) bool { sum += dp.Val; return true })
+				sinkV += sum
+			})
+			want := layout.pointAllocs
+			if layout.tagged {
+				want += float64(h.Len())
+			}
+			require.InDelta(t, want, allocs, 0, "ForEach")
 			require.NotZero(t, sinkTS)
 			require.NotZero(t, sinkV)
 		})

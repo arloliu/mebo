@@ -364,3 +364,41 @@ func TestNumericBlob_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T) {
 		}
 	}
 }
+
+// TestNumericBlob_ForEachPointsCapturingCallbacksStayOnStack is the point-form companion of the column test above:
+// ForEach does not allocate for a callback literal built at the call site and capturing a local,
+// on every timestamp and value encoding pair, with and without tags.
+// ALP and ALP-RLE values decode both columns into two scratch buffers first, so they allow exactly those two allocations,
+// and a tagged blob allows one allocation per point, the tag string the decoder copies out of the payload.
+func TestNumericBlob_ForEachPointsCapturingCallbacksStayOnStack(t *testing.T) {
+	if raceEnabled {
+		t.Skip("race detector adds allocations")
+	}
+	tsEncs := []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked}
+	valEncs := []format.EncodingType{format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE}
+	for _, tsEnc := range tsEncs {
+		for _, valEnc := range valEncs {
+			for _, tagged := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/tags=%t", tsEnc, valEnc, tagged), func(t *testing.T) {
+					blob, ids := buildForEachTestBlob(t, tsEnc, valEnc, tagged)
+					id := ids[0]
+					want := 0.0
+					if valEnc == format.TypeALP || valEnc == format.TypeALPRLE {
+						want = 2
+					}
+					if tagged {
+						want += float64(blob.Len(id))
+					}
+					var sink int64
+					allocs := testing.AllocsPerRun(50, func() {
+						var sum int64
+						blob.ForEach(id, func(_ int, dp NumericDataPoint) bool { sum += dp.Ts + int64(len(dp.Tag)); return true })
+						sink += sum
+					})
+					require.InDelta(t, want, allocs, 0, "ForEach")
+					require.NotZero(t, sink)
+				})
+			}
+		}
+	}
+}

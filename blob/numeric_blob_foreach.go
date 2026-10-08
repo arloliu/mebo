@@ -1,6 +1,9 @@
 package blob
 
 import (
+	"iter"
+
+	"github.com/arloliu/mebo/encoding"
 	"github.com/arloliu/mebo/format"
 	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/pool"
@@ -12,10 +15,12 @@ import (
 // starts at 0 and increments for each data point.
 //
 // ForEach is the callback (push) equivalent of All and yields identical data.
-// Prefer it in hot read paths: All must return a heap-allocated iterator and
-// makes the caller's range loop body escape to the heap, while ForEach's
-// static call chain keeps the callback and all decoder state on the stack —
-// zero allocations per call on the optimized encoding combinations.
+// Prefer it in hot read paths:
+// All must return a heap-allocated iterator and makes the caller's range loop body escape to the heap,
+// while ForEach's static call chain keeps the callback and all decoder state on the stack.
+// A call does not allocate, with two exceptions:
+// ALP and ALP-RLE values decode both columns into two new slices before the first callback,
+// and on a blob with tags every point's tag is a string copied out of the payload.
 //
 // Parameters:
 //   - metricID: The metric ID to iterate over.
@@ -98,76 +103,161 @@ func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield fun
 	b.forEachDataPoint(tsBytes, valBytes, tagBytes, entry.Count, yield)
 }
 
-// forEachDataPoint invokes the combo-specific iteration body directly with yield.
-// It mirrors the dispatch order of allDataPoints; keep the two in sync.
-// The iterator closures the allDataPoints* variants return are invoked in this frame,
-// so no iterator is allocated here, where All must allocate one.
-// The variants themselves are not inlinable,
-// so the call through the returned closure is dynamic and escape analysis treats yield as leaking:
-// a caller's capturing callback is moved to the heap on this path,
-// unlike ForEachValues and ForEachTimestamps, whose loops call yield by name.
+// forEachDataPoint calls the static loop of the blob's encoding pair with yield.
+// It mirrors the dispatch order of allDataPoints, whose iterators call the same loops; keep the two in sync.
+// Every loop is called by name and calls yield from a non-escaping literal at most,
+// so escape analysis keeps a caller's capturing callback on the stack, where All must allocate an iterator.
 func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
-	// ALP and ALP-RLE values: materialize ts+values and zip (avoids generic iter.Pull overhead).
-	if enc := b.ValueEncoding(); enc == format.TypeALP || enc == format.TypeALPRLE {
-		b.allDataPointsMaterialized(tsBytes, valBytes, tagBytes, count)(yield)
+	valEnc := b.ValueEncoding()
+	// ALP and ALP-RLE values: decode both columns and zip them (avoids the generic iter.Pull overhead).
+	if valEnc == format.TypeALP || valEnc == format.TypeALPRLE {
+		b.forEachPointsDecoded(tsBytes, valBytes, tagBytes, count, yield)
 		return
 	}
 
-	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeRaw {
-		b.allDataPointsRaw(tsBytes, valBytes, tagBytes, count)(yield)
-		return
-	}
-
-	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeGorilla {
-		b.allDataPointsRawGorilla(tsBytes, valBytes, tagBytes, count)(yield)
-		return
-	}
-
-	if b.tsEncType == format.TypeRaw && b.ValueEncoding() == format.TypeChimp {
-		b.allDataPointsRawChimp(tsBytes, valBytes, tagBytes, count)(yield)
-		return
-	}
-
-	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeGorilla {
-		if !b.HasTag() {
-			forEachDeltaGorilla(tsBytes, valBytes, count, yield)
-			return
-		}
-		b.allDataPointsDeltaGorilla(tsBytes, valBytes, tagBytes, count)(yield)
-
-		return
-	}
-
-	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeChimp {
-		if !b.HasTag() {
-			forEachDeltaChimp(tsBytes, valBytes, count, yield)
-			return
-		}
-		b.allDataPointsDeltaChimp(tsBytes, valBytes, tagBytes, count)(yield)
-
-		return
-	}
-
-	if b.tsEncType == format.TypeDelta && b.ValueEncoding() == format.TypeRaw {
-		b.allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes, count)(yield)
-		return
-	}
-
-	if b.tsEncType == format.TypeDeltaPacked {
-		switch b.ValueEncoding() { //nolint: exhaustive
-		case format.TypeGorilla:
-			b.allDataPointsDeltaPackedGorilla(tsBytes, valBytes, tagBytes, count)(yield)
-			return
-		case format.TypeChimp:
-			b.allDataPointsDeltaPackedChimp(tsBytes, valBytes, tagBytes, count)(yield)
-			return
+	switch b.tsEncType { //nolint: exhaustive
+	case format.TypeRaw:
+		switch valEnc { //nolint: exhaustive
 		case format.TypeRaw:
-			b.allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes, count)(yield)
+			b.forEachPointsRaw(tsBytes, valBytes, tagBytes, count, yield)
+			return
+		case format.TypeGorilla, format.TypeChimp:
+			b.forEachPointsRawXOR(tsBytes, valBytes, tagBytes, count, yield)
+			return
+		default:
+		}
+	case format.TypeDelta, format.TypeDeltaPacked:
+		if valEnc == format.TypeRaw {
+			b.forEachPointsDeltaRaw(tsBytes, valBytes, tagBytes, count, yield)
 			return
 		}
+		if valEnc == format.TypeGorilla || valEnc == format.TypeChimp {
+			b.forEachPointsDeltaXOR(tsBytes, valBytes, tagBytes, count, yield)
+			return
+		}
+	default:
 	}
 
-	b.allDataPointsGeneric(tsBytes, valBytes, tagBytes, count)(yield)
+	b.forEachPointsGeneric(tsBytes, valBytes, tagBytes, count, yield)
+}
+
+// forEachPointsRaw dispatches Raw timestamps with Raw values on the byte order and the tag flag,
+// so the loop reads through concrete decoders.
+func (b NumericBlob) forEachPointsRaw(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	engine := b.Engine()
+	switch {
+	case b.sameByteOrder && !b.HasTag():
+		forEachRaw(ienc.NewTimestampRawUnsafeDecoder(engine), ienc.NewNumericRawUnsafeDecoder(engine), tsBytes, valBytes, count, yield)
+	case b.sameByteOrder:
+		forEachRawTagged(ienc.NewTimestampRawUnsafeDecoder(engine), ienc.NewNumericRawUnsafeDecoder(engine), tsBytes, valBytes, tagBytes, count, yield)
+	case !b.HasTag():
+		forEachRaw(ienc.NewTimestampRawDecoder(engine), ienc.NewNumericRawDecoder(engine), tsBytes, valBytes, count, yield)
+	default:
+		forEachRawTagged(ienc.NewTimestampRawDecoder(engine), ienc.NewNumericRawDecoder(engine), tsBytes, valBytes, tagBytes, count, yield)
+	}
+}
+
+// forEachPointsRawXOR dispatches Raw timestamps with Gorilla or Chimp values.
+func (b NumericBlob) forEachPointsRawXOR(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	engine := b.Engine()
+	if b.sameByteOrder {
+		forEachRawXOR(ienc.NewTimestampRawUnsafeDecoder(engine), b.ValueEncoding(), b.HasTag(), tsBytes, valBytes, tagBytes, count, yield)
+		return
+	}
+	forEachRawXOR(ienc.NewTimestampRawDecoder(engine), b.ValueEncoding(), b.HasTag(), tsBytes, valBytes, tagBytes, count, yield)
+}
+
+// forEachRawXOR picks the Gorilla or Chimp loop for Raw timestamps read through tsDec.
+func forEachRawXOR[T encoding.ColumnarDecoder[int64]](
+	tsDec T, valEnc format.EncodingType, tagged bool, tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	switch {
+	case valEnc == format.TypeGorilla && !tagged:
+		forEachRawGorilla(tsDec, tsBytes, valBytes, count, yield)
+	case valEnc == format.TypeGorilla:
+		forEachRawGorillaTagged(tsDec, tsBytes, valBytes, tagBytes, count, yield)
+	case !tagged:
+		forEachRawChimp(tsDec, tsBytes, valBytes, count, yield)
+	default:
+		forEachRawChimpTagged(tsDec, tsBytes, valBytes, tagBytes, count, yield)
+	}
+}
+
+// forEachPointsDeltaRaw dispatches Delta or DeltaPacked timestamps with Raw values.
+func (b NumericBlob) forEachPointsDeltaRaw(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	engine := b.Engine()
+	if b.sameByteOrder {
+		forEachDeltaRawWith(ienc.NewNumericRawUnsafeDecoder(engine), b.tsEncType, b.HasTag(), tsBytes, valBytes, tagBytes, count, yield)
+		return
+	}
+	forEachDeltaRawWith(ienc.NewNumericRawDecoder(engine), b.tsEncType, b.HasTag(), tsBytes, valBytes, tagBytes, count, yield)
+}
+
+// forEachDeltaRawWith picks the Delta or DeltaPacked loop for Raw values read through valDec.
+func forEachDeltaRawWith[V encoding.ColumnarDecoder[float64]](
+	valDec V, tsEnc format.EncodingType, tagged bool, tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	switch {
+	case tsEnc == format.TypeDelta && !tagged:
+		forEachDeltaRaw(valDec, tsBytes, valBytes, count, yield)
+	case tsEnc == format.TypeDelta:
+		forEachDeltaRawTagged(valDec, tsBytes, valBytes, tagBytes, count, yield)
+	case !tagged:
+		forEachDeltaPackedRaw(valDec, tsBytes, valBytes, count, yield)
+	default:
+		forEachDeltaPackedRawTagged(valDec, tsBytes, valBytes, tagBytes, count, yield)
+	}
+}
+
+// forEachPointsDeltaXOR dispatches Delta or DeltaPacked timestamps with Gorilla or Chimp values to the fused loops.
+func (b NumericBlob) forEachPointsDeltaXOR(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	gorilla := b.ValueEncoding() == format.TypeGorilla
+	if b.tsEncType == format.TypeDelta {
+		switch {
+		case gorilla && !b.HasTag():
+			forEachDeltaGorilla(tsBytes, valBytes, count, yield)
+		case gorilla:
+			forEachDeltaGorillaTagged(tsBytes, valBytes, tagBytes, count, yield)
+		case !b.HasTag():
+			forEachDeltaChimp(tsBytes, valBytes, count, yield)
+		default:
+			forEachDeltaChimpTagged(tsBytes, valBytes, tagBytes, count, yield)
+		}
+
+		return
+	}
+
+	switch {
+	case gorilla && !b.HasTag():
+		forEachDeltaPackedGorilla(tsBytes, valBytes, count, yield)
+	case gorilla:
+		forEachDeltaPackedGorillaTagged(tsBytes, valBytes, tagBytes, count, yield)
+	case !b.HasTag():
+		forEachDeltaPackedChimp(tsBytes, valBytes, count, yield)
+	default:
+		forEachDeltaPackedChimpTagged(tsBytes, valBytes, tagBytes, count, yield)
+	}
+}
+
+// forEachPointsDecoded decodes both columns and zips them, as allDataPointsMaterialized does.
+func (b NumericBlob) forEachPointsDecoded(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ts, vals := b.decodePointColumns(tsBytes, valBytes, count)
+	if !b.HasTag() {
+		forEachDecoded(ts, vals, yield)
+		return
+	}
+	forEachDecodedTagged(ts, vals, tagBytes, yield)
+}
+
+// forEachPointsGeneric pulls the three column iterators in step, as allDataPointsGeneric does.
+func (b NumericBlob) forEachPointsGeneric(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	tsIter := b.decodeTimestamps(tsBytes, count)
+	valIter := b.decodeValues(valBytes, count)
+	if !b.HasTag() {
+		forEachPulled(tsIter, valIter, yield)
+		return
+	}
+	forEachPulledTagged(tsIter, valIter, b.decodeTags(tagBytes, count), yield)
 }
 
 // forEachDeltaGorilla runs the fused delta+gorilla decode loop inline so the
@@ -240,6 +330,216 @@ func forEachDeltaChimp(tsBytes, valBytes []byte, count int, yield func(int, Nume
 		}
 
 		if !yield(i, NumericDataPoint{Ts: ts.Ts(), Val: val.Val()}) {
+			return
+		}
+	}
+}
+
+// The loops below are the bodies of the allDataPoints* iterators, shared with forEachDataPoint.
+// They are package-level functions called by name, and they call yield directly or from a literal
+// that the fused decoders do not retain, so escape analysis keeps yield, and a caller's capturing callback, on the stack.
+// The decoder type parameters let forEachDataPoint pass concrete decoders, which are not boxed,
+// while the All* iterators pass the interface values they capture.
+
+// forEachRaw reads Raw timestamps and Raw values by index.
+func forEachRaw[T encoding.ColumnarDecoder[int64], V encoding.ColumnarDecoder[float64]](
+	tsDec T, valDec V, tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	for i := range count {
+		ts, _ := tsDec.At(tsBytes, i, count)
+		val, _ := valDec.At(valBytes, i, count)
+		if !yield(i, NumericDataPoint{Ts: ts, Val: val}) {
+			return
+		}
+	}
+}
+
+// forEachRawTagged walks the tag column once and reads Raw timestamps and Raw values by index
+// (TagAt would rescan the column from its start for every index).
+func forEachRawTagged[T encoding.ColumnarDecoder[int64], V encoding.ColumnarDecoder[float64]](
+	tsDec T, valDec V, tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	var tags ienc.TagDecoder
+	tags.Each(tagBytes, count, 0, func(i int, tag string) bool {
+		ts, _ := tsDec.At(tsBytes, i, count)
+		val, _ := valDec.At(valBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachRawGorilla runs the Gorilla loop and reads Raw timestamps by index.
+func forEachRawGorilla[T encoding.ColumnarDecoder[int64]](tsDec T, tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedGorillaEach(valBytes, count, 0, func(i int, val float64) bool {
+		ts, _ := tsDec.At(tsBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val})
+	})
+}
+
+// forEachRawGorillaTagged runs the fused Gorilla and tag loop and reads Raw timestamps by index.
+func forEachRawGorillaTagged[T encoding.ColumnarDecoder[int64]](
+	tsDec T, tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	ienc.FusedGorillaTagAll(valBytes, tagBytes, count, func(i int, val float64, tag string) bool {
+		ts, _ := tsDec.At(tsBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachRawChimp runs the Chimp loop and reads Raw timestamps by index.
+func forEachRawChimp[T encoding.ColumnarDecoder[int64]](tsDec T, tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedChimpEach(valBytes, count, 0, func(i int, val float64) bool {
+		ts, _ := tsDec.At(tsBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val})
+	})
+}
+
+// forEachRawChimpTagged runs the fused Chimp and tag loop and reads Raw timestamps by index.
+func forEachRawChimpTagged[T encoding.ColumnarDecoder[int64]](
+	tsDec T, tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	ienc.FusedChimpTagAll(valBytes, tagBytes, count, func(i int, val float64, tag string) bool {
+		ts, _ := tsDec.At(tsBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachDeltaRaw runs the Delta loop and reads Raw values by index.
+func forEachDeltaRaw[V encoding.ColumnarDecoder[float64]](valDec V, tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedDeltaEach(tsBytes, count, 0, func(i int, ts int64) bool {
+		val, _ := valDec.At(valBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val})
+	})
+}
+
+// forEachDeltaRawTagged runs the fused Delta and tag loop and reads Raw values by index.
+func forEachDeltaRawTagged[V encoding.ColumnarDecoder[float64]](
+	valDec V, tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	ienc.FusedDeltaTagAll(tsBytes, tagBytes, count, func(i int, ts int64, tag string) bool {
+		val, _ := valDec.At(valBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachDeltaPackedRaw runs the DeltaPacked loop and reads Raw values by index.
+func forEachDeltaPackedRaw[V encoding.ColumnarDecoder[float64]](
+	valDec V, tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	ienc.FusedDeltaPackedEach(tsBytes, count, 0, func(i int, ts int64) bool {
+		val, _ := valDec.At(valBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val})
+	})
+}
+
+// forEachDeltaPackedRawTagged runs the fused DeltaPacked and tag loop and reads Raw values by index.
+func forEachDeltaPackedRawTagged[V encoding.ColumnarDecoder[float64]](
+	valDec V, tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	ienc.FusedDeltaPackedTagAll(tsBytes, tagBytes, count, func(i int, ts int64, tag string) bool {
+		val, _ := valDec.At(valBytes, i, count)
+
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachDeltaGorillaTagged runs the fused Delta, Gorilla and tag loop.
+func forEachDeltaGorillaTagged(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedDeltaGorillaTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachDeltaChimpTagged runs the fused Delta, Chimp and tag loop.
+func forEachDeltaChimpTagged(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedDeltaChimpTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachDeltaPackedGorilla runs the fused DeltaPacked and Gorilla loop.
+func forEachDeltaPackedGorilla(tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedDeltaPackedGorillaEach(tsBytes, valBytes, count, func(i int, ts int64, val float64) bool {
+		return yield(i, NumericDataPoint{Ts: ts, Val: val})
+	})
+}
+
+// forEachDeltaPackedGorillaTagged runs the fused DeltaPacked, Gorilla and tag loop.
+func forEachDeltaPackedGorillaTagged(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedDeltaPackedGorillaTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachDeltaPackedChimp runs the fused DeltaPacked and Chimp loop.
+func forEachDeltaPackedChimp(tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedDeltaPackedChimpEach(tsBytes, valBytes, count, func(i int, ts int64, val float64) bool {
+		return yield(i, NumericDataPoint{Ts: ts, Val: val})
+	})
+}
+
+// forEachDeltaPackedChimpTagged runs the fused DeltaPacked, Chimp and tag loop.
+func forEachDeltaPackedChimpTagged(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
+	ienc.FusedDeltaPackedChimpTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
+		return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
+	})
+}
+
+// forEachDecoded zips decoded timestamp and value columns of equal length.
+func forEachDecoded(ts []int64, vals []float64, yield func(int, NumericDataPoint) bool) {
+	for i := range ts {
+		if !yield(i, NumericDataPoint{Ts: ts[i], Val: vals[i]}) {
+			return
+		}
+	}
+}
+
+// forEachDecodedTagged zips decoded timestamp and value columns of equal length with the tag column;
+// a tag column that ends early ends the walk, so only complete rows are yielded.
+func forEachDecodedTagged(ts []int64, vals []float64, tagBytes []byte, yield func(int, NumericDataPoint) bool) {
+	var tags ienc.TagDecoder
+	tags.Each(tagBytes, len(ts), 0, func(i int, tag string) bool {
+		return yield(i, NumericDataPoint{Ts: ts[i], Val: vals[i], Tag: tag})
+	})
+}
+
+// forEachPulled pulls the timestamp and value iterators in step until either ends.
+func forEachPulled(tsIter iter.Seq[int64], valIter iter.Seq[float64], yield func(int, NumericDataPoint) bool) {
+	tsNext, tsStop := iter.Pull(tsIter)
+	valNext, valStop := iter.Pull(valIter)
+	defer tsStop()
+	defer valStop()
+
+	for i := 0; ; i++ {
+		ts, tsOk := tsNext()
+		val, valOk := valNext()
+		if !tsOk || !valOk || !yield(i, NumericDataPoint{Ts: ts, Val: val}) {
+			return
+		}
+	}
+}
+
+// forEachPulledTagged pulls the timestamp, value and tag iterators in step until any ends.
+func forEachPulledTagged(tsIter iter.Seq[int64], valIter iter.Seq[float64], tagIter iter.Seq[string], yield func(int, NumericDataPoint) bool) {
+	tsNext, tsStop := iter.Pull(tsIter)
+	valNext, valStop := iter.Pull(valIter)
+	tagNext, tagStop := iter.Pull(tagIter)
+	defer tsStop()
+	defer valStop()
+	defer tagStop()
+
+	for i := 0; ; i++ {
+		ts, tsOk := tsNext()
+		val, valOk := valNext()
+		tag, tagOk := tagNext()
+		if !tsOk || !valOk || !tagOk || !yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag}) {
 			return
 		}
 	}

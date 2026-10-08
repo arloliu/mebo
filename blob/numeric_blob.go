@@ -771,7 +771,7 @@ func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int
 
 // allDataPointsRaw handles raw encoding for timestamps and values.
 // Uses At() for ts/val (O(1) direct memory access - fastest possible).
-// Uses All() iterator for tags (O(1) per iteration, avoids O(N²) scanning in At()).
+// Walks the tag column once when tags are enabled (avoids O(N²) scanning in At()).
 func (b NumericBlob) allDataPointsRaw(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
 	var tsDecoder encoding.ColumnarDecoder[int64]
 	var valDecoder encoding.ColumnarDecoder[float64]
@@ -790,36 +790,12 @@ func (b NumericBlob) allDataPointsRaw(tsBytes, valBytes, tagBytes []byte, count 
 	// NumericBlob (a fat capture that would heap-allocate on every All call).
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			for i := range count {
-				ts, _ := tsDecoder.At(tsBytes, i, count)
-				val, _ := valDecoder.At(valBytes, i, count)
-
-				dp := NumericDataPoint{
-					Ts:  ts,
-					Val: val,
-					Tag: "",
-				}
-
-				if !yield(i, dp) {
-					break
-				}
-			}
+			forEachRaw(tsDecoder, valDecoder, tsBytes, valBytes, count, yield)
 		}
 	}
 
-	// Tags enabled: walk the tag column once (At would rescan the varints from the start for every index).
-	// The tag loop calls back directly rather than through a range-over-func body,
-	// which would capture yield and force every caller's callback to the heap.
-	tagDecoder := ienc.NewTagDecoder(engine)
-
 	return func(yield func(int, NumericDataPoint) bool) {
-		tagDecoder.Each(tagBytes, count, 0, func(i int, tag string) bool {
-			// Use At() for ts/val - O(1) direct memory access
-			ts, _ := tsDecoder.At(tsBytes, i, count)
-			val, _ := valDecoder.At(valBytes, i, count)
-
-			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
-		})
+		forEachRawTagged(tsDecoder, valDecoder, tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -841,27 +817,12 @@ func (b NumericBlob) allDataPointsDeltaRaw(tsBytes, valBytes, tagBytes []byte, c
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedDeltaEach(tsBytes, count, 0, func(i int, ts int64) bool {
-				val, _ := valDecoder.At(valBytes, i, count)
-
-				return yield(i, NumericDataPoint{Ts: ts, Val: val})
-			})
+			forEachDeltaRaw(valDecoder, tsBytes, valBytes, count, yield)
 		}
 	}
 
-	// Tags enabled: Use fused delta+tag decoder with At() for raw values
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedDeltaTagAll(tsBytes, tagBytes, count, func(i int, ts int64, tag string) bool {
-			val, _ := valDecoder.At(valBytes, i, count)
-
-			dp := NumericDataPoint{
-				Ts:  ts,
-				Val: val,
-				Tag: tag,
-			}
-
-			return yield(i, dp)
-		})
+		forEachDeltaRawTagged(valDecoder, tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -895,17 +856,8 @@ func (b NumericBlob) allDataPointsDeltaGorilla(tsBytes, valBytes, tagBytes []byt
 		}
 	}
 
-	// Tags enabled: Use fused delta+gorilla+tag decoder
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedDeltaGorillaTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
-			dp := NumericDataPoint{
-				Ts:  ts,
-				Val: val,
-				Tag: tag,
-			}
-
-			return yield(i, dp)
-		})
+		forEachDeltaGorillaTagged(tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -934,17 +886,8 @@ func (b NumericBlob) allDataPointsDeltaChimp(tsBytes, valBytes, tagBytes []byte,
 		}
 	}
 
-	// Tags enabled: Use fused delta+chimp+tag decoder
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedDeltaChimpTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
-			dp := NumericDataPoint{
-				Ts:  ts,
-				Val: val,
-				Tag: tag,
-			}
-
-			return yield(i, dp)
-		})
+		forEachDeltaChimpTagged(tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -964,20 +907,12 @@ func (b NumericBlob) allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes []b
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedDeltaPackedEach(tsBytes, count, 0, func(i int, ts int64) bool {
-				val, _ := valDecoder.At(valBytes, i, count)
-
-				return yield(i, NumericDataPoint{Ts: ts, Val: val})
-			})
+			forEachDeltaPackedRaw(valDecoder, tsBytes, valBytes, count, yield)
 		}
 	}
 
-	// Tags enabled: Use fused deltaPacked+tag decoder with raw value At()
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedDeltaPackedTagAll(tsBytes, tagBytes, count, func(i int, ts int64, tag string) bool {
-			val, _ := valDecoder.At(valBytes, i, count)
-			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
-		})
+		forEachDeltaPackedRawTagged(valDecoder, tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -999,16 +934,12 @@ func (b NumericBlob) allDataPointsDeltaPackedGorilla(tsBytes, valBytes, tagBytes
 	// captures only the payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedDeltaPackedGorillaEach(tsBytes, valBytes, count, func(i int, ts int64, val float64) bool {
-				return yield(i, NumericDataPoint{Ts: ts, Val: val})
-			})
+			forEachDeltaPackedGorilla(tsBytes, valBytes, count, yield)
 		}
 	}
 
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedDeltaPackedGorillaTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
-			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
-		})
+		forEachDeltaPackedGorillaTagged(tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -1030,16 +961,12 @@ func (b NumericBlob) allDataPointsDeltaPackedChimp(tsBytes, valBytes, tagBytes [
 	// captures only the payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedDeltaPackedChimpEach(tsBytes, valBytes, count, func(i int, ts int64, val float64) bool {
-				return yield(i, NumericDataPoint{Ts: ts, Val: val})
-			})
+			forEachDeltaPackedChimp(tsBytes, valBytes, count, yield)
 		}
 	}
 
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedDeltaPackedChimpTagAll(tsBytes, valBytes, tagBytes, count, func(i int, ts int64, val float64, tag string) bool {
-			return yield(i, NumericDataPoint{Ts: ts, Val: val, Tag: tag})
-		})
+		forEachDeltaPackedChimpTagged(tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -1073,28 +1000,12 @@ func (b NumericBlob) allDataPointsRawGorilla(tsBytes, valBytes, tagBytes []byte,
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedGorillaEach(valBytes, count, 0, func(i int, val float64) bool {
-				// Use At() for timestamps - O(1) direct memory access
-				ts, _ := tsDecoder.At(tsBytes, i, count)
-
-				return yield(i, NumericDataPoint{Ts: ts, Val: val})
-			})
+			forEachRawGorilla(tsDecoder, tsBytes, valBytes, count, yield)
 		}
 	}
 
-	// Tags enabled: Use fused gorilla+tag decoder with At() for raw timestamps
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedGorillaTagAll(valBytes, tagBytes, count, func(i int, val float64, tag string) bool {
-			ts, _ := tsDecoder.At(tsBytes, i, count)
-
-			dp := NumericDataPoint{
-				Ts:  ts,
-				Val: val,
-				Tag: tag,
-			}
-
-			return yield(i, dp)
-		})
+		forEachRawGorillaTagged(tsDecoder, tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -1126,28 +1037,12 @@ func (b NumericBlob) allDataPointsRawChimp(tsBytes, valBytes, tagBytes []byte, c
 	// captures only the decoder and payload slices, not the whole NumericBlob.
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			ienc.FusedChimpEach(valBytes, count, 0, func(i int, val float64) bool {
-				// Use At() for timestamps - O(1) direct memory access
-				ts, _ := tsDecoder.At(tsBytes, i, count)
-
-				return yield(i, NumericDataPoint{Ts: ts, Val: val})
-			})
+			forEachRawChimp(tsDecoder, tsBytes, valBytes, count, yield)
 		}
 	}
 
-	// Tags enabled: Use fused chimp+tag decoder with At() for raw timestamps
 	return func(yield func(int, NumericDataPoint) bool) {
-		ienc.FusedChimpTagAll(valBytes, tagBytes, count, func(i int, val float64, tag string) bool {
-			ts, _ := tsDecoder.At(tsBytes, i, count)
-
-			dp := NumericDataPoint{
-				Ts:  ts,
-				Val: val,
-				Tag: tag,
-			}
-
-			return yield(i, dp)
-		})
+		forEachRawChimpTagged(tsDecoder, tsBytes, valBytes, tagBytes, count, yield)
 	}
 }
 
@@ -1157,102 +1052,47 @@ func (b NumericBlob) allDataPointsRawChimp(tsBytes, valBytes, tagBytes []byte, c
 // right trade for value codecs that have a fast batch DecodeAll but no stateful
 // fused decoder (e.g. ALP). Works for any timestamp encoding.
 func (b NumericBlob) allDataPointsMaterialized(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
-	tsBuf := make([]int64, count)
-	tsProduced := b.decodeTimestampsSlice(tsBytes, count, tsBuf)
-	valBuf := make([]float64, count)
-	valProduced := b.decodeValuesSlice(valBytes, count, valBuf)
-
-	// Yield only complete rows: a stream shorter than Count must not surface
-	// zero-filled timestamps or values from the unwritten buffer tail.
-	count = min(tsProduced, valProduced)
+	ts, vals := b.decodePointColumns(tsBytes, valBytes, count)
 
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			for i := range count {
-				if !yield(i, NumericDataPoint{Ts: tsBuf[i], Val: valBuf[i]}) {
-					return
-				}
-			}
+			forEachDecoded(ts, vals, yield)
 		}
 	}
-
-	tagIter := b.decodeTags(tagBytes, count)
 
 	return func(yield func(int, NumericDataPoint) bool) {
-		tagNext, tagStop := iter.Pull(tagIter)
-		defer tagStop()
-		for i := range count {
-			tag, ok := tagNext()
-			if !ok {
-				return // the tag stream ended early: yield only complete rows
-			}
-			if !yield(i, NumericDataPoint{Ts: tsBuf[i], Val: valBuf[i], Tag: tag}) {
-				return
-			}
-		}
+		forEachDecodedTagged(ts, vals, tagBytes, yield)
 	}
+}
+
+// decodePointColumns decodes both columns into new slices of count elements each,
+// trimmed to the rows both decodes produced:
+// a stream shorter than count must not surface zero-filled timestamps or values from the unwritten tail.
+func (b NumericBlob) decodePointColumns(tsBytes, valBytes []byte, count int) ([]int64, []float64) {
+	ts := make([]int64, count)
+	tsProduced := b.decodeTimestampsSlice(tsBytes, count, ts)
+	vals := make([]float64, count)
+	valProduced := b.decodeValuesSlice(valBytes, count, vals)
+	n := min(tsProduced, valProduced)
+
+	return ts[:n], vals[:n]
 }
 
 // allDataPointsGeneric is the fallback for unsupported encoding combinations (uses iter.Pull).
 func (b NumericBlob) allDataPointsGeneric(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
-	// If tags are disabled, use simple iteration without tag decoder
 	tsIter := b.decodeTimestamps(tsBytes, count)
 	valIter := b.decodeValues(valBytes, count)
 
 	if !b.HasTag() {
 		return func(yield func(int, NumericDataPoint) bool) {
-			// Use iter.Pull for fallback (works for all encoding combinations)
-			tsNext, tsStop := iter.Pull(tsIter)
-			valNext, valStop := iter.Pull(valIter)
-			defer tsStop()
-			defer valStop()
-
-			i := 0
-			for {
-				ts, tsOk := tsNext()
-				val, valOk := valNext()
-				if !tsOk || !valOk {
-					break
-				}
-
-				dp := NumericDataPoint{Ts: ts, Val: val, Tag: ""}
-				if !yield(i, dp) {
-					break
-				}
-
-				i++
-			}
+			forEachPulled(tsIter, valIter, yield)
 		}
 	}
 
 	tagIter := b.decodeTags(tagBytes, count)
 
 	return func(yield func(int, NumericDataPoint) bool) {
-		// Use iter.Pull for fallback (works for all encoding combinations)
-		tsNext, tsStop := iter.Pull(tsIter)
-		valNext, valStop := iter.Pull(valIter)
-		tagNext, tagStop := iter.Pull(tagIter)
-		defer tsStop()
-		defer valStop()
-		defer tagStop()
-
-		i := 0
-		for {
-			ts, tsOk := tsNext()
-			val, valOk := valNext()
-			tag, tagOk := tagNext()
-
-			if !tsOk || !valOk || !tagOk {
-				break
-			}
-
-			dp := NumericDataPoint{Ts: ts, Val: val, Tag: tag}
-			if !yield(i, dp) {
-				break
-			}
-
-			i++
-		}
+		forEachPulledTagged(tsIter, valIter, tagIter, yield)
 	}
 }
 
