@@ -715,3 +715,58 @@ func TestDecodeTagAt_HugeLengthDoesNotOverflow(t *testing.T) {
 		_, _ = NewTagDecoder(endian.GetLittleEndianEngine()).At(data, 0, 1)
 	})
 }
+
+// TestTagDecoder_Each pins the Each loop: indices from base, the index after the last tag,
+// -1 on an early stop, and a stop at the tags present when count overstates them.
+func TestTagDecoder_Each(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	encoder := NewTagEncoder(engine)
+	tags := []string{"a", "", "hello", "世界"}
+	for _, tag := range tags {
+		encoder.Write(tag)
+	}
+	data := encoder.Bytes()
+	decoder := NewTagDecoder(engine)
+
+	var gotIdx []int
+	var gotTags []string
+	next := decoder.Each(data, len(tags), 10, func(i int, tag string) bool {
+		gotIdx = append(gotIdx, i)
+		gotTags = append(gotTags, tag)
+
+		return true
+	})
+	require.Equal(t, 14, next)
+	require.Equal(t, []int{10, 11, 12, 13}, gotIdx)
+	require.Equal(t, tags, gotTags)
+
+	calls := 0
+	next = decoder.Each(data, len(tags), 0, func(i int, _ string) bool {
+		calls++
+
+		return i < 1
+	})
+	require.Equal(t, -1, next)
+	require.Equal(t, 2, calls)
+
+	calls = 0
+	next = decoder.Each(data, len(tags)+2, 3, func(int, string) bool {
+		calls++
+
+		return true
+	})
+	require.Equal(t, 3+len(tags), next, "the walk ends at the tags present")
+	require.Equal(t, len(tags), calls)
+
+	calls = 0
+	next = decoder.Each(data[:len(data)-1], len(tags), 0, func(int, string) bool {
+		calls++
+
+		return true
+	})
+	require.Equal(t, 3, next, "a tag cut short ends the walk before it")
+	require.Equal(t, 3, calls)
+
+	require.Equal(t, 5, decoder.Each(nil, 0, 5, func(int, string) bool { t.Fatal("no tags"); return false }))
+	require.Equal(t, 5, decoder.Each(nil, 3, 5, func(int, string) bool { t.Fatal("no data"); return false }))
+}

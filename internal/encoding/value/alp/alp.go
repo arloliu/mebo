@@ -1135,6 +1135,66 @@ func (d NumericALPDecoder) All(data []byte, count int) iter.Seq[float64] {
 	}
 }
 
+// Each decodes count values from data and calls yield for each one, indexing from base.
+//
+// It streams through the same per-scheme loops as All and returns the index after the last value yielded,
+// or -1 if yield returned false, the contract of the fused Each loops.
+// Unlike ranging over All, it never captures the caller's callback in a range-over-func body,
+// so escape analysis can keep that callback on the stack.
+// Like All, it trusts the column: the decoder validates every ALP column when a blob is opened,
+// and Each does not check lengths again; a column whose scheme byte is unknown yields nothing.
+//
+// Parameters:
+//   - data: The encoded column, scheme byte first, as validated at open
+//   - count: The number of values in the column
+//   - base: The index passed to yield for the first value
+//   - yield: Called with (index, value); return false to stop
+//
+// Returns:
+//   - int: base plus the number of values yielded, or -1 if yield stopped the walk
+func (d NumericALPDecoder) Each(data []byte, count, base int, yield func(int, float64) bool) int {
+	if count <= 0 || len(data) == 0 {
+		return base
+	}
+
+	idx := base
+	stopped := false
+	step := func(v float64) bool {
+		if !yield(idx, v) {
+			stopped = true
+
+			return false
+		}
+		idx++
+
+		return true
+	}
+
+	switch data[0] {
+	case alpSchemeRaw:
+		off := 1
+		for range count {
+			if !yield(idx, math.Float64frombits(d.engine.Uint64(data[off:off+8]))) {
+				return -1
+			}
+			idx++
+			off += 8
+		}
+	case alpSchemeMain:
+		d.allMain(data[1:], count, step)
+	case alpSchemeRD:
+		d.allRD(data[1:], count, step)
+	case alpSchemeRuns:
+		d.allRuns(data, count, step)
+	default:
+	}
+	if stopped {
+		return -1
+	}
+
+	return idx
+}
+
 func (d NumericALPDecoder) allMain(data []byte, count int, yield func(float64) bool) {
 	ee := int(data[0])
 	ff := int(data[1])

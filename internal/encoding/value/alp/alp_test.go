@@ -3536,3 +3536,95 @@ func FuzzALPBestEFSIMD(f *testing.F) {
 		alpEFKernelCheck(t, "fuzz", col, []int{int(seed) % alpEFCandidates})
 	})
 }
+
+// TestNumericALP_Each_MatchesAll pins the Each loop against All on every scheme byte, asserted per fixture:
+// main (0) with and without exceptions, RD (1), raw (2) and runs (3); indices from base, the index after the last value,
+// -1 on an early stop, and base on an empty column or a zero count.
+func TestNumericALP_Each_MatchesAll(t *testing.T) {
+	eng := endian.GetLittleEndianEngine()
+	dec := NewNumericALPDecoder(eng)
+	rng := rand.New(rand.NewSource(11))
+
+	long := genALPColumns(1, 9_000, 2, 42)[0]
+	exc := append([]float64(nil), long...)
+	for i := range exc {
+		if (i+1)%37 == 0 {
+			exc[i] = math.Pi * 1e17
+		}
+	}
+	rd := make([]float64, 2_000)
+	for i := range rd {
+		rd[i] = math.Sqrt(float64(i+2)) * 1e3
+	}
+	raw := make([]float64, 512)
+	for i := range raw {
+		for {
+			bits := rng.Uint64()
+			if (bits>>52)&0x7FF != 0x7FF {
+				raw[i] = math.Float64frombits(bits)
+				break
+			}
+		}
+	}
+	runs := make([]float64, 1_500)
+	cur := 100.0
+	for i := range runs {
+		if i > 0 && rng.Float64() < 0.6 {
+			runs[i] = runs[i-1]
+			continue
+		}
+		cur = math.Round((cur+cur*(rng.Float64()*2-1)*0.005)*100) / 100
+		runs[i] = cur
+	}
+
+	cases := []struct {
+		name   string
+		data   []byte
+		n      int
+		scheme byte
+	}{
+		{"main", alpEncodeSlice(long, eng), len(long), alpSchemeMain},
+		{"main_exceptions", alpEncodeSlice(exc, eng), len(exc), alpSchemeMain},
+		{"rd", alpEncodeSlice(rd, eng), len(rd), alpSchemeRD},
+		{"raw", alpEncodeSlice(raw, eng), len(raw), alpSchemeRaw},
+		{"runs", alpRunsEncode(runs, eng, true), len(runs), alpSchemeRuns},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.scheme, tc.data[0], "fixture scheme byte")
+			var want []float64
+			for v := range dec.All(tc.data, tc.n) {
+				want = append(want, v)
+			}
+			require.Len(t, want, tc.n)
+			var got []float64
+			var idx []int
+			next := dec.Each(tc.data, tc.n, 7, func(i int, v float64) bool {
+				idx = append(idx, i)
+				got = append(got, v)
+
+				return true
+			})
+			require.Equal(t, 7+tc.n, next)
+			require.Len(t, idx, tc.n)
+			for k := range idx {
+				require.Equal(t, 7+k, idx[k])
+			}
+			for k := range want {
+				require.Equal(t, math.Float64bits(want[k]), math.Float64bits(got[k]), "value %d", k)
+			}
+
+			calls := 0
+			next = dec.Each(tc.data, tc.n, 0, func(i int, _ float64) bool {
+				calls++
+
+				return i < tc.n/2
+			})
+			require.Equal(t, -1, next)
+			require.Equal(t, tc.n/2+1, calls)
+		})
+	}
+
+	require.Equal(t, 3, dec.Each(nil, 5, 3, func(int, float64) bool { t.Fatal("no data"); return false }))
+	require.Equal(t, 3, dec.Each(cases[0].data, 0, 3, func(int, float64) bool { t.Fatal("zero count"); return false }))
+}
