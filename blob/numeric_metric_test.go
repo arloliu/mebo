@@ -161,6 +161,18 @@ func requireHandleAgrees(t *testing.T, h *NumericMetric, blob NumericBlob, id ui
 	}
 }
 
+// requireMaterializedHandleAgrees materializes a copy of h and checks it as requireHandleAgrees does,
+// with both axes direct, and that its three ForEach forms yield what h's do;
+// h, copied before Materialize, keeps its classes and its answers.
+func requireMaterializedHandleAgrees(t *testing.T, h *NumericMetric, blob NumericBlob, id uint64, wantTs, wantVal AccessClass) {
+	t.Helper()
+	hm := *h
+	hm.Materialize()
+	requireHandleAgrees(t, &hm, blob, id, AccessDirect, AccessDirect)
+	require.Equal(t, collectHandle(h), collectHandle(&hm), "iteration before and after Materialize")
+	requireHandleAgrees(t, h, blob, id, wantTs, wantVal)
+}
+
 // TestNumericMetric_TimestampAccess pins every row of the spec's TimestampAt decision table:
 // the class follows the encoding and the metric's membership in a pre-decoded group, not the encoder options.
 func TestNumericMetric_TimestampAccess(t *testing.T) {
@@ -312,6 +324,8 @@ func TestNumericMetric_UnsupportedEncodings(t *testing.T) {
 		require.Equal(t, AccessUnsupported, h.TimestampAccess())
 		require.Equal(t, AccessDirect, h.ValueAccess())
 		requireHandleAgrees(t, &h, blob, 1, AccessUnsupported, AccessDirect)
+		h.Materialize()
+		requireHandleAgrees(t, &h, blob, 1, AccessUnsupported, AccessDirect)
 		_, ok = h.TimestampAt(0)
 		require.False(t, ok)
 		_, ok = h.At(0)
@@ -327,6 +341,8 @@ func TestNumericMetric_UnsupportedEncodings(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, AccessDirect, h.TimestampAccess())
 		require.Equal(t, AccessUnsupported, h.ValueAccess())
+		requireHandleAgrees(t, &h, blob, 1, AccessDirect, AccessUnsupported)
+		h.Materialize()
 		requireHandleAgrees(t, &h, blob, 1, AccessDirect, AccessUnsupported)
 		_, ok = h.ValueAt(0)
 		require.False(t, ok)
@@ -419,6 +435,7 @@ func testNumericMetricParity(t *testing.T, tsEnc, valEnc format.EncodingType, sh
 		h, ok := blob.Metric(id)
 		require.True(t, ok, "Metric")
 		requireHandleAgrees(t, &h, blob, id, wantTs, wantVal)
+		requireMaterializedHandleAgrees(t, &h, blob, id, wantTs, wantVal)
 
 		hn, ok := blob.MetricByName(m.name)
 		if names {
@@ -479,6 +496,8 @@ func TestNumericMetric_ZeroValue(t *testing.T) {
 	h.ForEach(nil)
 	h.ForEachValues(nil)
 	h.ForEachTimestamps(nil)
+	h.Materialize()
+	require.Equal(t, NumericMetric{}, h, "Materialize on the zero value does nothing")
 	for _, i := range []int{-1, 0, 1} {
 		_, ok := h.ValueAt(i)
 		require.False(t, ok, "ValueAt(%d)", i)
@@ -545,6 +564,8 @@ func TestNumericMetric_CorruptIndexEntry(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, 4, h.Len())
 			requireHandleAgrees(t, &h, blob, metricID, AccessDirect, AccessDirect)
+			h.Materialize()
+			requireHandleAgrees(t, &h, blob, metricID, AccessDirect, AccessDirect)
 			for i := range 4 {
 				_, ok := h.ValueAt(i)
 				require.False(t, ok)
@@ -558,7 +579,7 @@ func TestNumericMetric_CorruptIndexEntry(t *testing.T) {
 }
 
 // TestNumericMetric_EmptyMetric pins an entry with no points: Len 0, every read false,
-// and the classes still follow the encodings.
+// and the classes still follow the encodings until Materialize, which decodes nothing and leaves both axes direct.
 func TestNumericMetric_EmptyMetric(t *testing.T) {
 	const metricID = uint64(7)
 	newBlob := func(tsEnc format.EncodingType) NumericBlob {
@@ -579,6 +600,8 @@ func TestNumericMetric_EmptyMetric(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, 0, h.Len())
 		requireHandleAgrees(t, &h, blob, metricID, tt.want, AccessSequential)
+		h.Materialize()
+		requireHandleAgrees(t, &h, blob, metricID, AccessDirect, AccessDirect)
 	}
 }
 
@@ -655,6 +678,14 @@ func TestNumericMetric_ShortSharedGroupFallsThrough(t *testing.T) {
 	h.ForEachTimestamps(func(_ int, ts int64) bool { got = append(got, ts); return true })
 	require.Len(t, want, 5)
 	require.Equal(t, want, got)
+
+	// Materialize decodes the payload behind a short group, so every lookup is direct;
+	// iteration still yields the group, as NumericBlob.ForEachTimestamps does.
+	walk := collectHandle(&h)
+	h.Materialize()
+	require.Len(t, h.first.timestamps, points, "a short group is decoded from the payload")
+	requireHandleAgrees(t, &h, short, 2, AccessDirect, AccessDirect)
+	require.Equal(t, walk, collectHandle(&h), "iteration before and after Materialize")
 }
 
 // TestNumericMetric_EmptyFirstPart pins placement when the inline part holds no points
@@ -911,6 +942,17 @@ func requireSetHandleAgrees(t *testing.T, h *NumericMetric, bs BlobSet, id uint6
 	require.Equal(t, w.ts, setTs, "ForEachTimestamps against NumericBlobSet.ForEachTimestamps")
 }
 
+// requireMaterializedSetHandleAgrees materializes a copy of h and checks it as requireSetHandleAgrees does,
+// with both axes direct; h, copied before Materialize, keeps its classes and its answers.
+func requireMaterializedSetHandleAgrees(t *testing.T, h *NumericMetric, bs BlobSet, id uint64, name string, byName bool, wantTs, wantVal AccessClass) {
+	t.Helper()
+	hm := *h
+	hm.Materialize()
+	requireSetHandleAgrees(t, &hm, bs, id, name, byName, AccessDirect, AccessDirect)
+	require.Equal(t, collectHandle(h), collectHandle(&hm), "iteration before and after Materialize")
+	requireSetHandleAgrees(t, h, bs, id, name, byName, wantTs, wantVal)
+}
+
 // requireSetHandleAgreesByName checks every handle accessor against the BlobSet ByName accessor it replaces,
 // at every index from -1 to Len inclusive, and the three ForEach forms against NumericBlobSet's ByName forms.
 func requireSetHandleAgreesByName(t *testing.T, h *NumericMetric, bs BlobSet, name string) {
@@ -994,6 +1036,7 @@ func TestNumericMetric_SetAgreesWithBlobSet(t *testing.T) {
 					require.Equal(t, expected[name].ts, collectTs(&h), "metric %s timestamps", name)
 					require.Equal(t, expected[name].vals, collectVals(&h), "metric %s values", name)
 					requireSetHandleAgrees(t, &h, bs, id, name, names, layout.wantTs, layout.wantVal)
+					requireMaterializedSetHandleAgrees(t, &h, bs, id, name, names, layout.wantTs, layout.wantVal)
 
 					hn, ok := bs.NumericMetricByName(name)
 					if names {
@@ -1048,6 +1091,7 @@ func TestNumericMetric_SetMixedMembers(t *testing.T) {
 	require.Equal(t, 80, h.Len())
 	require.Equal(t, expected["all"].ts, collectTs(&h))
 	requireSetHandleAgrees(t, &h, bs, hash.ID("all"), "all", true, AccessDirect, AccessSequential)
+	requireMaterializedSetHandleAgrees(t, &h, bs, hash.ID("all"), "all", true, AccessDirect, AccessSequential)
 
 	one, ok := bs.NumericMetricByName("one")
 	require.True(t, ok)
@@ -1058,6 +1102,7 @@ func TestNumericMetric_SetMixedMembers(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 40, some.Len())
 	requireSetHandleAgrees(t, &some, bs, hash.ID("some"), "some", true, AccessDirect, AccessSequential)
+	requireMaterializedSetHandleAgrees(t, &some, bs, hash.ID("some"), "some", true, AccessDirect, AccessSequential)
 }
 
 // TestNumericMetric_SetForEachStops pins the callback-stop semantics across parts:
@@ -1233,4 +1278,204 @@ func TestNumericMetric_ForEachCapturingCallbacksStayOnStack(t *testing.T) {
 			require.NotZero(t, sinkV)
 		})
 	}
+}
+
+// materializeTestSet is the consumer's layout over the standard handle test set:
+// shared DeltaPacked timestamps, Chimp values and tags, so values and tags need decoding and timestamps do not.
+func materializeTestSet(t *testing.T) BlobSet {
+	t.Helper()
+	bs, _ := handleTestSet(t, handleTestSetMembers(), true,
+		WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeChimp), WithTagsEnabled(true))
+
+	return bs
+}
+
+// TestNumericMetric_MaterializeCopies pins the copy contract:
+// a copy made before Materialize is independent, keeps its classes and owns no decoded slices,
+// even for the parts after the first, which a copy shares with the original until Materialize replaces them;
+// a copy made after shares the decoded slices.
+func TestNumericMetric_MaterializeCopies(t *testing.T) {
+	bs := materializeTestSet(t)
+	h, ok := bs.NumericMetricByName("all")
+	require.True(t, ok)
+	require.Len(t, h.rest, 3)
+	before := h
+	h.Materialize()
+	require.Equal(t, AccessDirect, h.ValueAccess())
+	require.Equal(t, AccessSequential, before.ValueAccess(), "the copy made before is not materialized")
+	require.Nil(t, before.first.values)
+	require.Nil(t, before.first.tags)
+	for k := range before.rest {
+		require.Nil(t, before.rest[k].values, "part %d of the copy made before", k+1)
+		require.Nil(t, before.rest[k].tags, "part %d of the copy made before", k+1)
+		require.Len(t, h.rest[k].values, h.rest[k].count, "part %d of the materialized handle", k+1)
+		require.Len(t, h.rest[k].tags, h.rest[k].count, "part %d of the materialized handle", k+1)
+	}
+
+	after := h
+	require.Same(t, &h.rest[0], &after.rest[0], "a copy made after shares the parts")
+	require.Same(t, &h.first.values[0], &after.first.values[0], "and the decoded slices")
+	after.Materialize()
+	require.Same(t, &h.rest[0], &after.rest[0], "materializing a materialized copy writes nothing")
+
+	before.Materialize()
+	require.NotSame(t, &h.rest[0], &before.rest[0], "the copy made before materializes on its own")
+	require.Equal(t, collectHandle(&h), collectHandle(&before))
+}
+
+// TestNumericMetric_MaterializeIdempotent pins that a second Materialize decodes nothing and allocates nothing.
+func TestNumericMetric_MaterializeIdempotent(t *testing.T) {
+	bs := materializeTestSet(t)
+	h, ok := bs.NumericMetricByName("all")
+	require.True(t, ok)
+	h.Materialize()
+	values, tags := &h.rest[2].values[0], &h.rest[2].tags[0]
+	h.Materialize()
+	require.Same(t, values, &h.rest[2].values[0])
+	require.Same(t, tags, &h.rest[2].tags[0])
+	if raceEnabled {
+		return
+	}
+	require.Zero(t, testing.AllocsPerRun(50, h.Materialize))
+}
+
+// TestNumericMetric_MaterializeDirectAllocatesNothing pins gate 4:
+// Materialize on a handle whose axes are all direct and whose blobs have no tags allocates nothing,
+// on the blob form and on a set form with parts after the first.
+func TestNumericMetric_MaterializeDirectAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	layouts := []struct {
+		name string
+		opts []NumericEncoderOption
+	}{
+		{"shared-deltapacked/alp", []NumericEncoderOption{
+			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
+		}},
+		{"raw/raw", []NumericEncoderOption{WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw)}},
+	}
+	for _, layout := range layouts {
+		t.Run(layout.name, func(t *testing.T) {
+			blob := handleTestBlob(t, handleTestMetrics(3, 20, handleTestIdentical), false, layout.opts...)
+			bh, ok := blob.Metric(1)
+			require.True(t, ok)
+			bs, _ := handleTestSet(t, handleTestSetMembers(), true, layout.opts...)
+			sh, ok := bs.NumericMetricByName("all")
+			require.True(t, ok)
+			require.Len(t, sh.rest, 3)
+			for name, h := range map[string]NumericMetric{"blob": bh, "set": sh} {
+				require.Equal(t, AccessDirect, h.TimestampAccess(), name)
+				require.Equal(t, AccessDirect, h.ValueAccess(), name)
+				allocs := testing.AllocsPerRun(50, func() {
+					c := h
+					c.Materialize()
+				})
+				require.Zero(t, allocs, name)
+			}
+		})
+	}
+}
+
+// TestNumericMetric_MaterializeShortDecode pins the promotion rule on a stream that decodes short:
+// the owned slice keeps what the decoder produced, the axis keeps its class,
+// and every accessor and ForEach form answers as it did before Materialize.
+func TestNumericMetric_MaterializeShortDecode(t *testing.T) {
+	ms := handleTestMetrics(1, 40, handleTestIdentical)
+	blob := handleTestBlob(t, ms, false,
+		WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithTagsEnabled(true))
+	h, ok := blob.Metric(1)
+	require.True(t, ok)
+	// Cut every column of the part in half, as a corrupt entry whose ranges still lie inside the payloads would.
+	h.first.tsBytes = h.first.tsBytes[:len(h.first.tsBytes)/2]
+	h.first.valBytes = h.first.valBytes[:len(h.first.valBytes)/2]
+	h.first.tagBytes = h.first.tagBytes[:len(h.first.tagBytes)/2]
+
+	before := h
+	h.Materialize()
+	require.Equal(t, AccessSequential, h.TimestampAccess(), "a short decode does not promote the axis")
+	require.Equal(t, AccessSequential, h.ValueAccess())
+	require.NotEmpty(t, h.first.timestamps)
+	require.Less(t, len(h.first.timestamps), h.first.count)
+	require.NotEmpty(t, h.first.values)
+	require.Less(t, len(h.first.values), h.first.count)
+	require.NotEmpty(t, h.first.tags)
+	require.Less(t, len(h.first.tags), h.first.count)
+	for i := -1; i <= h.Len(); i++ {
+		wantTS, wantTSOk := before.TimestampAt(i)
+		gotTS, gotTSOk := h.TimestampAt(i)
+		require.Equal(t, wantTSOk, gotTSOk, "TimestampAt(%d) ok", i)
+		require.Equal(t, wantTS, gotTS, "TimestampAt(%d)", i)
+		wantV, wantVOk := before.ValueAt(i)
+		gotV, gotVOk := h.ValueAt(i)
+		require.Equal(t, wantVOk, gotVOk, "ValueAt(%d) ok", i)
+		require.Equal(t, math.Float64bits(wantV), math.Float64bits(gotV), "ValueAt(%d)", i)
+		wantTag, wantTagOk := before.TagAt(i)
+		gotTag, gotTagOk := h.TagAt(i)
+		require.Equal(t, wantTagOk, gotTagOk, "TagAt(%d) ok", i)
+		require.Equal(t, wantTag, gotTag, "TagAt(%d)", i)
+	}
+	require.Equal(t, collectHandle(&before), collectHandle(&h))
+	allocs := testing.AllocsPerRun(10, h.Materialize)
+	if !raceEnabled {
+		require.Zero(t, allocs, "a short decode is not retried")
+	}
+}
+
+// TestNumericMetric_MaterializedForEachReadsOwnedSlices pins the iteration after Materialize:
+// on the consumer's layout ForEach zips the owned slices and copies no tag,
+// and on ALP values with tags it reuses the owned tags, leaving only the two column buffers per part.
+func TestNumericMetric_MaterializedForEachReadsOwnedSlices(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	alp, _ := handleTestSet(t, handleTestSetMembers(), true,
+		WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP), WithTagsEnabled(true))
+	for _, tt := range []struct {
+		name string
+		bs   BlobSet
+		want float64
+	}{
+		{"shared-deltapacked/chimp/tags", materializeTestSet(t), 0},
+		{"shared-deltapacked/alp/tags", alp, 8},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h, ok := tt.bs.NumericMetricByName("all")
+			require.True(t, ok)
+			h.Materialize()
+			var sink int
+			allocs := testing.AllocsPerRun(50, func() {
+				var n int
+				h.ForEach(func(_ int, dp NumericDataPoint) bool { n += len(dp.Tag); return true })
+				sink += n
+			})
+			require.InDelta(t, tt.want, allocs, 0, "ForEach")
+			allocs = testing.AllocsPerRun(50, func() {
+				var sum float64
+				h.ForEachValues(func(_ int, v float64) bool { sum += v; return true })
+				sink += int(sum)
+			})
+			require.Zero(t, allocs, "ForEachValues")
+			require.Positive(t, sink)
+		})
+	}
+}
+
+// TestNumericMetric_MaterializeAllocations pins the allocation side of gate 2 on the consumer's layout:
+// resolving a handle and materializing it allocates no more than MaterializeNumericMetricByName on the same metric.
+func TestNumericMetric_MaterializeAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	bs := materializeTestSet(t)
+	handle := testing.AllocsPerRun(20, func() {
+		h, _ := bs.NumericMetricByName("all")
+		h.Materialize()
+	})
+	materialized := testing.AllocsPerRun(20, func() {
+		_, _ = bs.MaterializeNumericMetricByName("all")
+	})
+	require.LessOrEqual(t, handle, materialized)
+	// One for rest at resolution, one to copy it before writing, and per part the values, the tags and each tag string.
+	require.InDelta(t, 2+4*(2+20), handle, 0)
 }

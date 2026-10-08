@@ -97,9 +97,18 @@ func BenchmarkNumericMetric_Resolve(b *testing.B) {
 	})
 }
 
-// handleBenchSet builds the set gate fixture: four blobs of the production shape with retained names,
+// handleBenchSet builds the set gate fixture (S): four blobs of the production shape with retained names,
 // each at a later start time with later timestamps, so one metric spans 600 points.
 func handleBenchSet(tb testing.TB) BlobSet {
+	tb.Helper()
+
+	return handleBenchSetWith(tb, format.TypeALP, false)
+}
+
+// handleBenchSetWith builds the set gate fixture with the given value encoding,
+// and with tags on, "host=server1" on every point, when tagged is set:
+// Chimp with tags is the consumer fixture (C).
+func handleBenchSetWith(tb testing.TB, valEnc format.EncodingType, tagged bool) BlobSet {
 	tb.Helper()
 	cols := alpRLEGateColumns(0.5, 1)
 	blobs := make([]NumericBlob, 0, 4)
@@ -107,14 +116,16 @@ func handleBenchSet(tb testing.TB) BlobSet {
 		ms := make([]handleTestMetric, len(cols))
 		for m, col := range cols {
 			ts := make([]int64, len(col))
+			tags := make([]string, len(col))
 			for i := range ts {
 				ts[i] = handleTestStart + int64(k*alpRLEGatePoints+i)*15_000_000
+				tags[i] = "host=server1"
 			}
-			ms[m] = handleTestMetric{name: "metric." + strconv.Itoa(m+1), ts: ts, vals: col}
+			ms[m] = handleTestMetric{name: "metric." + strconv.Itoa(m+1), ts: ts, vals: col, tags: tags}
 		}
 		start := handleTestStart + int64(k)*3_600_000_000
 		blobs = append(blobs, handleTestBlobAt(tb, start, ms, true,
-			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP)))
+			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(valEnc), WithTagsEnabled(tagged)))
 	}
 
 	return NewBlobSet(blobs, nil)
@@ -247,6 +258,138 @@ func BenchmarkNumericMetric_SetResolve(b *testing.B) {
 		for b.Loop() {
 			h, _ := bs.NumericMetric(id)
 			sink += h.Len()
+		}
+		if sink == -1 {
+			b.Fatal("unreachable")
+		}
+	})
+}
+
+// BenchmarkNumericMetric_ConsumerMaterialize measures materializing one 600-point metric of the consumer fixture
+// (Chimp values, tags), resolved fresh in every iteration,
+// through MaterializeNumericMetricByName and through a handle and its Materialize.
+func BenchmarkNumericMetric_ConsumerMaterialize(b *testing.B) {
+	bs := handleBenchSetWith(b, format.TypeChimp, true)
+	const name = "metric.50"
+
+	b.Run("MaterializeNumericMetricByName", func(b *testing.B) {
+		var sink int
+		b.ReportAllocs()
+		for b.Loop() {
+			m, _ := bs.MaterializeNumericMetricByName(name)
+			sink += len(m.Values)
+		}
+		if sink == -1 {
+			b.Fatal("unreachable")
+		}
+	})
+
+	b.Run("NumericMetric", func(b *testing.B) {
+		var sink int
+		b.ReportAllocs()
+		for b.Loop() {
+			h, _ := bs.NumericMetricByName(name)
+			h.Materialize()
+			sink += h.Len()
+		}
+		if sink == -1 {
+			b.Fatal("unreachable")
+		}
+	})
+}
+
+// BenchmarkNumericMetric_ConsumerAt measures one point lookup at index 599 of the consumer fixture's metric:
+// At on a materialized handle, and the three accessors of MaterializedNumericMetric as the reference.
+func BenchmarkNumericMetric_ConsumerAt(b *testing.B) {
+	bs := handleBenchSetWith(b, format.TypeChimp, true)
+	const name = "metric.50"
+	const idx = 4*alpRLEGatePoints - 1
+	h, ok := bs.NumericMetricByName(name)
+	require.True(b, ok)
+	h.Materialize()
+	require.Equal(b, AccessDirect, h.ValueAccess())
+	m, ok := bs.MaterializeNumericMetricByName(name)
+	require.True(b, ok)
+
+	b.Run("MaterializedNumericMetric", func(b *testing.B) {
+		var sink int64
+		b.ReportAllocs()
+		for b.Loop() {
+			ts, _ := m.TimestampAt(idx)
+			v, _ := m.ValueAt(idx)
+			tag, _ := m.TagAt(idx)
+			sink += ts + int64(v) + int64(len(tag))
+		}
+		if sink == -1 {
+			b.Fatal("unreachable")
+		}
+	})
+
+	b.Run("NumericMetric", func(b *testing.B) {
+		var sink int64
+		b.ReportAllocs()
+		for b.Loop() {
+			dp, _ := h.At(idx)
+			sink += dp.Ts + int64(dp.Val) + int64(len(dp.Tag))
+		}
+		if sink == -1 {
+			b.Fatal("unreachable")
+		}
+	})
+}
+
+// BenchmarkNumericMetric_ConsumerForEach measures one ForEach pass over the 600 points of the consumer fixture's metric:
+// the consumer's blob-by-blob loop, a range over a MaterializedNumericMetric's slices as the reference,
+// and ForEach on a materialized handle.
+func BenchmarkNumericMetric_ConsumerForEach(b *testing.B) {
+	bs := handleBenchSetWith(b, format.TypeChimp, true)
+	const name = "metric.50"
+	h, ok := bs.NumericMetricByName(name)
+	require.True(b, ok)
+	h.Materialize()
+	m, ok := bs.MaterializeNumericMetricByName(name)
+	require.True(b, ok)
+	blobs := bs.NumericBlobs()
+
+	b.Run("blob-by-blob", func(b *testing.B) {
+		var sink int64
+		b.ReportAllocs()
+		for b.Loop() {
+			for i := range blobs {
+				blobs[i].ForEachByName(name, func(_ int, dp NumericDataPoint) bool {
+					sink += dp.Ts + int64(len(dp.Tag))
+
+					return true
+				})
+			}
+		}
+		if sink == -1 {
+			b.Fatal("unreachable")
+		}
+	})
+
+	b.Run("MaterializedNumericMetric", func(b *testing.B) {
+		var sink int64
+		b.ReportAllocs()
+		for b.Loop() {
+			for i, ts := range m.Timestamps {
+				sink += ts + int64(m.Values[i]) + int64(len(m.Tags[i]))
+			}
+		}
+		if sink == -1 {
+			b.Fatal("unreachable")
+		}
+	})
+
+	b.Run("NumericMetric", func(b *testing.B) {
+		var sink int64
+		b.ReportAllocs()
+		for b.Loop() {
+			h.ForEach(func(_ int, dp NumericDataPoint) bool {
+				sink += dp.Ts + int64(dp.Val) + int64(len(dp.Tag))
+
+				return true
+			})
 		}
 		if sink == -1 {
 			b.Fatal("unreachable")
