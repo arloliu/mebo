@@ -415,10 +415,10 @@ func TestNumericBlobSet_ForEachColumnsDoNotAllocate(t *testing.T) {
 	require.NotZero(t, valSink)
 }
 
-// TestNumericBlobSet_ForEachColumnsCapturingCallbacksStayOnStack is the call-site form of TestNumericBlobSet_ForEachColumnsDoNotAllocate.
+// TestNumericBlobSet_ForEachCapturingCallbacksStayOnStack is the call-site form of TestNumericBlobSet_ForEachColumnsDoNotAllocate.
 // The callback literal is built inside the measured function and captures a local, the shape a caller writes;
 // the set loops call the member loops by name, so it stays on the stack.
-func TestNumericBlobSet_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T) {
+func TestNumericBlobSet_ForEachCapturingCallbacksStayOnStack(t *testing.T) {
 	if raceEnabled {
 		t.Skip("race detector adds allocations")
 	}
@@ -445,6 +445,16 @@ func TestNumericBlobSet_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T
 		"ForEachValuesByName": func() {
 			var sum float64
 			set.ForEachValuesByName(name, func(_ int, v float64) bool { sum += v; return true })
+			sinkV += sum
+		},
+		"ForEach": func() {
+			var sum float64
+			set.ForEach(id, func(_ int, dp NumericDataPoint) bool { sum += dp.Val; return true })
+			sinkV += sum
+		},
+		"ForEachByName": func() {
+			var sum float64
+			set.ForEachByName(name, func(_ int, dp NumericDataPoint) bool { sum += dp.Val; return true })
 			sinkV += sum
 		},
 	}
