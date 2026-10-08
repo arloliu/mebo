@@ -281,6 +281,42 @@ func (d TagDecoder) All(data []byte, count int) iter.Seq[string] {
 	}
 }
 
+// Each decodes count tags from data and calls yield for each one, indexing from base.
+//
+// It returns the index after the last tag yielded, or -1 if yield returned false,
+// the contract of the fused Each loops, so a caller can chain columns without an adapter.
+// Unlike All, it calls yield straight from its loop, so the caller's callback is never captured by a closure
+// and escape analysis can keep it on the stack.
+// A truncated or malformed payload ends the walk after the last tag decoded.
+//
+// Parameters:
+//   - data: Encoded byte slice from TagEncoder.Bytes()
+//   - count: Total number of tags in the encoded data
+//   - base: The index passed to yield for the first tag
+//   - yield: Called with (index, tag); return false to stop
+//
+// Returns:
+//   - int: base plus the number of tags yielded, or -1 if yield stopped the walk
+func (d TagDecoder) Each(data []byte, count, base int, yield func(int, string) bool) int {
+	offset := 0
+	for i := range count {
+		tagLen, n, ok := decodeTagAt(data, offset)
+		if !ok {
+			return base + i
+		}
+
+		offset += n
+		tag := string(data[offset : offset+tagLen])
+		offset += tagLen
+
+		if !yield(base+i, tag) {
+			return -1
+		}
+	}
+
+	return base + count
+}
+
 // At retrieves the tag at the specified index from the encoded data.
 // The index is zero-based, so index 0 retrieves the first tag.
 //
