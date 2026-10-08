@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-10-08
+
 Faster encoding with Gorilla and Chimp, and faster point accessors, with no change to the API or the encoded bytes.
 
 ### Performance
@@ -698,7 +700,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.12.1...HEAD
+[1.12.1]: https://github.com/arloliu/mebo/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/arloliu/mebo/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/arloliu/mebo/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/arloliu/mebo/compare/v1.9.0...v1.10.0
