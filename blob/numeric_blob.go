@@ -33,6 +33,8 @@ type NumericBlob struct {
 	sharedTs   *sharedTimestamps // Pre-decoded timestamps of the shared-timestamp groups (nil if no shared TS)
 }
 
+var _ BlobReader = NumericBlob{}
+
 // sharedTimestampGroup is one shared-timestamp group:
 // the TimestampOffset that several metrics reference and its timestamps, decoded once at open.
 type sharedTimestampGroup struct {
