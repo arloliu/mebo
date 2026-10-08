@@ -52,12 +52,23 @@ func (s NumericBlobSet) resolverByName(metricName string) setEntryResolver {
 	}
 }
 
-func (r setEntryResolver) resolve(blob *NumericBlob) (section.NumericIndexEntry, bool) {
+// entry returns the member's index entry for the resolver's metric by pointer,
+// or nil when the member lacks it.
+// The pointer must not be retained, as entryFor and entryForName require.
+func (r setEntryResolver) entry(blob *NumericBlob) *section.NumericIndexEntry {
 	if r.byName {
-		return blob.index.resolveEntryByName(r.metricName, r.skipStripped)
+		return blob.index.entryForName(r.metricName, r.skipStripped)
 	}
 
-	return blob.index.resolveEntry(r.metricID, r.target, r.collided)
+	return blob.index.entryFor(r.metricID, r.target, r.collided)
+}
+
+func (r setEntryResolver) resolve(blob *NumericBlob) (section.NumericIndexEntry, bool) {
+	if entry := r.entry(blob); entry != nil {
+		return *entry, true
+	}
+
+	return section.NumericIndexEntry{}, false
 }
 
 // forEachAcrossBlobs drives a push callback over every blob in chronological
