@@ -321,3 +321,46 @@ func truncateForEachBlobPayload(blob NumericBlob, metricID uint64, timestamp boo
 
 	return blob
 }
+
+// TestNumericBlob_ForEachColumnsCapturingCallbacksStayOnStack pins the blob's column loops:
+// ForEachValues and ForEachTimestamps do not allocate for a callback literal built at the call site and capturing a local,
+// because the loops call yield by name and escape analysis keeps the closure on the stack.
+// The existing allocation test builds its closures outside the measured function, which hides a leak.
+func TestNumericBlob_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T) {
+	if raceEnabled {
+		t.Skip("race detector adds allocations")
+	}
+	layouts := []struct {
+		ts, val format.EncodingType
+	}{
+		{format.TypeRaw, format.TypeRaw},
+		{format.TypeDelta, format.TypeGorilla},
+		{format.TypeDeltaPacked, format.TypeChimp},
+		{format.TypeDeltaPacked, format.TypeRaw},
+		{format.TypeDeltaPacked, format.TypeALP},
+		{format.TypeRaw, format.TypeALPRLE},
+	}
+	for _, layout := range layouts {
+		for _, tagged := range []bool{false, true} {
+			name := fmt.Sprintf("%s/%s/tags=%t", layout.ts, layout.val, tagged)
+			blob, ids := buildForEachTestBlob(t, layout.ts, layout.val, tagged)
+			id := ids[0]
+			var sinkTS int64
+			var sinkV float64
+			allocs := testing.AllocsPerRun(50, func() {
+				var sum int64
+				blob.ForEachTimestamps(id, func(_ int, ts int64) bool { sum += ts; return true })
+				sinkTS += sum
+			})
+			require.Zerof(t, allocs, "%s ForEachTimestamps", name)
+			allocs = testing.AllocsPerRun(50, func() {
+				var sum float64
+				blob.ForEachValues(id, func(_ int, v float64) bool { sum += v; return true })
+				sinkV += sum
+			})
+			require.Zerof(t, allocs, "%s ForEachValues", name)
+			require.NotZero(t, sinkTS)
+			require.NotZero(t, sinkV)
+		}
+	}
+}

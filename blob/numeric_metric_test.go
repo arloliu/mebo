@@ -1177,3 +1177,48 @@ func TestNumericMetric_SetResolveAllocations(t *testing.T) {
 	require.InDelta(t, 1, allocs, 0, "two contributing members by ID")
 	require.Positive(t, sink)
 }
+
+// TestNumericMetric_ForEachColumnsCapturingCallbacksStayOnStack pins the set handle's column loops:
+// ForEachValues and ForEachTimestamps keep a call-site callback literal that captures a local on the stack.
+// It runs on a direct layout (shared group ranged directly, ALP through the pooled bulk decode)
+// and on a sequential one (fused Delta and Gorilla loops).
+func TestNumericMetric_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	layouts := []struct {
+		name string
+		opts []NumericEncoderOption
+	}{
+		{"shared-deltapacked/alp", []NumericEncoderOption{
+			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
+		}},
+		{"delta/gorilla/tags", []NumericEncoderOption{
+			WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithTagsEnabled(true),
+		}},
+	}
+	for _, layout := range layouts {
+		t.Run(layout.name, func(t *testing.T) {
+			bs, _ := handleTestSet(t, handleTestSetMembers(), true, layout.opts...)
+			h, ok := bs.NumericMetricByName("all")
+			require.True(t, ok)
+			require.Len(t, h.rest, 3)
+			var sinkTS int64
+			var sinkV float64
+			allocs := testing.AllocsPerRun(50, func() {
+				var sum int64
+				h.ForEachTimestamps(func(_ int, ts int64) bool { sum += ts; return true })
+				sinkTS += sum
+			})
+			require.Zero(t, allocs, "ForEachTimestamps")
+			allocs = testing.AllocsPerRun(50, func() {
+				var sum float64
+				h.ForEachValues(func(_ int, v float64) bool { sum += v; return true })
+				sinkV += sum
+			})
+			require.Zero(t, allocs, "ForEachValues")
+			require.NotZero(t, sinkTS)
+			require.NotZero(t, sinkV)
+		})
+	}
+}

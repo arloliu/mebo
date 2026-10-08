@@ -98,11 +98,14 @@ func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield fun
 	b.forEachDataPoint(tsBytes, valBytes, tagBytes, entry.Count, yield)
 }
 
-// forEachDataPoint invokes the combo-specific iteration body directly with
-// yield. It mirrors the dispatch order of allDataPoints (keep the two in
-// sync). The allDataPoints* variants are inlinable, so the iterator closure
-// they return is constructed and invoked in this frame and never escapes —
-// this is what makes ForEach allocation-free where All cannot be.
+// forEachDataPoint invokes the combo-specific iteration body directly with yield.
+// It mirrors the dispatch order of allDataPoints; keep the two in sync.
+// The iterator closures the allDataPoints* variants return are invoked in this frame,
+// so no iterator is allocated here, where All must allocate one.
+// The variants themselves are not inlinable,
+// so the call through the returned closure is dynamic and escape analysis treats yield as leaking:
+// a caller's capturing callback is moved to the heap on this path,
+// unlike ForEachValues and ForEachTimestamps, whose loops call yield by name.
 func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
 	// ALP and ALP-RLE values: materialize ts+values and zip (avoids generic iter.Pull overhead).
 	if enc := b.ValueEncoding(); enc == format.TypeALP || enc == format.TypeALPRLE {
@@ -382,7 +385,7 @@ func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, bas
 // shares the same decode loops.
 // Indexes and the result follow forEachValuesFromEntry.
 func (b NumericBlob) forEachValuesBytes(valBytes []byte, count, base int, yield func(int, float64) bool) int {
-	switch b.ValueEncoding() { //nolint:exhaustive // default branch drains the remaining codecs
+	switch b.ValueEncoding() { //nolint:exhaustive // an encoding without an Each loop yields nothing
 	case format.TypeGorilla:
 		return ienc.FusedGorillaEach(valBytes, count, base, yield)
 	case format.TypeChimp:
@@ -394,10 +397,12 @@ func (b NumericBlob) forEachValuesBytes(valBytes []byte, count, base int, yield 
 			return b.forEachALPValues(valBytes, count, base, yield)
 		}
 
-		return b.forEachValuesIter(valBytes, count, base, yield)
+		// Past the pool's cap the column streams through the codec's own Each loop, which calls yield directly.
+		return ienc.NewNumericALPDecoder(b.Engine()).Each(valBytes, count, base, yield)
 	default:
-		// Any future codec without a static Each or bulk path drains the iterator.
-		return b.forEachValuesIter(valBytes, count, base, yield)
+		// An encoding without a static Each loop yields nothing, as decodeValues does for it;
+		// see forEachTimestampsBytes for why its iterator is not drained here.
+		return base
 	}
 }
 
@@ -437,7 +442,7 @@ func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry,
 // shares the same decode loops.
 // Indexes and the result follow forEachValuesFromEntry.
 func (b NumericBlob) forEachTimestampsBytes(tsBytes []byte, count, base int, yield func(int, int64) bool) int {
-	switch b.tsEncType { //nolint:exhaustive // default branch drains the remaining codecs
+	switch b.tsEncType { //nolint:exhaustive // an encoding without an Each loop yields nothing
 	case format.TypeDelta:
 		return ienc.FusedDeltaEach(tsBytes, count, base, yield)
 	case format.TypeDeltaPacked:
@@ -445,38 +450,11 @@ func (b NumericBlob) forEachTimestampsBytes(tsBytes []byte, count, base int, yie
 	case format.TypeRaw:
 		return ienc.RawTimestampsEach(tsBytes, count, base, b.Engine(), b.sameByteOrder, yield)
 	default:
-		// Break rather than return inside the range-over-func body: a return
-		// there moves the result slot to the heap for every call.
-		idx := base
-		for ts := range b.decodeTimestamps(tsBytes, count) {
-			if !yield(idx, ts) {
-				idx = -1
-				break
-			}
-			idx++
-		}
-
-		return idx
+		// An encoding without a static Each loop yields nothing, as decodeTimestamps does for it.
+		// Draining its iterator here with a range-over-func body would capture yield in a closure
+		// and make escape analysis move every caller's callback to the heap, on every path of ForEachTimestamps.
+		return base
 	}
-}
-
-// forEachValuesIter drains the codec's value iterator, the path for codecs without a static Each loop.
-// For a single column this matches AllValues exactly — no iter.Pull — and it needs no buffer,
-// but it does not get the stack-state speedup.
-// It returns like forEachValuesFromEntry.
-func (b NumericBlob) forEachValuesIter(valBytes []byte, count, base int, yield func(int, float64) bool) int {
-	// Break rather than return inside the range-over-func body: a return
-	// there moves the result slot to the heap for every call.
-	idx := base
-	for v := range b.decodeValues(valBytes, count) {
-		if !yield(idx, v) {
-			idx = -1
-			break
-		}
-		idx++
-	}
-
-	return idx
 }
 
 // forEachALPValues bulk-decodes an ALP or ALP-RLE column into a pooled buffer and yields from it.
