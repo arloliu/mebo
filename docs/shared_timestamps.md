@@ -55,9 +55,14 @@ If no sharing is detected (all metrics have unique timestamps), no table is writ
 1. The decoder checks the shared timestamps flag bit (bit 3 of Options)
 2. If set, reads the mapping table from between the metric index and timestamp payload
 3. `ApplySharedTimestampTable` mutates index entries in-place — shared metrics' `TimestampOffset` and `TimestampLength` are overwritten to match their canonical
-4. `buildSharedTsCache` pre-decodes timestamps for offsets referenced by multiple metrics and stores them in a `map[int][]int64`
-5. Subsequent `AllTimestamps`, `ForEachTimestamps`, and `Materialize`/`MaterializeMetric` calls (on the blob or a `NumericBlobSet`) hit the cache instead of re-decoding;
-   `All`, `ForEach`, and `TimestampAt` still decode the canonical timestamp bytes on every call
+4. `buildSharedTimestamps` pre-decodes the timestamps of every offset that two or more index entries reference,
+   one group per offset, which the blob keeps and looks up by offset
+5. `TimestampAt`, `AllTimestamps`, `ForEachTimestamps`, `Materialize`/`MaterializeMetric` (on the blob or a `NumericBlobSet`)
+   and the `NumericMetric` handle read the group instead of re-decoding, so `TimestampAt` on a grouped metric is O(1);
+   `All` and `ForEach` decode the canonical timestamp bytes alongside the values
+6. A metric whose timestamp sequence is unique in the blob has no group:
+   its `TimestampAt` still walks its Delta or DeltaPacked column from the start (O(index)),
+   and `NumericMetric.TimestampAccess()` reports it as `AccessSequential`
 
 ## Binary Format
 
@@ -232,19 +237,20 @@ The extra allocations are: refcount map, cache map, and decoded `[]int64` slices
                       │
                       ▼
         ┌──────────────────────────┐
-        │  buildSharedTsCache      │
+        │  buildSharedTimestamps   │
         │  - Count offset refs     │
         │  - Pre-decode offsets    │
         │    used by > 1 metric    │
-        │  - Store in map[int][]i64│
+        │  - One group per offset  │
         └─────────────┬────────────┘
                       │
                       ▼
         ┌──────────────────────────┐
+        │  TimestampAt /           │
         │  AllTimestamps /         │
         │  Materialize             │
-        │  - Check cache first     │
-        │  - Decode on miss        │
+        │  - Read the group first  │
+        │  - Decode without one    │
         └──────────────────────────┘
 ```
 

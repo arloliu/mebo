@@ -121,16 +121,23 @@
 //
 // For frequent random access, materialize blob sets into memory:
 //
-//	// One-time materialization cost: ~100μs per metric per blob
+//	// One-time materialization cost: about 2–5 ns per point without tags (150-point metrics)
 //	mat := numericSet.Materialize() // or blobSet.MaterializeNumeric() on a BlobSet
 //
-//	// O(1) random access (~5ns per access)
+//	// O(1) random access (about 1 ns per access)
 //	val, ok := mat.ValueAt(metricID, 500)     // Very fast!
 //	ts, ok := mat.TimestampAt(metricID, 500)  // Direct array indexing
 //	tag, ok := mat.TagAt(metricID, 500)       // If tags enabled
 //
+// For one numeric metric, resolve a NumericMetric handle once instead
+// (NumericBlob.Metric, BlobSet.NumericMetricByName and their siblings);
+// its TimestampAccess and ValueAccess say whether lookups replay columns,
+// and its Materialize decodes only the axes that do.
+//
 // Use materialization when:
-//   - You need frequent random access (>100 accesses per metric)
+//   - Lookups on a metric replay its column (Gorilla or Chimp values, or Delta and DeltaPacked
+//     timestamps of the metric's own) and you read it many times or out of order;
+//     direct axes (Raw, ALP and ALP-RLE values, Raw or shared timestamps) gain nothing from it
 //   - Memory is available (~16 bytes per numeric point, ~24 bytes per text point)
 //   - The materialization cost is amortized over many accesses
 //
@@ -178,16 +185,18 @@
 //   - ALP (value): O(1) windowed bit read + O(log k) binary search over that
 //     column's exceptions (k = exceptions in the column, not its length)
 //   - Delta, DeltaPacked (timestamp): O(index), must sequentially decode from start,
-//     except timestamps shared across metrics: O(1) from a cache built at open
+//     except timestamps shared across metrics: O(1) from the groups pre-decoded at open
 //   - Gorilla, Chimp (value): O(index), must decompress the XOR chain from start
-//   - Materialized: O(1), ~5 ns (direct array access), regardless of the
+//   - Materialized: O(1), about 1 ns (direct array access), regardless of the
 //     underlying encoding — the one-time materialization cost decodes everything
 //     into a flat array upfront
 //
 // Materialization:
-//   - Cost: ~100 μs per metric per blob
+//   - Cost: about 2–5 ns per numeric point without tags (ALP to Chimp values),
+//     plus one string copy per point with tags
+//     (measured 2026-10 on 150-point metrics with shared DeltaPacked timestamps, uncompressed, little-endian)
 //   - Memory: ~16 bytes/point (numeric), ~24 bytes/point (text)
-//   - Access: O(1), ~5 ns per access
+//   - Access: O(1), about 1 ns per access (same measurement)
 //
 // # Thread Safety
 //
