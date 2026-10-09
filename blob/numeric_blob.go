@@ -918,11 +918,17 @@ func (b NumericBlob) allDataPointsDeltaChimp(tsBytes, valBytes, tagBytes []byte,
 }
 
 // allDataPointsDeltaPackedRaw handles Group Varint packed timestamps with raw values.
-// Uses the fused Each loop for timestamps (sequential) and At() for values (O(1) random access).
+// Without tags and in the host's byte order it runs forEachDeltaPackedRawNative, which bulk-decodes the timestamps;
+// otherwise it uses the fused Each loop for timestamps (sequential) and At() for values (O(1) random access).
 func (b NumericBlob) allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes []byte, count int) iter.Seq2[int, NumericDataPoint] {
 	var valDecoder encoding.ColumnarDecoder[float64]
 
 	engine := b.Engine()
+	if b.sameByteOrder && !b.HasTag() {
+		return func(yield func(int, NumericDataPoint) bool) {
+			forEachDeltaPackedRawNative(engine, tsBytes, valBytes, count, yield)
+		}
+	}
 	if b.sameByteOrder {
 		valDecoder = ienc.NewNumericRawUnsafeDecoder(engine)
 	} else {

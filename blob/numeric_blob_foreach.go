@@ -4,11 +4,39 @@ import (
 	"iter"
 
 	"github.com/arloliu/mebo/encoding"
+	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
 	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/pool"
 	"github.com/arloliu/mebo/section"
 )
+
+// forEachDeltaPackedRawNative zips DeltaPacked timestamps with Raw values in the host's byte order, without tags.
+// The timestamps are bulk-decoded into a pooled buffer, which takes the decoder's SIMD path
+// that the per-point state machine of forEachDeltaPackedRaw cannot,
+// and each value is one inlined load; rows follow the timestamps decoded, and a missing value reads 0, as there.
+// yield receives points, never the buffer, and the deferred Put runs only after the last callback returns.
+func forEachDeltaPackedRawNative(
+	engine endian.EndianEngine, tsBytes, valBytes []byte, count int, yield func(int, NumericDataPoint) bool,
+) {
+	valDec := ienc.NewNumericRawUnsafeDecoder(engine)
+	if count > pool.MaxPooledDecodeInt64s {
+		forEachDeltaPackedRaw(valDec, tsBytes, valBytes, count, yield)
+		return
+	}
+
+	tsPtr := pool.GetDecodeInt64Slice(count)
+	defer pool.PutDecodeInt64Slice(tsPtr)
+
+	var tsDec ienc.TimestampDeltaPackedDecoder
+	ts := (*tsPtr)[:tsDec.DecodeAll(tsBytes, count, *tsPtr)]
+	for i, t := range ts {
+		val, _ := valDec.At(valBytes, i, count)
+		if !yield(i, NumericDataPoint{Ts: t, Val: val}) {
+			return
+		}
+	}
+}
 
 // ForEach calls yield for each data point of the given metric ID in insertion
 // order, stopping early if yield returns false. The index passed to yield
@@ -22,6 +50,8 @@ import (
 // ALP and ALP-RLE values decode both columns before the first callback, into pooled buffers up to 8192 points
 // (allocating only while the pool is cold) and into two new slices beyond that,
 // and on a blob with tags every point's tag is a string copied out of the payload.
+// DeltaPacked timestamps with Raw values, without tags and in the host's byte order,
+// likewise decode the timestamps into a pooled buffer before the first callback.
 //
 // Parameters:
 //   - metricID: The metric ID to iterate over.
@@ -187,6 +217,10 @@ func forEachRawXOR[T encoding.ColumnarDecoder[int64]](
 // forEachPointsDeltaRaw dispatches Delta or DeltaPacked timestamps with Raw values.
 func (b NumericBlob) forEachPointsDeltaRaw(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
 	engine := b.Engine()
+	if b.sameByteOrder && b.tsEncType == format.TypeDeltaPacked && !b.HasTag() {
+		forEachDeltaPackedRawNative(engine, tsBytes, valBytes, count, yield)
+		return
+	}
 	if b.sameByteOrder {
 		forEachDeltaRawWith(ienc.NewNumericRawUnsafeDecoder(engine), b.tsEncType, b.HasTag(), tsBytes, valBytes, tagBytes, count, yield)
 		return
