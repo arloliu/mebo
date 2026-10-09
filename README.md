@@ -137,7 +137,7 @@ in shares calibrated so that Chimp costs about 3.8 bytes/point.
 | Delta + ALP-RLE | 3.797 | 76.4% | Smallest without shared timestamps |
 | Shared DeltaPacked + Chimp | 3.846 | 76.1% | Smallest with an XOR codec |
 | Delta + Gorilla | 5.096 | 68.4% | Default (`NewDefaultNumericEncoder`) |
-| Raw + Raw | 16.109 | 0% | Baseline; encode 120,399 ns/op, equivalent to the fastest |
+| Raw + Raw | 16.109 | 0% | Baseline; encode 119,621 ns/op, equivalent to the fastest |
 
 How much ALP-RLE saves depends on the data:
 12.8–47.5% against Chimp across four calibrated mixes, up to 80% on a single decimal gauge,
@@ -159,9 +159,10 @@ for the full breakdown across data shapes (decimals, counters, sparse data, repe
 | DeltaPacked | ~1.25 bytes typical, ~8.25 bytes worst case | O(index) | Regular intervals; Group Varint batch layout |
 
 Delta and DeltaPacked differ little in size: on the benchmark mix DeltaPacked costs 0.2 bytes/point more per metric, and 0.002 more with shared timestamps.
-DeltaPacked's Group Varint layout is meant for faster decode,
-but the 2026-10-07 benchmark run measured it iterating slower than Delta with Gorilla and Chimp;
-measure your own workload before choosing it for throughput.
+DeltaPacked's Group Varint layout is meant for faster decode.
+In the layout-averaged report run its iteration is equivalent to Delta's with every compressed value codec
+(the gap stays under the report's 20% threshold),
+and 1.52× faster with Raw values (1.45× with shared timestamps).
 
 ### Value Encodings
 
@@ -231,12 +232,13 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 9.540 bytes/point (40.8% savings), 106,475 ns/op sequential iteration on the benchmark mix.
-DeltaPacked's Group Varint batch decoding is optimized for read throughput, not encode speed;
-if encode speed is the priority,
-plain Raw + Raw encodes about as fast as any combination (120,399 ns/op) at the cost of no compression.
-In the 2026-10-07 layout-averaged run, Delta + ALP and Delta + ALP-RLE iterate faster at under half the size
-(Delta + ALP: 83,169 ns/op, 1.28× faster, at 4.026 bytes/point);
+**Result**: 9.540 bytes/point (40.8% savings), 54,272 ns/op sequential iteration on the benchmark mix,
+the lowest iteration time of all 30 combinations, equivalent to Shared DeltaPacked + Raw:
+the DeltaPacked timestamps decode a whole column at a time.
+It iterates 1.51× faster than Delta + ALP (81,928 ns/op) at 2.4× its size (4.026 bytes/point),
+so pick it only when iteration speed matters more than bytes.
+If encode speed is the priority,
+plain Raw + Raw encodes about as fast as any combination (119,621 ns/op) at the cost of no compression;
 see [Performance Guide § Iteration Performance](docs/performance.md#iteration-performance).
 
 ### Query-Optimized (Raw + Raw)
