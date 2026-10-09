@@ -3,6 +3,7 @@ package metadata
 import (
 	"encoding/binary"
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/arloliu/mebo/endian"
@@ -769,4 +770,56 @@ func TestTagDecoder_Each(t *testing.T) {
 
 	require.Equal(t, 5, decoder.Each(nil, 0, 5, func(int, string) bool { t.Fatal("no tags"); return false }))
 	require.Equal(t, 5, decoder.Each(nil, 3, 5, func(int, string) bool { t.Fatal("no data"); return false }))
+}
+
+func TestTagDecoder_DecodeInto(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	encoder := NewTagEncoder(engine)
+	tags := []string{"a", "", "hello", "世界"}
+	for _, tag := range tags {
+		encoder.Write(tag)
+	}
+	data := encoder.Bytes()
+	decoder := NewTagDecoder(engine)
+
+	dst := make([]string, len(tags))
+	require.Equal(t, len(tags), decoder.DecodeInto(data, dst))
+	require.Equal(t, tags, dst)
+
+	dst = make([]string, 2)
+	require.Equal(t, 2, decoder.DecodeInto(data, dst), "dst bounds the walk")
+	require.Equal(t, tags[:2], dst)
+
+	dst = make([]string, len(tags)+2)
+	require.Equal(t, len(tags), decoder.DecodeInto(data, dst), "the walk ends at the tags present")
+	require.Equal(t, tags, dst[:len(tags)])
+
+	dst = make([]string, len(tags))
+	require.Equal(t, 3, decoder.DecodeInto(data[:len(data)-1], dst), "a tag cut short ends the walk before it")
+	require.Equal(t, tags[:3], dst[:3])
+
+	require.Zero(t, decoder.DecodeInto(data, nil))
+	require.Zero(t, decoder.DecodeInto(nil, make([]string, 3)))
+
+	// The tags are copies of data, not views of it.
+	buf := append([]byte(nil), data...)
+	dst = make([]string, len(tags))
+	decoder.DecodeInto(buf, dst)
+	clear(buf)
+	require.Equal(t, tags, dst)
+}
+
+func TestTagDecoder_DecodeIntoAllocatesOnce(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	encoder := NewTagEncoder(engine)
+	for i := range 100 {
+		encoder.Write("host=" + strconv.Itoa(i%4))
+	}
+	data := encoder.Bytes()
+	decoder := NewTagDecoder(engine)
+	dst := make([]string, 100)
+	allocs := testing.AllocsPerRun(50, func() {
+		decoder.DecodeInto(data, dst)
+	})
+	require.InDelta(t, 1, allocs, 0)
 }
