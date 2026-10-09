@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Fewer allocations when materializing tagged metrics, faster lookups on the `NumericMetric` handle,
+faster iteration over DeltaPacked timestamps,
+and a fix for a DeltaPacked + Raw iteration slowdown introduced in v1.13.0-rc1.
+No API changed, and encoded bytes are unchanged.
+
+### Performance
+
+- **Materialization copies each tag column once instead of every tag.**
+  Every materialization path decodes a tag column into one string and slices its tags out of it:
+  `NumericBlob.Materialize`, `MaterializeMetric`, the `NumericBlobSet` materialize paths and `NumericMetric.Materialize`.
+  On a 600-point Chimp metric with tags over four blobs, `MaterializeNumericMetricByName` drops from 616 to 7 allocations (12.3 → 5.9 µs),
+  and a handle's `Materialize` from 610 to 5 (12.0 → 5.8 µs).
+  A tag kept from a materialized result keeps its whole column alive; streaming `ForEach` still copies one string per tag.
+- **`NumericMetric.Materialize` allocates at most four times** however many blobs the handle spans,
+  carving every part from one array per axis and one string for all tag columns.
+- **DeltaPacked timestamps with Gorilla or Chimp values iterate 17–27% faster**
+  (`NumericBlob.ForEach` and `All`, `NumericBlobSet.ForEach`, `NumericMetric.ForEach`, without tags):
+  columns of up to 8192 points decode their timestamps a whole column at a time into a pooled buffer.
+  DeltaPacked now iterates equivalently to Delta with every compressed value codec.
+  A walk that stops after the first few points costs about twice as much, since the whole timestamp column is decoded first.
+- **ALP and ALP-RLE point `ForEach` no longer allocates** for columns up to 8192 points:
+  both columns decode into pooled buffers (−23..−26% on 150-point metrics without tags).
+- **Direct lookups on the handle are faster**: `At`'s fallback places an index once,
+  `ValueAt`, `TimestampAt` and `TagAt` read the first blob's decoded slices before placing the index,
+  and Raw `At` is one inlined load.
+  Raw `ValueAt` + `TimestampAt` −39%, shared timestamps with Raw values −33%, Raw `At` −24%, a materialized handle −9%.
+
+### Fixed
+
+- **DeltaPacked + Raw iteration** (`All` and `ForEach`, shared or not, without tags, in the host's byte order)
+  was 27–31% slower than v1.12.1 since v1.13.0-rc1, after the loop moved to a scalar timestamp decoder.
+  It now decodes the timestamps a whole column at a time and runs 48–52% faster than v1.12.1.
+
+### Documentation
+
+- `docs/performance.md` regenerated from a layout-averaged run on this release;
+  README and `docs/best_practices.md` drop the advice that DeltaPacked iterates slower than Delta.
+- Materialization godoc: the tag cost is one string copy per tag column.
+- `NumericBlob.ForEach` godoc: which combinations decode a column into a pooled buffer before the first callback.
+
 ## [1.13.0-rc1] - 2026-10-09
 
 A handle for random access to one numeric metric, resolved once and read by index, and `ForEach` callbacks that stay on the stack.
