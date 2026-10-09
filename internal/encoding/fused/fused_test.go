@@ -1,6 +1,7 @@
 package fused
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/arloliu/mebo/internal/encoding/timestamp/deltapacked"
 	"github.com/arloliu/mebo/internal/encoding/value/chimp"
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
+	"github.com/arloliu/mebo/internal/pool"
 )
 
 func TestFusedDeltaGorillaAll(t *testing.T) {
@@ -396,6 +398,95 @@ func TestFusedDeltaPackedGorillaTagAll_CallbackShortCircuit(t *testing.T) {
 	})
 
 	require.Equal(t, stopAfter, callbackCount, "no callback may run after short-circuiting")
+}
+
+// TestFusedDeltaPackedXOREach_MatchesStepLoop pins the bulk-decoded DeltaPacked loops against the per-point loops
+// they replace for columns within the pooled buffer: the same rows on complete columns, on every truncation of
+// either column, with counts past, below and around the encoded points (negative included), after an early stop,
+// and with dirty pooled buffers; at the pool's size limit, on the complete columns.
+func TestFusedDeltaPackedXOREach_MatchesStepLoop(t *testing.T) {
+	type row struct {
+		i   int
+		ts  int64
+		val float64
+	}
+	collect := func(stopAfter int, run func(func(int, int64, float64) bool)) []row {
+		var rows []row
+		run(func(i int, ts int64, val float64) bool {
+			rows = append(rows, row{i, ts, val})
+
+			return len(rows) < stopAfter
+		})
+
+		return rows
+	}
+	loops := []struct {
+		name string
+		enc  func([]float64) []byte
+		each func([]byte, []byte, int, func(int, int64, float64) bool)
+		step func([]byte, []byte, int, func(int, int64, float64) bool)
+	}{
+		{"gorilla", func(v []float64) []byte {
+			e := gorilla.NewNumericGorillaEncoder()
+			e.WriteSlice(v)
+			return append([]byte(nil), e.Bytes()...)
+		}, FusedDeltaPackedGorillaEach, fusedDeltaPackedGorillaStep},
+		{"chimp", func(v []float64) []byte {
+			e := chimp.NewNumericChimpEncoder()
+			e.WriteSlice(v)
+			return append([]byte(nil), e.Bytes()...)
+		}, FusedDeltaPackedChimpEach, fusedDeltaPackedChimpStep},
+	}
+	for _, loop := range loops {
+		for _, n := range []int{1, 2, 3, 4, 5, 9, 63, 64, 65, 150, 200, 8191, 8192, 8193} {
+			t.Run(fmt.Sprintf("%s/points=%d", loop.name, n), func(t *testing.T) {
+				ts := make([]int64, n)
+				vals := make([]float64, n)
+				for i := range n {
+					ts[i] = 1_700_000_000_000_000 + int64(i)*15_000_000 + int64(i%7)*int64(i%3)*1000
+					vals[i] = math.Round(100*(50+10*math.Sin(float64(i)/5))) / 100
+				}
+				tsEnc := deltapacked.NewTimestampDeltaPackedEncoder()
+				tsEnc.WriteSlice(ts)
+				tsData := append([]byte(nil), tsEnc.Bytes()...)
+				valData := loop.enc(vals)
+
+				check := func(tsData, valData []byte, count, stopAfter int, what string) {
+					// Leave dirty buffers in the pool, so a read of stale contents would show.
+					for range 4 {
+						p := pool.GetDecodeInt64Slice(256)
+						for i := range *p {
+							(*p)[i] = -1
+						}
+						pool.PutDecodeInt64Slice(p)
+					}
+					want := collect(stopAfter, func(y func(int, int64, float64) bool) {
+						if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+							return
+						}
+						loop.step(tsData, valData, count, y)
+					})
+					got := collect(stopAfter, func(y func(int, int64, float64) bool) { loop.each(tsData, valData, count, y) })
+					require.Equal(t, want, got, what)
+				}
+				check(tsData, valData, n, math.MaxInt, "complete")
+				check(tsData, valData, n+5, math.MaxInt, "count past the encoded points")
+				check(tsData, valData, max(1, n/2), math.MaxInt, "count below the encoded points")
+				check(tsData, valData, -1, math.MaxInt, "negative count")
+				check(tsData, valData, 0, math.MaxInt, "zero count")
+				check(tsData, valData, n, max(1, n/2), "early stop")
+				if n > 200 {
+					return
+				}
+				for keep := range len(tsData) {
+					check(tsData[:keep], valData, n, math.MaxInt, fmt.Sprintf("timestamp bytes kept: %d", keep))
+				}
+				for keep := range len(valData) {
+					check(tsData, valData[:keep], n, math.MaxInt, fmt.Sprintf("value bytes kept: %d", keep))
+				}
+			})
+		}
+	}
 }
 
 func encodeFusedDeltaPackedGorillaTagData(t *testing.T, timestamps []int64, values []float64, tags []string) (tsData, valData, tagData []byte) {

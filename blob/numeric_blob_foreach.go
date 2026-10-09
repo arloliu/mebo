@@ -50,8 +50,9 @@ func forEachDeltaPackedRawNative(
 // ALP and ALP-RLE values decode both columns before the first callback, into pooled buffers up to 8192 points
 // (allocating only while the pool is cold) and into two new slices beyond that,
 // and on a blob with tags every point's tag is a string copied out of the payload.
-// DeltaPacked timestamps with Raw values, without tags and in the host's byte order,
-// likewise decode the timestamps into a pooled buffer before the first callback.
+// DeltaPacked timestamps with Gorilla or Chimp values, or with Raw values in the host's byte order, without tags,
+// likewise decode the whole timestamp column into a pooled buffer before the first callback when it has up to 8192 points,
+// so a walk that stops after a few points costs more than it did point by point; longer columns decode point by point.
 //
 // Parameters:
 //   - metricID: The metric ID to iterate over.
