@@ -438,8 +438,10 @@ func (h *NumericMetric) ForEachTimestamps(yield func(index int, ts int64) bool) 
 //   - NumericDataPoint: The point, with an empty tag on a blob without tags.
 //   - bool: false if the index is out of bounds or an axis cannot be read.
 func (h *NumericMetric) At(index int) (NumericDataPoint, bool) {
-	// A materialized part serves the point from its slices after one placement.
-	if p, i := h.locate(index); i >= 0 && i < len(p.values) && (i < len(p.tags) || !p.HasTag()) {
+	// A materialized part serves the point from its slices after one placement;
+	// otherwise the part reads each axis from that same placement.
+	p, i := h.locate(index)
+	if i >= 0 && i < len(p.values) && (i < len(p.tags) || !p.HasTag()) {
 		if ts, ok := p.timestampFromSlices(i); ok {
 			dp := NumericDataPoint{Ts: ts, Val: p.values[i]}
 			if i < len(p.tags) {
@@ -450,20 +452,7 @@ func (h *NumericMetric) At(index int) (NumericDataPoint, bool) {
 		}
 	}
 
-	ts, ok := h.TimestampAt(index)
-	if !ok {
-		return NumericDataPoint{}, false
-	}
-	val, ok := h.ValueAt(index)
-	if !ok {
-		return NumericDataPoint{}, false
-	}
-	tag, ok := h.TagAt(index)
-	if !ok {
-		return NumericDataPoint{}, false
-	}
-
-	return NumericDataPoint{Ts: ts, Val: val, Tag: tag}, true
+	return p.at(i)
 }
 
 // ValueAt returns the value at the given index.
@@ -478,18 +467,21 @@ func (h *NumericMetric) At(index int) (NumericDataPoint, bool) {
 //   - float64: The value.
 //   - bool: false if the index is out of bounds or the value encoding cannot be read.
 func (h *NumericMetric) ValueAt(index int) (float64, bool) {
+	// The first part's decoded column needs no placement.
+	if uint(index) < uint(len(h.first.values)) {
+		return h.first.values[index], true
+	}
+
+	// numericMetricPart.valueAt, written out: calling it measurably slowed the ALP lookups.
 	p, i := h.locate(index)
 	count := p.count
 	if i < 0 || i >= count {
 		return 0, false
 	}
-
-	// The column Materialize decoded first; a short decode falls through to the payload for the rest.
 	if i < len(p.values) {
 		return p.values[i], true
 	}
 
-	// valueAtFromEntry over the part's own range.
 	switch p.valEncType { //nolint: exhaustive
 	case format.TypeRaw:
 		if p.sameByteOrder {
@@ -520,18 +512,22 @@ func (h *NumericMetric) ValueAt(index int) (float64, bool) {
 //   - int64: The timestamp.
 //   - bool: false if the index is out of bounds or the timestamp encoding cannot be read.
 func (h *NumericMetric) TimestampAt(index int) (int64, bool) {
+	// The first part's decoded column or pre-decoded group needs no placement.
+	if uint(index) < uint(len(h.first.timestamps)) {
+		return h.first.timestamps[index], true
+	}
+	if uint(index) < uint(min(len(h.first.shared), h.first.count)) {
+		return h.first.shared[index], true
+	}
+
+	// numericMetricPart.timestampAt, written out, as ValueAt does.
 	p, i := h.locate(index)
 	count := p.count
 	if i < 0 || i >= count {
 		return 0, false
 	}
-	// The column Materialize decoded, then the pre-decoded group;
-	// either one shorter than count falls through to the payload, as timestampAtFromEntry does for a short group.
-	if i < len(p.timestamps) {
-		return p.timestamps[i], true
-	}
-	if i < len(p.shared) {
-		return p.shared[i], true
+	if ts, ok := p.timestampFromSlices(i); ok {
+		return ts, true
 	}
 
 	switch p.tsEncType { //nolint: exhaustive
@@ -565,19 +561,14 @@ func (h *NumericMetric) TimestampAt(index int) (int64, bool) {
 //   - string: The tag, empty on a blob without tags.
 //   - bool: false if the index is out of bounds or the tag column cannot be read.
 func (h *NumericMetric) TagAt(index int) (string, bool) {
-	p, i := h.locate(index)
-	count := p.count
-	if i < 0 || i >= count {
-		return "", false
-	}
-	if !p.HasTag() {
-		return "", true
-	}
-	if i < len(p.tags) {
-		return p.tags[i], true
+	// The first part's decoded tags need no placement.
+	if uint(index) < uint(len(h.first.tags)) {
+		return h.first.tags[index], true
 	}
 
-	return ienc.NewTagDecoder(p.engine).At(p.tagBytes, i, count)
+	p, i := h.locate(index)
+
+	return p.tagAt(i)
 }
 
 // Materialize decodes every axis the handle reads by replaying its column into slices the handle owns,
@@ -829,8 +820,26 @@ func (p *numericMetricPart) valueAccess() AccessClass {
 	}
 }
 
+// at is At on the part's local index i past the materialized fast path: each axis reads as its accessor does.
+func (p *numericMetricPart) at(i int) (NumericDataPoint, bool) {
+	ts, ok := p.timestampAt(i)
+	if !ok {
+		return NumericDataPoint{}, false
+	}
+	val, ok := p.valueAt(i)
+	if !ok {
+		return NumericDataPoint{}, false
+	}
+	tag, ok := p.tagAt(i)
+	if !ok {
+		return NumericDataPoint{}, false
+	}
+
+	return NumericDataPoint{Ts: ts, Val: val, Tag: tag}, true
+}
+
 // timestampFromSlices reads the timestamp at local index i from the decoded column or the pre-decoded group,
-// and returns false when neither holds it.
+// and reports false when neither covers it. The caller keeps i within the part.
 func (p *numericMetricPart) timestampFromSlices(i int) (int64, bool) {
 	if i < len(p.timestamps) {
 		return p.timestamps[i], true
@@ -840,6 +849,82 @@ func (p *numericMetricPart) timestampFromSlices(i int) (int64, bool) {
 	}
 
 	return 0, false
+}
+
+// timestampAt is TimestampAt on the part's local index i, for At's fallback (TimestampAt writes it out):
+// the column Materialize decoded, then the pre-decoded group,
+// either one shorter than count falling through to the payload, as timestampAtFromEntry does for a short group.
+func (p *numericMetricPart) timestampAt(i int) (int64, bool) {
+	count := p.count
+	if i < 0 || i >= count {
+		return 0, false
+	}
+	if ts, ok := p.timestampFromSlices(i); ok {
+		return ts, true
+	}
+
+	switch p.tsEncType { //nolint: exhaustive
+	case format.TypeRaw:
+		if p.sameByteOrder {
+			return ienc.NewTimestampRawUnsafeDecoder(p.engine).At(p.tsBytes, i, count)
+		}
+
+		return ienc.NewTimestampRawDecoder(p.engine).At(p.tsBytes, i, count)
+	case format.TypeDelta:
+		return ienc.NewTimestampDeltaDecoder().At(p.tsBytes, i, count)
+	case format.TypeDeltaPacked:
+		var decoder ienc.TimestampDeltaPackedDecoder
+
+		return decoder.At(p.tsBytes, i, count)
+	default:
+		return 0, false
+	}
+}
+
+// valueAt is ValueAt on the part's local index i, for At's fallback (ValueAt writes it out): the column Materialize decoded,
+// a short decode falling through to the payload for the rest, as valueAtFromEntry does over the part's own range.
+func (p *numericMetricPart) valueAt(i int) (float64, bool) {
+	count := p.count
+	if i < 0 || i >= count {
+		return 0, false
+	}
+	if i < len(p.values) {
+		return p.values[i], true
+	}
+
+	switch p.valEncType { //nolint: exhaustive
+	case format.TypeRaw:
+		if p.sameByteOrder {
+			return ienc.NewNumericRawUnsafeDecoder(p.engine).At(p.valBytes, i, count)
+		}
+
+		return ienc.NewNumericRawDecoder(p.engine).At(p.valBytes, i, count)
+	case format.TypeGorilla:
+		return ienc.NewNumericGorillaDecoder().At(p.valBytes, i, count)
+	case format.TypeChimp:
+		return ienc.NewNumericChimpDecoder().At(p.valBytes, i, count)
+	case format.TypeALP, format.TypeALPRLE:
+		return ienc.NewNumericALPDecoder(p.engine).At(p.valBytes, i, count)
+	default:
+		return 0, false
+	}
+}
+
+// tagAt is TagAt on the part's local index i: empty on a blob without tags,
+// the decoded tags first, then a walk of the tag column.
+func (p *numericMetricPart) tagAt(i int) (string, bool) {
+	count := p.count
+	if i < 0 || i >= count {
+		return "", false
+	}
+	if !p.HasTag() {
+		return "", true
+	}
+	if i < len(p.tags) {
+		return p.tags[i], true
+	}
+
+	return ienc.NewTagDecoder(p.engine).At(p.tagBytes, i, count)
 }
 
 // timestampColumn returns the part's timestamps as a slice of count elements, decoded or pre-decoded, or nil.

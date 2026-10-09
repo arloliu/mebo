@@ -1496,6 +1496,67 @@ func TestNumericMetric_MaterializeArenaMixesShortAndCompleteParts(t *testing.T) 
 	require.Equal(t, collectHandle(&before), collectHandle(&h))
 }
 
+// TestNumericMetric_FirstPartFastPathEdges pins the checks ValueAt, TimestampAt and TagAt make on the first part
+// before placing an index: a first part decoded short hands the rest of its points and the next parts to the payload,
+// and a pre-decoded group longer than the part never answers past the part's count.
+func TestNumericMetric_FirstPartFastPathEdges(t *testing.T) {
+	requireSameLookups := func(t *testing.T, want, got *NumericMetric) {
+		t.Helper()
+		for i := -1; i <= got.Len(); i++ {
+			wantTS, wantTSOk := want.TimestampAt(i)
+			gotTS, gotTSOk := got.TimestampAt(i)
+			require.Equal(t, wantTSOk, gotTSOk, "TimestampAt(%d) ok", i)
+			require.Equal(t, wantTS, gotTS, "TimestampAt(%d)", i)
+			wantV, wantVOk := want.ValueAt(i)
+			gotV, gotVOk := got.ValueAt(i)
+			require.Equal(t, wantVOk, gotVOk, "ValueAt(%d) ok", i)
+			require.Equal(t, math.Float64bits(wantV), math.Float64bits(gotV), "ValueAt(%d)", i)
+			wantTag, wantTagOk := want.TagAt(i)
+			gotTag, gotTagOk := got.TagAt(i)
+			require.Equal(t, wantTagOk, gotTagOk, "TagAt(%d) ok", i)
+			require.Equal(t, wantTag, gotTag, "TagAt(%d)", i)
+			wantDP, wantOk := want.At(i)
+			gotDP, gotOk := got.At(i)
+			require.Equal(t, wantOk, gotOk, "At(%d) ok", i)
+			require.Equal(t, wantDP, gotDP, "At(%d)", i)
+		}
+	}
+
+	t.Run("short first part before other parts", func(t *testing.T) {
+		bs, _ := handleTestSet(t, handleTestSetMembers(), true,
+			WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithTagsEnabled(true))
+		h, ok := bs.NumericMetricByName("all")
+		require.True(t, ok)
+		require.NotEmpty(t, h.rest)
+		h.first.tsBytes = h.first.tsBytes[:len(h.first.tsBytes)/2]
+		h.first.valBytes = h.first.valBytes[:len(h.first.valBytes)/2]
+		h.first.tagBytes = h.first.tagBytes[:len(h.first.tagBytes)/2]
+
+		before := h
+		h.Materialize()
+		require.NotEmpty(t, h.first.values)
+		require.Less(t, len(h.first.values), h.first.count)
+		require.Less(t, len(h.first.timestamps), h.first.count)
+		require.Less(t, len(h.first.tags), h.first.count)
+		requireSameLookups(t, &before, &h)
+	})
+
+	t.Run("group longer than the part", func(t *testing.T) {
+		ms := handleTestMetrics(3, 40, handleTestIdentical)
+		blob := handleTestBlob(t, ms, false,
+			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeRaw))
+		h, ok := blob.Metric(1)
+		require.True(t, ok)
+		require.Len(t, h.first.shared, h.first.count)
+		want := h
+		// A group whose entries outnumber the metric's points, as a corrupt entry count would leave it.
+		h.first.shared = append(slices.Clone(h.first.shared), 1, 2, 3)
+		requireSameLookups(t, &want, &h)
+		_, ok = h.TimestampAt(h.first.count)
+		require.False(t, ok)
+	})
+}
+
 // TestNumericMetric_MaterializedForEachReadsOwnedSlices pins the iteration after Materialize:
 // on the consumer's layout ForEach zips the owned slices and copies no tag,
 // and on ALP values with tags it reuses the owned tags and decodes the columns into pooled buffers, allocating nothing.
