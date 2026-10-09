@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A handle for random access to one numeric metric, resolved once and read by index, and `ForEach` callbacks that stay on the stack.
+Every addition is new API; nothing existing changed signature, and encoded bytes are unchanged.
+
+### Added
+
+- **`blob.NumericMetric`**: a handle on one numeric metric of a `NumericBlob`, or across the numeric members of a `BlobSet`.
+  `NumericBlob.Metric` / `MetricByName` and `BlobSet.NumericMetric` / `NumericMetricByName` resolve the metric's index entries,
+  payload ranges and pre-decoded shared timestamps once;
+  `Len`, `Duration`, `At`, `ValueAt`, `TimestampAt` and `TagAt` then do no name hashing, index search or decoder construction per call
+  and allocate nothing, and `ForEach`, `ForEachValues` and `ForEachTimestamps` walk every blob with the handle's own indices.
+  On the 100-metric benchmark blob a `ValueAt` + `TimestampAt` pair costs 10.4 ns through the handle against 26.4 ns through `NumericBlob`;
+  at index 599 of a 600-point metric over four blobs, 12.0 ns against 115 ns through the `BlobSet` `ByName` accessors.
+- **`NumericMetric.Materialize()`** decodes only the axes a lookup would replay (Gorilla and Chimp values, Delta and DeltaPacked timestamps of a metric's own)
+  and the tags, into slices the handle owns; it allocates nothing when every axis is direct and the blobs have no tags,
+  costs no more than `MaterializeNumericMetricByName` (0.98× its time on a 600-point Chimp metric with tags),
+  and leaves copies made before it independent.
+- **`blob.AccessClass`** (`AccessDirect`, `AccessSequential`, `AccessUnsupported`) with `NumericMetric.TimestampAccess()` and `ValueAccess()`:
+  whether a lookup reads the point directly or replays the column, decided by the encodings and the shared-timestamp groups.
+
+### Performance
+
+- **`ForEach`, `ForEachValues` and `ForEachTimestamps` no longer move the caller's callback to the heap**,
+  on `NumericBlob`, `NumericBlobSet` and the handle: a callback literal that captures locals costs no allocation per call.
+  ALP and ALP-RLE values still decode both columns into two slices for `ForEach`, and a tagged blob still copies each tag string.
+  Tagged ALP `ForEach` is about 4× faster, walking the tags without `iter.Pull`.
+
+### Documentation
+
+- The materialization godoc's "~100 µs per metric" and "~5 ns per access" are replaced by measured figures with their fixture:
+  about 2–5 ns per point without tags (ALP to Chimp values) plus one string copy per tagged point, and about 1 ns per accessor.
+  The text-metric figures are not yet measured and are unchanged.
+- `docs/best_practices.md` and the package documentation guide random access through the handle,
+  with the break-even per metric instead of "roughly 100 random accesses on a dataset".
+- `docs/shared_timestamps.md` describes the groups pre-decoded at open that `TimestampAt` reads,
+  and that a metric with a unique timestamp sequence keeps a sequential `TimestampAt`;
+  `API_STABILITY.md` qualifies the v1.12.0 note accordingly and records the v1.13.0 additions.
+- New design document: `docs/specs/random-access-without-materialize.md`, with the gate results.
+
 ## [1.12.1] - 2026-10-08
 
 Faster encoding with Gorilla and Chimp, and faster point accessors, with no change to the API or the encoded bytes.
