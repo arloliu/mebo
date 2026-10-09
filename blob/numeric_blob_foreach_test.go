@@ -9,7 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/pool"
 )
 
@@ -241,6 +243,80 @@ func TestNumericBlob_ForEachByName(t *testing.T) {
 	require.False(t, blob.ForEachByName("no.such.metric", func(int, NumericDataPoint) bool {
 		return true
 	}))
+}
+
+// TestNumericBlob_DeltaPackedRawMatchesColumnDecoders pins the bulk DeltaPacked + Raw loop against the column decoders:
+// ForEach and All yield the rows the timestamp iterator yields, each with the value At reads (0 where it reads none),
+// on complete columns, on every truncation of either column, and on both sides of the pool's size limit.
+// The rows are also checked against FusedDeltaPackedEach, the per-point loop the bulk decode replaced.
+func TestNumericBlob_DeltaPackedRawMatchesColumnDecoders(t *testing.T) {
+	reference := func(blob NumericBlob, metricID uint64) []NumericDataPoint {
+		entry, ok := blob.index.GetByID(metricID)
+		require.True(t, ok)
+		tsBytes, _ := safeSlice(blob.tsPayload, entry.TimestampOffset, entry.TimestampLength)
+		valBytes, _ := safeSlice(blob.valPayload, entry.ValueOffset, entry.ValueLength)
+		var tsDec ienc.TimestampDeltaPackedDecoder
+		valDec := ienc.NewNumericRawUnsafeDecoder(blob.Engine())
+		var points []NumericDataPoint
+		i := 0
+		for ts := range tsDec.All(tsBytes, entry.Count) {
+			val, _ := valDec.At(valBytes, i, entry.Count)
+			points = append(points, NumericDataPoint{Ts: ts, Val: val})
+			i++
+		}
+		var fused []NumericDataPoint
+		ienc.FusedDeltaPackedEach(tsBytes, entry.Count, 0, func(i int, ts int64) bool {
+			val, _ := valDec.At(valBytes, i, entry.Count)
+			fused = append(fused, NumericDataPoint{Ts: ts, Val: val})
+
+			return true
+		})
+		require.Equal(t, points, fused, "the column iterator and the fused loop disagree")
+
+		return points
+	}
+	requireMatches := func(t *testing.T, blob NumericBlob, metricID uint64, what string) {
+		t.Helper()
+		want := reference(blob, metricID)
+		_, all := collectAllDataPoints(blob, metricID)
+		_, each, _ := collectForEachDataPoints(blob, metricID, math.MaxInt)
+		if len(want) == 0 {
+			require.Empty(t, all, what)
+			require.Empty(t, each, what)
+
+			return
+		}
+		require.Equal(t, want, all, "All, %s", what)
+		require.Equal(t, want, each, "ForEach, %s", what)
+	}
+
+	for _, pointCount := range []int{1, 2, 3, 4, 10, 30, 48, 50, 56, 60, 63, 64, 65, 80, 100, 200} {
+		t.Run(fmt.Sprintf("points=%d", pointCount), func(t *testing.T) {
+			blob, metricID := buildDeltaPackedRawForEachBlob(t, pointCount, endian.IsNativeBigEndian(), false)
+			require.True(t, blob.sameByteOrder, "the bulk loop needs a blob in the host's byte order")
+			requireMatches(t, blob, metricID, "complete")
+			entry, ok := blob.index.GetByID(metricID)
+			require.True(t, ok)
+			for keep := 0; keep < entry.TimestampLength; keep++ {
+				requireMatches(t, truncateForEachBlobPayload(blob, metricID, true, keep), metricID, fmt.Sprintf("timestamp bytes kept: %d", keep))
+			}
+			for keep := 0; keep < entry.ValueLength; keep++ {
+				requireMatches(t, truncateForEachBlobPayload(blob, metricID, false, keep), metricID, fmt.Sprintf("value bytes kept: %d", keep))
+			}
+		})
+	}
+
+	for _, points := range []int{pool.MaxPooledDecodeInt64s, pool.MaxPooledDecodeInt64s + 1} {
+		t.Run(fmt.Sprintf("points=%d", points), func(t *testing.T) {
+			opts := []NumericEncoderOption{WithBlobLayoutV2(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeRaw)}
+			if endian.IsNativeBigEndian() {
+				opts = append(opts, WithBigEndian())
+			}
+			blob := handleTestBlob(t, handleTestMetrics(1, points, handleTestIdentical), false, opts...)
+			require.True(t, blob.sameByteOrder)
+			requireMatches(t, blob, 1, "complete")
+		})
+	}
 }
 
 func buildDeltaPackedRawForEachBlob(t *testing.T, pointCount int, bigEndian, withTags bool) (NumericBlob, uint64) {
