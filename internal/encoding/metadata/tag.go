@@ -3,6 +3,7 @@ package metadata
 import (
 	"encoding/binary"
 	"iter"
+	"unsafe"
 
 	"github.com/arloliu/mebo/encoding"
 
@@ -315,6 +316,55 @@ func (d TagDecoder) Each(data []byte, count, base int, yield func(int, string) b
 	}
 
 	return base + count
+}
+
+// DecodeInto decodes up to len(dst) tags from data into dst and returns how many it decoded.
+//
+// It copies data into one string and slices every tag out of it, so a column costs one allocation
+// rather than one per tag; the tags share that string, so any tag kept alive keeps the whole column alive.
+// That suits a caller that keeps the column, such as materialization; a streaming caller that may keep
+// only a few tags should use Each, whose tags are independent copies.
+// A truncated or malformed payload ends the walk after the last tag decoded.
+//
+// Parameters:
+//   - data: Encoded byte slice from TagEncoder.Bytes()
+//   - dst: Destination for the decoded tags; its length is the number of tags to decode
+//
+// Returns:
+//   - int: The number of tags written to dst
+func (d TagDecoder) DecodeInto(data []byte, dst []string) int {
+	if len(dst) == 0 {
+		return 0
+	}
+
+	return d.DecodeStringInto(string(data), dst)
+}
+
+// DecodeStringInto is DecodeInto over a column the caller already holds as a string:
+// every tag is a substring of column, so it allocates nothing.
+//
+// Parameters:
+//   - column: Encoded tags from TagEncoder.Bytes(), as a string
+//   - dst: Destination for the decoded tags; its length is the number of tags to decode
+//
+// Returns:
+//   - int: The number of tags written to dst
+func (d TagDecoder) DecodeStringInto(column string, dst []string) int {
+	// A read-only view of column for the length prefixes; nothing writes through it.
+	data := unsafe.Slice(unsafe.StringData(column), len(column))
+	offset := 0
+	for i := range dst {
+		tagLen, n, ok := decodeTagAt(data, offset)
+		if !ok {
+			return i
+		}
+
+		offset += n
+		dst[i] = column[offset : offset+tagLen]
+		offset += tagLen
+	}
+
+	return len(dst)
 }
 
 // At retrieves the tag at the specified index from the encoded data.
