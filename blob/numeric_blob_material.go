@@ -83,7 +83,7 @@ func (m MaterializedNumericBlob) ordinalByName(metricName string) (int, bool) {
 //
 // Performance:
 //   - Materialization cost: about 2–5 ns per point without tags (ALP to Chimp values),
-//     plus one string copy per point with tags
+//     plus one string copy of each tag column with tags
 //     (measured 2026-10 on 150-point metrics with shared DeltaPacked timestamps, uncompressed, little-endian)
 //   - Random access: about 1 ns per accessor (O(1), slice indexing)
 //   - Memory: ~16 bytes per data point
@@ -352,7 +352,7 @@ type MaterializedNumericMetric struct {
 //
 // Performance:
 //   - Materialization cost: about 0.4 µs for a 150-point metric with ALP values and shared timestamps,
-//     about 2–5 ns per point without tags (ALP to Chimp values), plus one string copy per point with tags
+//     about 2–5 ns per point without tags (ALP to Chimp values), plus one string copy of each tag column with tags
 //     (measured 2026-10)
 //   - Random access: about 1 ns per accessor (O(1), slice indexing)
 //   - Memory: ~16 bytes per data point
@@ -409,13 +409,7 @@ func (b NumericBlob) materializeEntry(entry section.NumericIndexEntry) Materiali
 	var tags []string
 	if b.HasTag() {
 		tags = make([]string, count)
-		idx := 0
-		for tag := range b.allTagsFromEntry(entry) {
-			tags[idx] = tag
-			idx++
-		}
-
-		tags = tags[:idx]
+		tags = tags[:b.decodeTagsInto(entry, tags)]
 	}
 
 	// Keep only complete rows when a corrupt stream decoded short, so

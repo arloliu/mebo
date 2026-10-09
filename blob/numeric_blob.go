@@ -573,6 +573,32 @@ func (b NumericBlob) allValuesFromEntry(entry section.NumericIndexEntry) iter.Se
 	return b.decodeValues(valBytes, entry.Count)
 }
 
+// decodeTagsInto decodes the entry's tags into dst[:entry.Count] and returns how many it wrote,
+// the rows allTagsFromEntry yields: empty tags on a blob without tags, none for an invalid range.
+// The tags of one call share a single string copy of the column, so materializing a column costs one allocation.
+// dst must hold at least entry.Count elements.
+func (b NumericBlob) decodeTagsInto(entry section.NumericIndexEntry, dst []string) int {
+	count := entry.Count
+	if count == 0 {
+		return 0
+	}
+	dst = dst[:count]
+
+	if !b.HasTag() || len(b.tagPayload) == 0 {
+		clear(dst)
+		return count
+	}
+
+	tagBytes, ok := safeSlice(b.tagPayload, entry.TagOffset, entry.TagLength)
+	if !ok {
+		return 0
+	}
+
+	var decoder ienc.TagDecoder
+
+	return decoder.DecodeInto(tagBytes, dst)
+}
+
 // allTagsFromEntry returns an iterator over all tags for the given entry.
 func (b NumericBlob) allTagsFromEntry(entry section.NumericIndexEntry) iter.Seq[string] {
 	count := entry.Count
@@ -1069,9 +1095,12 @@ func (b NumericBlob) allDataPointsMaterialized(tsBytes, valBytes, tagBytes []byt
 // trimmed to the rows both decodes produced:
 // a stream shorter than count must not surface zero-filled timestamps or values from the unwritten tail.
 func (b NumericBlob) decodePointColumns(tsBytes, valBytes []byte, count int) ([]int64, []float64) {
-	ts := make([]int64, count)
+	return b.decodePointColumnsInto(tsBytes, valBytes, count, make([]int64, count), make([]float64, count))
+}
+
+// decodePointColumnsInto is decodePointColumns into caller-owned buffers of count elements each.
+func (b NumericBlob) decodePointColumnsInto(tsBytes, valBytes []byte, count int, ts []int64, vals []float64) ([]int64, []float64) {
 	tsProduced := b.decodeTimestampsSlice(tsBytes, count, ts)
-	vals := make([]float64, count)
 	valProduced := b.decodeValuesSlice(valBytes, count, vals)
 	n := min(tsProduced, valProduced)
 

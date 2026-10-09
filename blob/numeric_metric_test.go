@@ -3,6 +3,7 @@ package blob
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -1232,17 +1233,16 @@ func TestNumericMetric_ForEachCapturingCallbacksStayOnStack(t *testing.T) {
 		t.Skip("allocation counts are not stable under the race detector")
 	}
 	layouts := []struct {
-		name        string
-		opts        []NumericEncoderOption
-		pointAllocs float64 // ForEach: ALP decodes both columns into two scratch buffers per member
-		tagged      bool    // ForEach also copies one tag string per point
+		name   string
+		opts   []NumericEncoderOption
+		tagged bool // ForEach copies one tag string per point
 	}{
 		{"shared-deltapacked/alp", []NumericEncoderOption{
 			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
-		}, 8, false},
+		}, false},
 		{"delta/gorilla/tags", []NumericEncoderOption{
 			WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithTagsEnabled(true),
-		}, 0, true},
+		}, true},
 	}
 	for _, layout := range layouts {
 		t.Run(layout.name, func(t *testing.T) {
@@ -1269,9 +1269,9 @@ func TestNumericMetric_ForEachCapturingCallbacksStayOnStack(t *testing.T) {
 				h.ForEach(func(_ int, dp NumericDataPoint) bool { sum += dp.Val; return true })
 				sinkV += sum
 			})
-			want := layout.pointAllocs
+			want := 0.0
 			if layout.tagged {
-				want += float64(h.Len())
+				want = float64(h.Len())
 			}
 			require.InDelta(t, want, allocs, 0, "ForEach")
 			require.NotZero(t, sinkTS)
@@ -1377,6 +1377,39 @@ func TestNumericMetric_MaterializeDirectAllocatesNothing(t *testing.T) {
 	}
 }
 
+// TestNumericMetric_MaterializeTagsCopyOncePerColumn pins the tag cost of materialization:
+// a tag column decodes into one string copy shared by its tags, so the allocations do not grow with the points.
+// Raw timestamps and values are direct, so the handle allocates the tag slice and the column string only;
+// MaterializeMetric adds its timestamp and value slices.
+func TestNumericMetric_MaterializeTagsCopyOncePerColumn(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	for _, points := range []int{20, 200} {
+		ms := handleTestMetrics(1, points, handleTestIdentical)
+		blob := handleTestBlob(t, ms, false,
+			WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw), WithTagsEnabled(true))
+		h, ok := blob.Metric(1)
+		require.True(t, ok)
+		allocs := testing.AllocsPerRun(50, func() {
+			c := h
+			c.Materialize()
+		})
+		require.InDeltaf(t, 2, allocs, 0, "handle, %d points", points)
+		allocs = testing.AllocsPerRun(50, func() {
+			_, _ = blob.MaterializeMetric(1)
+		})
+		require.InDeltaf(t, 4, allocs, 0, "MaterializeMetric, %d points", points)
+
+		c := h
+		c.Materialize()
+		m, ok := blob.MaterializeMetric(1)
+		require.True(t, ok)
+		require.Equal(t, ms[0].tags, c.first.tags)
+		require.Equal(t, ms[0].tags, m.Tags)
+	}
+}
+
 // TestNumericMetric_MaterializeShortDecode pins the promotion rule on a stream that decodes short:
 // the owned slice keeps what the decoder produced, the axis keeps its class,
 // and every accessor and ForEach form answers as it did before Materialize.
@@ -1422,9 +1455,50 @@ func TestNumericMetric_MaterializeShortDecode(t *testing.T) {
 	}
 }
 
+// TestNumericMetric_MaterializeArenaMixesShortAndCompleteParts pins the shared arrays Materialize carves:
+// with a part in the middle whose columns decode short, every part keeps its own share,
+// capped at its point count, and every accessor and ForEach form answers as it did before Materialize.
+func TestNumericMetric_MaterializeArenaMixesShortAndCompleteParts(t *testing.T) {
+	bs, _ := handleTestSet(t, handleTestSetMembers(), true,
+		WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla), WithTagsEnabled(true))
+	h, ok := bs.NumericMetricByName("all")
+	require.True(t, ok)
+	require.Len(t, h.rest, 3)
+	short := &h.rest[1]
+	short.tsBytes = short.tsBytes[:len(short.tsBytes)/2]
+	short.valBytes = short.valBytes[:len(short.valBytes)/2]
+	short.tagBytes = short.tagBytes[:len(short.tagBytes)/2]
+
+	before := h
+	before.rest = slices.Clone(h.rest)
+	h.Materialize()
+	for k := range 1 + len(h.rest) {
+		p := h.part(k)
+		require.Equal(t, p.count, cap(p.timestamps), "part %d timestamps", k)
+		require.Equal(t, p.count, cap(p.values), "part %d values", k)
+		require.Equal(t, p.count, cap(p.tags), "part %d tags", k)
+		if k == 2 {
+			require.Less(t, len(p.timestamps), p.count, "the short part's timestamps")
+			require.Less(t, len(p.values), p.count, "the short part's values")
+			require.Less(t, len(p.tags), p.count, "the short part's tags")
+		} else {
+			require.Len(t, p.timestamps, p.count, "part %d timestamps", k)
+			require.Len(t, p.values, p.count, "part %d values", k)
+			require.Len(t, p.tags, p.count, "part %d tags", k)
+		}
+	}
+	for i := -1; i <= h.Len(); i++ {
+		wantDP, wantOk := before.At(i)
+		gotDP, gotOk := h.At(i)
+		require.Equal(t, wantOk, gotOk, "At(%d) ok", i)
+		require.Equal(t, wantDP, gotDP, "At(%d)", i)
+	}
+	require.Equal(t, collectHandle(&before), collectHandle(&h))
+}
+
 // TestNumericMetric_MaterializedForEachReadsOwnedSlices pins the iteration after Materialize:
 // on the consumer's layout ForEach zips the owned slices and copies no tag,
-// and on ALP values with tags it reuses the owned tags, leaving only the two column buffers per part.
+// and on ALP values with tags it reuses the owned tags and decodes the columns into pooled buffers, allocating nothing.
 func TestNumericMetric_MaterializedForEachReadsOwnedSlices(t *testing.T) {
 	if raceEnabled {
 		t.Skip("allocation counts are not stable under the race detector")
@@ -1437,7 +1511,7 @@ func TestNumericMetric_MaterializedForEachReadsOwnedSlices(t *testing.T) {
 		want float64
 	}{
 		{"shared-deltapacked/chimp/tags", materializeTestSet(t), 0},
-		{"shared-deltapacked/alp/tags", alp, 8},
+		{"shared-deltapacked/alp/tags", alp, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h, ok := tt.bs.NumericMetricByName("all")
@@ -1476,6 +1550,17 @@ func TestNumericMetric_MaterializeAllocations(t *testing.T) {
 		_, _ = bs.MaterializeNumericMetricByName("all")
 	})
 	require.LessOrEqual(t, handle, materialized)
-	// One for rest at resolution, one to copy it before writing, and per part the values, the tags and each tag string.
-	require.InDelta(t, 2+4*(2+20), handle, 0)
+	// One for rest at resolution, one to copy it before writing,
+	// and for all parts together one value array, one tag array and one string holding every tag column.
+	require.InDelta(t, 2+3, handle, 0)
+
+	// Each part's share of the arrays ends where its points do, so no part can reach the next one's.
+	h, ok := bs.NumericMetricByName("all")
+	require.True(t, ok)
+	h.Materialize()
+	for k := range h.rest {
+		p := &h.rest[k]
+		require.Equal(t, p.count, cap(p.values), "part %d values", k)
+		require.Equal(t, p.count, cap(p.tags), "part %d tags", k)
+	}
 }

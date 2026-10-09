@@ -19,7 +19,8 @@ import (
 // All must return a heap-allocated iterator and makes the caller's range loop body escape to the heap,
 // while ForEach's static call chain keeps the callback and all decoder state on the stack.
 // A call does not allocate, with two exceptions:
-// ALP and ALP-RLE values decode both columns into two new slices before the first callback,
+// ALP and ALP-RLE values decode both columns before the first callback, into pooled buffers up to 8192 points
+// (allocating only while the pool is cold) and into two new slices beyond that,
 // and on a blob with tags every point's tag is a string copied out of the payload.
 //
 // Parameters:
@@ -240,8 +241,27 @@ func (b NumericBlob) forEachPointsDeltaXOR(tsBytes, valBytes, tagBytes []byte, c
 }
 
 // forEachPointsDecoded decodes both columns and zips them, as allDataPointsMaterialized does.
+// Columns of up to pool.MaxPooledDecodeFloat64s points decode into pooled buffers, as forEachALPValues does;
+// yield receives points, never the buffers, and the deferred Puts run only after the last callback returns.
 func (b NumericBlob) forEachPointsDecoded(tsBytes, valBytes, tagBytes []byte, count int, yield func(int, NumericDataPoint) bool) {
-	ts, vals := b.decodePointColumns(tsBytes, valBytes, count)
+	if count > pool.MaxPooledDecodeFloat64s {
+		ts, vals := b.decodePointColumns(tsBytes, valBytes, count)
+		b.forEachZippedColumns(ts, vals, tagBytes, yield)
+
+		return
+	}
+
+	tsPtr := pool.GetDecodeInt64Slice(count)
+	defer pool.PutDecodeInt64Slice(tsPtr)
+	valPtr := pool.GetDecodeFloat64Slice(count)
+	defer pool.PutDecodeFloat64Slice(valPtr)
+
+	ts, vals := b.decodePointColumnsInto(tsBytes, valBytes, count, *tsPtr, *valPtr)
+	b.forEachZippedColumns(ts, vals, tagBytes, yield)
+}
+
+// forEachZippedColumns zips decoded timestamp and value columns of equal length, with the tag column on a tagged blob.
+func (b NumericBlob) forEachZippedColumns(ts []int64, vals []float64, tagBytes []byte, yield func(int, NumericDataPoint) bool) {
 	if !b.HasTag() {
 		forEachDecoded(ts, vals, yield)
 		return

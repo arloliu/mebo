@@ -193,7 +193,7 @@
 //
 // Materialization:
 //   - Cost: about 2–5 ns per numeric point without tags (ALP to Chimp values),
-//     plus one string copy per point with tags
+//     plus one string copy of each tag column with tags
 //     (measured 2026-10 on 150-point metrics with shared DeltaPacked timestamps, uncompressed, little-endian)
 //   - Memory: ~16 bytes/point (numeric), ~24 bytes/point (text)
 //   - Access: O(1), about 1 ns per access (same measurement)
