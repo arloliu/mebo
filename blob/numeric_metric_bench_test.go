@@ -65,6 +65,77 @@ func BenchmarkNumericMetric_Lookup(b *testing.B) {
 	}
 }
 
+// BenchmarkNumericMetric_LookupDirect measures the lookups that never replay a column, 100 metrics × 150 points:
+// Raw timestamps and values read from the payload, a materialized Delta and Chimp handle read from its slices,
+// and shared DeltaPacked timestamps read from the pre-decoded group (with Raw values).
+// Each iteration visits index (m*37) % 150 of every metric; ns/lookup is one ValueAt and TimestampAt pair
+// in the first sub-benchmark and one At call in the second.
+func BenchmarkNumericMetric_LookupDirect(b *testing.B) {
+	const metrics, points = 100, 150
+	cases := []struct {
+		name        string
+		opts        []NumericEncoderOption
+		materialize bool
+	}{
+		{"raw-raw", []NumericEncoderOption{WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw)}, false},
+		{"materialized-delta-chimp", []NumericEncoderOption{
+			WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeChimp),
+		}, true},
+		{"shared-deltapacked-raw", []NumericEncoderOption{
+			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeRaw),
+		}, false},
+	}
+	for _, c := range cases {
+		blob := handleTestBlob(b, handleTestMetrics(metrics, points, handleTestIdentical), false, c.opts...)
+		handles := make([]NumericMetric, metrics)
+		for m := range handles {
+			h, ok := blob.Metric(uint64(m + 1))
+			require.True(b, ok)
+			if c.materialize {
+				h.Materialize()
+			}
+			require.Equal(b, AccessDirect, h.TimestampAccess())
+			require.Equal(b, AccessDirect, h.ValueAccess())
+			handles[m] = h
+		}
+
+		b.Run(c.name+"/ValueAt+TimestampAt", func(b *testing.B) {
+			var sink float64
+			var sinkTS int64
+			b.ReportAllocs()
+			for b.Loop() {
+				for m := range metrics {
+					idx := (m * 37) % points
+					h := &handles[m]
+					v, _ := h.ValueAt(idx)
+					ts, _ := h.TimestampAt(idx)
+					sink += v
+					sinkTS += ts
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*metrics), "ns/lookup")
+			if sink == -1 || sinkTS == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+
+		b.Run(c.name+"/At", func(b *testing.B) {
+			var sink float64
+			b.ReportAllocs()
+			for b.Loop() {
+				for m := range metrics {
+					dp, _ := handles[m].At((m * 37) % points)
+					sink += dp.Val + float64(dp.Ts)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*metrics), "ns/lookup")
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+	}
+}
+
 // BenchmarkNumericMetric_Resolve measures one resolution per iteration, by ID on the gate fixture
 // and by name on the same shape with retained names.
 func BenchmarkNumericMetric_Resolve(b *testing.B) {
