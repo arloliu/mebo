@@ -2,6 +2,7 @@
 package raw
 
 import (
+	"encoding/binary"
 	"fmt"
 	"iter"
 	"unsafe"
@@ -480,8 +481,11 @@ func (d TimestampRawUnsafeDecoder) DecodeAll(data []byte, count int, dst []int64
 // The data should be the byte slice payload produced by a TimestampRawEncoder.
 // The index is zero-based, so index 0 retrieves the first timestamp.
 //
-// If the index is out of bounds (negative or >= count), the method returns false.
-// If the data is malformed or does not contain enough timestamps, it may return false.
+// The data must be in the host's byte order, which is what selects this decoder;
+// the timestamp is read with one native-order load.
+//
+// It returns (0, false) when the index is out of bounds (negative or >= count),
+// when the data length is not a multiple of 8 bytes, or when the data holds no timestamp at the index.
 //
 // Parameters:
 //   - data: Encoded byte slice from TimestampRawEncoder.Bytes() (must be multiple of 8 bytes)
@@ -492,20 +496,13 @@ func (d TimestampRawUnsafeDecoder) DecodeAll(data []byte, count int, dst []int64
 //   - int64: The timestamp at the specified index (microseconds since Unix epoch)
 //   - bool: true if the index exists and was successfully decoded, false otherwise
 func (d TimestampRawUnsafeDecoder) At(data []byte, index int, count int) (int64, bool) {
-	if len(data) == 0 || index < 0 || index >= count {
+	// One native-order load at the index, rather than building the whole int64 view first, so the lookup inlines.
+	// A length that is not a multiple of 8 is malformed and rejected, as the view would reject it.
+	if index < 0 || index >= count || len(data)%8 != 0 || index >= len(data)/8 {
 		return 0, false
 	}
 
-	timestamps, err := decodeInt64SliceUnsafe(data)
-	if err != nil {
-		return 0, false
-	}
-
-	if index >= len(timestamps) {
-		return 0, false
-	}
-
-	return timestamps[index], true
+	return int64(binary.NativeEndian.Uint64(data[index*8:])), true //nolint:gosec // reinterprets the stored bits
 }
 
 func decodeInt64SliceUnsafe(data []byte) ([]int64, error) {
