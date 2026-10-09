@@ -152,9 +152,9 @@ func (s *NumericBlobSet) Materialize() MaterializedNumericBlobSet {
 
 			// Decode and append tags (if enabled)
 			if hasTags && blob.HasTag() {
-				for tag := range blob.allTagsFromEntry(entry) {
-					metricSet.tags = append(metricSet.tags, tag)
-				}
+				tagOff := len(metricSet.tags)
+				metricSet.tags = slices.Grow(metricSet.tags, count)[:tagOff+count]
+				metricSet.tags = metricSet.tags[:tagOff+blob.decodeTagsInto(entry, metricSet.tags[tagOff:])]
 			} else if hasTags {
 				// This blob doesn't have tags, but other blobs do
 				// Fill with empty strings to maintain index alignment
@@ -274,9 +274,9 @@ func (s *NumericBlobSet) materializeMetricCore(metricID uint64, resolve func(blo
 
 		// Decode and append tags (if enabled)
 		if hasTags && blob.HasTag() {
-			for tag := range blob.allTagsFromEntry(entry) {
-				tags = append(tags, tag)
-			}
+			tagOff := len(tags)
+			tags = slices.Grow(tags, count)[:tagOff+count]
+			tags = tags[:tagOff+blob.decodeTagsInto(entry, tags[tagOff:])]
 		} else if hasTags {
 			// This blob doesn't have tags, but other blobs do
 			// Fill with empty strings to maintain index alignment

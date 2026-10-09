@@ -984,7 +984,7 @@ func (bs BlobSet) TextAtByName(metricName string, index int) (TextDataPoint, boo
 //
 // Performance:
 //   - Materialization cost: about 2–5 ns per point without tags (ALP to Chimp values),
-//     plus one string copy per point with tags
+//     plus one string copy of each tag column with tags
 //     (measured 2026-10 on 150-point metrics with shared DeltaPacked timestamps, uncompressed, little-endian)
 //   - Random access: about 1 ns per accessor (O(1), slice indexing)
 //   - Memory: ~16 bytes per data point × total numeric data points

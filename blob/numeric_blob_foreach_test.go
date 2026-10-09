@@ -2,6 +2,7 @@ package blob
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
+	"github.com/arloliu/mebo/internal/pool"
 )
 
 // buildForEachTestBlob encodes 3 metrics × 50 points with the given encodings
@@ -368,7 +370,7 @@ func TestNumericBlob_ForEachColumnsCapturingCallbacksStayOnStack(t *testing.T) {
 // TestNumericBlob_ForEachPointsCapturingCallbacksStayOnStack is the point-form companion of the column test above:
 // ForEach does not allocate for a callback literal built at the call site and capturing a local,
 // on every timestamp and value encoding pair, with and without tags.
-// ALP and ALP-RLE values decode both columns into two scratch buffers first, so they allow exactly those two allocations,
+// ALP and ALP-RLE values decode both columns into pooled scratch buffers, so they stay at zero too,
 // and a tagged blob allows one allocation per point, the tag string the decoder copies out of the payload.
 func TestNumericBlob_ForEachPointsCapturingCallbacksStayOnStack(t *testing.T) {
 	if raceEnabled {
@@ -383,9 +385,6 @@ func TestNumericBlob_ForEachPointsCapturingCallbacksStayOnStack(t *testing.T) {
 					blob, ids := buildForEachTestBlob(t, tsEnc, valEnc, tagged)
 					id := ids[0]
 					want := 0.0
-					if valEnc == format.TypeALP || valEnc == format.TypeALPRLE {
-						want = 2
-					}
 					if tagged {
 						want += float64(blob.Len(id))
 					}
@@ -400,5 +399,80 @@ func TestNumericBlob_ForEachPointsCapturingCallbacksStayOnStack(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestNumericBlob_ForEachALPPooledColumns pins the pooled column buffers of the ALP point loop:
+// it agrees with All on both sides of the pool's size limit, on a timestamp column cut short into a dirty buffer,
+// under a callback that re-enters ForEach, and after a callback that panics.
+func TestNumericBlob_ForEachALPPooledColumns(t *testing.T) {
+	for _, valEnc := range []format.EncodingType{format.TypeALP, format.TypeALPRLE} {
+		for _, points := range []int{pool.MaxPooledDecodeFloat64s, pool.MaxPooledDecodeFloat64s + 1} {
+			t.Run(fmt.Sprintf("%s/%d", valEnc, points), func(t *testing.T) {
+				blob := handleTestBlob(t, handleTestMetrics(1, points, handleTestIdentical), false,
+					WithBlobLayoutV2(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(valEnc))
+				wantIdx, want := collectAllDataPoints(blob, 1)
+				require.Len(t, want, points)
+				gotIdx, got, found := collectForEachDataPoints(blob, 1, math.MaxInt)
+				require.True(t, found)
+				require.Equal(t, wantIdx, gotIdx)
+				require.Equal(t, want, got)
+			})
+		}
+
+		t.Run(fmt.Sprintf("%s/truncated-into-dirty-buffers", valEnc), func(t *testing.T) {
+			blob, ids := buildForEachTestBlob(t, format.TypeDelta, valEnc, true)
+			id := ids[0]
+			ord, _ := blob.index.getOrdinal(id)
+			short := truncateForEachBlobPayload(blob, id, true, blob.index.sorted[ord].TimestampLength/2)
+			for range 8 {
+				dirtyTS := pool.GetDecodeInt64Slice(64)
+				for i := range *dirtyTS {
+					(*dirtyTS)[i] = -1
+				}
+				pool.PutDecodeInt64Slice(dirtyTS)
+				dirtyVals := pool.GetDecodeFloat64Slice(64)
+				for i := range *dirtyVals {
+					(*dirtyVals)[i] = -1
+				}
+				pool.PutDecodeFloat64Slice(dirtyVals)
+			}
+			wantIdx, want := collectAllDataPoints(short, id)
+			require.NotEmpty(t, want)
+			require.Less(t, len(want), short.Len(id))
+			gotIdx, got, _ := collectForEachDataPoints(short, id, math.MaxInt)
+			require.Equal(t, wantIdx, gotIdx)
+			require.Equal(t, want, got)
+		})
+
+		t.Run(fmt.Sprintf("%s/re-entrant-and-panicking-callbacks", valEnc), func(t *testing.T) {
+			blob, ids := buildForEachTestBlob(t, format.TypeDeltaPacked, valEnc, false)
+			id := ids[0]
+			_, want := collectAllDataPoints(blob, id)
+
+			var outer []NumericDataPoint
+			blob.ForEach(id, func(i int, dp NumericDataPoint) bool {
+				if i == 0 {
+					_, inner, _ := collectForEachDataPoints(blob, id, math.MaxInt)
+					require.Equal(t, want, inner, "nested ForEach")
+				}
+				outer = append(outer, dp)
+
+				return true
+			})
+			require.Equal(t, want, outer, "outer ForEach after a nested one")
+
+			require.Panics(t, func() {
+				blob.ForEach(id, func(i int, _ NumericDataPoint) bool {
+					if i == 3 {
+						panic("callback")
+					}
+
+					return true
+				})
+			})
+			_, after, _ := collectForEachDataPoints(blob, id, math.MaxInt)
+			require.Equal(t, want, after, "ForEach after a panicking callback")
+		})
 	}
 }

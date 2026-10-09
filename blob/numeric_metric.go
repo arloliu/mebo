@@ -2,6 +2,7 @@ package blob
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
@@ -95,6 +96,27 @@ type numericMetricPart struct {
 	tags       []string  // the decoded tag column, for a blob with tags
 }
 
+// numericMetricArena holds the arrays one Materialize call carves its parts' decoded columns from:
+// one per axis, and one string holding every tag column the call decodes, back to back.
+// Materialize sizes it from the parts that need decoding, fills the tag string, then hands each part its share in order.
+type numericMetricArena struct {
+	timestamps []int64
+	values     []float64
+	tags       []string
+	tagColumns string
+	tagBuilder strings.Builder
+
+	numTimestamps int
+	numValues     int
+	numTags       int
+	numTagBytes   int
+
+	// Whether some part decodes the axis, even an empty one: a decoded column is non-nil, which marks it done.
+	decodesTimestamps bool
+	decodesValues     bool
+	decodesTags       bool
+}
+
 // fillNumericMetricPart copies what the point accessors need for entry of b into p, a part whose points start at base.
 // It writes in place and takes the blob by pointer so that resolution copies neither the blob nor the part.
 // A range that falls outside its payload leaves the slice nil, so every lookup on that axis returns false,
@@ -164,6 +186,15 @@ func forEachZipped(ts []int64, vals []float64, tags []string, yield func(int, Nu
 			return
 		}
 	}
+}
+
+// carve returns the next n elements of *buf with their capacity cut to n, so a part never reaches the next one's,
+// and advances *buf past them.
+func carve[T any](buf *[]T, n int) []T {
+	s := (*buf)[:n:n]
+	*buf = (*buf)[n:]
+
+	return s
 }
 
 // Metric returns a handle on the metric with the given ID.
@@ -553,9 +584,12 @@ func (h *NumericMetric) TagAt(index int) (string, bool) {
 // so that every later lookup is direct.
 //
 // Per blob it decodes the timestamps when they are sequential (Delta or DeltaPacked without a complete shared group),
-// the values when they are sequential (Gorilla or Chimp), and the tags whenever the blob has them,
-// each into one new slice; axes that are already direct are left alone,
+// the values when they are sequential (Gorilla or Chimp), and the tags whenever the blob has them;
+// axes that are already direct are left alone,
 // so on a handle whose axes are all direct and whose blobs have no tags it allocates nothing.
+// The decoded columns of all blobs share one array per axis, and the tags one string copy of every tag column,
+// so a call makes at most four allocations regardless of how many blobs the handle spans,
+// plus one copy of the parts after the first when one of them decodes (see below).
 // An axis becomes direct only when its decode produced every point;
 // a stream that ends early keeps what was decoded, the axis keeps its class,
 // and lookups past the decoded points read the payload as before.
@@ -569,15 +603,33 @@ func (h *NumericMetric) TagAt(index int) (string, bool) {
 // copies made after it share the decoded slices, which are never written again.
 // The slices are the handle's own, but the handle still aliases the blobs' bytes for its other reads.
 func (h *NumericMetric) Materialize() {
-	h.first.materialize()
-	if !h.restNeedsDecode() {
+	restDecode := h.restNeedsDecode()
+	if !restDecode && !h.first.needsDecode() {
 		return
 	}
-	// The parts after the first live in an array that copies of the handle share: write to a copy of it,
-	// so a copy made before this call keeps its parts as they were.
-	h.rest = slices.Clone(h.rest)
-	for k := range h.rest {
-		h.rest[k].materialize()
+	if restDecode {
+		// The parts after the first live in an array that copies of the handle share: write to a copy of it,
+		// so a copy made before this call keeps its parts as they were.
+		h.rest = slices.Clone(h.rest)
+	}
+
+	// Three passes over the same parts in the same order, so the last one carves the arena in step with the first.
+	// The loops call by name: a part pointer handed to a func value would leak the handle to the heap.
+	parts := 1
+	if restDecode {
+		parts += len(h.rest)
+	}
+	var arena numericMetricArena
+	for k := range parts {
+		arena.reserve(h.part(k))
+	}
+	arena.allocate()
+	for k := range parts {
+		arena.appendTagColumn(h.part(k))
+	}
+	arena.sealTagColumns()
+	for k := range parts {
+		h.part(k).materialize(&arena)
 	}
 }
 
@@ -617,6 +669,15 @@ func (c AccessClass) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+// part returns the k-th part: the first, then the parts after it.
+func (h *NumericMetric) part(k int) *numericMetricPart {
+	if k == 0 {
+		return &h.first
+	}
+
+	return &h.rest[k-1]
 }
 
 // locate returns the part holding index and the index local to that part.
@@ -814,25 +875,66 @@ func (p *numericMetricPart) tagsNeedDecode() bool {
 	return p.HasTag() && p.tags == nil && p.tagOK
 }
 
-// materialize decodes the part's axes that need it, each into one new slice cut to the points its decoder produced.
-func (p *numericMetricPart) materialize() {
+// materialize decodes the part's axes that need it, each into a slice carved from the arena
+// and cut to the points its decoder produced.
+func (p *numericMetricPart) materialize(a *numericMetricArena) {
 	b := NumericBlob{blobBase: p.blobBase}
 	if p.timestampsNeedDecode() {
-		ts := make([]int64, p.count)
+		ts := carve(&a.timestamps, p.count)
 		p.timestamps = ts[:b.decodeTimestampsSlice(p.tsBytes, p.count, ts)]
 	}
 	if p.valuesNeedDecode() {
-		vals := make([]float64, p.count)
+		vals := carve(&a.values, p.count)
 		p.values = vals[:b.decodeValuesSlice(p.valBytes, p.count, vals)]
 	}
 	if p.tagsNeedDecode() {
-		tags := make([]string, p.count)
+		tags := carve(&a.tags, p.count)
+		column := a.tagColumns[:len(p.tagBytes)]
+		a.tagColumns = a.tagColumns[len(p.tagBytes):]
 		var decoder ienc.TagDecoder
-		n := decoder.Each(p.tagBytes, p.count, 0, func(i int, tag string) bool {
-			tags[i] = tag
-
-			return true
-		})
-		p.tags = tags[:n]
+		p.tags = tags[:decoder.DecodeStringInto(column, tags)]
 	}
+}
+
+// reserve counts the points and tag bytes p will carve, by the predicates materialize tests.
+func (a *numericMetricArena) reserve(p *numericMetricPart) {
+	if p.timestampsNeedDecode() {
+		a.numTimestamps += p.count
+		a.decodesTimestamps = true
+	}
+	if p.valuesNeedDecode() {
+		a.numValues += p.count
+		a.decodesValues = true
+	}
+	if p.tagsNeedDecode() {
+		a.numTags += p.count
+		a.numTagBytes += len(p.tagBytes)
+		a.decodesTags = true
+	}
+}
+
+// allocate makes one array per axis that some part decodes.
+func (a *numericMetricArena) allocate() {
+	if a.decodesTimestamps {
+		a.timestamps = make([]int64, a.numTimestamps)
+	}
+	if a.decodesValues {
+		a.values = make([]float64, a.numValues)
+	}
+	if a.decodesTags {
+		a.tags = make([]string, a.numTags)
+	}
+	a.tagBuilder.Grow(a.numTagBytes)
+}
+
+// appendTagColumn appends p's tag column to the tag string when p decodes its tags.
+func (a *numericMetricArena) appendTagColumn(p *numericMetricPart) {
+	if p.tagsNeedDecode() {
+		a.tagBuilder.Write(p.tagBytes)
+	}
+}
+
+// sealTagColumns turns the appended tag columns into the string the parts slice their tags from.
+func (a *numericMetricArena) sealTagColumns() {
+	a.tagColumns = a.tagBuilder.String()
 }
