@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0-rc1] - 2026-10-09
+
 A handle for random access to one numeric metric, resolved once and read by index, and `ForEach` callbacks that stay on the stack.
 Every addition is new API; nothing existing changed signature, and encoded bytes are unchanged.
 
@@ -738,7 +740,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.12.1...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.13.0-rc1...HEAD
+[1.13.0-rc1]: https://github.com/arloliu/mebo/compare/v1.12.1...v1.13.0-rc1
 [1.12.1]: https://github.com/arloliu/mebo/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/arloliu/mebo/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/arloliu/mebo/compare/v1.10.0...v1.11.0
