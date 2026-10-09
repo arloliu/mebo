@@ -5,6 +5,7 @@ import (
 	"github.com/arloliu/mebo/internal/encoding/timestamp/deltapacked"
 	"github.com/arloliu/mebo/internal/encoding/value/chimp"
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
+	"github.com/arloliu/mebo/internal/pool"
 )
 
 // Callback-style fused decoders ("Each" variants). These mirror the Seq2/Seq
@@ -97,11 +98,31 @@ func FusedDeltaChimpEach(tsData, valData []byte, count int, yield func(int, int6
 }
 
 // FusedDeltaPackedGorillaEach decodes Group Varint packed delta-of-delta
-// timestamps and Gorilla-compressed values in a single fused loop, invoking
-// yield with (index, timestamp, value) for each data point. Stops early if
-// yield returns false.
+// timestamps and Gorilla-compressed values, invoking yield with
+// (index, timestamp, value) for each data point. Stops early if yield returns false.
+//
+// Columns of up to pool.MaxPooledDecodeInt64s points bulk-decode the timestamps
+// into a pooled buffer first, with DecodeAll: it decodes whole groups without the
+// per-point call DeltaPackedTsState.Next costs, and with SIMD kernels where the CPU
+// and the column length allow, so the loop left decodes only the values.
+// Longer columns (and negative counts) keep the per-point loop.
+// yield receives values, never the buffer, and the deferred Put runs only after
+// the last callback returns.
 func FusedDeltaPackedGorillaEach(tsData, valData []byte, count int, yield func(int, int64, float64) bool) {
 	if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+		return
+	}
+	if count < 0 || count > pool.MaxPooledDecodeInt64s {
+		fusedDeltaPackedGorillaStep(tsData, valData, count, yield)
+		return
+	}
+
+	tsPtr := pool.GetDecodeInt64Slice(count)
+	defer pool.PutDecodeInt64Slice(tsPtr)
+
+	var tsDec deltapacked.TimestampDeltaPackedDecoder
+	ts := (*tsPtr)[:tsDec.DecodeAll(tsData, count, *tsPtr)]
+	if len(ts) == 0 {
 		return
 	}
 
@@ -109,38 +130,47 @@ func FusedDeltaPackedGorillaEach(tsData, valData []byte, count int, yield func(i
 	if !valOk {
 		return
 	}
-	val := gc.First()
-
-	dps, tsOk := deltapacked.NewDeltaPackedTsState(tsData)
-	if !tsOk {
+	if !yield(0, ts[0], gc.First()) {
 		return
 	}
 
-	if !yield(0, dps.Ts(), val) {
-		return
-	}
-
-	for i := 1; i < count; i++ {
-		if !dps.Next(count - i) {
+	for i := 1; i < len(ts); i++ {
+		val, ok := gc.Next()
+		if !ok {
 			return
 		}
-		val, valOk = gc.Next()
-		if !valOk {
-			return
-		}
-
-		if !yield(i, dps.Ts(), val) {
+		if !yield(i, ts[i], val) {
 			return
 		}
 	}
 }
 
 // FusedDeltaPackedChimpEach decodes Group Varint packed delta-of-delta
-// timestamps and Chimp-compressed values in a single fused loop, invoking
-// yield with (index, timestamp, value) for each data point. Stops early if
-// yield returns false.
+// timestamps and Chimp-compressed values, invoking yield with
+// (index, timestamp, value) for each data point. Stops early if yield returns false.
+//
+// Columns of up to pool.MaxPooledDecodeInt64s points bulk-decode the timestamps
+// into a pooled buffer first, with DecodeAll: it decodes whole groups without the
+// per-point call DeltaPackedTsState.Next costs, and with SIMD kernels where the CPU
+// and the column length allow, so the loop left decodes only the values.
+// Longer columns (and negative counts) keep the per-point loop.
+// yield receives values, never the buffer, and the deferred Put runs only after
+// the last callback returns.
 func FusedDeltaPackedChimpEach(tsData, valData []byte, count int, yield func(int, int64, float64) bool) {
 	if count == 0 || len(tsData) == 0 || len(valData) == 0 {
+		return
+	}
+	if count < 0 || count > pool.MaxPooledDecodeInt64s {
+		fusedDeltaPackedChimpStep(tsData, valData, count, yield)
+		return
+	}
+
+	tsPtr := pool.GetDecodeInt64Slice(count)
+	defer pool.PutDecodeInt64Slice(tsPtr)
+
+	var tsDec deltapacked.TimestampDeltaPackedDecoder
+	ts := (*tsPtr)[:tsDec.DecodeAll(tsData, count, *tsPtr)]
+	if len(ts) == 0 {
 		return
 	}
 
@@ -148,27 +178,16 @@ func FusedDeltaPackedChimpEach(tsData, valData []byte, count int, yield func(int
 	if !valOk {
 		return
 	}
-	val := cc.First()
-
-	dps, tsOk := deltapacked.NewDeltaPackedTsState(tsData)
-	if !tsOk {
+	if !yield(0, ts[0], cc.First()) {
 		return
 	}
 
-	if !yield(0, dps.Ts(), val) {
-		return
-	}
-
-	for i := 1; i < count; i++ {
-		if !dps.Next(count - i) {
+	for i := 1; i < len(ts); i++ {
+		val, ok := cc.Next()
+		if !ok {
 			return
 		}
-		val, valOk = cc.Next()
-		if !valOk {
-			return
-		}
-
-		if !yield(i, dps.Ts(), val) {
+		if !yield(i, ts[i], val) {
 			return
 		}
 	}
@@ -280,9 +299,8 @@ func FusedChimpEach(valData []byte, count, base int, yield func(int, float64) bo
 
 // FusedDeltaPackedEach decodes Group Varint packed delta-of-delta timestamps,
 // invoking yield with (index, timestamp) for each data point, where indexes
-// start at base. It is the timestamp-only counterpart of
-// FusedDeltaPackedGorillaEach (same packed decode state machine, no value
-// stream).
+// start at base. It walks the packed stream one point at a time with
+// DeltaPackedTsState, as fusedDeltaPackedGorillaStep does, with no value stream.
 //
 // Returns the index after the last yielded timestamp, or -1 if yield returned
 // false.
@@ -316,4 +334,70 @@ func FusedDeltaPackedEach(tsData []byte, count, base int, yield func(int, int64)
 	}
 
 	return base + count
+}
+
+// fusedDeltaPackedGorillaStep is FusedDeltaPackedGorillaEach one point at a time, for columns
+// longer than the pooled timestamp buffer. The caller has checked the empty cases.
+func fusedDeltaPackedGorillaStep(tsData, valData []byte, count int, yield func(int, int64, float64) bool) {
+	gc, valOk := gorilla.NewGorillaCursor(valData)
+	if !valOk {
+		return
+	}
+	val := gc.First()
+
+	dps, tsOk := deltapacked.NewDeltaPackedTsState(tsData)
+	if !tsOk {
+		return
+	}
+
+	if !yield(0, dps.Ts(), val) {
+		return
+	}
+
+	for i := 1; i < count; i++ {
+		if !dps.Next(count - i) {
+			return
+		}
+		val, valOk = gc.Next()
+		if !valOk {
+			return
+		}
+
+		if !yield(i, dps.Ts(), val) {
+			return
+		}
+	}
+}
+
+// fusedDeltaPackedChimpStep is FusedDeltaPackedChimpEach one point at a time, for columns
+// longer than the pooled timestamp buffer. The caller has checked the empty cases.
+func fusedDeltaPackedChimpStep(tsData, valData []byte, count int, yield func(int, int64, float64) bool) {
+	cc, valOk := chimp.NewChimpCursor(valData)
+	if !valOk {
+		return
+	}
+	val := cc.First()
+
+	dps, tsOk := deltapacked.NewDeltaPackedTsState(tsData)
+	if !tsOk {
+		return
+	}
+
+	if !yield(0, dps.Ts(), val) {
+		return
+	}
+
+	for i := 1; i < count; i++ {
+		if !dps.Next(count - i) {
+			return
+		}
+		val, valOk = cc.Next()
+		if !valOk {
+			return
+		}
+
+		if !yield(i, dps.Ts(), val) {
+			return
+		}
+	}
 }

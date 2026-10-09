@@ -329,9 +329,9 @@ func FusedChimpTagAll(valData, tagData []byte, count int, yield func(int, float6
 	}
 }
 
-// FusedDeltaPackedGorillaAll returns an iterator that decodes Group Varint packed
-// delta-of-delta timestamps and Gorilla-compressed values in a single fused loop,
-// avoiding iter.Pull overhead.
+// FusedDeltaPackedGorillaAll returns an iterator over Group Varint packed
+// delta-of-delta timestamps and Gorilla-compressed values, decoded by
+// FusedDeltaPackedGorillaEach without iter.Pull.
 //
 // Parameters:
 //   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
@@ -399,8 +399,9 @@ func FusedDeltaPackedGorillaTagAll(tsData, valData, tagData []byte, count int, t
 	}
 }
 
-// FusedDeltaPackedChimpAll returns an iterator that decodes Group Varint packed
-// delta-of-delta timestamps and Chimp-compressed values in a single fused loop.
+// FusedDeltaPackedChimpAll returns an iterator over Group Varint packed
+// delta-of-delta timestamps and Chimp-compressed values, decoded by
+// FusedDeltaPackedChimpEach.
 //
 // Parameters:
 //   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
