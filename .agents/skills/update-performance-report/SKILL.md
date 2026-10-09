@@ -170,8 +170,9 @@ When a codec is added, verify its `At()` complexity in the decoder source before
 
 - **DeltaPacked vs Delta**: DeltaPacked's Group Varint layout is meant for faster decode and iteration, not size; the size difference is small.
   Check the iterate columns before repeating the speed claim:
-  the 2026-10-07 layout-averaged run measured DeltaPacked iterating 1.28–1.35× slower than Delta with Gorilla and Chimp,
-  decided in every layout, and equivalent to it with ALP and ALP-RLE.
+  since v1.13.0 the DeltaPacked loops decode the timestamps a whole column at a time (`DecodeAll`, up to 8192 points),
+  and the 2026-10-09 layout-averaged run measured DeltaPacked equivalent to Delta with Gorilla, Chimp, ALP and ALP-RLE,
+  and 1.45–1.52× faster with Raw values (before that change it iterated 1.28–1.35× slower with Gorilla and Chimp).
 - **Chimp vs Gorilla**: both XOR-based; Chimp is usually slightly smaller.
 - **ALP** (`format.TypeALP`): wins on decimal-quantized values and integers.
   On full-precision values it is about Chimp's size,
