@@ -552,6 +552,42 @@ func TestNumericRawUnsafeDecoder_At_InvalidIndices(t *testing.T) {
 	}
 }
 
+// TestNumericRawUnsafeDecoder_At_MalformedData pins the single-load At on payloads that do not match count:
+// a value backed by the data is read even when count claims more, and anything else is (0, false).
+func TestNumericRawUnsafeDecoder_At_MalformedData(t *testing.T) {
+	engine := endian.GetLittleEndianEngine()
+	encoder := NewNumericRawEncoder(engine)
+	values := []float64{3.14159, 2.71828}
+	encoder.WriteSlice(values)
+	decoder := NewNumericRawUnsafeDecoder(engine)
+	data := encoder.Bytes()
+
+	tests := []struct {
+		name   string
+		data   []byte
+		index  int
+		count  int
+		wantOK bool
+	}{
+		{"last value", data, 1, 2, true},
+		{"count larger than the data, index backed", data, 1, 3, true},
+		{"count larger than the data, index past it", data, 2, 3, false},
+		{"length not a multiple of 8", data[:15], 0, 2, false},
+		{"no data", nil, 0, 1, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := decoder.At(tt.data, tt.index, tt.count)
+			require.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				require.Equal(t, values[tt.index], got)
+			} else {
+				require.Equal(t, float64(0), got)
+			}
+		})
+	}
+}
+
 // === Round-Trip Tests ===
 
 func TestNumericRaw_RoundTrip_LargeDataset(t *testing.T) {

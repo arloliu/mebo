@@ -2,6 +2,7 @@
 package raw
 
 import (
+	"encoding/binary"
 	"fmt"
 	"iter"
 	"math"
@@ -460,16 +461,14 @@ func (d NumericRawUnsafeDecoder) DecodeAll(data []byte, count int, dst []float64
 	return count
 }
 
-// At retrieves the float64 value at the specified index from the encoded data using unsafe memory operations.
+// At retrieves the float64 value at the specified index from the encoded data.
 //
-// The data should be the byte slice payload produced by a NumericRawEncoder.
+// The data should be the byte slice payload produced by a NumericRawEncoder in the host's byte order,
+// which is what selects this decoder; the value is read with one native-order load.
 // The index is zero-based, so index 0 retrieves the first float64 value.
 //
-// If the index is out of bounds (negative or >= count), the method returns false.
-//
-// Caution: This method uses unsafe operations and assumes that the input byte slice
-// has the correct alignment and length. The caller must ensure that the input length
-// is a multiple of 8 bytes to avoid undefined behavior.
+// It returns (0, false) when the index is out of bounds (negative or >= count),
+// when the data length is not a multiple of 8 bytes, or when the data holds no value at the index.
 //
 // Parameters:
 //   - data: Encoded byte slice from NumericRawEncoder.Bytes() (must be multiple of 8 bytes)
@@ -480,20 +479,13 @@ func (d NumericRawUnsafeDecoder) DecodeAll(data []byte, count int, dst []float64
 //   - float64: The value at the specified index
 //   - bool: true if the index exists and was successfully decoded, false otherwise
 func (d NumericRawUnsafeDecoder) At(data []byte, index int, count int) (float64, bool) {
-	if len(data) == 0 || index < 0 || index >= count {
+	// One native-order load at the index, rather than building the whole float64 view first, so the lookup inlines.
+	// A length that is not a multiple of 8 is malformed and rejected, as the view would reject it.
+	if index < 0 || index >= count || len(data)%8 != 0 || index >= len(data)/8 {
 		return 0, false
 	}
 
-	floatSlice, err := decodeFloat64SliceUnsafe(data)
-	if floatSlice == nil || err != nil {
-		return 0, false
-	}
-
-	if index >= len(floatSlice) {
-		return 0, false
-	}
-
-	return floatSlice[index], true
+	return math.Float64frombits(binary.NativeEndian.Uint64(data[index*8:])), true
 }
 
 // decodeFloat64SliceUnsafe decodes a byte slice into a float64 slice using unsafe memory operations.
