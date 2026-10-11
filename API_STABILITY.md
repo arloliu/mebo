@@ -314,6 +314,12 @@ Behaviour changes:
   a callback literal that captures locals costs no allocation per call.
   ALP and ALP-RLE values still decode both columns into two new slices, and a tagged blob still copies each tag string.
 
+Deprecations:
+
+- **`TimestampEncodingType`** on numeric and text blobs is deprecated in favor of `TimestampEncoding`,
+  which returns the same value.
+  It keeps working throughout v1 and will be removed in v2.0.0.
+
 ## Go Version Compatibility
 
 ### Minimum Go Version

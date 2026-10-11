@@ -263,6 +263,9 @@ func (b blobBase) Engine() endian.EndianEngine {
 
 // TimestampEncodingType returns the timestamp encoding stored in the blob
 // header. It is equivalent to TimestampEncoding.
+//
+// Deprecated: Use TimestampEncoding instead, which pairs with ValueEncoding.
+// TimestampEncodingType keeps working throughout v1 and will be removed in v2.0.0.
 func (b blobBase) TimestampEncodingType() format.EncodingType {
 	return b.tsEncType
 }
