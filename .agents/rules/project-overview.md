@@ -11,7 +11,10 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 
 ## Key Features
 
-- **Hash-Based Identification**: Metrics are identified by 64-bit xxHash64 hashes for fast lookups with zero collision risk
+- **Hash-Based Identification**: Metrics are identified by 64-bit xxHash64 hashes for fast lookups.
+  Collisions are unlikely but possible:
+  with `StartMetricName` a collision makes the encoder store the metric names,
+  and with `StartMetricID` a duplicate ID returns `ErrHashCollision`
 - **Columnar Storage**: Timestamps and values are stored separately for optimal compression and access patterns
 - **Flexible Encoding**: Per-blob configurable encoding strategies for both timestamps and values
 - **Memory Efficiency**: Fixed-size structures enable single-pass encoding and efficient binary search
@@ -20,7 +23,7 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 
 - **Language**: Go >=1.25.0
 - **Module**: github.com/arloliu/mebo
-- **Architecture**: Columnar time-series storage with pluggable encoders
+- **Architecture**: Columnar time-series storage with per-blob encoding selection (codecs are internal, not pluggable)
 
 ## Project Structure
 
@@ -34,8 +37,11 @@ Mebo is a high-performance, space-efficient binary format for storing time-serie
 ├── encoding/             # Columnar encoding
 ├── section/              # Section headers and metadata
 ├── examples/             # Usage examples
-├── tests/                # Test utilities and benchmarks
-│   └── measure/          # Compression measurement tool
+├── tests/                # Separate Go modules for tooling
+│   ├── compat/           # Cross-version compatibility and corruption harness
+│   ├── measurev2/        # Benchmark matrix behind the performance report
+│   ├── measure/          # Legacy compression measurement tool
+│   └── fbs_compare/      # FlatBuffers comparison
 └── README.md
 ```
 

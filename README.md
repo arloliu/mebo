@@ -24,7 +24,7 @@ Mebo is designed for **batch processing of already-collected metrics**, not stre
 
 **Storage format**
 - Binary blob format with compact index (16 bytes per metric entry; 32 bytes for V2 extended entries)
-- O(1) metric lookup via 64-bit xxHash64 identifiers
+- Metric lookup by 64-bit xxHash64 identifier: O(1) hash map on the default V1 layout, O(log n) binary search on the V2 layout
 - Separate numeric (float64) and text (string) blob types
 - BlobSet: unified multi-blob access with global indexing across time windows
 
