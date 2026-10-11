@@ -8,6 +8,10 @@ COVERAGE_DIR    := ./.coverage
 COVERAGE_OUT    := $(COVERAGE_DIR)/coverage.out
 COVERAGE_HTML   := $(COVERAGE_DIR)/coverage.html
 ENCODING_PKG    := ./internal/encoding/...
+# Fuzz targets that take untrusted blob bytes; `make fuzz` runs each for FUZZ_TIME.
+FUZZ_PKG        := ./blob
+FUZZ_TARGETS    := FuzzNumericDecoder FuzzTextDecoder FuzzStripMetricNames
+FUZZ_TIME       ?= 30s
 
 # Source files
 ALL_GO_FILES    := $(shell find . -name "*.go" -not -path "./tests/fbs_compare/*" -not -path "./vendor/*")
@@ -29,7 +33,7 @@ GO_MINOR        := $(shell go version | sed 's/.*go[0-9][0-9]*\.\([0-9][0-9]*\).
 # Default target
 .DEFAULT_GOAL := help
 
-.PHONY: fix test test-encoding-simd test-fusion test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
+.PHONY: fix test test-encoding-simd test-fusion fuzz test-race test-short coverage coverage-html lint fmt vet bench clean gomod-tidy update-pkg-cache ci
 
 fix:
 	@echo "Running go fmt and goimports..."
@@ -73,6 +77,13 @@ test-encoding-simd: clean-test-results
 	else \
 		echo "Skipping GOEXPERIMENT=simd tests (requires Go >= 1.26, found Go 1.$(GO_MINOR))"; \
 	fi
+
+## fuzz: Fuzz each blob decoding entry point for FUZZ_TIME (default 30s); a failing input lands in blob/testdata/fuzz/
+fuzz:
+	@for target in $(FUZZ_TARGETS); do \
+		echo "Fuzzing $$target for $(FUZZ_TIME)..."; \
+		go test $(FUZZ_PKG) -run '^$$' -fuzz "^$$target$$" -fuzztime=$(FUZZ_TIME) || exit 1; \
+	done
 
 ## test-race: Run tests with race detector only
 test-race: clean-test-results
