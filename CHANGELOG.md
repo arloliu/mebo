@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0-rc4] - 2026-10-12
+
 `blob.Verify`, which checks that every metric in a blob decodes completely,
 and decoders that reject three header inconsistencies no mebo encoder writes.
 Encoded bytes are unchanged.
@@ -910,7 +912,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.13.0-rc3...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.13.0-rc4...HEAD
+[1.13.0-rc4]: https://github.com/arloliu/mebo/compare/v1.13.0-rc3...v1.13.0-rc4
 [1.13.0-rc3]: https://github.com/arloliu/mebo/compare/v1.13.0-rc2...v1.13.0-rc3
 [1.13.0-rc2]: https://github.com/arloliu/mebo/compare/v1.13.0-rc1...v1.13.0-rc2
 [1.13.0-rc1]: https://github.com/arloliu/mebo/compare/v1.12.1...v1.13.0-rc1
