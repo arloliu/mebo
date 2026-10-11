@@ -176,10 +176,16 @@ func FuzzNumericDecoder(f *testing.F) {
 			exerciseNumericFuzz(t, borrowed)
 		}
 
+		// Verify opens the blob itself, so it must reject whatever the decoder rejects.
+		if verifyErr := Verify(data); copiedErr != nil && section.IsNumericBlob(data) {
+			require.Error(t, verifyErr, "Verify accepted a blob the decoder rejects")
+		}
+
 		if guarded, ok := fuzzGuardedCopy(t, data); ok {
 			if blob, err := decodeNumericFuzz(NewNumericDecoderBorrowed, guarded); err == nil {
 				exerciseNumericFuzz(t, blob)
 			}
+			_ = Verify(guarded)
 		}
 
 		if set, err := DecodeBlobSet(data, data); err == nil {

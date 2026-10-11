@@ -257,9 +257,15 @@
 //   - ErrInvalidNumOfDataPoints: A metric's data point count does not fit its payload
 //   - ErrHashMismatch, ErrInvalidMetricNamesPayload: Metric names do not match their IDs
 //     or cannot be parsed
+//   - ErrMetricNamesExtentMismatch: The header's IndexOffset disagrees with the metric names payload
+//   - ErrInvalidReservedBytes: A reserved header or index field is not zero
 //
+// Decoding checks a blob's structure, not every column:
+// a truncated Gorilla, Chimp or text column can open and then end early when iterated.
+// Verify decodes every metric to the end and reports the first one that comes up short,
+// at the cost of a full decode.
 // The blob format has no checksum,
-// so decoding detects only structural inconsistencies, not arbitrary data corruption.
+// so neither detects a change that leaves a valid encoding, such as a flipped bit inside a value.
 // Lookups by metric ID, metric name, or index do not return errors:
 // a missing metric or an out-of-range index yields a zero value and false.
 //

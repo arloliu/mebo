@@ -32,7 +32,14 @@ Mebo is a **data format library** that processes time-series data. Security cons
 - **Integer Overflows**: We use safe arithmetic and check for overflow conditions in critical paths
 
 #### Input Validation
-- **Malformed Data**: Decoders validate input data structure before processing
+- **Malformed Data**: Decoders validate a blob's structure when they open it:
+  the header, the index, and that each column is long enough for its points.
+  That does not prove every column decodes completely:
+  a truncated Gorilla, Chimp or text column can open and then end early when iterated.
+  `blob.Verify` decodes every metric to the end and reports an incomplete one,
+  at the cost of a full decode.
+  Neither detects a change that leaves a valid encoding, such as a flipped bit inside a value;
+  the format has no checksum, so rely on your storage or transport for that
 - **Resource Exhaustion**: Each compressed payload decompresses to at most 128 MiB, whatever the codec.
   This is a ceiling, not a ratio limit:
   a numeric blob holds up to three compressed payloads (timestamps, values, tags),
