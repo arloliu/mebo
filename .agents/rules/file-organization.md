@@ -121,6 +121,7 @@ func (c *Config) validate() error {
 - Utility files like `columnar.go`, `varstring.go` for shared functionality
 - Package-level constants/types file (e.g., `types.go`, `const.go`)
 - If a component doesn't need benchmarks, 2 files (impl + test) is fine
+- A fuzz target may live in its own `*_fuzz_test.go` beside the component it fuzzes, so `make fuzz` targets are easy to find
 
 ## Import Organization
 
