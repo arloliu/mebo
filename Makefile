@@ -8,9 +8,9 @@ COVERAGE_DIR    := ./.coverage
 COVERAGE_OUT    := $(COVERAGE_DIR)/coverage.out
 COVERAGE_HTML   := $(COVERAGE_DIR)/coverage.html
 ENCODING_PKG    := ./internal/encoding/...
-# Fuzz targets that take untrusted blob bytes; `make fuzz` runs each for FUZZ_TIME.
-FUZZ_PKG        := ./blob
-FUZZ_TARGETS    := FuzzNumericDecoder FuzzTextDecoder FuzzStripMetricNames
+# Fuzz targets (package:target) that take untrusted bytes; `make fuzz` runs each for FUZZ_TIME.
+FUZZ_TARGETS    := ./blob:FuzzNumericDecoder ./blob:FuzzTextDecoder ./blob:FuzzStripMetricNames \
+                   ./internal/encoding/fused:FuzzFusedDecoders
 FUZZ_TIME       ?= 30s
 
 # Source files
@@ -78,11 +78,12 @@ test-encoding-simd: clean-test-results
 		echo "Skipping GOEXPERIMENT=simd tests (requires Go >= 1.26, found Go 1.$(GO_MINOR))"; \
 	fi
 
-## fuzz: Fuzz each blob decoding entry point for FUZZ_TIME (default 30s); a failing input lands in blob/testdata/fuzz/
+## fuzz: Fuzz each decoding entry point for FUZZ_TIME (default 30s); a failing input lands in <package>/testdata/fuzz/
 fuzz:
-	@for target in $(FUZZ_TARGETS); do \
-		echo "Fuzzing $$target for $(FUZZ_TIME)..."; \
-		go test $(FUZZ_PKG) -run '^$$' -fuzz "^$$target$$" -fuzztime=$(FUZZ_TIME) || exit 1; \
+	@for entry in $(FUZZ_TARGETS); do \
+		pkg=$${entry%%:*}; target=$${entry##*:}; \
+		echo "Fuzzing $$pkg $$target for $(FUZZ_TIME)..."; \
+		go test $$pkg -run '^$$' -fuzz "^$$target$$" -fuzztime=$(FUZZ_TIME) || exit 1; \
 	done
 
 ## test-race: Run tests with race detector only
