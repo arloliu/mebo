@@ -2686,3 +2686,72 @@ func TestNumericDecoder_RejectsPayloadOverlappingIndex(t *testing.T) {
 	_, err = decodeHardening(t, corrupt)
 	require.ErrorIs(t, err, errs.ErrInvalidTimestampPayloadOffset)
 }
+
+// decodeNumericBlob runs both decode stages and returns the first error.
+func decodeNumericBlob(data []byte) error {
+	decoder, err := NewNumericDecoder(data)
+	if err != nil {
+		return err
+	}
+
+	_, err = decoder.Decode()
+
+	return err
+}
+
+func TestNumericDecoder_RejectsSharedTimestampsBitOnV1(t *testing.T) {
+	encoder, err := NewNumericEncoder(time.Unix(0, 0))
+	require.NoError(t, err)
+	require.NoError(t, encoder.StartMetricID(1, 2))
+	require.NoError(t, encoder.AddDataPoint(1000, 1.5, ""))
+	require.NoError(t, encoder.AddDataPoint(2000, 2.5, ""))
+	require.NoError(t, encoder.EndMetric())
+	data, err := encoder.Finish()
+	require.NoError(t, err)
+	require.NoError(t, decodeNumericBlob(data))
+
+	// Options is always little-endian; bit 3 is the shared timestamps flag.
+	data[0] |= byte(section.SharedTimestampsMask)
+	require.ErrorIs(t, decodeNumericBlob(data), errs.ErrInvalidHeaderFlags)
+}
+
+func TestNumericDecoder_RejectsIndexOffsetMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		withNames bool
+	}{
+		{name: "without metric names"},
+		{name: "with metric names", withNames: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opts []NumericEncoderOption
+			if tt.withNames {
+				opts = append(opts, WithMetricNames())
+			}
+			encoder, err := NewNumericEncoder(time.Unix(0, 0), opts...)
+			require.NoError(t, err)
+			for i, name := range []string{"cpu.usage", "mem.used"} {
+				require.NoError(t, encoder.StartMetricName(name, 2))
+				require.NoError(t, encoder.AddDataPoint(1000, float64(i), ""))
+				require.NoError(t, encoder.AddDataPoint(2000, float64(i)+0.5, ""))
+				require.NoError(t, encoder.EndMetric())
+			}
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+			require.NoError(t, decodeNumericBlob(data))
+
+			engine := endian.GetLittleEndianEngine()
+			indexOffset := engine.Uint32(data[16:20])
+			if tt.withNames {
+				require.Greater(t, indexOffset, uint32(section.HeaderSize))
+			} else {
+				require.Equal(t, uint32(section.HeaderSize), indexOffset)
+			}
+
+			engine.PutUint32(data[16:20], indexOffset+1)
+			require.ErrorIs(t, decodeNumericBlob(data), errs.ErrMetricNamesExtentMismatch)
+		})
+	}
+}

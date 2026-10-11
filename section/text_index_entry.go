@@ -2,6 +2,7 @@ package section
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/errs"
@@ -80,12 +81,15 @@ func ParseTextIndexEntry(data []byte, engine endian.EndianEngine) (TextIndexEntr
 		return TextIndexEntry{}, errs.ErrInvalidIndexEntrySize
 	}
 
+	if reserved := engine.Uint16(data[10:12]); reserved != 0 {
+		return TextIndexEntry{}, fmt.Errorf("%w: text index entry bytes 10-11", errs.ErrInvalidReservedBytes)
+	}
+
 	return TextIndexEntry{
-		MetricID:  engine.Uint64(data[0:8]),
-		Count:     engine.Uint16(data[8:10]),
-		Reserved1: engine.Uint16(data[10:12]),
-		Offset:    engine.Uint32(data[12:16]),
-		Size:      0, // Calculated by decoder from offset differences
+		MetricID: engine.Uint64(data[0:8]),
+		Count:    engine.Uint16(data[8:10]),
+		Offset:   engine.Uint32(data[12:16]),
+		Size:     0, // Calculated by decoder from offset differences
 	}, nil
 }
 

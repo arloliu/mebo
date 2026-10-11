@@ -522,3 +522,53 @@ func TestTextDecoder_RejectsDataOverlappingIndex(t *testing.T) {
 	require.NotPanics(t, func() { _, decodeErr = decoder.Decode() })
 	require.Error(t, decodeErr)
 }
+
+func TestTextDecoder_RejectsIndexOffsetMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		withNames bool
+	}{
+		{name: "without metric names"},
+		{name: "with metric names", withNames: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder, err := NewTextEncoder(time.Unix(0, 0))
+			require.NoError(t, err)
+			for i, name := range []string{"state", "recipe"} {
+				if tt.withNames {
+					require.NoError(t, encoder.StartMetricName(name, 1))
+				} else {
+					require.NoError(t, encoder.StartMetricID(uint64(i+1), 1))
+				}
+				require.NoError(t, encoder.AddDataPoint(1000, name, ""))
+				require.NoError(t, encoder.EndMetric())
+			}
+			data, err := encoder.Finish()
+			require.NoError(t, err)
+
+			decode := func(data []byte) error {
+				decoder, err := NewTextDecoder(data)
+				if err != nil {
+					return err
+				}
+				_, err = decoder.Decode()
+
+				return err
+			}
+			require.NoError(t, decode(data))
+
+			engine := endian.GetLittleEndianEngine()
+			indexOffset := engine.Uint32(data[16:20])
+			if tt.withNames {
+				require.Greater(t, indexOffset, uint32(section.HeaderSize))
+			} else {
+				require.Equal(t, uint32(section.HeaderSize), indexOffset)
+			}
+
+			engine.PutUint32(data[16:20], indexOffset+1)
+			require.ErrorIs(t, decode(data), errs.ErrMetricNamesExtentMismatch)
+		})
+	}
+}

@@ -277,6 +277,11 @@ func (f NumericFlag) Validate() error {
 		return errs.ErrInvalidHeaderFlags
 	}
 
+	// The shared timestamp table exists only in the V2 layouts.
+	if f.HasSharedTimestamps() && !f.IsV2() {
+		return errs.ErrInvalidHeaderFlags
+	}
+
 	return nil
 }
 

@@ -31,7 +31,7 @@ var (
 	ErrInvalidMetricNamesCount       = errors.New("invalid metric names count")
 	ErrMixedIdentifierMode           = errors.New("cannot mix StartMetricID and StartMetricName in the same encoder")
 	ErrInvalidSharedTimestampTable   = errors.New("invalid shared timestamp table")
-	ErrInvalidReservedBytes          = errors.New("non-zero reserved bytes in extended index entry")
+	ErrInvalidReservedBytes          = errors.New("non-zero reserved bytes")
 	ErrIndexEntryOverflow            = errors.New("extended index entry field exceeds platform int range")
 	ErrBlobSizeExceedsLimit          = errors.New("blob size exceeds maximum uint32 limit for header offsets")
 	ErrEmptyBlobSet                  = errors.New("cannot create blob set with empty blobs")

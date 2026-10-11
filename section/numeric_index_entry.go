@@ -1,6 +1,8 @@
 package section
 
 import (
+	"fmt"
+
 	"bytes"
 
 	"github.com/arloliu/mebo/endian"
@@ -268,7 +270,7 @@ func ParseNumericIndexEntryExt(data []byte, engine endian.EndianEngine) (Numeric
 	// Validate reserved bytes (24-32) are zero per the wire format contract
 	for _, b := range data[24:32] {
 		if b != 0 {
-			return NumericIndexEntry{}, errs.ErrInvalidReservedBytes
+			return NumericIndexEntry{}, fmt.Errorf("%w: extended index entry bytes 24-31", errs.ErrInvalidReservedBytes)
 		}
 	}
 
