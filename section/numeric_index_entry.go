@@ -105,10 +105,10 @@ type NumericIndexEntry struct {
 func (e *NumericIndexEntry) Bytes(engine endian.EndianEngine) []byte {
 	var b [NumericIndexEntrySize]byte // stack allocation, it's faster than heap allocation
 	engine.PutUint64(b[0:8], e.MetricID)
-	engine.PutUint16(b[8:10], uint16(e.Count))            //nolint: gosec
-	engine.PutUint16(b[10:12], uint16(e.TimestampOffset)) //nolint: gosec
-	engine.PutUint16(b[12:14], uint16(e.ValueOffset))     //nolint: gosec
-	engine.PutUint16(b[14:16], uint16(e.TagOffset))       //nolint: gosec
+	engine.PutUint16(b[8:10], uint16(e.Count))            //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(b[10:12], uint16(e.TimestampOffset)) //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(b[12:14], uint16(e.ValueOffset))     //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(b[14:16], uint16(e.TagOffset))       //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
 
 	return b[:]
 }
@@ -128,10 +128,10 @@ func (e *NumericIndexEntry) WriteTo(buf *bytes.Buffer, engine endian.EndianEngin
 	// Write directly to the allocated space
 	data := buf.Bytes()[start : start+NumericIndexEntrySize]
 	engine.PutUint64(data[0:8], e.MetricID)
-	engine.PutUint16(data[8:10], uint16(e.Count))            //nolint: gosec
-	engine.PutUint16(data[10:12], uint16(e.TimestampOffset)) //nolint: gosec
-	engine.PutUint16(data[12:14], uint16(e.ValueOffset))     //nolint: gosec
-	engine.PutUint16(data[14:16], uint16(e.TagOffset))       //nolint: gosec
+	engine.PutUint16(data[8:10], uint16(e.Count))            //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(data[10:12], uint16(e.TimestampOffset)) //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(data[12:14], uint16(e.ValueOffset))     //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(data[14:16], uint16(e.TagOffset))       //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
 }
 
 // WriteToSlice writes to a pre-allocated slice and returns the next position.
@@ -147,10 +147,10 @@ func (e *NumericIndexEntry) WriteTo(buf *bytes.Buffer, engine endian.EndianEngin
 //   - int: Next write position (offset + 16)
 func (e *NumericIndexEntry) WriteToSlice(data []byte, offset int, engine endian.EndianEngine) int {
 	engine.PutUint64(data[offset:offset+8], e.MetricID)
-	engine.PutUint16(data[offset+8:offset+10], uint16(e.Count))            //nolint: gosec
-	engine.PutUint16(data[offset+10:offset+12], uint16(e.TimestampOffset)) //nolint: gosec
-	engine.PutUint16(data[offset+12:offset+14], uint16(e.ValueOffset))     //nolint: gosec
-	engine.PutUint16(data[offset+14:offset+16], uint16(e.TagOffset))       //nolint: gosec
+	engine.PutUint16(data[offset+8:offset+10], uint16(e.Count))            //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(data[offset+10:offset+12], uint16(e.TimestampOffset)) //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(data[offset+12:offset+14], uint16(e.ValueOffset))     //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
+	engine.PutUint16(data[offset+14:offset+16], uint16(e.TagOffset))       //nolint:gosec // 16B entry only when fields fit uint16 (V1 limits, selectIndexFormat)
 
 	return offset + NumericIndexEntrySize
 }
@@ -173,10 +173,10 @@ func (e *NumericIndexEntry) WriteToSlice(data []byte, offset int, engine endian.
 func (e *NumericIndexEntry) Bytes32(engine endian.EndianEngine) []byte {
 	var b [NumericExtIndexEntrySize]byte
 	engine.PutUint64(b[0:8], e.MetricID)
-	engine.PutUint32(b[8:12], uint32(e.Count))            //nolint: gosec
-	engine.PutUint32(b[12:16], uint32(e.TimestampOffset)) //nolint: gosec
-	engine.PutUint32(b[16:20], uint32(e.ValueOffset))     //nolint: gosec
-	engine.PutUint32(b[20:24], uint32(e.TagOffset))       //nolint: gosec
+	engine.PutUint32(b[8:12], uint32(e.Count))            //nolint:gosec // Count <= NumericMaxCount (uint32 range), checked at StartMetric*
+	engine.PutUint32(b[12:16], uint32(e.TimestampOffset)) //nolint:gosec // caller precondition: the blob encoder caps offsets below 2^32
+	engine.PutUint32(b[16:20], uint32(e.ValueOffset))     //nolint:gosec // caller precondition: the blob encoder caps offsets below 2^32
+	engine.PutUint32(b[20:24], uint32(e.TagOffset))       //nolint:gosec // caller precondition: the blob encoder caps offsets below 2^32
 	// b[24:32] reserved (zero-initialized)
 
 	return b[:]
@@ -196,10 +196,10 @@ func (e *NumericIndexEntry) Bytes32(engine endian.EndianEngine) []byte {
 //   - int: Next write position (offset + 32)
 func (e *NumericIndexEntry) WriteToSlice32(data []byte, offset int, engine endian.EndianEngine) int {
 	engine.PutUint64(data[offset:offset+8], e.MetricID)
-	engine.PutUint32(data[offset+8:offset+12], uint32(e.Count))            //nolint: gosec
-	engine.PutUint32(data[offset+12:offset+16], uint32(e.TimestampOffset)) //nolint: gosec
-	engine.PutUint32(data[offset+16:offset+20], uint32(e.ValueOffset))     //nolint: gosec
-	engine.PutUint32(data[offset+20:offset+24], uint32(e.TagOffset))       //nolint: gosec
+	engine.PutUint32(data[offset+8:offset+12], uint32(e.Count))            //nolint:gosec // Count <= NumericMaxCount (uint32 range), checked at StartMetric*
+	engine.PutUint32(data[offset+12:offset+16], uint32(e.TimestampOffset)) //nolint:gosec // caller precondition: the blob encoder caps offsets below 2^32
+	engine.PutUint32(data[offset+16:offset+20], uint32(e.ValueOffset))     //nolint:gosec // caller precondition: the blob encoder caps offsets below 2^32
+	engine.PutUint32(data[offset+20:offset+24], uint32(e.TagOffset))       //nolint:gosec // caller precondition: the blob encoder caps offsets below 2^32
 	// Explicitly zero reserved bytes to enforce "must be 0" contract
 	clear(data[offset+24 : offset+32])
 
@@ -309,5 +309,5 @@ func (e NumericIndexEntry) GetMetricID() uint64 {
 // Returns:
 //   - uint32: Number of data points (converted from int)
 func (e NumericIndexEntry) GetCount() uint32 {
-	return uint32(e.Count) //nolint: gosec
+	return uint32(e.Count) //nolint:gosec // Count <= NumericMaxCount, or parsed from a uint16/uint32 field
 }

@@ -46,7 +46,7 @@ func EncodeMetricNames(names []string, engine endian.EndianEngine) ([]byte, erro
 	offset := 0
 
 	// Write count
-	engine.PutUint16(buf[offset:], uint16(len(names))) //nolint: gosec
+	engine.PutUint16(buf[offset:], uint16(len(names))) //nolint:gosec // len(names) <= 65535, checked above
 	offset += 2
 
 	// Write each name with length prefix
@@ -54,7 +54,7 @@ func EncodeMetricNames(names []string, engine endian.EndianEngine) ([]byte, erro
 		nameBytes := []byte(name)
 		nameLen := len(nameBytes)
 
-		engine.PutUint16(buf[offset:], uint16(nameLen)) //nolint: gosec
+		engine.PutUint16(buf[offset:], uint16(nameLen)) //nolint:gosec // nameLen <= 65535, checked above
 		offset += 2
 
 		copy(buf[offset:], nameBytes)

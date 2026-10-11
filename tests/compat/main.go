@@ -282,7 +282,7 @@ func runDecode(args []string, expectError bool) error {
 	if len(failed) > 0 {
 		return fmt.Errorf("%d scenario(s) failed: %s", len(failed), strings.Join(failed, ", "))
 	}
-	fmt.Printf("\n%s %d scenario(s) from %s\n", strings.Title(mode), len(scenarios), *indir) //nolint:staticcheck
+	fmt.Printf("\n%s %d scenario(s) from %s\n", strings.Title(mode), len(scenarios), *indir) //nolint:staticcheck // mode is ASCII ("verified" or "rejected"), so Title's caveat is moot
 	return nil
 }
 

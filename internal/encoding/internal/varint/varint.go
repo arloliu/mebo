@@ -55,5 +55,5 @@ func DecodeU64(data []byte, offset int) (uint64, int, bool) {
 
 // DecodeZigZag64 decodes a zigzag-encoded int64 value without branches.
 func DecodeZigZag64(value uint64) int64 {
-	return int64((value >> 1) ^ -(value & 1)) //nolint:gosec
+	return int64((value >> 1) ^ -(value & 1)) //nolint:gosec // zigzag decode: reinterprets the bits as int64
 }

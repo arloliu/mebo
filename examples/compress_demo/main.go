@@ -108,7 +108,7 @@ func generateTimestampLikeData() []byte {
 	// Fill with delta values (typically small integers for timestamp deltas)
 	for i := 0; i < len(data); i += 4 {
 		// Simulate small delta values (1-1000ms between timestamps)
-		delta := uint32(i%1000 + 1) //nolint: gosec
+		delta := uint32(i%1000 + 1) //nolint:gosec // i%1000+1 is in [1, 1000]
 
 		// Store as little-endian bytes (similar to mebo encoding)
 		if i+3 < len(data) {

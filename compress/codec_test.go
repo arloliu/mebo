@@ -769,7 +769,7 @@ func TestAllCodecs_InterfaceCompliance(t *testing.T) {
 	for name, codec := range codecs {
 		t.Run(name, func(t *testing.T) {
 			// Verify codec implements Codec interface
-			var _ Codec = codec //nolint: staticcheck
+			var _ Codec = codec //nolint:staticcheck // explicit Codec type is the compile-time interface check
 			require.NotNil(t, codec)
 		})
 	}

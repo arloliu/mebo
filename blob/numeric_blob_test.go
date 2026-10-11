@@ -982,7 +982,7 @@ func TestNumericBlob_DeltaGorilla_Scenarios(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		metrics []struct { //nolint:revive
+		metrics []struct { //nolint:revive // inline anonymous struct keeps the test-case shape local
 			name       string
 			id         uint64
 			timestamps []int64

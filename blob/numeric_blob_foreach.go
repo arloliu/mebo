@@ -147,9 +147,9 @@ func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count 
 		return
 	}
 
-	switch b.tsEncType { //nolint: exhaustive
+	switch b.tsEncType { //nolint:exhaustive // other timestamp encodings fall through to the generic loop
 	case format.TypeRaw:
-		switch valEnc { //nolint: exhaustive
+		switch valEnc { //nolint:exhaustive // other value encodings fall through to the generic loop
 		case format.TypeRaw:
 			b.forEachPointsRaw(tsBytes, valBytes, tagBytes, count, yield)
 			return

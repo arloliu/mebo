@@ -246,7 +246,7 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	}
 
 	enc = encoder.header.Flag.TimestampEncoding()
-	switch enc { //nolint: exhaustive
+	switch enc { //nolint:exhaustive // value-only encodings fall to default (returns an error)
 	case format.TypeRaw:
 		encoder.tsEncoder = ienc.NewTimestampRawEncoder(encoder.engine)
 	case format.TypeDelta:
@@ -781,7 +781,7 @@ func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	}
 
 	// Set actual metric count in cloned header now that encoding is complete
-	finalHeader.MetricCount = uint32(len(e.indexEntries)) //nolint: gosec
+	finalHeader.MetricCount = uint32(len(e.indexEntries)) //nolint:gosec // len(indexEntries) <= MaxMetricCount, checked at StartMetric*
 
 	// Sort index entries by MetricID for V2 layout.
 	// This enables cache-friendly iteration and binary search lookups in the decoder.
@@ -848,7 +848,7 @@ func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 			return dst, err
 		}
 		// Update IndexOffset to account for metric names payload (positioned after header)
-		finalHeader.IndexOffset = uint32(section.HeaderSize + len(metricNamesPayload)) //nolint: gosec
+		finalHeader.IndexOffset = uint32(section.HeaderSize + len(metricNamesPayload)) //nolint:gosec // validateBlobSize below rejects a payload that overflows uint32
 	}
 
 	// Calculate exact blob size and validate it fits in uint32 header offsets.
@@ -862,9 +862,9 @@ func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	}
 
 	// Set header payload offsets — safe because blobSize fits in uint32.
-	finalHeader.TimestampPayloadOffset = finalHeader.IndexOffset + uint32(indexEntriesSize) + uint32(sharedTableSize) //nolint: gosec
-	finalHeader.ValuePayloadOffset = finalHeader.TimestampPayloadOffset + uint32(len(tsPayload))                      //nolint: gosec
-	finalHeader.TagPayloadOffset = finalHeader.ValuePayloadOffset + uint32(len(valPayload))                           //nolint: gosec
+	finalHeader.TimestampPayloadOffset = finalHeader.IndexOffset + uint32(indexEntriesSize) + uint32(sharedTableSize) //nolint:gosec // validateBlobSize above caps every payload offset at uint32
+	finalHeader.ValuePayloadOffset = finalHeader.TimestampPayloadOffset + uint32(len(tsPayload))                      //nolint:gosec // validateBlobSize above caps every payload offset at uint32
+	finalHeader.TagPayloadOffset = finalHeader.ValuePayloadOffset + uint32(len(valPayload))                           //nolint:gosec // validateBlobSize above caps every payload offset at uint32
 
 	// Extend dst by exactly blobSize bytes (allocating only when capacity is
 	// insufficient) and assemble the blob in the appended region.

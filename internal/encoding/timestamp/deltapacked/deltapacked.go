@@ -92,7 +92,7 @@ func (e *TimestampDeltaPackedEncoder) Write(timestampUs int64) {
 	e.seqCount++
 
 	if e.seqCount == 1 {
-		e.appendUvarint(uint64(timestampUs)) //nolint:gosec
+		e.appendUvarint(uint64(timestampUs)) //nolint:gosec // two's-complement bit pattern of the first timestamp
 		e.prevTS = timestampUs
 		return
 	}
@@ -101,7 +101,7 @@ func (e *TimestampDeltaPackedEncoder) Write(timestampUs int64) {
 
 	if e.seqCount == 2 {
 		zigzag := (delta << 1) ^ (delta >> 63)
-		e.appendUvarint(uint64(zigzag)) //nolint:gosec
+		e.appendUvarint(uint64(zigzag)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 		e.prevTS = timestampUs
 		e.prevDelta = delta
 
@@ -110,7 +110,7 @@ func (e *TimestampDeltaPackedEncoder) Write(timestampUs int64) {
 
 	// Delta-of-delta: accumulate into group
 	deltaOfDelta := delta - e.prevDelta
-	zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec
+	zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 
 	e.pending[e.pendingLen] = zigzag
 	e.pendingLen++
@@ -151,7 +151,7 @@ func (e *TimestampDeltaPackedEncoder) WriteSlice(timestampsUs []int64) {
 	// First timestamp: full varint
 	if currentSeqCount == 0 {
 		ts := timestampsUs[0]
-		e.appendUvarint(uint64(ts)) //nolint:gosec
+		e.appendUvarint(uint64(ts)) //nolint:gosec // two's-complement bit pattern of the first timestamp
 		prevTS = ts
 		startIdx = 1
 		currentSeqCount++
@@ -162,7 +162,7 @@ func (e *TimestampDeltaPackedEncoder) WriteSlice(timestampsUs []int64) {
 		ts := timestampsUs[startIdx]
 		delta := ts - prevTS
 		zigzag := (delta << 1) ^ (delta >> 63)
-		e.appendUvarint(uint64(zigzag)) //nolint:gosec
+		e.appendUvarint(uint64(zigzag)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 		prevTS = ts
 		prevDelta = delta
 		startIdx++
@@ -179,7 +179,7 @@ func (e *TimestampDeltaPackedEncoder) WriteSlice(timestampsUs []int64) {
 			prevTS, prevDelta = deltadelta.IntoActive(deltaBuf[:n], remaining[:n], prevTS, prevDelta)
 
 			for _, deltaOfDelta := range deltaBuf[:n] {
-				zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec
+				zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 
 				e.pending[e.pendingLen] = zigzag
 				e.pendingLen++
@@ -194,7 +194,7 @@ func (e *TimestampDeltaPackedEncoder) WriteSlice(timestampsUs []int64) {
 	} else {
 		for _, ts := range remaining {
 			deltaOfDelta := nextDeltaOfDelta(ts, &prevTS, &prevDelta)
-			zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec
+			zigzag := uint64((deltaOfDelta << 1) ^ (deltaOfDelta >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 
 			e.pending[e.pendingLen] = zigzag
 			e.pendingLen++
@@ -231,7 +231,7 @@ func (e *TimestampDeltaPackedEncoder) writeSliceSIMDFused(
 		// so pending values must be flushed ahead of them to keep stream order.
 		head := 0
 		for e.pendingLen > 0 && head < n {
-			e.pending[e.pendingLen] = uint64((deltaBuf[head] << 1) ^ (deltaBuf[head] >> 63)) //nolint:gosec
+			e.pending[e.pendingLen] = uint64((deltaBuf[head] << 1) ^ (deltaBuf[head] >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 			e.pendingLen++
 			head++
 
@@ -255,7 +255,7 @@ func (e *TimestampDeltaPackedEncoder) writeSliceSIMDFused(
 
 		// Tail (< groupSize values) via scalar path
 		for i := head + nGroups*groupSize; i < n; i++ {
-			zigzag := uint64((deltaBuf[i] << 1) ^ (deltaBuf[i] >> 63)) //nolint:gosec
+			zigzag := uint64((deltaBuf[i] << 1) ^ (deltaBuf[i] >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 			e.pending[e.pendingLen] = zigzag
 			e.pendingLen++
 
@@ -461,7 +461,7 @@ func NewDeltaPackedTsState(data []byte) (DeltaPackedTsState, bool) {
 		return DeltaPackedTsState{}, false
 	}
 
-	return DeltaPackedTsState{data: data, curTS: int64(first), offset: offset, seqCount: 1}, true //nolint:gosec
+	return DeltaPackedTsState{data: data, curTS: int64(first), offset: offset, seqCount: 1}, true //nolint:gosec // two's-complement bit pattern of the first timestamp
 }
 
 // Next decodes the next timestamp. remaining includes the timestamp being decoded.
@@ -555,7 +555,7 @@ func (d TimestampDeltaPackedDecoder) All(data []byte, count int) iter.Seq[int64]
 			return
 		}
 
-		curTS := int64(first) //nolint:gosec
+		curTS := int64(first) //nolint:gosec // two's-complement bit pattern of the first timestamp
 		if !yield(curTS) {
 			return
 		}
@@ -699,7 +699,7 @@ func (d TimestampDeltaPackedDecoder) DecodeAll(data []byte, count int, dst []int
 		return 0
 	}
 
-	curTS := int64(first) //nolint:gosec
+	curTS := int64(first) //nolint:gosec // two's-complement bit pattern of the first timestamp
 	dst[0] = curTS
 
 	if count == 1 {
@@ -857,7 +857,7 @@ func (d TimestampDeltaPackedDecoder) At(data []byte, index int, count int) (int6
 		return 0, false
 	}
 
-	curTS := int64(first) //nolint:gosec
+	curTS := int64(first) //nolint:gosec // two's-complement bit pattern of the first timestamp
 	if index == 0 {
 		return curTS, true
 	}
@@ -1000,7 +1000,7 @@ func encodeDeltaPackedGroupsBatch(buf *pool.ByteBuffer, dods []int64) {
 	var zigzags [deltadelta.ChunkSize]uint64
 	for i := range nValues {
 		dod := dods[i]
-		zigzags[i] = uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec
+		zigzags[i] = uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 	}
 
 	// --- Phase 2: Batch tag classify + control bytes + total size ---
@@ -1068,10 +1068,10 @@ func encodeDeltaPackedGroupsScalar(dst []byte, dods []int64, nGroups int) int {
 		base := g * groupSize
 
 		// Zigzag encode
-		zz0 := uint64((dods[base] << 1) ^ (dods[base] >> 63))     //nolint:gosec
-		zz1 := uint64((dods[base+1] << 1) ^ (dods[base+1] >> 63)) //nolint:gosec
-		zz2 := uint64((dods[base+2] << 1) ^ (dods[base+2] >> 63)) //nolint:gosec
-		zz3 := uint64((dods[base+3] << 1) ^ (dods[base+3] >> 63)) //nolint:gosec
+		zz0 := uint64((dods[base] << 1) ^ (dods[base] >> 63))     //nolint:gosec // zigzag encode: bit reinterpretation of int64
+		zz1 := uint64((dods[base+1] << 1) ^ (dods[base+1] >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
+		zz2 := uint64((dods[base+2] << 1) ^ (dods[base+2] >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
+		zz3 := uint64((dods[base+3] << 1) ^ (dods[base+3] >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 
 		// Tag classify
 		tag0 := encodeTag(zz0)

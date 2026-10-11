@@ -39,11 +39,11 @@ func DefaultTestDataConfig(numMetrics, numPoints int) TestDataConfig {
 // Returns a slice of MetricData with timestamps and values.
 func GenerateTestData(cfg TestDataConfig) []MetricData {
 	// Fixed seed for reproducibility
-	rng := rand.New(rand.NewSource(42)) //nolint: gosec
+	rng := rand.New(rand.NewSource(42)) //nolint:gosec // fixed-seed math/rand for reproducible data, not security
 	metrics := make([]MetricData, cfg.NumMetrics)
 
 	for m := 0; m < cfg.NumMetrics; m++ {
-		metricID := cfg.MetricIDOffset + uint64(m) //nolint: gosec
+		metricID := cfg.MetricIDOffset + uint64(m) //nolint:gosec // m is a non-negative loop index
 		timestamps := make([]int64, cfg.NumPoints)
 		values := make([]float64, cfg.NumPoints)
 
@@ -79,14 +79,14 @@ func GenerateTestData(cfg TestDataConfig) []MetricData {
 // Returns a slice of TextMetricData with timestamps and text values.
 func GenerateTextTestData(cfg TestDataConfig) []TextMetricData {
 	// Fixed seed for reproducibility
-	rng := rand.New(rand.NewSource(42)) //nolint: gosec
+	rng := rand.New(rand.NewSource(42)) //nolint:gosec // fixed-seed math/rand for reproducible data, not security
 	metrics := make([]TextMetricData, cfg.NumMetrics)
 
 	// Common status/log prefixes for realistic text values
 	prefixes := []string{"INFO", "WARN", "DEBUG", "ERROR", "TRACE"}
 
 	for m := 0; m < cfg.NumMetrics; m++ {
-		metricID := cfg.MetricIDOffset + uint64(m) //nolint: gosec
+		metricID := cfg.MetricIDOffset + uint64(m) //nolint:gosec // m is a non-negative loop index
 		timestamps := make([]int64, cfg.NumPoints)
 		values := make([]string, cfg.NumPoints)
 
