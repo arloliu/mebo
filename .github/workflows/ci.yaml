@@ -46,6 +46,15 @@ jobs:
       run: make test
     - name: ALP byte identity with fused multiply-add (GOAMD64=v3)
       run: make test-fusion
+    # Runners vary in CPU, and the AVX-512 kernel tests skip on one without the instructions,
+    # so this step reports what the runner has and, where it has them, fails if a kernel test skips.
+    - name: AVX-512 ALP kernels (when the runner supports them)
+      run: |
+        if grep -qw avx512dq /proc/cpuinfo && grep -qw avx512bw /proc/cpuinfo && grep -qw avx512vbmi /proc/cpuinfo; then
+          MEBO_REQUIRE_AVX512=1 go test ./internal/encoding/value/alp/ -count=1 -run 'AVX512|Kernel'
+        else
+          echo "This runner lacks AVX-512 DQ, BW or VBMI: CI checked the scalar ALP paths only."
+        fi
 
   fuzz:
     name: Fuzz
