@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Faster ALP decoding on CPUs with AVX-512 VBMI, decoder fuzzing in CI,
+and encoders that refuse oversized blobs they used to truncate or leave unreadable.
+No API changed, and encoded bytes are unchanged for every blob both versions accept.
+Encoding algorithms and lookups are unchanged, and decoded values are bit-identical;
+the new size checks run once per payload or blob, and Zstd, S2 and LZ4 `Compress` can now refuse input.
+
+### Performance
+
+- **ALP columns decode in bulk with an AVX-512 kernel on CPUs with AVX-512 DQ, BW and VBMI**
+  (Ice Lake and later Intel, Zen 4 and later AMD).
+  Per 8 values it makes one masked load of the group's bytes and one `VPERMB` byte shuffle,
+  instead of the two qword gathers of the earlier, never-enabled kernel, which ran slower than scalar code on AMD.
+  This speeds up `Materialize`, `ForEach` and `All` on ALP and ALP-RLE metrics, which decode a whole column at once;
+  `ValueAt` and the other single-point lookups are unchanged.
+  On a Ryzen 9 9950X3D (100 metrics × 150 points, averaged over four code layouts),
+  `NumericBlob.Materialize` is 13% faster on ALP and 9% on ALP-RLE, and `ForEachValues` 8% and 5%.
+  A 150-point column's `DecodeAll` is 1.9–2.1× as fast, and the unpack loop alone 4.7–6.7×.
+  Code widths 59 and 61–63, which only columns spanning more than 2^58 steps produce, keep the scalar kernels,
+  and so does every CPU without these extensions;
+  `GODEBUG=cpu.avx512dq=off` turns the kernel off, together with the AVX-512 encode kernels.
+  The kernel never loads past the column's codes,
+  and leaves the last few groups to the scalar kernels when its 64-byte loads would cross into the next 4 KiB page,
+  so a column ending just before unmapped memory does not pay for suppressed faults.
+
+### Fixed
+
+- **Compressed payloads over 128 MiB are refused at encode time.**
+  Every decompressor restores at most 128 MiB, but Zstd, S2 and LZ4 `Compress` accepted any input,
+  so a numeric or text blob with a larger uncompressed payload encoded without error and could never be decoded.
+  `Compress` now returns `ErrDecompressedSizeExceedsLimit` instead, and `Finish` returns it wrapped.
+  This also keeps every 32-byte index entry offset within its uint32 field.
+- **`TextEncoder.Finish` checks the blob size.**
+  Like the numeric encoder, it returns `ErrBlobSizeExceedsLimit` for a blob past the uint32 offset range,
+  where it used to wrap the data size, entry offsets and index offset silently.
+- **`TextDecoder` compares the data size at full width.**
+  An uncompressed data section larger than 4 GiB no longer passes the size check by wrapping to the header's 32-bit `DataSize`.
+
+### Infrastructure
+
+- **Decoder fuzzing.**
+  `FuzzNumericDecoder` and `FuzzTextDecoder` decode arbitrary bytes and drive every read path:
+  iteration, `ForEach`, random access at and past the bounds, metric handles, materialization and blob sets.
+  They assert that no input panics, that lookups outside a metric's length report false,
+  and that the copying and borrowing decoders agree.
+  On Linux, small inputs are also decoded in place from memory that ends at a guard page,
+  so a read past the end of the input, assembly kernels included, fails the run.
+  The seeds cover every timestamp and value encoding pair, the layout and payload options,
+  every ALP bit width from 1 to 63, and DeltaPacked deltas from 1 to 8 bytes wide.
+- **Fused decoder fuzzing.**
+  `FuzzFusedDecoders` feeds arbitrary stream bytes and point counts straight to every fused iteration loop,
+  below the blob validation the blob targets cannot get past.
+  Counts run past 8192,
+  so the per-point loop that DeltaPacked + Gorilla or Chimp columns of more than 8192 points take is fuzzed too,
+  and on shorter columns the two loops must agree on every point both produce.
+- **ALP decode fuzzing.**
+  `FuzzALPDecode` builds ALP-main columns of every code width from arbitrary bytes
+  and checks that `DecodeAll` with the AVX-512 kernel matches, bit for bit,
+  both `DecodeAll` without it and the per-point iterator.
+- **AVX-512 tests in CI.**
+  The AVX-512 kernel tests skip on a CPU without the instructions, and GitHub's runners vary,
+  so CI only checks the scalar ALP paths on most runs.
+  A test step now reports which kind of runner it got,
+  and on one with AVX-512 DQ, BW and VBMI it fails if a kernel test skips.
+  The kernel's differential, guard-page and fuzz tests were run on a Ryzen 9 9950X3D.
+- `make fuzz` runs each fuzz target for `FUZZ_TIME` (default 30s); CI runs it on every pull request and push to `main`.
+- The unused `iter.Seq2` forms of the fused Delta/DeltaPacked + Gorilla/Chimp decoders are removed;
+  the blob iterators have called the callback forms since v1.7.0.
+- Every `//nolint` directive states why the finding is safe,
+  and golangci-lint now requires it (`nolintlint.require-explanation`).
+
+### Documentation
+
+- README and package godoc: metric lookup is O(1) on the default V1 layout and O(log n) binary search on V2,
+  not O(1) everywhere; the hash collision probability is per pair of names.
+- `SECURITY.md`: the `unsafe` conversions and assembly kernels are length-checked and fuzzed,
+  since Go's bounds checks do not cover them;
+  a crafted numeric blob can decompress to about 384 MiB, and the shared-timestamp cache can add more.
+
 ## [1.13.0-rc2] - 2026-10-09
 
 Fewer allocations when materializing tagged metrics, faster lookups on the `NumericMetric` handle,
