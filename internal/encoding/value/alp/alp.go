@@ -620,7 +620,7 @@ func alpMainStatsScalar(values []float64, ee, ff int, dst []uint64, excPos []uin
 			excPos = append(excPos, uint32(i))
 			continue
 		}
-		dst[i] = uint64(d) //nolint:gosec
+		dst[i] = uint64(d) //nolint:gosec // digit kept as its two's-complement bits, read back as int64
 		if d < mn {
 			mn = d
 		}
@@ -670,7 +670,7 @@ func (e *NumericALPEncoder) encodeMainFast(ee, ff int, mn int64, width int, digi
 // packed bytes. Do not reorder these two loops.
 func (e *NumericALPEncoder) encodeMain(values []float64, ee, ff int, mn int64, width int, digits []uint64, excPos []uint32) {
 	for i := range digits {
-		digits[i] = uint64(int64(digits[i]) - mn) //nolint:gosec
+		digits[i] = uint64(int64(digits[i]) - mn) //nolint:gosec // FOR offset: wrapping d-mn yields the true unsigned difference
 	}
 	for _, p := range excPos {
 		digits[p] = 0 // byte-identical to the old codes[i]=0 for exceptions
@@ -678,8 +678,8 @@ func (e *NumericALPEncoder) encodeMain(values []float64, ee, ff int, mn int64, w
 
 	eng := e.engine
 	e.buf.B = append(e.buf.B, byte(ee), byte(ff), byte(width)) //nolint:gosec // ALP scheme validation bounds all three header fields.
-	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos)))   //nolint:gosec
-	e.buf.B = eng.AppendUint64(e.buf.B, uint64(mn))            //nolint:gosec
+	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos)))   //nolint:gosec // exceptions <= column length <= NumericMaxCount (uint32)
+	e.buf.B = eng.AppendUint64(e.buf.B, uint64(mn))            //nolint:gosec // two's-complement bit pattern of the frame min
 	e.buf.B = alpPackBits(e.buf.B, digits, width)
 	for _, p := range excPos {
 		e.buf.B = eng.AppendUint32(e.buf.B, p)
@@ -793,7 +793,7 @@ func alpRDBuildDict(patterns []uint64, rbw int, leftScratch *[]uint64, cntScratc
 
 	cnts := (*cntScratch)[:0]
 	for _, l := range touched {
-		cnts = append(cnts, int32(counts[l])) //nolint:gosec
+		cnts = append(cnts, int32(counts[l])) //nolint:gosec // wraps only past 2^31 points; skews RD ranking, never output
 	}
 	*cntScratch = cnts
 
@@ -930,11 +930,11 @@ func (e *NumericALPEncoder) encodeRD(values []float64, rbw int, dict *[alpRDMaxD
 		left := p >> r
 		rights[i] = p & rightMask
 		if c, ok := alpRDLookup(dict, nDict, left); ok {
-			leftCodes[i] = uint64(c) //nolint:gosec
+			leftCodes[i] = uint64(c) //nolint:gosec // dictionary code c < alpRDMaxDictSize (8)
 		} else {
 			leftCodes[i] = 0
 			excPos = append(excPos, uint32(i))
-			excLeft = append(excLeft, uint16(left)) //nolint:gosec
+			excLeft = append(excLeft, uint16(left)) //nolint:gosec // left part is at most alpRDCutLimit (16) bits
 		}
 	}
 	e.rdExcPos = excPos
@@ -942,9 +942,9 @@ func (e *NumericALPEncoder) encodeRD(values []float64, rbw int, dict *[alpRDMaxD
 
 	eng := e.engine
 	e.buf.B = append(e.buf.B, byte(rbw), byte(codeBits), byte(nDict)) //nolint:gosec // RD header fields are bounded by their bit widths and dictionary limit.
-	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos)))          //nolint:gosec
+	e.buf.B = eng.AppendUint32(e.buf.B, uint32(len(excPos)))          //nolint:gosec // exceptions <= column length <= NumericMaxCount (uint32)
 	for k := 0; k < nDict; k++ {
-		e.buf.B = eng.AppendUint16(e.buf.B, uint16(dict[k])) //nolint:gosec
+		e.buf.B = eng.AppendUint16(e.buf.B, uint16(dict[k])) //nolint:gosec // dictionary lefts are at most alpRDCutLimit (16) bits
 	}
 	e.buf.B = alpPackBits(e.buf.B, leftCodes, codeBits)
 	e.buf.B = alpPackBits(e.buf.B, rights, rbw)
@@ -1200,7 +1200,7 @@ func (d NumericALPDecoder) allMain(data []byte, count int, yield func(float64) b
 	ff := int(data[1])
 	width := int(data[2])
 	nExc := int(d.engine.Uint32(data[3:7]))
-	mn := int64(d.engine.Uint64(data[7:15])) //nolint:gosec
+	mn := int64(d.engine.Uint64(data[7:15])) //nolint:gosec // two's-complement bit pattern of the stored frame min
 	codes := data[15:]
 	exc := data[15+(count*width+7)/8:]
 
@@ -1237,7 +1237,7 @@ func (d NumericALPDecoder) allMain(data []byte, count int, yield func(float64) b
 			} else {
 				code = alpReadBitsSlow(codes, bitpos, width, mask)
 			}
-			v = float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee] //nolint:gosec
+			v = float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee] //nolint:gosec // FOR decode: wrapping code+mn inverts the encoder's d-mn
 		}
 		bitpos += width
 		if !yield(v) {
@@ -1314,7 +1314,7 @@ func (d NumericALPDecoder) decodeMainInto(data []byte, count int, dst []float64)
 	ff := int(data[1])                       //nolint:gosec // DecodeAll keeps the established trusted-column contract; blob validates ALP columns before dispatch.
 	width := int(data[2])                    //nolint:gosec // DecodeAll keeps the established trusted-column contract; blob validates ALP columns before dispatch.
 	nExc := int(d.engine.Uint32(data[3:7]))  //nolint:gosec // DecodeAll keeps the established trusted-column contract; blob validates ALP columns before dispatch.
-	mn := int64(d.engine.Uint64(data[7:15])) //nolint:gosec
+	mn := int64(d.engine.Uint64(data[7:15])) //nolint:gosec // two's-complement bit pattern of the stored frame min
 	codes := data[15:]                       //nolint:gosec // DecodeAll keeps the established trusted-column contract; blob validates ALP columns before dispatch.
 	exc := data[15+(count*width+7)/8:]
 
@@ -1366,7 +1366,7 @@ func (d NumericALPDecoder) decodeMainInto(data []byte, count int, dst []float64)
 		} else {
 			code = alpReadBitsSlow(codes, bitpos, width, mask)
 		}
-		dst[i] = float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee] //nolint:gosec
+		dst[i] = float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee] //nolint:gosec // FOR decode: wrapping code+mn inverts the encoder's d-mn
 		bitpos += width
 	}
 	// patch exceptions by position afterwards (sidecar positions are ascending)
@@ -1570,7 +1570,7 @@ func (d NumericALPDecoder) atMain(data []byte, index, count int) float64 {
 	ff := int(data[1])
 	width := int(data[2])
 	nExc := int(d.engine.Uint32(data[3:7]))
-	mn := int64(d.engine.Uint64(data[7:15])) //nolint:gosec
+	mn := int64(d.engine.Uint64(data[7:15])) //nolint:gosec // two's-complement bit pattern of the stored frame min
 	codes := data[15:]
 	exc := data[15+(count*width+7)/8:]
 
@@ -1593,7 +1593,7 @@ func (d NumericALPDecoder) atMain(data []byte, index, count int) float64 {
 	}
 	code := alpReadBitsFast(codes, index*width, width, mask)
 
-	return float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee] //nolint:gosec
+	return float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee] //nolint:gosec // FOR decode: wrapping code+mn inverts the encoder's d-mn
 }
 
 // atRD looks up a single index in an O(1) windowed read plus a binary search

@@ -642,7 +642,7 @@ func (b NumericBlob) timestampAtFromEntry(entry *section.NumericIndexEntry, inde
 		return 0, false
 	}
 
-	switch b.tsEncType { //nolint: exhaustive
+	switch b.tsEncType { //nolint:exhaustive // value-only encodings fall to default (returns false)
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -679,7 +679,7 @@ func (b NumericBlob) valueAtFromEntry(entry *section.NumericIndexEntry, index in
 		return 0, false
 	}
 
-	switch b.ValueEncoding() { //nolint: exhaustive
+	switch b.ValueEncoding() { //nolint:exhaustive // timestamp-only encodings fall to default (returns false)
 	case format.TypeRaw:
 		// Raw encoding: fixed 8 bytes per float64 (length checked at decode)
 		engine := b.Engine()
@@ -780,7 +780,7 @@ func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int
 
 	// DeltaPacked paths: Group Varint timestamp encoding with various value encodings
 	if b.tsEncType == format.TypeDeltaPacked {
-		switch b.ValueEncoding() { //nolint: exhaustive
+		switch b.ValueEncoding() { //nolint:exhaustive // other value encodings fall through to the generic path below
 		case format.TypeGorilla:
 			return b.allDataPointsDeltaPackedGorilla(tsBytes, valBytes, tagBytes, count)
 		case format.TypeChimp:
@@ -1133,7 +1133,7 @@ func (b NumericBlob) allDataPointsGeneric(tsBytes, valBytes, tagBytes []byte, co
 
 // decodeTimestamps selects the optimal timestamp decoder and returns an iterator.
 func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64] {
-	switch b.tsEncType { //nolint: exhaustive
+	switch b.tsEncType { //nolint:exhaustive // value-only encodings fall to default (empty iterator)
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -1159,7 +1159,7 @@ func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64]
 
 // decodeValues selects the optimal value decoder and returns an iterator.
 func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] {
-	switch b.ValueEncoding() { //nolint: exhaustive
+	switch b.ValueEncoding() { //nolint:exhaustive // timestamp-only encodings fall to default (empty iterator)
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -1192,7 +1192,7 @@ func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] 
 // Returns:
 //   - int: The number of timestamps actually decoded. May be less than count if data is truncated.
 func (b NumericBlob) decodeTimestampsSlice(tsBytes []byte, count int, dst []int64) int {
-	switch b.tsEncType { //nolint: exhaustive
+	switch b.tsEncType { //nolint:exhaustive // value-only encodings fall to default (returns 0)
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -1223,7 +1223,7 @@ func (b NumericBlob) decodeTimestampsSlice(tsBytes []byte, count int, dst []int6
 // Returns:
 //   - int: The number of values actually decoded. May be less than count if data is truncated.
 func (b NumericBlob) decodeValuesSlice(valBytes []byte, count int, dst []float64) int {
-	switch b.ValueEncoding() { //nolint: exhaustive
+	switch b.ValueEncoding() { //nolint:exhaustive // timestamp-only encodings fall to default (returns 0)
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {

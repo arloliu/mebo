@@ -50,19 +50,19 @@ func (t *SharedTimestampTable) Size() int {
 // Returns:
 //   - int: Next write position after the table
 func (t *SharedTimestampTable) WriteToSlice(data []byte, offset int, engine endian.EndianEngine) int {
-	engine.PutUint16(data[offset:offset+2], uint16(len(t.Groups))) //nolint: gosec
+	engine.PutUint16(data[offset:offset+2], uint16(len(t.Groups))) //nolint:gosec // groups <= MaxMetricCount (65536) / 2
 	offset += 2
 
 	for i := range t.Groups {
 		g := &t.Groups[i]
-		engine.PutUint16(data[offset:offset+2], uint16(g.CanonicalIndex)) //nolint: gosec
+		engine.PutUint16(data[offset:offset+2], uint16(g.CanonicalIndex)) //nolint:gosec // metric index < MaxMetricCount (65536)
 		offset += 2
 
-		engine.PutUint16(data[offset:offset+2], uint16(len(g.SharedIndices))) //nolint: gosec
+		engine.PutUint16(data[offset:offset+2], uint16(len(g.SharedIndices))) //nolint:gosec // members exclude the canonical, so < MaxMetricCount (65536)
 		offset += 2
 
 		for _, idx := range g.SharedIndices {
-			engine.PutUint16(data[offset:offset+2], uint16(idx)) //nolint: gosec
+			engine.PutUint16(data[offset:offset+2], uint16(idx)) //nolint:gosec // metric index < MaxMetricCount (65536)
 			offset += 2
 		}
 	}

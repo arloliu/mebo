@@ -710,7 +710,7 @@ func TestTagCompressionRatio_Report(t *testing.T) {
 
 // Helper functions to generate test data
 
-func generateShortTags(count int) []string { //nolint:unparam
+func generateShortTags(count int) []string { //nolint:unparam // every benchmark passes 150; count stays a parameter for other sizes
 	tags := make([]string, count)
 	prefixes := []string{"ok", "error", "warn", "info", "debug"}
 
@@ -721,7 +721,7 @@ func generateShortTags(count int) []string { //nolint:unparam
 	return tags
 }
 
-func generateMediumTags(count int) []string { //nolint:unparam
+func generateMediumTags(count int) []string { //nolint:unparam // every benchmark passes 150; count stays a parameter for other sizes
 	tags := make([]string, count)
 
 	for i := range count {
@@ -732,7 +732,7 @@ func generateMediumTags(count int) []string { //nolint:unparam
 	return tags
 }
 
-func generateLongTags(count int) []string { //nolint:unparam
+func generateLongTags(count int) []string { //nolint:unparam // every benchmark passes 150; count stays a parameter for other sizes
 	tags := make([]string, count)
 	base := "host=server.example.com,datacenter=us-west-2a,cluster=prod-k8s,namespace=monitoring,pod=metrics-collector,container=exporter,app=prometheus,version=2.45.0,env=production"
 
@@ -743,7 +743,7 @@ func generateLongTags(count int) []string { //nolint:unparam
 	return tags
 }
 
-func generateMixedTags(count int) []string { //nolint:unparam
+func generateMixedTags(count int) []string { //nolint:unparam // every benchmark passes 150; count stays a parameter for other sizes
 	tags := make([]string, count)
 
 	for i := range count {

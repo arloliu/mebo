@@ -62,7 +62,7 @@ func NewTextEncoderConfig(startTime time.Time) *TextEncoderConfig {
 
 // setTimestampEncoding sets the timestamp encoding type.
 func (c *TextEncoderConfig) setTimestampEncoding(enc format.EncodingType) error {
-	switch enc { //nolint: exhaustive
+	switch enc { //nolint:exhaustive // other encodings fall to default (returns an error)
 	case format.TypeRaw, format.TypeDelta:
 		c.header.Flag.SetTimestampEncoding(enc)
 		return nil

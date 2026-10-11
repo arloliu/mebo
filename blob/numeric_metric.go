@@ -482,7 +482,7 @@ func (h *NumericMetric) ValueAt(index int) (float64, bool) {
 		return p.values[i], true
 	}
 
-	switch p.valEncType { //nolint: exhaustive
+	switch p.valEncType { //nolint:exhaustive // timestamp-only encodings fall to default (returns false)
 	case format.TypeRaw:
 		if p.sameByteOrder {
 			return ienc.NewNumericRawUnsafeDecoder(p.engine).At(p.valBytes, i, count)
@@ -530,7 +530,7 @@ func (h *NumericMetric) TimestampAt(index int) (int64, bool) {
 		return ts, true
 	}
 
-	switch p.tsEncType { //nolint: exhaustive
+	switch p.tsEncType { //nolint:exhaustive // value-only encodings fall to default (returns false)
 	case format.TypeRaw:
 		if p.sameByteOrder {
 			return ienc.NewTimestampRawUnsafeDecoder(p.engine).At(p.tsBytes, i, count)
@@ -790,7 +790,7 @@ func (p *numericMetricPart) forEachTimestamps(yield func(int, int64) bool) int {
 
 // timestampAccess classifies the part's timestamp axis from its encoding and its group.
 func (p *numericMetricPart) timestampAccess() AccessClass {
-	switch p.tsEncType { //nolint: exhaustive
+	switch p.tsEncType { //nolint:exhaustive // value-only encodings fall to default (AccessUnsupported)
 	case format.TypeRaw:
 		return AccessDirect
 	case format.TypeDelta, format.TypeDeltaPacked:
@@ -806,7 +806,7 @@ func (p *numericMetricPart) timestampAccess() AccessClass {
 
 // valueAccess classifies the part's value axis from its encoding and what Materialize decoded; every ALP scheme is direct.
 func (p *numericMetricPart) valueAccess() AccessClass {
-	switch p.valEncType { //nolint: exhaustive
+	switch p.valEncType { //nolint:exhaustive // timestamp-only encodings fall to default (AccessUnsupported)
 	case format.TypeRaw, format.TypeALP, format.TypeALPRLE:
 		return AccessDirect
 	case format.TypeGorilla, format.TypeChimp:
@@ -863,7 +863,7 @@ func (p *numericMetricPart) timestampAt(i int) (int64, bool) {
 		return ts, true
 	}
 
-	switch p.tsEncType { //nolint: exhaustive
+	switch p.tsEncType { //nolint:exhaustive // value-only encodings fall to default (returns false)
 	case format.TypeRaw:
 		if p.sameByteOrder {
 			return ienc.NewTimestampRawUnsafeDecoder(p.engine).At(p.tsBytes, i, count)
@@ -892,7 +892,7 @@ func (p *numericMetricPart) valueAt(i int) (float64, bool) {
 		return p.values[i], true
 	}
 
-	switch p.valEncType { //nolint: exhaustive
+	switch p.valEncType { //nolint:exhaustive // timestamp-only encodings fall to default (returns false)
 	case format.TypeRaw:
 		if p.sameByteOrder {
 			return ienc.NewNumericRawUnsafeDecoder(p.engine).At(p.valBytes, i, count)

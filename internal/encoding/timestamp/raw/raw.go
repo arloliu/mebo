@@ -146,7 +146,7 @@ func (e *TimestampRawEncoder) WriteSlice(timestampsUs []int64) {
 	// Write each timestamp directly using PutUint64 on the buffer slice
 	for i, ts := range timestampsUs {
 		offset := startIdx + i*8
-		e.engine.PutUint64(buf[offset:offset+8], uint64(ts)) //nolint:gosec
+		e.engine.PutUint64(buf[offset:offset+8], uint64(ts)) //nolint:gosec // two's-complement bit pattern of the int64 timestamp
 	}
 }
 
@@ -242,7 +242,7 @@ func (e *TimestampRawEncoder) Finish() {
 func (e *TimestampRawEncoder) writeInt64(timestamp int64) {
 	bufLen := e.buf.Len()
 	bs := e.buf.Bytes()[bufLen : bufLen+8]
-	e.engine.PutUint64(bs, uint64(timestamp)) //nolint:gosec
+	e.engine.PutUint64(bs, uint64(timestamp)) //nolint:gosec // two's-complement bit pattern of the int64 timestamp
 	e.buf.SetLength(bufLen + 8)
 }
 
@@ -309,7 +309,7 @@ func (d TimestampRawDecoder) All(data []byte, count int) iter.Seq[int64] {
 				break
 			}
 
-			ts := int64(d.engine.Uint64(data[start : start+8])) //nolint: gosec
+			ts := int64(d.engine.Uint64(data[start : start+8])) //nolint:gosec // two's-complement bit pattern of the stored int64
 
 			if !yield(ts) {
 				break
@@ -346,7 +346,7 @@ func (d TimestampRawDecoder) DecodeAll(data []byte, count int, dst []int64) int 
 			return i
 		}
 
-		dst[i] = int64(d.engine.Uint64(data[start : start+8])) //nolint: gosec
+		dst[i] = int64(d.engine.Uint64(data[start : start+8])) //nolint:gosec // two's-complement bit pattern of the stored int64
 	}
 
 	return count
@@ -378,7 +378,7 @@ func (d TimestampRawDecoder) At(data []byte, index int, count int) (int64, bool)
 		return 0, false
 	}
 
-	ts := int64(d.engine.Uint64(data[start : start+8])) //nolint: gosec
+	ts := int64(d.engine.Uint64(data[start : start+8])) //nolint:gosec // two's-complement bit pattern of the stored int64
 
 	return ts, true
 }
@@ -556,7 +556,7 @@ func RawTimestampsEach(data []byte, count, base int, engine endian.EndianEngine,
 
 	for i := range count {
 		start := i * 8
-		timestamp := int64(engine.Uint64(data[start : start+8])) //nolint:gosec
+		timestamp := int64(engine.Uint64(data[start : start+8])) //nolint:gosec // two's-complement bit pattern of the stored int64
 		if !yield(base+i, timestamp) {
 			return -1
 		}

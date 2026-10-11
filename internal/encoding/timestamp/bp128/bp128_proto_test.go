@@ -45,13 +45,13 @@ func bpPackBlock(out []uint64, block []uint64, w int) []uint64 {
 	bitpos := 0
 	for p := 0; p < bpPerLane; p++ {
 		v := archsimd.LoadUint64x8Slice(block[p*8:])
-		acc = acc.Or(v.ShiftAllLeft(uint64(bitpos))) //nolint:gosec
+		acc = acc.Or(v.ShiftAllLeft(uint64(bitpos))) //nolint:gosec // bitpos is in [0, 63]
 		nb := bitpos + w
 		if nb >= 64 {
 			acc.Store(&tmp)
 			out = append(out, tmp[:]...)
 			if nb > 64 {
-				acc = v.ShiftAllRight(uint64(64 - bitpos)) //nolint:gosec
+				acc = v.ShiftAllRight(uint64(64 - bitpos)) //nolint:gosec // bitpos is in [1, 63] here, so 64-bitpos is too
 			} else {
 				acc = archsimd.BroadcastUint64x8(0)
 			}
@@ -78,7 +78,7 @@ func bpUnpackBlock(dst []uint64, packed []uint64, w int) int {
 
 		return 0
 	}
-	mask := archsimd.BroadcastUint64x8((uint64(1) << uint(w)) - 1) //nolint:gosec
+	mask := archsimd.BroadcastUint64x8((uint64(1) << uint(w)) - 1) //nolint:gosec // w is in [1, 64] (bits.Len64 of the block max)
 	in := 0
 	cur := archsimd.LoadUint64x8Slice(packed[in:])
 	in += 8
@@ -87,10 +87,10 @@ func bpUnpackBlock(dst []uint64, packed []uint64, w int) int {
 		nb := bitpos + w
 		var v archsimd.Uint64x8
 		if nb < 64 {
-			v = cur.ShiftAllRight(uint64(bitpos)).And(mask) //nolint:gosec
+			v = cur.ShiftAllRight(uint64(bitpos)).And(mask) //nolint:gosec // bitpos is in [0, 63]
 			bitpos = nb
 		} else if nb == 64 {
-			v = cur.ShiftAllRight(uint64(bitpos)).And(mask) //nolint:gosec
+			v = cur.ShiftAllRight(uint64(bitpos)).And(mask) //nolint:gosec // bitpos is in [0, 63]
 			if p != bpPerLane-1 {
 				cur = archsimd.LoadUint64x8Slice(packed[in:])
 				in += 8
@@ -99,8 +99,8 @@ func bpUnpackBlock(dst []uint64, packed []uint64, w int) int {
 		} else {
 			next := archsimd.LoadUint64x8Slice(packed[in:])
 			in += 8
-			lo := cur.ShiftAllRight(uint64(bitpos))      //nolint:gosec
-			hi := next.ShiftAllLeft(uint64(64 - bitpos)) //nolint:gosec
+			lo := cur.ShiftAllRight(uint64(bitpos))      //nolint:gosec // bitpos is in [0, 63]
+			hi := next.ShiftAllLeft(uint64(64 - bitpos)) //nolint:gosec // bitpos is in [1, 63] here, so 64-bitpos is too
 			v = lo.Or(hi).And(mask)
 			cur = next
 			bitpos = nb - 64
@@ -121,7 +121,7 @@ func bpEncode(vals []uint64) (packed []uint64, widths []uint8) {
 				w = bl
 			}
 		}
-		widths = append(widths, uint8(w)) //nolint:gosec
+		widths = append(widths, uint8(w)) //nolint:gosec // w is bits.Len64 of a block value, at most 64
 		if w > 0 {
 			packed = bpPackBlock(packed, block, w)
 		}

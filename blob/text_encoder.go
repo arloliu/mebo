@@ -316,7 +316,7 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 		e.buf.ExtendOrGrow(8)
 		bufBytes := e.buf.Bytes()
 		offset := len(bufBytes) - 8
-		e.engine.PutUint64(bufBytes[offset:], uint64(timestamp)) //nolint:gosec
+		e.engine.PutUint64(bufBytes[offset:], uint64(timestamp)) //nolint:gosec // two's-complement bit pattern of the int64 timestamp
 
 	case format.TypeDelta:
 		// Delta encoding: write varint delta from previous timestamp
@@ -393,7 +393,7 @@ func (e *TextEncoder) EndMetric() error {
 	dataOffset := e.dataState.offset
 	dataLength := e.dataEncoder.Size() - dataOffset
 
-	//nolint:gosec
+	//nolint:gosec // count <= MaxDataPoints; Finish rejects data past the uint32 range
 	entry := section.TextIndexEntry{
 		MetricID: e.curMetricID,
 		Count:    uint16(e.added),
@@ -476,7 +476,7 @@ func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 	header := e.cloneHeader()
 
 	// Update header with final counts and offsets
-	header.MetricCount = uint32(len(e.indexEntries)) //nolint:gosec
+	header.MetricCount = uint32(len(e.indexEntries)) //nolint:gosec // len(indexEntries) <= MaxMetricCount, checked at StartMetric*
 
 	// Compress data if needed
 	dataBytes := e.dataEncoder.Bytes()
@@ -484,7 +484,7 @@ func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 	var err error
 
 	// DataSize always stores the uncompressed size for verification and Size calculation
-	header.DataSize = uint32(len(dataBytes)) //nolint:gosec
+	header.DataSize = uint32(len(dataBytes)) //nolint:gosec // larger data fails Compress or the blob-size check below
 
 	if e.dataCodec != nil {
 		compressedData, err = e.dataCodec.Compress(dataBytes)
@@ -528,10 +528,10 @@ func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 	}
 
 	// Calculate offsets (metric names come before index)
-	namesSize := uint32(len(namesPayload)) //nolint:gosec
+	namesSize := uint32(len(namesPayload)) //nolint:gosec // EncodeMetricNames caps the payload at MaxUint32
 	indexSize := len(e.indexEntries) * section.TextIndexEntrySize
 	header.IndexOffset = section.IndexOffsetOffset + namesSize
-	header.DataOffset = header.IndexOffset + uint32(indexSize) //nolint:gosec
+	header.DataOffset = header.IndexOffset + uint32(indexSize) //nolint:gosec // indexSize <= MaxMetricCount * TextIndexEntrySize (1 MiB)
 
 	// Pre-calculate exact blob size
 	headerSize := section.HeaderSize

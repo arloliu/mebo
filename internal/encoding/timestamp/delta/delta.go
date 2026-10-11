@@ -133,7 +133,7 @@ func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 
 	if e.seqCount == 1 {
 		// First timestamp: write full value (no zigzag, just varint)
-		e.appendUnsigned(uint64(timestampUs)) //nolint:gosec
+		e.appendUnsigned(uint64(timestampUs)) //nolint:gosec // two's-complement bit pattern of the first timestamp
 		e.prevTS = timestampUs
 
 		return
@@ -157,7 +157,7 @@ func (e *TimestampDeltaEncoder) Write(timestampUs int64) {
 	zigzag := (valToEncode << 1) ^ (valToEncode >> 63)
 
 	// Write varint with inline fast paths
-	e.appendUnsigned(uint64(zigzag)) //nolint:gosec
+	e.appendUnsigned(uint64(zigzag)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 
 	e.prevTS = timestampUs
 }
@@ -211,7 +211,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 	// Handle first timestamp if this is initial write
 	if currentSeqCount == 0 {
 		ts := timestampsUs[0]
-		e.appendUnsigned(uint64(ts)) //nolint:gosec
+		e.appendUnsigned(uint64(ts)) //nolint:gosec // two's-complement bit pattern of the first timestamp
 		prevTS = ts
 		startIdx = 1
 		currentSeqCount++
@@ -222,7 +222,7 @@ func (e *TimestampDeltaEncoder) WriteSlice(timestampsUs []int64) {
 		ts := timestampsUs[startIdx] //nolint:gosec // startIdx is guarded by startIdx < tsLen.
 		delta := ts - prevTS
 		zigzag := (delta << 1) ^ (delta >> 63)
-		e.appendUnsigned(uint64(zigzag)) //nolint:gosec
+		e.appendUnsigned(uint64(zigzag)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 		prevTS = ts
 		prevDelta = delta
 		startIdx++
@@ -254,7 +254,7 @@ func (e *TimestampDeltaEncoder) writeVarintBatch(dods []int64) {
 	e.buf.Grow(len(dods) * binary.MaxVarintLen64)
 
 	for _, dod := range dods {
-		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec
+		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 		switch {
 		case zigzag < 1<<7:
 			e.buf.B = append(e.buf.B, byte(zigzag))
@@ -283,7 +283,7 @@ func (e *TimestampDeltaEncoder) writeVarintDirect(
 		prevTS = ts
 		prevDelta = delta
 
-		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec
+		zigzag := uint64((dod << 1) ^ (dod >> 63)) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 		switch {
 		case zigzag < 1<<7:
 			e.buf.B = append(e.buf.B, byte(zigzag))
@@ -476,7 +476,7 @@ func NewDeltaTsState(data []byte) (DeltaTsState, bool) {
 	}
 
 	return DeltaTsState{
-		curTS:  int64(first), //nolint:gosec
+		curTS:  int64(first), //nolint:gosec // two's-complement bit pattern of the first timestamp
 		offset: offset,
 	}, true
 }
@@ -578,7 +578,7 @@ func (s *DeltaTsState) NextLong(data []byte) bool {
 		}
 	}
 
-	s.prevDelta += int64((value >> 1) ^ -(value & 1)) //nolint:gosec
+	s.prevDelta += int64((value >> 1) ^ -(value & 1)) //nolint:gosec // zigzag decode: reinterprets the bits as int64
 	s.curTS += s.prevDelta
 	s.offset = offset
 
@@ -645,7 +645,7 @@ func (d TimestampDeltaDecoder) All(data []byte, count int) iter.Seq[int64] {
 			return
 		}
 
-		curTS := int64(first) //nolint:gosec
+		curTS := int64(first) //nolint:gosec // two's-complement bit pattern of the first timestamp
 		if !yield(curTS) {
 			return
 		}
@@ -712,7 +712,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		return 0
 	}
 
-	curTS := int64(first) //nolint:gosec
+	curTS := int64(first) //nolint:gosec // two's-complement bit pattern of the first timestamp
 	dst[0] = curTS
 
 	if count == 1 {
@@ -745,7 +745,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		if b < 0x80 {
 			// 1-byte varint (DoD=0 for regular intervals): fused zigzag decode
 			v := uint64(b)
-			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
+			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec // zigzag decode: reinterprets the bits as int64
 			curTS += prevDelta
 			dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 
@@ -764,7 +764,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		v |= uint64(b&0x7f) << 7
 
 		if b < 0x80 {
-			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
+			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec // zigzag decode: reinterprets the bits as int64
 			curTS += prevDelta
 			dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 
@@ -781,7 +781,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 		v |= uint64(b&0x7f) << 14
 
 		if b < 0x80 {
-			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
+			prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec // zigzag decode: reinterprets the bits as int64
 			curTS += prevDelta
 			dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 
@@ -815,7 +815,7 @@ func (d TimestampDeltaDecoder) DecodeAll(data []byte, count int, dst []int64) in
 			}
 		}
 
-		prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec
+		prevDelta += int64((v >> 1) ^ -(v & 1)) //nolint:gosec // zigzag decode: reinterprets the bits as int64
 		curTS += prevDelta
 		dst[produced] = curTS //nolint:gosec // produced is bounded by count and dst has count elements.
 	}
@@ -864,7 +864,7 @@ func (d TimestampDeltaDecoder) At(data []byte, index int, count int) (int64, boo
 		return 0, false
 	}
 
-	curTS := int64(first) //nolint:gosec
+	curTS := int64(first) //nolint:gosec // two's-complement bit pattern of the first timestamp
 	if index == 0 {
 		return curTS, true
 	}

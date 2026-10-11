@@ -30,7 +30,7 @@ const (
 	bp128Block   = bp128Lanes * bp128PerLane // 256 values per block
 )
 
-func bp128ZigZag(value int64) uint64 { return uint64((value << 1) ^ (value >> 63)) } //nolint:gosec
+func bp128ZigZag(value int64) uint64 { return uint64((value << 1) ^ (value >> 63)) } //nolint:gosec // zigzag encode: bit reinterpretation of int64
 
 func bp128UnZigZag(value uint64) int64 { return int64(value>>1) ^ -int64(value&1) }
 

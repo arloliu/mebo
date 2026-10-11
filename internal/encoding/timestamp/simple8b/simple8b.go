@@ -42,7 +42,7 @@ var s8bSelBits = [16]int{0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 30, 60}
 
 const s8bMaxBits = 60
 
-func s8bZigZag(v int64) uint64   { return uint64((v << 1) ^ (v >> 63)) } //nolint:gosec
+func s8bZigZag(v int64) uint64   { return uint64((v << 1) ^ (v >> 63)) } //nolint:gosec // zigzag encode: bit reinterpretation of int64
 func s8bUnZigZag(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }
 
 type TimestampSimple8bEncoder struct {
@@ -159,7 +159,7 @@ func (e *TimestampSimple8bEncoder) flush() {
 	}
 
 	eng := e.engine
-	e.buf.B = eng.AppendUint64(e.buf.B, uint64(e.firstTS)) //nolint:gosec
+	e.buf.B = eng.AppendUint64(e.buf.B, uint64(e.firstTS)) //nolint:gosec // two's-complement bit pattern of the first timestamp
 
 	vals := e.pending
 
@@ -199,7 +199,7 @@ func (e *TimestampSimple8bEncoder) flush() {
 	off := startLen
 	for i := 0; i < n; {
 		sel, cnt := s8bSelectFor(vals[i:])
-		word := uint64(sel) << 60 //nolint:gosec
+		word := uint64(sel) << 60 //nolint:gosec // selector is in [0, 15] (index into 16-entry tables)
 		if bitw := s8bSelBits[sel]; bitw > 0 {
 			for j := range cnt {
 				word |= vals[i+j] << uint(j*bitw)
@@ -327,7 +327,7 @@ func (d TimestampSimple8bDecoder) All(data []byte, count int) iter.Seq[int64] {
 			return
 		}
 
-		firstTS := int64(d.engine.Uint64(data[0:8])) //nolint:gosec
+		firstTS := int64(d.engine.Uint64(data[0:8])) //nolint:gosec // two's-complement bit pattern of the stored int64
 		if !yield(firstTS) {
 			return
 		}

@@ -77,7 +77,7 @@ func (e *VarStringEncoder) Write(text string) error {
 	e.buf.Grow(1 + len(text))
 
 	// Write length as uint8
-	length := uint8(len(text)) //nolint:gosec
+	length := uint8(len(text)) //nolint:gosec // len(text) <= MaxTextLength (255), checked above
 	e.buf.MustWrite([]byte{length})
 
 	// Write string data
@@ -116,7 +116,7 @@ func (e *VarStringEncoder) WriteSlice(texts []string) error {
 
 	// Encode all strings
 	for _, text := range texts {
-		length := uint8(len(text)) //nolint:gosec
+		length := uint8(len(text)) //nolint:gosec // len(text) <= MaxTextLength (255), checked above
 		e.buf.MustWrite([]byte{length})
 		e.buf.MustWrite([]byte(text))
 		e.count++
@@ -136,7 +136,7 @@ func (e *VarStringEncoder) WriteSlice(texts []string) error {
 func (e *VarStringEncoder) WriteVarint(val int64) {
 	// Zigzag encoding: converts signed to unsigned
 	// -1 becomes 1, -2 becomes 3, 0 stays 0, 1 becomes 2, etc.
-	uval := uint64(val<<1) ^ uint64(val>>63) //nolint:gosec
+	uval := uint64(val<<1) ^ uint64(val>>63) //nolint:gosec // zigzag encode: bit reinterpretation of int64
 
 	// Encode as varint
 	for uval >= 0x80 {
