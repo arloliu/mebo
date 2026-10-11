@@ -77,10 +77,16 @@ func FuzzTextDecoder(f *testing.F) {
 			exerciseTextFuzz(t, borrowed)
 		}
 
+		// Verify opens the blob itself, so it must reject whatever the decoder rejects.
+		if verifyErr := Verify(data); copiedErr != nil && section.IsTextBlob(data) {
+			require.Error(t, verifyErr, "Verify accepted a blob the decoder rejects")
+		}
+
 		if guarded, ok := fuzzGuardedCopy(t, data); ok {
 			if blob, err := decodeTextFuzz(NewTextDecoderBorrowed, guarded); err == nil {
 				exerciseTextFuzz(t, blob)
 			}
+			_ = Verify(guarded)
 		}
 
 		if set, err := DecodeBlobSet(data, data); err == nil {

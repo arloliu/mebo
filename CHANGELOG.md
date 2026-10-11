@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`blob.Verify(data)`** decodes a numeric or text blob and checks that every metric decodes completely:
+  each numeric timestamp, value and tag column to the metric's point count,
+  and each text metric's records to its count, ending exactly where its data ends.
+  Opening a blob validates structure only,
+  so a truncated Gorilla, Chimp or text column used to open and then end iteration early without an error.
+  Verify costs a full decode and is meant for untrusted input or diagnosis; the open path is unchanged.
+  Every compat fixture encoded by v1.4.3 through v1.11.0 passes it.
+
 ### Fixed
 
 - **Decoders reject three header inconsistencies they used to accept**, none of which any mebo encoder writes:
