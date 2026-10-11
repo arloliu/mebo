@@ -23,12 +23,23 @@ Mebo is a **data format library** that processes time-series data. Security cons
 
 #### Memory Safety
 - **Go's Memory Safety**: Protected by Go's memory management and bounds checking
-- **Buffer Overflows**: Not possible due to Go's runtime safety guarantees
+- **Buffer Overflows**: Go code is bounds-checked by the runtime.
+  The zero-copy `unsafe` conversions and the amd64 assembly decode kernels are not,
+  so they check input lengths explicitly before reading.
+  The decoders are fuzzed (`make fuzz`, also run in CI);
+  on Linux, small uncompressed inputs are also decoded from memory followed by a guard page,
+  so a read past the end of the input fails the run
 - **Integer Overflows**: We use safe arithmetic and check for overflow conditions in critical paths
 
 #### Input Validation
 - **Malformed Data**: Decoders validate input data structure before processing
-- **Resource Exhaustion**: Decoders check for reasonable sizes to prevent memory exhaustion
+- **Resource Exhaustion**: Each compressed payload decompresses to at most 128 MiB, whatever the codec.
+  This is a ceiling, not a ratio limit:
+  a numeric blob holds up to three compressed payloads (timestamps, values, tags),
+  so a small crafted blob can decompress to about 384 MiB.
+  Structures decoded when a blob is opened come on top of that:
+  shared timestamps are cached at 8 bytes per point,
+  so a small compressed column of 128 Mi zero deltas can claim about 1 GiB
 - **Hash Collisions**: We use xxHash64 (64-bit) which has astronomically low collision probability
 
 ### Usage Scenarios
@@ -41,7 +52,8 @@ Mebo is a **data format library** that processes time-series data. Security cons
 
 #### Use with Caution ⚠️
 - **Untrusted Data Sources**: If processing data from untrusted sources:
-  - Implement size limits on input data
+  - Implement size limits on input data,
+    and budget memory for the decompression ceiling and decode caches above rather than the input size alone
   - Use timeouts for decoding operations
   - Validate data origin and integrity (use checksums/signatures)
   - Consider sandboxing decoders

@@ -7,11 +7,12 @@
 //
 // # Core Features
 //
-//   - Hash-based metric identification (64-bit xxHash64) for O(1) lookups
+//   - Hash-based metric identification (64-bit xxHash64): O(1) map lookups on the
+//     default V1 layout, O(log n) binary search on the V2 layout
 //   - Columnar storage with separate timestamp and value encoding
 //   - Flexible per-blob encoding strategies:
 //     timestamps use Raw, Delta, or DeltaPacked;
-//     values use Raw, Gorilla, Chimp, or ALP
+//     values use Raw, Gorilla, Chimp, ALP, or ALP-RLE
 //   - Optional compression (None, Zstd, S2, LZ4)
 //   - Tag support for additional metadata
 //   - Memory-efficient fixed-size structures
@@ -562,7 +563,7 @@ func NewBlobSet(numericBlobs []blob.NumericBlob, textBlobs []blob.TextBlob) blob
 // MetricID converts a metric name string to its 64-bit hash identifier.
 //
 // Mebo uses xxHash64 to convert metric names to fixed-size IDs for:
-//   - Fast O(1) hash map lookups
+//   - Fast lookups (a hash map on the V1 layout, binary search on the V2 layout)
 //   - Fixed-size index entries (16 bytes each, or 32 bytes for V2 extended entries)
 //   - Consistent metric identification across blobs
 //
@@ -577,7 +578,8 @@ func NewBlobSet(numericBlobs []blob.NumericBlob, textBlobs []blob.TextBlob) blob
 //   - With MetricID and StartMetricID, the encoder cannot tell names apart,
 //     so a duplicate ID returns ErrHashCollision
 //   - When names are stored, the decoder verifies them against their hashes
-//   - Collision probability: ~1 in 2^64 (negligible for practical use)
+//   - Collision probability: about 2^-64 per pair of names, or n²/2^65 for
+//     n names (about 6e-16 for 150 names; negligible for practical use)
 //
 // When to use:
 //
