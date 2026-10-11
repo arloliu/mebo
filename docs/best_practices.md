@@ -124,8 +124,8 @@ such as held gauges, status values, or slow sensors scraped faster than they cha
   Both ratios come from a CPU with AVX-512DQ;
   with the scalar (e, f) search both codecs encode several times slower,
   and the overhead measured before the AVX-512 search was about 1% and 1.5×.
-- **Read cost:** on that half-repeated gauge, `DecodeAll` is 3× faster than Chimp, `ValueAt` is 1.28× ALP,
-  and `ForEachValues` is about 3.2 ns/point against Chimp's 4.8.
+- **Read cost:** on that half-repeated gauge, `DecodeAll` is 3.8× faster than Chimp, `ValueAt` is 1.28× ALP,
+  and `ForEachValues` is about 3.1 ns/point against Chimp's 4.8.
 - **Compatibility:** readers older than this encoding reject the blob; see [ALP-RLE: upgrade consumers before producers](#alp-rle-upgrade-consumers-before-producers).
 
 The measurements and their method are in the [Performance Guide](performance.md#alp-rle-speed-layout-averaged).

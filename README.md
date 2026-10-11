@@ -137,7 +137,7 @@ in shares calibrated so that Chimp costs about 3.8 bytes/point.
 | Delta + ALP-RLE | 3.797 | 76.4% | Smallest without shared timestamps |
 | Shared DeltaPacked + Chimp | 3.846 | 76.1% | Smallest with an XOR codec |
 | Delta + Gorilla | 5.096 | 68.4% | Default (`NewDefaultNumericEncoder`) |
-| Raw + Raw | 16.109 | 0% | Baseline; encode 119,621 ns/op, equivalent to the fastest |
+| Raw + Raw | 16.109 | 0% | Baseline; encode 119,567 ns/op, equivalent to the fastest |
 
 How much ALP-RLE saves depends on the data:
 12.8–47.5% against Chimp across four calibrated mixes, up to 80% on a single decimal gauge,
@@ -162,7 +162,7 @@ Delta and DeltaPacked differ little in size: on the benchmark mix DeltaPacked co
 DeltaPacked's Group Varint layout is meant for faster decode.
 In the layout-averaged report run its iteration is equivalent to Delta's with every compressed value codec
 (the gap stays under the report's 20% threshold),
-and 1.52× faster with Raw values (1.45× with shared timestamps).
+and 1.50× faster with Raw values (1.45× with shared timestamps).
 
 ### Value Encodings
 
@@ -174,7 +174,7 @@ and 1.52× faster with Raw values (1.45× with shared timestamps).
 | ALP | Variable | O(1) + O(log k)* | Decimal-quantized data (2–4 dp) and counters: 2.4–3.6× smaller than Chimp on 2- and 4-dp gauges. Larger than Chimp on full-precision values that repeat, and costs more to encode; see [Performance Guide](docs/performance.md#codec-selection-by-data-shape) |
 | ALP-RLE | Variable | O(index/64) + O(log k)† | Columns where many points repeat the previous value: each uncompressed column is never larger than ALP; a 2-dp gauge where half the points repeat is 1.12 B/pt vs 3.38 for Chimp (100 × 150 blob). Older readers reject it; see [ALP or ALP-RLE?](docs/best_practices.md#alp-or-alp-rle) |
 
-\* k = exceptions in that column, not its length — measured 6.4–23.9× faster than Gorilla/Chimp's
+\* k = exceptions in that column, not its length — measured 9.0–36.6× faster than Gorilla/Chimp's
 `ValueAt` (Shared DeltaPacked) on the benchmark profiles' 150-point columns, least on mostly-constant data; see [Performance Guide § Random Access Performance](docs/performance.md#random-access-performance).
 
 † A column with runs first ranks its run-start bitmap, one 64-bit word at a time (at most 3 words at 150 points);
@@ -232,13 +232,14 @@ encoder, _ := mebo.NewNumericEncoder(time.Now(),
 )
 ```
 
-**Result**: 9.540 bytes/point (40.8% savings), 54,272 ns/op sequential iteration on the benchmark mix,
+**Result**: 9.540 bytes/point (40.8% savings), 54,449 ns/op sequential iteration on the benchmark mix,
 the lowest iteration time of all 30 combinations, equivalent to Shared DeltaPacked + Raw:
 the DeltaPacked timestamps decode a whole column at a time.
-It iterates 1.51× faster than Delta + ALP (81,928 ns/op) at 2.4× its size (4.026 bytes/point),
+It iterates 1.44× faster than Delta + ALP (78,629 ns/op) at 2.4× its size (4.026 bytes/point),
 so pick it only when iteration speed matters more than bytes.
 If encode speed is the priority,
-plain Raw + Raw encodes about as fast as any combination (119,621 ns/op) at the cost of no compression;
+plain Raw + Raw encodes in 119,567 ns/op, equivalent to the fastest combination under the report's comparison rule,
+at the cost of no compression;
 see [Performance Guide § Iteration Performance](docs/performance.md#iteration-performance).
 
 ### Query-Optimized (Raw + Raw)
