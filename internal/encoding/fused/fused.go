@@ -1,36 +1,12 @@
 package fused
 
 import (
-	"iter"
-
 	"github.com/arloliu/mebo/internal/encoding/metadata"
 	tsdelta "github.com/arloliu/mebo/internal/encoding/timestamp/delta"
 	"github.com/arloliu/mebo/internal/encoding/timestamp/deltapacked"
 	"github.com/arloliu/mebo/internal/encoding/value/chimp"
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
 )
-
-// FusedDeltaGorillaAll returns an iterator that decodes delta-of-delta timestamps and
-// Gorilla-compressed values in a single fused loop, avoiding iter.Pull overhead.
-//
-// This is the fused equivalent of synchronizing TimestampDeltaDecoder.All() and
-// NumericGorillaDecoder.All() via iter.Pull, but with all state inlined into
-// a single loop iteration. Eliminates coroutine creation and context-switch overhead.
-//
-// Parameters:
-//   - tsData: Delta-of-delta encoded timestamp bytes
-//   - valData: Gorilla XOR compressed value bytes
-//   - count: Number of data points to decode
-//
-// Returns:
-//   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
-func FusedDeltaGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return func(yield func(int64, float64) bool) {
-		FusedDeltaGorillaEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
-			return yield(ts, val)
-		})
-	}
-}
 
 // FusedDeltaGorillaTagAll returns an iterator that decodes delta-of-delta timestamps,
 // Gorilla-compressed values, and varint-prefixed tags in a single fused loop.
@@ -198,28 +174,6 @@ func FusedGorillaTagAll(valData, tagData []byte, count int, yield func(int, floa
 // Chimp and Gorilla cursors return decoded values directly so fused callbacks
 // do not carry wrapper state or count bookkeeping in their hot loops.
 
-// FusedDeltaChimpAll returns an iterator that decodes delta-of-delta timestamps and
-// Chimp-compressed values in a single fused loop, avoiding iter.Pull overhead.
-//
-// This is the fused equivalent of synchronizing TimestampDeltaDecoder.All() and
-// NumericChimpDecoder.All() via iter.Pull, but with all state inlined into
-// a single loop iteration.
-//
-// Parameters:
-//   - tsData: Delta-of-delta encoded timestamp bytes
-//   - valData: Chimp XOR compressed value bytes
-//   - count: Number of data points to decode
-//
-// Returns:
-//   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
-func FusedDeltaChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return func(yield func(int64, float64) bool) {
-		FusedDeltaChimpEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
-			return yield(ts, val)
-		})
-	}
-}
-
 // FusedDeltaChimpTagAll decodes delta-of-delta timestamps, Chimp-compressed values,
 // and varint-prefixed tags in a single fused loop.
 //
@@ -329,25 +283,6 @@ func FusedChimpTagAll(valData, tagData []byte, count int, yield func(int, float6
 	}
 }
 
-// FusedDeltaPackedGorillaAll returns an iterator over Group Varint packed
-// delta-of-delta timestamps and Gorilla-compressed values, decoded by
-// FusedDeltaPackedGorillaEach without iter.Pull.
-//
-// Parameters:
-//   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
-//   - valData: Gorilla XOR compressed value bytes
-//   - count: Number of data points to decode
-//
-// Returns:
-//   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
-func FusedDeltaPackedGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return func(yield func(int64, float64) bool) {
-		FusedDeltaPackedGorillaEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
-			return yield(ts, val)
-		})
-	}
-}
-
 // FusedDeltaPackedGorillaTagAll decodes Group Varint packed delta-of-delta timestamps,
 // Gorilla-compressed values, and varint-prefixed tags in a single fused loop.
 //
@@ -396,25 +331,6 @@ func FusedDeltaPackedGorillaTagAll(tsData, valData, tagData []byte, count int, t
 		if !tagOk || !tagYield(i, dps.Ts(), val, tag) {
 			return
 		}
-	}
-}
-
-// FusedDeltaPackedChimpAll returns an iterator over Group Varint packed
-// delta-of-delta timestamps and Chimp-compressed values, decoded by
-// FusedDeltaPackedChimpEach.
-//
-// Parameters:
-//   - tsData: Group Varint packed delta-of-delta encoded timestamp bytes
-//   - valData: Chimp XOR compressed value bytes
-//   - count: Number of data points to decode
-//
-// Returns:
-//   - iter.Seq2[int64, float64]: Iterator yielding (timestamp, value) pairs
-func FusedDeltaPackedChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return func(yield func(int64, float64) bool) {
-		FusedDeltaPackedChimpEach(tsData, valData, count, func(_ int, ts int64, val float64) bool {
-			return yield(ts, val)
-		})
 	}
 }
 

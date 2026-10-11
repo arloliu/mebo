@@ -1,8 +1,6 @@
 package encoding
 
 import (
-	"iter"
-
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/internal/encoding/fused"
 	"github.com/arloliu/mebo/internal/encoding/metadata"
@@ -287,11 +285,6 @@ func FusedDeltaPackedEach(tsData []byte, count, base int, yield func(int, int64)
 	return fused.FusedDeltaPackedEach(tsData, count, base, yield)
 }
 
-// FusedDeltaGorillaAll returns fused Delta and Gorilla values.
-func FusedDeltaGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return fused.FusedDeltaGorillaAll(tsData, valData, count)
-}
-
 // FusedDeltaGorillaTagAll decodes Delta, Gorilla, and tags together.
 func FusedDeltaGorillaTagAll(tsData, valData, tagData []byte, count int, yield func(int, int64, float64, string) bool) {
 	fused.FusedDeltaGorillaTagAll(tsData, valData, tagData, count, yield)
@@ -307,11 +300,6 @@ func FusedGorillaTagAll(valData, tagData []byte, count int, yield func(int, floa
 	fused.FusedGorillaTagAll(valData, tagData, count, yield)
 }
 
-// FusedDeltaChimpAll returns fused Delta and Chimp values.
-func FusedDeltaChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return fused.FusedDeltaChimpAll(tsData, valData, count)
-}
-
 // FusedDeltaChimpTagAll decodes Delta, Chimp, and tags together.
 func FusedDeltaChimpTagAll(tsData, valData, tagData []byte, count int, yield func(int, int64, float64, string) bool) {
 	fused.FusedDeltaChimpTagAll(tsData, valData, tagData, count, yield)
@@ -322,19 +310,9 @@ func FusedChimpTagAll(valData, tagData []byte, count int, yield func(int, float6
 	fused.FusedChimpTagAll(valData, tagData, count, yield)
 }
 
-// FusedDeltaPackedGorillaAll returns fused packed Delta and Gorilla values.
-func FusedDeltaPackedGorillaAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return fused.FusedDeltaPackedGorillaAll(tsData, valData, count)
-}
-
 // FusedDeltaPackedGorillaTagAll decodes packed Delta, Gorilla, and tags together.
 func FusedDeltaPackedGorillaTagAll(tsData, valData, tagData []byte, count int, yield func(int, int64, float64, string) bool) {
 	fused.FusedDeltaPackedGorillaTagAll(tsData, valData, tagData, count, yield)
-}
-
-// FusedDeltaPackedChimpAll returns fused packed Delta and Chimp values.
-func FusedDeltaPackedChimpAll(tsData, valData []byte, count int) iter.Seq2[int64, float64] {
-	return fused.FusedDeltaPackedChimpAll(tsData, valData, count)
 }
 
 // FusedDeltaPackedChimpTagAll decodes packed Delta, Chimp, and tags together.

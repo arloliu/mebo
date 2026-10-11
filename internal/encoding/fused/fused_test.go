@@ -2,6 +2,7 @@ package fused
 
 import (
 	"fmt"
+	"iter"
 	"math"
 	"math/rand"
 	"testing"
@@ -17,7 +18,23 @@ import (
 	"github.com/arloliu/mebo/internal/pool"
 )
 
-func TestFusedDeltaGorillaAll(t *testing.T) {
+// deltaGorillaEachSeq ranges over FusedDeltaGorillaEach, checking that the
+// indexes it yields run 0, 1, 2, ... and that a break stops the decode.
+func deltaGorillaEachSeq(t *testing.T, tsData, valData []byte, count int) iter.Seq2[int64, float64] {
+	t.Helper()
+
+	return func(yield func(int64, float64) bool) {
+		next := 0
+		FusedDeltaGorillaEach(tsData, valData, count, func(i int, ts int64, val float64) bool {
+			require.Equal(t, next, i, "FusedDeltaGorillaEach index")
+			next++
+
+			return yield(ts, val)
+		})
+	}
+}
+
+func TestFusedDeltaGorillaEach(t *testing.T) {
 	// Prepare test data
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	timestamps := make([]int64, 10)
@@ -44,7 +61,7 @@ func TestFusedDeltaGorillaAll(t *testing.T) {
 	// Decode using fused decoder
 	gotTS := make([]int64, 0, 10)
 	gotVals := make([]float64, 0, 10)
-	for ts, val := range FusedDeltaGorillaAll(tsData, valData, 10) {
+	for ts, val := range deltaGorillaEachSeq(t, tsData, valData, 10) {
 		gotTS = append(gotTS, ts)
 		gotVals = append(gotVals, val)
 	}
@@ -53,7 +70,7 @@ func TestFusedDeltaGorillaAll(t *testing.T) {
 	require.Equal(t, values, gotVals)
 }
 
-func TestFusedDeltaGorillaAll_ConstantValues(t *testing.T) {
+func TestFusedDeltaGorillaEach_ConstantValues(t *testing.T) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	timestamps := make([]int64, 50)
 	values := make([]float64, 50)
@@ -76,7 +93,7 @@ func TestFusedDeltaGorillaAll_ConstantValues(t *testing.T) {
 
 	gotTS := make([]int64, 0, 50)
 	gotVals := make([]float64, 0, 50)
-	for ts, val := range FusedDeltaGorillaAll(tsData, valData, 50) {
+	for ts, val := range deltaGorillaEachSeq(t, tsData, valData, 50) {
 		gotTS = append(gotTS, ts)
 		gotVals = append(gotVals, val)
 	}
@@ -85,7 +102,7 @@ func TestFusedDeltaGorillaAll_ConstantValues(t *testing.T) {
 	require.Equal(t, values, gotVals)
 }
 
-func TestFusedDeltaGorillaAll_SinglePoint(t *testing.T) {
+func TestFusedDeltaGorillaEach_SinglePoint(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
 	val := 99.5
 
@@ -103,7 +120,7 @@ func TestFusedDeltaGorillaAll_SinglePoint(t *testing.T) {
 
 	gotTS := make([]int64, 0, 1)
 	gotVals := make([]float64, 0, 1)
-	for ts, val := range FusedDeltaGorillaAll(tsData, valData, 1) {
+	for ts, val := range deltaGorillaEachSeq(t, tsData, valData, 1) {
 		gotTS = append(gotTS, ts)
 		gotVals = append(gotVals, val)
 	}
@@ -112,7 +129,7 @@ func TestFusedDeltaGorillaAll_SinglePoint(t *testing.T) {
 	require.Equal(t, []float64{val}, gotVals)
 }
 
-func TestFusedDeltaGorillaAll_EarlyBreak(t *testing.T) {
+func TestFusedDeltaGorillaEach_EarlyBreak(t *testing.T) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	timestamps := make([]int64, 10)
 	values := make([]float64, 10)
@@ -135,7 +152,7 @@ func TestFusedDeltaGorillaAll_EarlyBreak(t *testing.T) {
 
 	// Break after 3 items
 	count := 0
-	for range FusedDeltaGorillaAll(tsData, valData, 10) {
+	for range deltaGorillaEachSeq(t, tsData, valData, 10) {
 		count++
 		if count == 3 {
 			break
@@ -145,14 +162,14 @@ func TestFusedDeltaGorillaAll_EarlyBreak(t *testing.T) {
 	require.Equal(t, 3, count)
 }
 
-func TestFusedDeltaGorillaAll_EmptyInputs(t *testing.T) {
+func TestFusedDeltaGorillaEach_EmptyInputs(t *testing.T) {
 	count := 0
-	for range FusedDeltaGorillaAll(nil, nil, 0) {
+	for range deltaGorillaEachSeq(t, nil, nil, 0) {
 		count++
 	}
 	require.Equal(t, 0, count)
 
-	for range FusedDeltaGorillaAll([]byte{}, []byte{}, 0) {
+	for range deltaGorillaEachSeq(t, []byte{}, []byte{}, 0) {
 		count++
 	}
 	require.Equal(t, 0, count)
@@ -206,7 +223,7 @@ func TestFusedDeltaGorillaTagAll(t *testing.T) {
 	require.Equal(t, tags, gotTags)
 }
 
-func TestFusedDeltaGorillaAll_VariedValues(t *testing.T) {
+func TestFusedDeltaGorillaEach_VariedValues(t *testing.T) {
 	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	timestamps := make([]int64, 20)
 	values := []float64{
@@ -233,7 +250,7 @@ func TestFusedDeltaGorillaAll_VariedValues(t *testing.T) {
 
 	gotTS := make([]int64, 0, 20)
 	gotVals := make([]float64, 0, 20)
-	for ts, val := range FusedDeltaGorillaAll(tsData, valData, 20) {
+	for ts, val := range deltaGorillaEachSeq(t, tsData, valData, 20) {
 		gotTS = append(gotTS, ts)
 		gotVals = append(gotVals, val)
 	}
@@ -695,23 +712,6 @@ func BenchmarkFusedDeltaChimpEach(b *testing.B) {
 
 			return true
 		})
-		if sink == 0 && vsink == 0 {
-			b.Fatal("no data")
-		}
-	}
-}
-
-func BenchmarkFusedDeltaGorillaAll(b *testing.B) {
-	tsData, valData := genFusedBenchStream(200, 42)
-
-	b.ReportAllocs()
-	for b.Loop() {
-		var sink int64
-		var vsink float64
-		for ts, val := range FusedDeltaGorillaAll(tsData, valData, 200) {
-			sink += ts
-			vsink += val
-		}
 		if sink == 0 && vsink == 0 {
 			b.Fatal("no data")
 		}

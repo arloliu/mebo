@@ -37,8 +37,9 @@ Two structural fixes, both verified against an in-package floor benchmark:
    non-escaping ("yield does not escape"), keep the adapter and loop state on
    the stack, and are also ~14% faster than the Seq2 forms at codec level
    (4.6 vs 5.4 ns/pt) because the yield target stays stable in a register.
-   The Seq2 `Fused*All` forms now delegate to the `Each` forms (one copy of
-   each decode loop); their only remaining consumers are tests.
+   The Seq2 `Fused*All` forms then delegated to the `Each` forms (one copy of
+   each decode loop); with tests as their only consumers,
+   they were removed in v1.13.0.
 
 The SIMD-backed `TimestampDeltaPackedDecoder.All` path for
 deltapacked-raw was deliberately left unchanged (scalar `Each` would lose the
