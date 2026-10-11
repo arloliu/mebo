@@ -23,6 +23,32 @@ func TestNumericFlag_ALPRLEValueEncodingValid(t *testing.T) {
 	require.Error(t, f.Validate())
 }
 
+// TestNumericFlag_EncodingAxes pins the header validation that blob's encoding
+// dispatch relies on: each axis admits only its own encodings,
+// so a decoded blob never carries a timestamp encoding as its value encoding or the reverse.
+func TestNumericFlag_EncodingAxes(t *testing.T) {
+	type axes struct{ timestamp, value bool }
+	valid := map[format.EncodingType]axes{
+		format.TypeRaw:         {timestamp: true, value: true},
+		format.TypeDelta:       {timestamp: true},
+		format.TypeDeltaPacked: {timestamp: true},
+		format.TypeGorilla:     {value: true},
+		format.TypeChimp:       {value: true},
+		format.TypeALP:         {value: true},
+		format.TypeALPRLE:      {value: true},
+	}
+
+	for enc := range format.EncodingType(16) {
+		f := NewNumericFlag()
+		f.SetTimestampEncoding(enc)
+		require.Equal(t, valid[enc].timestamp, f.IsValidEncoding(), "timestamp encoding %v", enc)
+
+		f = NewNumericFlag()
+		f.SetValueEncoding(enc)
+		require.Equal(t, valid[enc].value, f.IsValidEncoding(), "value encoding %v", enc)
+	}
+}
+
 func TestNumericFlag_IsValidMagicNumber(t *testing.T) {
 	tests := []struct {
 		name  string

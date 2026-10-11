@@ -654,6 +654,16 @@ func TestNumericEncoder_ConfigurationMethods(t *testing.T) {
 
 		err = encoder.setValueEncoding(format.TypeGorilla)
 		require.NoError(t, err)
+
+		for _, enc := range []format.EncodingType{format.TypeDelta, format.TypeDeltaPacked} {
+			err = encoder.setValueEncoding(enc)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "encoding is not supported for values")
+		}
+
+		err = encoder.setValueEncoding(format.EncodingType(99))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid value encoding")
 	})
 
 	t.Run("setTimestampCompression", func(t *testing.T) {

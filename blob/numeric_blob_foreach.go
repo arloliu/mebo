@@ -147,15 +147,19 @@ func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count 
 		return
 	}
 
-	switch b.tsEncType { //nolint:exhaustive // other timestamp encodings fall through to the generic loop
+	switch b.tsEncType {
 	case format.TypeRaw:
-		switch valEnc { //nolint:exhaustive // other value encodings fall through to the generic loop
+		switch valEnc {
 		case format.TypeRaw:
 			b.forEachPointsRaw(tsBytes, valBytes, tagBytes, count, yield)
 			return
 		case format.TypeGorilla, format.TypeChimp:
 			b.forEachPointsRawXOR(tsBytes, valBytes, tagBytes, count, yield)
 			return
+		case format.TypeALP, format.TypeALPRLE, format.TypeDelta, format.TypeDeltaPacked:
+			// ALP values are handled above, before the timestamp dispatch;
+			// Delta and DeltaPacked are timestamp-only: header validation rejects them as value encodings.
+			fallthrough
 		default:
 		}
 	case format.TypeDelta, format.TypeDeltaPacked:
@@ -167,6 +171,9 @@ func (b NumericBlob) forEachDataPoint(tsBytes, valBytes, tagBytes []byte, count 
 			b.forEachPointsDeltaXOR(tsBytes, valBytes, tagBytes, count, yield)
 			return
 		}
+	case format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		// Value-only encodings: header validation rejects them as timestamp encodings.
+		fallthrough
 	default:
 	}
 
@@ -740,7 +747,7 @@ func (b NumericBlob) forEachValuesFromEntry(entry section.NumericIndexEntry, bas
 // shares the same decode loops.
 // Indexes and the result follow forEachValuesFromEntry.
 func (b NumericBlob) forEachValuesBytes(valBytes []byte, count, base int, yield func(int, float64) bool) int {
-	switch b.ValueEncoding() { //nolint:exhaustive // an encoding without an Each loop yields nothing
+	switch b.ValueEncoding() {
 	case format.TypeGorilla:
 		return ienc.FusedGorillaEach(valBytes, count, base, yield)
 	case format.TypeChimp:
@@ -754,6 +761,9 @@ func (b NumericBlob) forEachValuesBytes(valBytes []byte, count, base int, yield 
 
 		// Past the pool's cap the column streams through the codec's own Each loop, which calls yield directly.
 		return ienc.NewNumericALPDecoder(b.Engine()).Each(valBytes, count, base, yield)
+	case format.TypeDelta, format.TypeDeltaPacked:
+		// Timestamp-only encodings: header validation rejects them as value encodings.
+		fallthrough
 	default:
 		// An encoding without a static Each loop yields nothing, as decodeValues does for it;
 		// see forEachTimestampsBytes for why its iterator is not drained here.
@@ -797,13 +807,16 @@ func (b NumericBlob) forEachTimestampsFromEntry(entry section.NumericIndexEntry,
 // shares the same decode loops.
 // Indexes and the result follow forEachValuesFromEntry.
 func (b NumericBlob) forEachTimestampsBytes(tsBytes []byte, count, base int, yield func(int, int64) bool) int {
-	switch b.tsEncType { //nolint:exhaustive // an encoding without an Each loop yields nothing
+	switch b.tsEncType {
 	case format.TypeDelta:
 		return ienc.FusedDeltaEach(tsBytes, count, base, yield)
 	case format.TypeDeltaPacked:
 		return ienc.FusedDeltaPackedEach(tsBytes, count, base, yield)
 	case format.TypeRaw:
 		return ienc.RawTimestampsEach(tsBytes, count, base, b.Engine(), b.sameByteOrder, yield)
+	case format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		// Value-only encodings: header validation rejects them as timestamp encodings.
+		fallthrough
 	default:
 		// An encoding without a static Each loop yields nothing, as decodeTimestamps does for it.
 		// Draining its iterator here with a range-over-func body would capture yield in a closure

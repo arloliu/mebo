@@ -62,10 +62,12 @@ func NewTextEncoderConfig(startTime time.Time) *TextEncoderConfig {
 
 // setTimestampEncoding sets the timestamp encoding type.
 func (c *TextEncoderConfig) setTimestampEncoding(enc format.EncodingType) error {
-	switch enc { //nolint:exhaustive // other encodings fall to default (returns an error)
+	switch enc {
 	case format.TypeRaw, format.TypeDelta:
 		c.header.Flag.SetTimestampEncoding(enc)
 		return nil
+	case format.TypeDeltaPacked, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		return fmt.Errorf("%v encoding is not supported for text timestamps", enc)
 	default:
 		return fmt.Errorf("invalid timestamp encoding: %v", enc)
 	}

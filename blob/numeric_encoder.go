@@ -179,14 +179,17 @@ func (e *NumericEncoder) MaxDataPoints() int {
 	}
 
 	tsEnc := e.header.Flag.TimestampEncoding()
-	tsBytes := 10  // Delta: a zigzag delta-of-delta varint takes up to 10 bytes
-	switch tsEnc { //nolint:exhaustive // other enum values use the default fallback
+	tsBytes := 10 // Delta: a zigzag delta-of-delta varint takes up to 10 bytes
+	switch tsEnc {
 	case format.TypeRaw:
 		tsBytes = 8
 	case format.TypeDeltaPacked:
 		tsBytes = 9 // Max 33 bytes per 4 values (control byte + 4 × 8) -> ~8.25
+	case format.TypeDelta, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		// Delta keeps the bound above;
+		// the encoder config rejects the value-only encodings as timestamp encodings.
+		fallthrough
 	default:
-		// tsBytes already initialized to 10
 	}
 
 	valEnc := e.header.Flag.ValueEncoding()
@@ -228,7 +231,7 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 	}
 
 	enc := encoder.header.Flag.ValueEncoding()
-	switch enc { //nolint:exhaustive // TypeDeltaPacked is timestamp-only encoding
+	switch enc {
 	case format.TypeRaw:
 		encoder.valEncoder = ienc.NewNumericRawEncoder(encoder.engine)
 	case format.TypeGorilla:
@@ -239,20 +242,22 @@ func NewNumericEncoder(blobTS time.Time, opts ...NumericEncoderOption) (*Numeric
 		encoder.valEncoder = ienc.NewNumericALPEncoder(encoder.engine)
 	case format.TypeALPRLE:
 		encoder.valEncoder = ienc.NewNumericALPRLEEncoder(encoder.engine)
-	case format.TypeDelta:
-		return nil, fmt.Errorf("%w: value encoding %s not supported yet", errs.ErrUnsupportedEncoding, enc.String())
+	case format.TypeDelta, format.TypeDeltaPacked:
+		return nil, fmt.Errorf("%w: %s encoding is not supported for values", errs.ErrUnsupportedEncoding, enc.String())
 	default:
 		return nil, fmt.Errorf("%w: invalid value encoding %s", errs.ErrUnsupportedEncoding, enc.String())
 	}
 
 	enc = encoder.header.Flag.TimestampEncoding()
-	switch enc { //nolint:exhaustive // value-only encodings fall to default (returns an error)
+	switch enc {
 	case format.TypeRaw:
 		encoder.tsEncoder = ienc.NewTimestampRawEncoder(encoder.engine)
 	case format.TypeDelta:
 		encoder.tsEncoder = ienc.NewTimestampDeltaEncoder()
 	case format.TypeDeltaPacked:
 		encoder.tsEncoder = ienc.NewTimestampDeltaPackedEncoder()
+	case format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		return nil, fmt.Errorf("%w: %s encoding is not supported for timestamps", errs.ErrUnsupportedEncoding, enc.String())
 	default:
 		return nil, fmt.Errorf("%w: invalid timestamp encoding %s", errs.ErrUnsupportedEncoding, enc.String())
 	}

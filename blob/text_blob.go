@@ -745,7 +745,7 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 		return 0, 0, errTimestampOffset(offset, len(data))
 	}
 
-	switch b.tsEncType { //nolint:exhaustive // other encodings fall to default (returns an error)
+	switch b.tsEncType {
 	case format.TypeDelta:
 		// Delta encoding: each varint is the delta from the previous timestamp.
 		// Callers seed lastTs with the blob start time, which is the base the
@@ -778,6 +778,9 @@ func (b TextBlob) decodeTimestampAt(data []byte, offset int, lastTs *int64) (int
 
 		return ts, 1 + length, nil // 1 byte for length prefix + 8 bytes for timestamp
 
+	case format.TypeDeltaPacked, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		// Header validation admits only Raw and Delta timestamps in a text blob.
+		fallthrough
 	default:
 		return 0, 0, fmt.Errorf("unsupported timestamp encoding: %v", b.tsEncType)
 	}
