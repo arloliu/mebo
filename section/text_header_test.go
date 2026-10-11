@@ -348,3 +348,20 @@ func TestIsNumericBlob_vs_IsTextBlob(t *testing.T) {
 		require.True(t, IsTextBlob(data))
 	})
 }
+
+func TestTextHeader_Parse_RejectsReservedBytes(t *testing.T) {
+	header, err := NewTextHeader(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), 1)
+	require.NoError(t, err)
+
+	data := header.Bytes()
+	var parsed TextHeader
+	require.NoError(t, parsed.Parse(data))
+
+	for i := 28; i < HeaderSize; i++ {
+		corrupt := append([]byte(nil), data...)
+		corrupt[i] = 0x01
+
+		var h TextHeader
+		require.ErrorIs(t, h.Parse(corrupt), errs.ErrInvalidReservedBytes, "byte %d", i)
+	}
+}

@@ -1,6 +1,7 @@
 package section
 
 import (
+	"fmt"
 	"time"
 	"unsafe"
 
@@ -86,6 +87,10 @@ func (h *TextHeader) Parse(data []byte) error {
 
 	if !h.IsValidFlags() {
 		return errs.ErrInvalidHeaderFlags
+	}
+
+	if h.Reserved != [4]byte{} {
+		return fmt.Errorf("%w: text header bytes 28-31", errs.ErrInvalidReservedBytes)
 	}
 
 	return nil

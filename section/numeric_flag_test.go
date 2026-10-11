@@ -3,6 +3,7 @@ package section
 import (
 	"testing"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/stretchr/testify/require"
 )
@@ -46,6 +47,34 @@ func TestNumericFlag_EncodingAxes(t *testing.T) {
 		f = NewNumericFlag()
 		f.SetValueEncoding(enc)
 		require.Equal(t, valid[enc].value, f.IsValidEncoding(), "value encoding %v", enc)
+	}
+}
+
+func TestNumericFlag_SharedTimestampsRequiresV2(t *testing.T) {
+	tests := []struct {
+		name    string
+		magic   uint16
+		wantErr bool
+	}{
+		{name: "V1", magic: MagicNumericV1Opt, wantErr: true},
+		{name: "V2", magic: MagicNumericV2Opt},
+		{name: "V2Ext", magic: MagicNumericV2ExtOpt},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := NewNumericFlag()
+			f.Options = (f.Options &^ MagicNumberMask) | tt.magic
+			require.NoError(t, f.Validate())
+
+			f.SetHasSharedTimestamps(true)
+			if tt.wantErr {
+				require.ErrorIs(t, f.Validate(), errs.ErrInvalidHeaderFlags)
+				return
+			}
+
+			require.NoError(t, f.Validate())
+		})
 	}
 }
 

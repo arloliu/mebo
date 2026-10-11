@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Decoders reject three header inconsistencies they used to accept**, none of which any mebo encoder writes:
+  - a numeric V1 blob with the shared-timestamps bit set.
+    The decoder used to parse a shared timestamp table, which only V2 layouts have (`errs.ErrInvalidHeaderFlags`);
+  - a header `IndexOffset` that disagrees with where the index starts, right after the metric names payload.
+    The decoders read the index from the derived position while `StripMetricNames` trusts `IndexOffset`,
+    so the two could read one blob differently (`errs.ErrMetricNamesExtentMismatch`);
+  - non-zero reserved bytes in a text header (bytes 28–31) or a text index entry (bytes 10–11),
+    which the format documents as zero (`errs.ErrInvalidReservedBytes`,
+    whose message no longer names the extended index entry it was first written for).
+
+  Blobs written by mebo itself are unaffected: the compat fixtures encoded by v1.4.3 through v1.11.0 all still decode.
+
 ### Deprecated
 
 - **`TimestampEncodingType`** on numeric and text blobs: use `TimestampEncoding`, which returns the same value

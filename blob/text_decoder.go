@@ -224,6 +224,10 @@ func (d *TextDecoder) parseHeader() error {
 // Returns the metric names slice and the byte offset where the index section starts.
 func (d *TextDecoder) parseMetricNames() ([]string, int, error) {
 	if !d.header.Flag.HasMetricNames() {
+		if err := d.checkIndexOffset(section.HeaderSize); err != nil {
+			return nil, 0, err
+		}
+
 		return nil, section.HeaderSize, nil
 	}
 
@@ -243,8 +247,24 @@ func (d *TextDecoder) parseMetricNames() ([]string, int, error) {
 	}
 
 	indexOffset := section.HeaderSize + bytesRead
+	if err := d.checkIndexOffset(indexOffset); err != nil {
+		return nil, 0, err
+	}
 
 	return metricNames, indexOffset, nil
+}
+
+// checkIndexOffset rejects a header whose IndexOffset disagrees with where the index starts,
+// right after the header and the metric names payload.
+// The decoder reads the index from the derived position, and StripMetricNames from IndexOffset,
+// so a blob where the two differ would read differently in each.
+func (d *TextDecoder) checkIndexOffset(indexOffset int) error {
+	if uint64(d.header.IndexOffset) != uint64(indexOffset) { //nolint:gosec // indexOffset is a non-negative byte position within the blob
+		return fmt.Errorf("%w: header IndexOffset %d, index starts at %d",
+			errs.ErrMetricNamesExtentMismatch, d.header.IndexOffset, indexOffset)
+	}
+
+	return nil
 }
 
 // parseIndexEntries parses the index section starting at the given offset.
