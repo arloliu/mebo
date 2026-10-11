@@ -10,7 +10,7 @@ COVERAGE_HTML   := $(COVERAGE_DIR)/coverage.html
 ENCODING_PKG    := ./internal/encoding/...
 # Fuzz targets (package:target) that take untrusted bytes; `make fuzz` runs each for FUZZ_TIME.
 FUZZ_TARGETS    := ./blob:FuzzNumericDecoder ./blob:FuzzTextDecoder ./blob:FuzzStripMetricNames \
-                   ./internal/encoding/fused:FuzzFusedDecoders
+                   ./internal/encoding/fused:FuzzFusedDecoders ./internal/encoding/value/alp:FuzzALPDecode
 FUZZ_TIME       ?= 30s
 
 # Source files
