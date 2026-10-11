@@ -664,7 +664,8 @@ func validateBlobSize(blobSize int) error {
 // Returns:
 //   - []byte: Complete encoded blob with header, index entries, and compressed payloads
 //   - error: ErrMetricNotEnded if a metric was started but not ended, ErrNoMetricsAdded if no metrics
-//     were added, or compression errors
+//     were added, ErrBlobSizeExceedsLimit if the blob would not fit uint32 offsets,
+//     or compression errors (ErrDecompressedSizeExceedsLimit for a payload over 128 MiB uncompressed)
 func (e *NumericEncoder) Finish() ([]byte, error) {
 	return e.finishAppend(nil)
 }
@@ -851,7 +852,9 @@ func (e *NumericEncoder) finishAppend(dst []byte) ([]byte, error) {
 	}
 
 	// Calculate exact blob size and validate it fits in uint32 header offsets.
-	// If blobSize <= MaxUint32, all sub-offsets (which are portions of blobSize) also fit in uint32.
+	// If blobSize <= MaxUint32, all header offsets (which are portions of blobSize) also fit in uint32.
+	// Index entries offset into the uncompressed payloads instead:
+	// those fit too, since Compress refuses input over 128 MiB.
 	indexEntriesSize := entrySize * len(e.indexEntries)
 	blobSize := section.HeaderSize + len(metricNamesPayload) + indexEntriesSize + sharedTableSize + len(tsPayload) + len(valPayload) + len(tagPayload)
 	if err := validateBlobSize(blobSize); err != nil {

@@ -348,7 +348,7 @@ func (d *TextDecoder) decompressData(dataOffset int) ([]byte, error) {
 
 	// Verify decompressed size matches header
 	// DataSize stores the uncompressed (decompressed) size
-	if uint32(len(decompressedData)) != d.header.DataSize { //nolint:gosec
+	if uint64(len(decompressedData)) != uint64(d.header.DataSize) {
 		return nil, fmt.Errorf("%w: expected %d, got %d",
 			errs.ErrDataSizeMismatch, d.header.DataSize, len(decompressedData))
 	}

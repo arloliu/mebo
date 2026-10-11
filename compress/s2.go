@@ -26,10 +26,13 @@ func NewS2Compressor() S2Compressor {
 //
 // Returns:
 //   - []byte: Compressed data (nil if input is empty)
-//   - error: Always nil (S2 compression doesn't return errors)
+//   - error: ErrDecompressedSizeExceedsLimit if data is over 128 MiB, the most Decompress restores
 func (c S2Compressor) Compress(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
+	}
+	if err := checkCompressInput(data); err != nil {
+		return nil, err
 	}
 
 	return s2.Encode(nil, data), nil

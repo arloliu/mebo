@@ -36,10 +36,14 @@ func NewLZ4Compressor() LZ4Compressor {
 //
 // Returns:
 //   - []byte: Compressed data (nil if input is empty)
-//   - error: Compression error if any
+//   - error: ErrDecompressedSizeExceedsLimit if data is over 128 MiB, the most Decompress restores,
+//     or a compression error
 func (c LZ4Compressor) Compress(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
+	}
+	if err := checkCompressInput(data); err != nil {
+		return nil, err
 	}
 	dstSize := lz4.CompressBlockBound(len(data))
 	dst := make([]byte, dstSize)
