@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+`blob.Verify`, which checks that every metric in a blob decodes completely,
+and decoders that reject three header inconsistencies no mebo encoder writes.
+Encoded bytes are unchanged.
+Every blob that v1.4.3 through v1.11.0 wrote in the compat fixtures still decodes and passes Verify,
+and a v1.10.0 ↔ rc4 compatibility run passes in both directions.
+Opening a blob gains a few constant-time header checks and one compare per text index entry;
+lookups and iteration are unchanged.
+
 ### Added
 
 - **`blob.Verify(data)`** decodes a numeric or text blob and checks that every metric decodes completely:
@@ -16,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a truncated Gorilla, Chimp or text column used to open and then end iteration early without an error.
   Verify costs a full decode and is meant for untrusted input or diagnosis; the open path is unchanged.
   Every compat fixture encoded by v1.4.3 through v1.11.0 passes it.
+
+### Changed
+
+- **Encoders report an encoding given for the wrong axis as unsupported**, not invalid:
+  `WithValueEncoding(format.TypeDelta)` now fails with "Delta encoding is not supported for values",
+  matching what `WithTimestampEncoding` already said for value encodings,
+  and a text encoder given a numeric-only timestamp encoding says so.
+  Unknown encoding values still report "invalid", and `NewNumericEncoder` still wraps `errs.ErrUnsupportedEncoding`.
+  Inside the library, every switch over an encoding type now lists all of them,
+  so the linter flags each dispatch point that a new encoding has to handle.
 
 ### Fixed
 
