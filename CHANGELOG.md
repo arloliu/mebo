@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`TimestampEncodingType`** on numeric and text blobs: use `TimestampEncoding`, which returns the same value
+  and pairs with `ValueEncoding`.
+  It keeps working throughout v1 and will be removed in v2.0.0.
+
 ## [1.13.0-rc3] - 2026-10-11
 
 Faster ALP decoding on CPUs with AVX-512 VBMI, decoder fuzzing in CI,
