@@ -1030,3 +1030,32 @@ func TestTextEncoder_FinishStateErrorIsRecoverable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, blob.Len(1))
 }
+
+func TestNewTextEncoder_TimestampEncodingValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		enc     format.EncodingType
+		wantErr string
+	}{
+		{name: "Raw", enc: format.TypeRaw},
+		{name: "Delta", enc: format.TypeDelta},
+		{name: "DeltaPacked", enc: format.TypeDeltaPacked, wantErr: "encoding is not supported for text timestamps"},
+		{name: "Gorilla", enc: format.TypeGorilla, wantErr: "encoding is not supported for text timestamps"},
+		{name: "Chimp", enc: format.TypeChimp, wantErr: "encoding is not supported for text timestamps"},
+		{name: "ALP", enc: format.TypeALP, wantErr: "encoding is not supported for text timestamps"},
+		{name: "ALPRLE", enc: format.TypeALPRLE, wantErr: "encoding is not supported for text timestamps"},
+		{name: "Unknown", enc: format.EncodingType(99), wantErr: "invalid timestamp encoding"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewTextEncoder(time.Unix(0, 0), WithTextTimestampEncoding(tt.enc))
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}

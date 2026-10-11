@@ -310,7 +310,7 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 	// Encode timestamp based on encoding type
 	e.buf.Reset()
 	tsEncoding := e.header.Flag.GetTimestampEncoding()
-	switch tsEncoding { //nolint:exhaustive // TypeDeltaPacked not supported for text blobs
+	switch tsEncoding {
 	case format.TypeRaw:
 		// Raw encoding: write int64 directly using endianness
 		e.buf.ExtendOrGrow(8)
@@ -337,8 +337,8 @@ func (e *TextEncoder) AddDataPoint(timestamp int64, value string, tag string) er
 		// Track timestamp for next delta calculation
 		e.lastTimestamp = timestamp
 
-	case format.TypeGorilla, format.TypeChimp:
-		return fmt.Errorf("timestamp encoding %v not supported", tsEncoding)
+	case format.TypeDeltaPacked, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		return fmt.Errorf("%v encoding is not supported for text timestamps", tsEncoding)
 
 	default:
 		return fmt.Errorf("invalid timestamp encoding: %v", tsEncoding)

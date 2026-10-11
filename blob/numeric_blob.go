@@ -642,7 +642,7 @@ func (b NumericBlob) timestampAtFromEntry(entry *section.NumericIndexEntry, inde
 		return 0, false
 	}
 
-	switch b.tsEncType { //nolint:exhaustive // value-only encodings fall to default (returns false)
+	switch b.tsEncType {
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -659,8 +659,11 @@ func (b NumericBlob) timestampAtFromEntry(entry *section.NumericIndexEntry, inde
 	case format.TypeDeltaPacked:
 		var decoder ienc.TimestampDeltaPackedDecoder
 		return decoder.At(tsBytes, index, count)
+	case format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		// Value-only encodings: header validation rejects them as timestamp encodings.
+		fallthrough
 	default:
-		// Other encodings don't support random access
+		// No encoding, as on a zero-value blob, or an unknown one.
 		return 0, false
 	}
 }
@@ -679,7 +682,7 @@ func (b NumericBlob) valueAtFromEntry(entry *section.NumericIndexEntry, index in
 		return 0, false
 	}
 
-	switch b.ValueEncoding() { //nolint:exhaustive // timestamp-only encodings fall to default (returns false)
+	switch b.ValueEncoding() {
 	case format.TypeRaw:
 		// Raw encoding: fixed 8 bytes per float64 (length checked at decode)
 		engine := b.Engine()
@@ -705,8 +708,11 @@ func (b NumericBlob) valueAtFromEntry(entry *section.NumericIndexEntry, index in
 		decoder := ienc.NewNumericALPDecoder(engine)
 
 		return decoder.At(valBytes, index, count)
+	case format.TypeDelta, format.TypeDeltaPacked:
+		// Timestamp-only encodings: header validation rejects them as value encodings.
+		fallthrough
 	default:
-		// Other encodings don't support random access
+		// No encoding, as on a zero-value blob, or an unknown one.
 		return 0, false
 	}
 }
@@ -780,13 +786,18 @@ func (b NumericBlob) allDataPoints(tsBytes, valBytes, tagBytes []byte, count int
 
 	// DeltaPacked paths: Group Varint timestamp encoding with various value encodings
 	if b.tsEncType == format.TypeDeltaPacked {
-		switch b.ValueEncoding() { //nolint:exhaustive // other value encodings fall through to the generic path below
+		switch b.ValueEncoding() {
 		case format.TypeGorilla:
 			return b.allDataPointsDeltaPackedGorilla(tsBytes, valBytes, tagBytes, count)
 		case format.TypeChimp:
 			return b.allDataPointsDeltaPackedChimp(tsBytes, valBytes, tagBytes, count)
 		case format.TypeRaw:
 			return b.allDataPointsDeltaPackedRaw(tsBytes, valBytes, tagBytes, count)
+		case format.TypeALP, format.TypeALPRLE, format.TypeDelta, format.TypeDeltaPacked:
+			// No DeltaPacked loop for ALP values: the generic path below handles them.
+			// Delta and DeltaPacked are timestamp-only: header validation rejects them as value encodings.
+			fallthrough
+		default:
 		}
 	}
 
@@ -1133,7 +1144,7 @@ func (b NumericBlob) allDataPointsGeneric(tsBytes, valBytes, tagBytes []byte, co
 
 // decodeTimestamps selects the optimal timestamp decoder and returns an iterator.
 func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64] {
-	switch b.tsEncType { //nolint:exhaustive // value-only encodings fall to default (empty iterator)
+	switch b.tsEncType {
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -1152,6 +1163,9 @@ func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64]
 		var decoder ienc.TimestampDeltaPackedDecoder
 
 		return decoder.All(tsBytes, count)
+	case format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		// Value-only encodings: header validation rejects them as timestamp encodings.
+		fallthrough
 	default:
 		return func(yield func(int64) bool) {}
 	}
@@ -1159,7 +1173,7 @@ func (b NumericBlob) decodeTimestamps(tsBytes []byte, count int) iter.Seq[int64]
 
 // decodeValues selects the optimal value decoder and returns an iterator.
 func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] {
-	switch b.ValueEncoding() { //nolint:exhaustive // timestamp-only encodings fall to default (empty iterator)
+	switch b.ValueEncoding() {
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -1181,6 +1195,9 @@ func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] 
 		decoder := ienc.NewNumericALPDecoder(engine)
 
 		return decoder.All(valBytes, count)
+	case format.TypeDelta, format.TypeDeltaPacked:
+		// Timestamp-only encodings: header validation rejects them as value encodings.
+		fallthrough
 	default:
 		return func(yield func(float64) bool) {}
 	}
@@ -1192,7 +1209,7 @@ func (b NumericBlob) decodeValues(valBytes []byte, count int) iter.Seq[float64] 
 // Returns:
 //   - int: The number of timestamps actually decoded. May be less than count if data is truncated.
 func (b NumericBlob) decodeTimestampsSlice(tsBytes []byte, count int, dst []int64) int {
-	switch b.tsEncType { //nolint:exhaustive // value-only encodings fall to default (returns 0)
+	switch b.tsEncType {
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -1212,6 +1229,9 @@ func (b NumericBlob) decodeTimestampsSlice(tsBytes []byte, count int, dst []int6
 		var decoder ienc.TimestampDeltaPackedDecoder
 
 		return decoder.DecodeAll(tsBytes, count, dst)
+	case format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
+		// Value-only encodings: header validation rejects them as timestamp encodings.
+		fallthrough
 	default:
 		return 0
 	}
@@ -1223,7 +1243,7 @@ func (b NumericBlob) decodeTimestampsSlice(tsBytes []byte, count int, dst []int6
 // Returns:
 //   - int: The number of values actually decoded. May be less than count if data is truncated.
 func (b NumericBlob) decodeValuesSlice(valBytes []byte, count int, dst []float64) int {
-	switch b.ValueEncoding() { //nolint:exhaustive // timestamp-only encodings fall to default (returns 0)
+	switch b.ValueEncoding() {
 	case format.TypeRaw:
 		engine := b.Engine()
 		if b.sameByteOrder {
@@ -1248,6 +1268,9 @@ func (b NumericBlob) decodeValuesSlice(valBytes []byte, count int, dst []float64
 		decoder := ienc.NewNumericALPDecoder(engine)
 
 		return decoder.DecodeAll(valBytes, count, dst)
+	case format.TypeDelta, format.TypeDeltaPacked:
+		// Timestamp-only encodings: header validation rejects them as value encodings.
+		fallthrough
 	default:
 		return 0
 	}

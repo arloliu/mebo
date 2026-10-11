@@ -117,10 +117,12 @@ func (c *NumericEncoderConfig) setTimestampEncoding(enc format.EncodingType) err
 
 // setValueEncoding sets the value encoding type.
 func (c *NumericEncoderConfig) setValueEncoding(enc format.EncodingType) error {
-	switch enc { //nolint:exhaustive // timestamp-only encodings fall to default (returns an error)
+	switch enc {
 	case format.TypeRaw, format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE:
 		c.header.Flag.SetValueEncoding(enc)
 		return nil
+	case format.TypeDelta, format.TypeDeltaPacked:
+		return fmt.Errorf("%v encoding is not supported for values", enc)
 	default:
 		return fmt.Errorf("invalid value encoding: %v", enc)
 	}
