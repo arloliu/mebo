@@ -426,6 +426,10 @@ func (e *TextEncoder) EndMetric() error {
 
 // Finish completes the encoding and returns the final blob as a byte slice.
 // After calling Finish, the encoder cannot be reused.
+//
+// It returns ErrMetricNotEnded or ErrNoMetricsAdded for an incomplete encoder,
+// ErrBlobSizeExceedsLimit if the blob would not fit uint32 offsets,
+// and compression errors (ErrDecompressedSizeExceedsLimit for data over 128 MiB uncompressed).
 func (e *TextEncoder) Finish() ([]byte, error) {
 	return e.finishAppend(nil)
 }
@@ -533,6 +537,9 @@ func (e *TextEncoder) finishAppend(dst []byte) ([]byte, error) {
 	headerSize := section.HeaderSize
 	indexEntriesSize := len(e.indexEntries) * section.TextIndexEntrySize
 	blobSize := headerSize + len(namesPayload) + indexEntriesSize + len(compressedData)
+	if err := validateBlobSize(blobSize); err != nil {
+		return dst, err
+	}
 
 	// Extend dst by exactly blobSize bytes (allocating only when capacity is
 	// insufficient) and assemble the blob in the appended region.

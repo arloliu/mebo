@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/arloliu/mebo/errs"
 	"github.com/arloliu/mebo/format"
 	"github.com/stretchr/testify/require"
 )
@@ -871,4 +872,26 @@ func TestLZ4Decompress_CorruptInputAllocatesBounded(t *testing.T) {
 	out, err := codec.Decompress(compressed)
 	require.NoError(t, err)
 	require.Equal(t, src, out)
+}
+
+func TestAllCodecs_CompressRefusesInputDecompressCannotRestore(t *testing.T) {
+	oversized := make([]byte, maxDecompressSize+1)
+
+	for name, codec := range map[string]Codec{
+		"zstd": NewZstdCompressor(),
+		"s2":   NewS2Compressor(),
+		"lz4":  NewLZ4Compressor(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			compressed, err := codec.Compress(oversized)
+			require.ErrorIs(t, err, errs.ErrDecompressedSizeExceedsLimit)
+			require.Nil(t, compressed)
+		})
+	}
+
+	t.Run("none", func(t *testing.T) {
+		out, err := NewNoOpCompressor().Compress(oversized)
+		require.NoError(t, err, "uncompressed payloads are bounded by the blob size instead")
+		require.Len(t, out, len(oversized))
+	})
 }

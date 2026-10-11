@@ -9,7 +9,18 @@ import (
 
 // maxDecompressSize is the upper bound on decompressed payload size across all codecs.
 // Matches the 128 MB limit used by the LZ4 codec.
+// Compress refuses larger input, so no codec produces a payload it cannot restore.
 const maxDecompressSize = 128 * 1024 * 1024
+
+// checkCompressInput rejects input larger than Decompress would restore.
+func checkCompressInput(data []byte) error {
+	if len(data) > maxDecompressSize {
+		return fmt.Errorf("%w: compressing %d bytes, but decompression restores at most %d",
+			errs.ErrDecompressedSizeExceedsLimit, len(data), maxDecompressSize)
+	}
+
+	return nil
+}
 
 // Compressor provides high-performance compression and decompression for mebo time-series data.
 //

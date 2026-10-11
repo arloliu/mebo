@@ -45,9 +45,13 @@ var zstdEncoderPool = sync.Pool{
 
 // Compress compresses the input data using Zstandard compression.
 // Uses a pooled encoder for better performance (eliminates allocation overhead).
+// It returns ErrDecompressedSizeExceedsLimit for input over 128 MiB, the most Decompress restores.
 func (c ZstdCompressor) Compress(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
+	}
+	if err := checkCompressInput(data); err != nil {
+		return nil, err
 	}
 
 	// Get encoder from pool (reuses "warmed up" encoder)
