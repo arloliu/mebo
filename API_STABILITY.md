@@ -307,12 +307,22 @@ These additions are purely additive; no existing signature changed.
   it is safe for concurrent reads, and `Materialize` is a write the caller serializes.
 - **`blob.AccessClass`** with **`AccessDirect`**, **`AccessSequential`** and **`AccessUnsupported`**, and its `String` method:
   how `TimestampAt` and `ValueAt` serve a random access on a handle.
+- **`blob.Verify(data []byte) error`**: decodes a numeric or text blob and checks that every metric decodes completely,
+  returning an error that wraps `errs.ErrInvalidNumOfDataPoints` for the first metric that does not.
 
 Behaviour changes:
 
 - **`ForEach` and `ForEachByName`** on `NumericBlob` and `NumericBlobSet` no longer move the caller's callback to the heap:
   a callback literal that captures locals costs no allocation per call.
   ALP and ALP-RLE values still decode both columns into two new slices, and a tagged blob still copies each tag string.
+- **Decoders reject three header states that no mebo encoder writes**:
+  the shared-timestamps bit on a V1 numeric blob (`errs.ErrInvalidHeaderFlags`),
+  a header `IndexOffset` other than where the index starts after the metric names payload
+  (`errs.ErrMetricNamesExtentMismatch`),
+  and non-zero reserved bytes in a text header or text index entry (`errs.ErrInvalidReservedBytes`).
+  The message of `errs.ErrInvalidReservedBytes` no longer mentions extended index entries; match it with `errors.Is`.
+- **Encoder errors for an encoding given for the wrong axis** say it is not supported for that axis instead of invalid;
+  the sentinels they wrap are unchanged.
 
 Deprecations:
 
