@@ -98,6 +98,12 @@ const (
 // A whole process turns the kernels off with GODEBUG=cpu.avx512dq=off.
 var alpEncAVX512 = arch.X86HasAVX512DQ()
 
+// alpDecAVX512 enables the AVX-512 ALP-main decode kernel (alp_decsimd_amd64.s) where the CPU supports it:
+// it needs DQ for the int64-to-float64 conversion, and BW plus VBMI for the masked byte load and VPERMB.
+// Tests clear it to force the scalar paths on the same machine; they must not run in parallel while they do.
+// A whole process turns it off with GODEBUG=cpu.avx512dq=off, which turns the encode kernels off too.
+var alpDecAVX512 = arch.X86HasAVX512DQ() && arch.X86HasAVX512VBMI()
+
 var alpPow10 = [...]float64{
 	1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9,
 	1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
@@ -1329,28 +1335,35 @@ func (d NumericALPDecoder) decodeMainInto(data []byte, count int, dst []float64)
 		n = len(dst)
 	}
 
-	// Fused-kernel fast path (generated: numeric_alp_kernels_gen.go). A width-w
-	// kernel decodes whole 8-value groups (byte-aligned: 8w bits == w bytes) with
-	// constant shifts and no interior bounds checks. Each group loads the ceil(w/8)
-	// covering words, so its last group over-reads up to slack = 8*ceil(w/8)-w
-	// bytes past the group; dispatch only as many groups as stay within codes and
-	// let the scalar loop below finish the remainder + the <8-value tail. Skipped
-	// for n<8 (no full group) and width 0 (no bits — scalar handles it).
+	// Fused-kernel fast path.
+	// The AVX-512 kernel (alp_decsimd_amd64.s) decodes as many whole 8-value groups as it can;
+	// it declines without CPU support or for a width it cannot handle,
+	// and stops short of groups whose loads would reach past the page holding the end of codes.
+	// The generated kernels (numeric_alp_kernels_gen.go) then decode the groups it left.
+	// Groups are byte-aligned (8w bits == w bytes), so they resume at byte start/8*w.
+	// A width-w generated kernel decodes whole groups with constant shifts and no interior bounds checks.
+	// Each group loads the ceil(w/8) covering words,
+	// so its last group over-reads up to slack = 8*ceil(w/8)-w bytes past the group;
+	// dispatch only as many groups as stay within codes,
+	// and let the scalar loop below finish the remainder + the <8-value tail.
+	// Skipped for n<8 (no full group) and width 0 (no bits — scalar handles it).
 	start := 0
 	if width >= 1 && width <= 64 && n >= 8 {
-		if kern := alpFusedUnpack[width]; kern != nil {
+		start = alpFusedDecodeAVX512(codes, n, width, mn, alpPow10[ff], alpInvPow10[ee], dst)
+		if kern := alpFusedUnpack[width]; start < n&^7 && kern != nil {
+			rest := codes[start/8*width:] //nolint:gosec // the kernel decoded start/8 groups of width bytes from codes
 			slack := 8*((width+7)/8) - width
-			maxG := n >> 3
-			if clen-slack >= 0 {
-				if g := (clen - slack) / width; g < maxG {
+			maxG := (n - start) >> 3
+			if len(rest)-slack >= 0 {
+				if g := (len(rest) - slack) / width; g < maxG {
 					maxG = g
 				}
 			} else {
 				maxG = 0
 			}
 			if maxG > 0 {
-				start = maxG << 3
-				kern(codes, start, mn, alpPow10[ff], alpInvPow10[ee], dst)
+				kern(rest, maxG<<3, mn, alpPow10[ff], alpInvPow10[ee], dst[start:])
+				start += maxG << 3
 			}
 		}
 	}

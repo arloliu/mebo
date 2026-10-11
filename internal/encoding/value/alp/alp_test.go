@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/internal/arch"
@@ -1112,16 +1113,17 @@ func TestALPCrossVer_SizeParity(t *testing.T) {
 // the scalar decode of decodeMainInto bit-for-bit (math.Float64bits equality)
 // for the whole-group prefix it decodes; the caller finishes the remainder and
 // the <8-value tail in Go. This test calls the kernel function DIRECTLY under
-// the arch gate (so it exercises the real asm on AVX-512DQ hardware whether or
-// not the dispatch is wired) and reconstructs the exact caller contract: kernel
-// prefix + scalar tail, compared to a pure scalar reference over all N values.
+// the arch gate (so it exercises the real asm on AVX-512 VBMI hardware) and
+// reconstructs the exact caller contract: kernel prefix + scalar tail,
+// compared to a pure scalar reference over all N values.
 //
-// Coverage: every width 1..64 (including the {59,61,62,63} lane-straddle widths
-// the two-gather funnel must handle) x counts spanning full groups and odd
-// tails (n%8 != 0) x adversarial FOR minimums (incl. MinInt64/MaxInt64 wrap)
-// x pf/ie scale combos x random codes (masked to width, so max-width all-ones
-// values are exercised). A tight-buffer variant witnesses the wrapper's gather
-// over-read bound is memory-safe (no fault, still bit-equal).
+// Coverage: every width 1..64 (the kernel declines 59 and 61..63, whose lanes
+// straddle a qword, and the tail path then decodes them) x counts spanning
+// full groups and odd tails (n%8 != 0) x adversarial FOR minimums (incl.
+// MinInt64/MaxInt64 wrap) x pf/ie scale combos x random codes (masked to
+// width, so max-width all-ones values are exercised). A tight-buffer variant
+// with no byte past the packed codes witnesses that the masked load never
+// reads past codes (no fault, still bit-equal).
 // ---------------------------------------------------------------------------
 
 // alpDecodeTailScalar decodes values [start,n) exactly as decodeMainInto's
@@ -1146,7 +1148,7 @@ func alpDecodeTailScalar(codes []byte, start, n, width int, mn int64, pf, ie flo
 }
 
 func TestALPFusedDecodeAVX512_Differential(t *testing.T) {
-	alpRequireAVX512(t, arch.X86HasAVX512DQ(), "AVX-512DQ")
+	alpRequireAVX512(t, alpDecAVX512, "the AVX-512 decode kernel")
 
 	rng := rand.New(rand.NewSource(20260716))
 	counts := []int{8, 9, 15, 16, 17, 24, 31, 32, 64, 255, 256, 1000, 1024}
@@ -1162,9 +1164,9 @@ func TestALPFusedDecodeAVX512_Differential(t *testing.T) {
 
 	for w := 1; w <= 64; w++ {
 		mask := maskW(w)
-		// Over-read slack the asm gather needs beyond the exact ceil(n*w/8)
-		// packed bytes: hi qword of the last lane plus its 8-byte load.
-		pad := ((7 * w) >> 3) + 16 + 8
+		// Noise past the exact ceil(n*w/8) packed bytes: at least one full
+		// 64-byte load window, so the kernel covers every whole group.
+		pad := 64 + 8
 		for _, n := range counts {
 			codes := make([]uint64, n)
 			for i := range codes {
@@ -1172,8 +1174,8 @@ func TestALPFusedDecodeAVX512_Differential(t *testing.T) {
 			}
 			packed := alpPackBits(nil, codes, w) // exactly ceil(n*w/8) bytes
 
-			// (a) padded buffer: over-read region is real, noise-filled memory,
-			// so the kernel covers the maximum number of groups.
+			// (a) padded buffer: the bytes past the codes are real, noise-filled
+			// memory, which the kernel must ignore.
 			padded := make([]byte, len(packed)+pad)
 			copy(padded, packed)
 			for i := len(packed); i < len(padded); i++ {
@@ -1217,10 +1219,12 @@ func TestALPFusedDecodeAVX512_Differential(t *testing.T) {
 }
 
 // TestALPFusedDecodeAVX512_Guards pins the wrapper's decline paths: sub-group
-// counts, out-of-range widths, and buffers too short for even one group's
-// gather must return 0 (caller decodes everything scalar) and never fault.
+// counts, out-of-range widths, widths whose lanes straddle a qword, and buffers
+// too short for one group must return 0 (caller decodes everything scalar) and
+// never fault. It also pins the group bounds: g whole groups in codes, or in
+// dst, decode exactly g groups.
 func TestALPFusedDecodeAVX512_Guards(t *testing.T) {
-	alpRequireAVX512(t, arch.X86HasAVX512DQ(), "AVX-512DQ")
+	alpRequireAVX512(t, alpDecAVX512, "the AVX-512 decode kernel")
 	dst := make([]float64, 64)
 	big := make([]byte, 4096)
 
@@ -1233,10 +1237,43 @@ func TestALPFusedDecodeAVX512_Guards(t *testing.T) {
 	if got := alpFusedDecodeAVX512(big, 64, 65, 0, 1, 1, dst); got != 0 {
 		t.Fatalf("width>64 should decline, got %d", got)
 	}
-	// Buffer too short for a single width-64 group's two-gather reach.
-	short := make([]byte, 8)
+	for _, w := range []int{59, 61, 62, 63} {
+		if got := alpFusedDecodeAVX512(big, 64, w, 0, 1, 1, dst); got != 0 {
+			t.Fatalf("width %d straddles a qword and should decline, got %d", w, got)
+		}
+	}
+	// Buffer too short for a single width-64 group.
+	short := make([]byte, 63)
 	if got := alpFusedDecodeAVX512(short, 8, 64, 0, 1, 1, dst); got != 0 {
 		t.Fatalf("short buffer should decline, got %d", got)
+	}
+	// Three whole width-10 groups and a partial one: exactly three groups.
+	// The buffer starts a page, so the page cap leaves its groups alone.
+	const page = 4096
+	pages := make([]byte, 2*page)
+	off := int(-uintptr(unsafe.Pointer(&pages[0])) & (page - 1))
+	if got := alpFusedDecodeAVX512(pages[off:off+39:off+39], 64, 10, 0, 1, 1, dst); got != 24 {
+		t.Fatalf("39-byte width-10 buffer should decode 24 values, got %d", got)
+	}
+	// A dst shorter than n: only the groups that fit in dst, and nothing past them.
+	const poison = 0x7FF8DEADBEEFCAFE
+	canary := make([]float64, 24)
+	for i := range canary {
+		canary[i] = math.Float64frombits(poison)
+	}
+	if got := alpFusedDecodeAVX512(big, 64, 8, 0, 1, 1, canary[:15]); got != 8 {
+		t.Fatalf("15-value dst should decode 8 values, got %d", got)
+	}
+	for i, v := range canary {
+		if written := math.Float64bits(v) != poison; written != (i < 8) {
+			t.Fatalf("value %d: written=%v, want writes to exactly the first group", i, written)
+		}
+	}
+
+	alpDecAVX512 = false
+	t.Cleanup(func() { alpDecAVX512 = true })
+	if got := alpFusedDecodeAVX512(big, 64, 8, 0, 1, 1, dst); got != 0 {
+		t.Fatalf("kernel switched off should decline, got %d", got)
 	}
 }
 

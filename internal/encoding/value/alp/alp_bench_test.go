@@ -87,13 +87,31 @@ func BenchmarkALPDecodeAll_FullPrecision(b *testing.B) {
 	benchALPDecodeAll(b, genALPColumns(100, 1000, -1, 42))
 }
 
-// BenchmarkALPDecodeKernelWidths isolates the AVX-512 decode kernel's wire/park
-// decision: for a spread of code widths it times the fused kernel against the
-// generated scalar kernel (numeric_alp_kernels_gen.go) that decodeMainInto
-// currently dispatches to, over the same N=1024 whole-group column. The
-// per-width asm/scalar ratio (and its geomean) is what the 1.5x wire gate is
-// measured against — the high-level BenchmarkALPDecode* benchmarks only cover
-// the one or two widths a corpus happens to produce.
+// BenchmarkALPDecodeAll_150Points decodes 150-point columns, a typical blob's,
+// with the AVX-512 decode kernel and with the generated scalar kernels it falls back to.
+func BenchmarkALPDecodeAll_150Points(b *testing.B) {
+	for _, dp := range []int{1, 2, 3} {
+		cols := genALPColumns(100, 150, dp, 42)
+		b.Run("dp="+strconv.Itoa(dp)+"/kernel", func(b *testing.B) {
+			if !alpDecAVX512 {
+				b.Skip("the AVX-512 decode kernel cannot run on this machine")
+			}
+			benchALPDecodeAll(b, cols)
+		})
+		b.Run("dp="+strconv.Itoa(dp)+"/scalar", func(b *testing.B) {
+			kernel := alpDecAVX512
+			alpDecAVX512 = false
+			b.Cleanup(func() { alpDecAVX512 = kernel })
+			benchALPDecodeAll(b, cols)
+		})
+	}
+}
+
+// BenchmarkALPDecodeKernelWidths isolates the AVX-512 decode kernel:
+// for a spread of code widths it times the kernel against the generated scalar kernel
+// (numeric_alp_kernels_gen.go) that decodeMainInto falls back to,
+// over the same N=1024 whole-group column.
+// The high-level BenchmarkALPDecode* benchmarks only cover the one or two widths a corpus happens to produce.
 func BenchmarkALPDecodeKernelWidths(b *testing.B) {
 	const n = 1024
 	widths := []int{8, 12, 16, 20, 24, 32, 40, 48, 56, 64}
