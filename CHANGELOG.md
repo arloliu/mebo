@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-20
+
 The library code of v1.13.0-rc4, released as v1.13.0 after testing;
 only documentation changed since rc4.
 Compared with v1.12.1, it adds a handle for random access to one numeric metric and `blob.Verify`,
@@ -979,7 +981,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.13.0-rc4...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/arloliu/mebo/compare/v1.12.1...v1.13.0
 [1.13.0-rc4]: https://github.com/arloliu/mebo/compare/v1.13.0-rc3...v1.13.0-rc4
 [1.13.0-rc3]: https://github.com/arloliu/mebo/compare/v1.13.0-rc2...v1.13.0-rc3
 [1.13.0-rc2]: https://github.com/arloliu/mebo/compare/v1.13.0-rc1...v1.13.0-rc2
