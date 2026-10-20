@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The library code of v1.13.0-rc4, released as v1.13.0 after testing;
+only documentation changed since rc4.
+Compared with v1.12.1, it adds a handle for random access to one numeric metric and `blob.Verify`,
+decodes ALP faster on CPUs with AVX-512 VBMI,
+allocates less when iterating and materializing,
+and rejects oversized blobs at encode time and inconsistent headers at decode time.
+Every API change is an addition or a deprecation, and no existing signature changed.
+Encoded bytes are unchanged for every blob both versions accept.
+The v1.13.0-rc1 through rc4 sections below give the details and measurements.
+
+### Added
+
+- **`blob.NumericMetric`**: a handle on one numeric metric of a `NumericBlob`,
+  or across the numeric members of a `BlobSet`.
+  It resolves the metric once, then reads by index without name hashing, index search or decoder construction per call.
+  Constructors: `NumericBlob.Metric` / `MetricByName` and `BlobSet.NumericMetric` / `NumericMetricByName` (rc1).
+- **`NumericMetric.Materialize`**, and **`blob.AccessClass`** (`AccessDirect`, `AccessSequential`, `AccessUnsupported`)
+  with its `String` method and `NumericMetric.TimestampAccess` and `ValueAccess`,
+  which report whether a lookup reads the point directly or replays the column (rc1).
+- **`blob.Verify(data)`** checks that every metric of a numeric or text blob decodes completely (rc4).
+
+### Changed
+
+- **An encoding given for the wrong axis is reported as unsupported**, not invalid;
+  the sentinel errors are unchanged (rc4).
+- **The message of `errs.ErrInvalidReservedBytes`** no longer mentions extended index entries;
+  match it with `errors.Is` (rc4).
+
+### Deprecated
+
+- **`TimestampEncodingType`** on numeric and text blobs, in favor of `TimestampEncoding`.
+  It keeps working throughout v1 and will be removed in v2.0.0 (rc4).
+
+### Fixed
+
+- **Encoders refuse blobs they used to write unreadable or truncated** (rc3):
+  a Zstd, S2 or LZ4 payload over 128 MiB before compression fails with `ErrDecompressedSizeExceedsLimit`,
+  and a text blob past the uint32 offset range with `ErrBlobSizeExceedsLimit`.
+  Zstd, S2 and LZ4 `Compress` can now return an error.
+- **`TextDecoder` compares the data size at full width**,
+  so a data section over 4 GiB no longer passes by wrapping to the header's 32-bit `DataSize` (rc3).
+- **Decoders reject three header inconsistencies that no mebo encoder writes** (rc4):
+  the shared-timestamps bit on a V1 numeric blob,
+  an `IndexOffset` that disagrees with where the index starts,
+  and non-zero reserved bytes in a text header or text index entry.
+
+### Performance
+
+- **`ForEach`, `ForEachValues` and `ForEachTimestamps` keep the caller's callback on the stack**,
+  so a callback literal that captures locals costs no allocation per call (rc1).
+- **Materialization copies each tag column once instead of every tag** (rc2).
+- **DeltaPacked timestamps decode a whole column at a time** for columns of up to 8192 points:
+  untagged iteration with Gorilla or Chimp values is 17–27% faster than in rc1,
+  and with Raw values 48–52% faster than in v1.12.1 (rc2).
+- **ALP and ALP-RLE point `ForEach` no longer allocates** for columns of up to 8192 points (rc2).
+- **ALP columns decode in bulk with an AVX-512 kernel** on CPUs with AVX-512 DQ, BW and VBMI:
+  `NumericBlob.Materialize` is 13% faster on ALP and 9% on ALP-RLE (rc3).
+
+### Infrastructure
+
+- **Decoder fuzzing in CI** covers every read path, the fused iteration loops and the ALP kernels.
+  On Linux, small inputs are also decoded from memory that ends at a guard page (rc3).
+
+### Documentation
+
+- New design document: `docs/specs/v2-api-design.md`, the planned v2 API.
+
 ## [1.13.0-rc4] - 2026-10-12
 
 `blob.Verify`, which checks that every metric in a blob decodes completely,
