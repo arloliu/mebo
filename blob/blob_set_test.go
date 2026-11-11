@@ -2,6 +2,7 @@ package blob
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -2221,6 +2222,95 @@ func TestBlobSet_MetricDuration(t *testing.T) {
 		duration := singleSet.MetricDuration(singleID)
 		require.Equal(t, int64(0), duration, "Single data point should have 0 duration")
 	})
+}
+
+// TestDecodeBlobSet_DropsIdenticalInputs pins the rule for repeated inputs:
+// a blob byte-identical to an earlier input is dropped, numeric or text,
+// and blobs that share a start time, or a header and a length, without being identical are all kept.
+func TestDecodeBlobSet_DropsIdenticalInputs(t *testing.T) {
+	start := time.UnixMicro(1_700_000_000_000_000)
+	a := encodeSetTestNumeric(t, start, "cpu", 1, 2, 3)
+	b := encodeSetTestNumeric(t, start.Add(time.Minute), "cpu", 4, 5)
+	sameStart := encodeSetTestNumeric(t, start, "mem", 7, 8, 9)
+	// Three blobs with one header and one length: Raw columns of the same shape differ only in their payload.
+	rawBlob := func(v float64) []byte {
+		enc, err := NewNumericEncoder(start.Add(time.Hour),
+			WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw),
+			WithTimestampCompression(format.CompressionNone), WithValueCompression(format.CompressionNone))
+		require.NoError(t, err)
+		require.NoError(t, enc.StartMetricID(42, 1))
+		require.NoError(t, enc.AddDataPoint(start.Add(time.Hour).UnixMicro(), v, ""))
+		require.NoError(t, enc.EndMetric())
+		data, err := enc.Finish()
+		require.NoError(t, err)
+
+		return data
+	}
+	r1, r2, r3 := rawBlob(1), rawBlob(2), rawBlob(3)
+	require.Len(t, r2, len(r1))
+	require.Equal(t, r1[:section.HeaderSize], r2[:section.HeaderSize])
+
+	textEnc, err := NewTextEncoder(start)
+	require.NoError(t, err)
+	require.NoError(t, textEnc.StartMetricName("state", 1))
+	require.NoError(t, textEnc.AddDataPoint(start.UnixMicro(), "up", ""))
+	require.NoError(t, textEnc.EndMetric())
+	text, err := textEnc.Finish()
+	require.NoError(t, err)
+
+	set, err := DecodeBlobSet(a, b, slices.Clone(a), sameStart, text, r1, r2, r3, slices.Clone(r3), r2, slices.Clone(text), b)
+	require.NoError(t, err)
+	require.Len(t, set.NumericBlobs(), 6, "a, b, sameStart, r1, r2, r3")
+	require.Len(t, set.TextBlobs(), 1)
+
+	h, ok := set.NumericMetricByName("cpu")
+	require.True(t, ok)
+	require.Equal(t, 5, h.Len(), "the repeated blobs contribute their points once")
+	var got []float64
+	h.ForEachValues(func(_ int, v float64) bool { got = append(got, v); return true })
+	require.Equal(t, []float64{1, 2, 3, 4, 5}, got)
+
+	raw, ok := set.NumericMetric(42)
+	require.True(t, ok)
+	got = got[:0]
+	raw.ForEachValues(func(_ int, v float64) bool { got = append(got, v); return true })
+	require.Equal(t, []float64{1, 2, 3}, got, "same header and length, different payloads: all kept, in input order")
+
+	// The error still names the position in the caller's argument list.
+	_, err = DecodeBlobSet(a, slices.Clone(a), []byte("not a blob"))
+	require.ErrorIs(t, err, errs.ErrInvalidMagicNumber)
+	require.ErrorContains(t, err, "input 2")
+}
+
+// TestBlobInputSet_ShortInputs pins the duplicate rule on inputs shorter than a header,
+// which DecodeBlobSet rejects before it could see one twice.
+func TestBlobInputSet_ShortInputs(t *testing.T) {
+	seen := newBlobInputSet(0)
+	require.False(t, seen.duplicate(nil))
+	require.True(t, seen.duplicate([]byte{}), "nil and empty hold the same bytes")
+	for n := 1; n < section.HeaderSize; n++ {
+		data := make([]byte, n)
+		require.False(t, seen.duplicate(data), "%d zero bytes", n)
+		require.True(t, seen.duplicate(slices.Clone(data)), "%d zero bytes again", n)
+		data[n-1] = 1
+		require.False(t, seen.duplicate(data), "%d bytes with a different last byte", n)
+	}
+}
+
+// TestDecodeBlobSet_KeepsValidatingAfterDuplicate pins that dropping a duplicate skips no other input:
+// an input that shares a valid blob's header and length but not its bytes is still decoded, and rejected when malformed.
+func TestDecodeBlobSet_KeepsValidatingAfterDuplicate(t *testing.T) {
+	start := time.UnixMicro(1_700_000_000_000_000)
+	valid := encodeSetTestNumeric(t, start, "cpu", 1, 2, 3)
+	_, err := DecodeBlobSet(valid, slices.Clone(valid))
+	require.NoError(t, err)
+
+	malformed := slices.Clone(valid)
+	for i := section.HeaderSize; i < len(malformed); i++ {
+		malformed[i] = 0xFF
+	}
+	_, err = DecodeBlobSet(valid, slices.Clone(valid), malformed)
+	require.Error(t, err, "the malformed input is decoded, not taken for a duplicate")
 }
 
 func encodeSetTestNumeric(t *testing.T, start time.Time, name string, vals ...float64) []byte {

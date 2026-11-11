@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
 	"iter"
@@ -178,6 +179,12 @@ func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
 // DecodeBlobSet creates a new BlobSet from a list of encoded byte slices.
 // Each byte slice is parsed to determine if it's a numeric or text blob.
 //
+// An input that is byte-identical to an earlier input of the same call is dropped,
+// so a blob that was stored or delivered twice contributes its points once.
+// An input is compared with earlier ones only when one of them has the same 32-byte header and the same length,
+// so a set whose blobs differ in either pays one map lookup and one insert per input, and no pass over the payloads.
+// Blobs that overlap in time without being identical are all kept.
+//
 // Parameters:
 //   - blobs: List of byte slices representing encoded blobs
 //
@@ -187,7 +194,11 @@ func NewBlobSet(numericBlobs []NumericBlob, textBlobs []TextBlob) BlobSet {
 func DecodeBlobSet(blobs ...[]byte) (BlobSet, error) {
 	numericBlobs := make([]NumericBlob, 0, len(blobs)/2)
 	textBlobs := make([]TextBlob, 0, len(blobs)/2)
+	seen := newBlobInputSet(len(blobs))
 	for i, blob := range blobs {
+		if seen.duplicate(blob) {
+			continue
+		}
 		if section.IsNumericBlob(blob) {
 			decoder, err := NewNumericDecoder(blob)
 			if err != nil {
@@ -1622,4 +1633,46 @@ func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, co
 	}
 
 	return 0, true
+}
+
+// blobInputKey is what two encoded blobs must share before their bytes are compared: the header and the length.
+type blobInputKey struct {
+	header [section.HeaderSize]byte
+	size   int
+}
+
+// blobInputSet records the encoded blobs DecodeBlobSet has seen, to recognize one that repeats an earlier one.
+type blobInputSet struct {
+	first map[blobInputKey][]byte // the first input seen with each key
+	// more holds the inputs that share a key with an earlier, different input.
+	// shortcut: they are compared one by one, which is quadratic in their number;
+	// index them by a content hash if sets with many same-header, same-size blobs appear.
+	more [][]byte
+}
+
+func newBlobInputSet(n int) blobInputSet {
+	return blobInputSet{first: make(map[blobInputKey][]byte, n)}
+}
+
+// duplicate reports whether data is byte-identical to an input seen before, and records it when it is not.
+func (s *blobInputSet) duplicate(data []byte) bool {
+	key := blobInputKey{size: len(data)}
+	copy(key.header[:], data)
+	first, ok := s.first[key]
+	if !ok {
+		s.first[key] = data
+
+		return false
+	}
+	if bytes.Equal(first, data) {
+		return true
+	}
+	for _, other := range s.more {
+		if bytes.Equal(other, data) {
+			return true
+		}
+	}
+	s.more = append(s.more, data)
+
+	return false
 }
