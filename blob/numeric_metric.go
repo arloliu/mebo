@@ -293,7 +293,8 @@ func (b NumericBlob) MetricByName(metricName string) (h NumericMetric, ok bool) 
 // Resolution follows NumericValueAt: the set's logical identity decides which member entry a collided ID names.
 // Text members are not consulted, so a metric that only text members hold has no handle.
 // The handle aliases the members' bytes; see NumericMetric for its lifetime.
-// Resolution allocates nothing when one member holds the metric and once when several do.
+// A member that holds the metric without points is left out of the handle.
+// Resolution allocates nothing when one member has points of the metric and once when several do.
 //
 // Parameters:
 //   - metricID: The metric ID to resolve.
@@ -315,7 +316,8 @@ func (bs BlobSet) NumericMetric(metricID uint64) (NumericMetric, bool) {
 // Text members are not consulted, so a name that only text members hold has no handle,
 // where TimestampAtByName and MetricLenByName fall back to them.
 // The handle aliases the members' bytes; see NumericMetric for its lifetime.
-// Resolution allocates nothing when one member holds the metric and once when several do.
+// A member that holds the metric without points is left out of the handle.
+// Resolution allocates nothing when one member has points of the metric and once when several do.
 //
 // Parameters:
 //   - metricName: The metric name to resolve.

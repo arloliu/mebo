@@ -362,6 +362,13 @@ Behaviour changes:
   A name returned by `MetricNames` and kept after its blob is released keeps that blob's other names alive with it;
   each name used to be its own allocation.
   The names still own their bytes, independent of the decoder's input.
+- **A `NumericMetric` across a set leaves out the blobs that hold the metric without points.**
+  Its points and their indices are unchanged.
+  `TimestampAccess` and `ValueAccess` no longer count such a blob, which could make them report a worse class,
+  and when no blob has points the handle is the first such blob's and is empty.
+  The encoder refuses a metric without points, so only a blob another writer made is affected.
+- **`MetricDuration` and `MetricDurationByName` take their ends from the blobs that have points of the metric.**
+  They returned 0 when the first or the last blob holding the metric held it without points.
 
 ## Go Version Compatibility
 
