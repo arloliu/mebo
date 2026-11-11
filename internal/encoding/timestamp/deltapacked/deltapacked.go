@@ -521,7 +521,9 @@ func (s *DeltaPackedTsState) Next(remaining int) bool {
 }
 
 // Ts returns the most recently decoded timestamp.
-func (s DeltaPackedTsState) Ts() int64 {
+// It takes a pointer, as DeltaTsState.Ts does: a value receiver copied the 80-byte state on every point,
+// in 16-byte loads that straddle the 8-byte stores Next has just made.
+func (s *DeltaPackedTsState) Ts() int64 {
 	return s.curTS
 }
 
