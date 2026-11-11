@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the blobs before a window are no longer decoded to reach it.
   The values of a 600-point window of that set take 3.6 µs wherever the window lies,
   where `ForEachValues` skipping to it takes 55 µs a tenth of the way in and 0.5 ms nine tenths of the way in.
-  With `SearchTimestamp`, a time window `[begin, end]` is the range from `SearchTimestamp(begin)` to `SearchTimestamp(end+1)`.
+  With `SearchTimestamp`, a time window `[begin, end]` is the range from `SearchTimestamp(begin)` to `SearchTimestamp(end+1)`,
+  or to `Len()` when `end` is `math.MaxInt64`.
 
 ### Changed
 
@@ -47,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Resolving a `NumericMetric` across a set** first tries, in each blob,
   the position the metric had in the blob before it, which is where it is when the blobs hold the same metrics:
   0.21 ms by name over 2880 blobs of 200 metrics, down from 0.28 ms.
+- **A `NumericMetric` across a set leaves out the blobs that hold the metric without points.**
+  Its points and their indices are unchanged; `TimestampAccess` and `ValueAccess` no longer count such a blob,
+  and resolution allocates only when several blobs have points of the metric.
+  When no blob has points, the handle is the first such blob's and is empty.
+  Only a blob another writer made holds a metric without points; the encoder refuses one.
 - **Walking a DeltaPacked timestamp column point by point** no longer copies the decoder's 80-byte state on every point:
   `ForEachTimestamps` over 2880 unshared 30-point columns went from 271 µs to 155 µs for half the points.
 
