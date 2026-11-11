@@ -1517,6 +1517,8 @@ type blobAccessor[T any] interface {
 
 // calculateDuration is a generic helper that calculates metric duration across a slice of blobs.
 // It also reports whether any blob holds the metric, so callers need no separate lookup pass.
+// The ends are taken from the first and the last blob that have points of the metric:
+// a blob that holds it without points, which only another writer's blob can, has no timestamp to give.
 // This function is inlined by the compiler for zero overhead compared to duplicated code.
 //
 // Performance: Optimized bi-directional search - finds first from start, last from end.
@@ -1526,23 +1528,28 @@ func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) (int64, bo
 		return 0, false
 	}
 
-	// Find first blob containing the metric (forward search)
+	// Find first blob with points of the metric (forward search)
 	firstIdx := -1
+	found := false
 	for i := range blobs {
-		if blobs[i].HasMetricID(metricID) {
+		if !blobs[i].HasMetricID(metricID) {
+			continue
+		}
+		found = true
+		if blobs[i].Len(metricID) > 0 {
 			firstIdx = i
 			break // Stop as soon as we find the first
 		}
 	}
 
 	if firstIdx == -1 {
-		return 0, false // Metric not found
+		return 0, found // Metric not found, or held without points
 	}
 
-	// Find last blob containing the metric (reverse search)
+	// Find last blob with points of the metric (reverse search)
 	lastIdx := firstIdx // Default to first if it's the only one
 	for i := len(blobs) - 1; i > firstIdx; i-- {
-		if blobs[i].HasMetricID(metricID) {
+		if blobs[i].HasMetricID(metricID) && blobs[i].Len(metricID) > 0 {
 			lastIdx = i
 			break // Stop as soon as we find the last
 		}
@@ -1555,12 +1562,7 @@ func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) (int64, bo
 	}
 
 	// Get last timestamp from last blob
-	lastBlobLen := blobs[lastIdx].Len(metricID)
-	if lastBlobLen == 0 {
-		return 0, true
-	}
-
-	lastTimestamp, ok := blobs[lastIdx].TimestampAt(metricID, lastBlobLen-1)
+	lastTimestamp, ok := blobs[lastIdx].TimestampAt(metricID, blobs[lastIdx].Len(metricID)-1)
 	if !ok {
 		return 0, true
 	}
@@ -1574,6 +1576,7 @@ func calculateDuration[T blobAccessor[T]](blobs []T, metricID uint64) (int64, bo
 
 // calculateDurationByName is a generic helper that calculates metric duration by name across a slice of blobs.
 // It also reports whether any contributing blob holds the metric.
+// As in calculateDuration, the ends are taken from the blobs that have points of the metric.
 // This function is inlined by the compiler for zero overhead compared to duplicated code.
 //
 // Performance: Optimized bi-directional search - finds first from start, last from end.
@@ -1583,29 +1586,34 @@ func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, co
 		return 0, false
 	}
 
-	// Find first blob containing the metric (forward search)
+	// Find first blob with points of the metric (forward search)
 	firstIdx := -1
+	found := false
 	for i := range blobs {
 		if contributes != nil && !contributes(i) {
 			continue
 		}
-		if blobs[i].HasMetricName(metricName) {
+		if !blobs[i].HasMetricName(metricName) {
+			continue
+		}
+		found = true
+		if blobs[i].LenByName(metricName) > 0 {
 			firstIdx = i
 			break // Stop as soon as we find the first
 		}
 	}
 
 	if firstIdx == -1 {
-		return 0, false // Metric not found
+		return 0, found // Metric not found, or held without points
 	}
 
-	// Find last blob containing the metric (reverse search)
+	// Find last blob with points of the metric (reverse search)
 	lastIdx := firstIdx // Default to first if it's the only one
 	for i := len(blobs) - 1; i > firstIdx; i-- {
 		if contributes != nil && !contributes(i) {
 			continue
 		}
-		if blobs[i].HasMetricName(metricName) {
+		if blobs[i].HasMetricName(metricName) && blobs[i].LenByName(metricName) > 0 {
 			lastIdx = i
 			break // Stop as soon as we find the last
 		}
@@ -1618,12 +1626,7 @@ func calculateDurationByName[T blobAccessor[T]](blobs []T, metricName string, co
 	}
 
 	// Get last timestamp from last blob
-	lastBlobLen := blobs[lastIdx].LenByName(metricName)
-	if lastBlobLen == 0 {
-		return 0, true
-	}
-
-	lastTimestamp, ok := blobs[lastIdx].TimestampAtByName(metricName, lastBlobLen-1)
+	lastTimestamp, ok := blobs[lastIdx].TimestampAtByName(metricName, blobs[lastIdx].LenByName(metricName)-1)
 	if !ok {
 		return 0, true
 	}

@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Walking a DeltaPacked timestamp column point by point** no longer copies the decoder's 80-byte state on every point:
   `ForEachTimestamps` over 2880 unshared 30-point columns went from 271 µs to 155 µs for half the points.
 
+### Fixed
+
+- **`MetricDuration` and `MetricDurationByName` on `BlobSet`, `NumericBlobSet` and `TextBlobSet`** returned 0
+  when the first or the last blob holding the metric held it without points.
+  They now take the two ends from the blobs that have points of it, as `NumericMetric.Duration` does.
+  Only a blob another writer made holds a metric without points; the encoder refuses one.
+
 ## [1.13.0] - 2026-10-20
 
 The library code of v1.13.0-rc4, released as v1.13.0 after testing;
