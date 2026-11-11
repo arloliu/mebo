@@ -18,6 +18,19 @@ import (
 // handleTestStart is the start time of every handle test blob, in microseconds.
 const handleTestStart = int64(1_700_000_000_000_000)
 
+// searchTestModes are the timestamp layouts SearchTimestamp searches, with the class each gives the handle.
+var searchTestModes = []struct {
+	name  string
+	opts  []NumericEncoderOption
+	class AccessClass
+}{
+	{"raw", []NumericEncoderOption{WithTimestampEncoding(format.TypeRaw)}, AccessDirect},
+	{"delta", []NumericEncoderOption{WithTimestampEncoding(format.TypeDelta)}, AccessSequential},
+	{"deltapacked", []NumericEncoderOption{WithTimestampEncoding(format.TypeDeltaPacked)}, AccessSequential},
+	{"delta-shared", []NumericEncoderOption{WithTimestampEncoding(format.TypeDelta), WithSharedTimestamps()}, AccessDirect},
+	{"deltapacked-shared", []NumericEncoderOption{WithTimestampEncoding(format.TypeDeltaPacked), WithSharedTimestamps()}, AccessDirect},
+}
+
 // handleTestShape says how the timestamp sequences of a handle test blob relate to each other.
 type handleTestShape uint8
 
@@ -647,6 +660,58 @@ func TestNumericMetric_PartsAfterFirst(t *testing.T) {
 	}
 }
 
+// TestNumericMetric_ManyPartsPlacement pins index placement on a handle with more parts than a scan places,
+// some of them empty: every index reads the point a walk yields at it, and the ends are rejected.
+func TestNumericMetric_ManyPartsPlacement(t *testing.T) {
+	sizes := []int{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7}
+	parts := make([][]int64, len(sizes))
+	next := int64(1000)
+	for k, n := range sizes {
+		parts[k] = make([]int64, n)
+		for i := range parts[k] {
+			parts[k][i] = next
+			next += 7
+		}
+	}
+	h := searchTestHandle(t, parts, WithTimestampEncoding(format.TypeDelta))
+	require.Greater(t, len(h.rest), locateScanParts)
+	// Empty two parts in a row, a later one and the last one, and close the gaps they leave in the index.
+	for _, k := range []int{1, 2, 5, len(h.rest) - 1} {
+		removed := h.rest[k].count
+		h.rest[k].count = 0
+		for j := k + 1; j < len(h.rest); j++ {
+			h.rest[j].base -= removed
+		}
+	}
+
+	var want []int64
+	h.ForEachTimestamps(func(i int, ts int64) bool {
+		require.Len(t, want, i)
+		want = append(want, ts)
+
+		return true
+	})
+	require.Len(t, want, h.Len())
+	for i, ts := range want {
+		got, ok := h.TimestampAt(i)
+		require.True(t, ok, "TimestampAt(%d)", i)
+		require.Equal(t, ts, got, "TimestampAt(%d)", i)
+		dp, ok := h.At(i)
+		require.True(t, ok, "At(%d)", i)
+		require.Equal(t, ts, dp.Ts, "At(%d)", i)
+	}
+	for _, i := range []int{-1, h.Len(), h.Len() + 1, math.MaxInt} {
+		_, ok := h.At(i)
+		require.False(t, ok, "At(%d)", i)
+		_, ok = h.TimestampAt(i)
+		require.False(t, ok, "TimestampAt(%d)", i)
+		_, ok = h.ValueAt(i)
+		require.False(t, ok, "ValueAt(%d)", i)
+		_, ok = h.TagAt(i)
+		require.False(t, ok, "TagAt(%d)", i)
+	}
+}
+
 // TestNumericMetric_ShortSharedGroupFallsThrough pins the malformed-group rule:
 // a pre-decoded group shorter than the metric's count serves the indices it has,
 // and the rest decode from the metric's own payload, as NumericBlob.TimestampAt does on the same blob;
@@ -1070,6 +1135,78 @@ func collectTs(h *NumericMetric) []int64 {
 
 func collectVals(h *NumericMetric) []float64 {
 	return collectHandle(h).vals
+}
+
+// TestNumericMetric_SetOrdinalsShift pins resolution over members that hold different subsets of the metrics,
+// so a metric's ordinal in one member's index is seldom its ordinal in the next, and some members lack it:
+// by name and by ID, the handle yields the points the BlobSet iterators yield.
+// Every second member has its names stripped in one of the variants, and the V1 layout has no sorted index to guess in.
+func TestNumericMetric_SetOrdinalsShift(t *testing.T) {
+	const metrics, members = 12, 9
+	names := make([]string, metrics)
+	for m := range names {
+		names[m] = "shift.metric." + strconv.Itoa(m)
+	}
+	for _, tt := range []struct {
+		name  string
+		opts  []NumericEncoderOption
+		strip bool
+	}{
+		{"v2", []NumericEncoderOption{WithBlobLayoutV2()}, false},
+		{"v2/stripped members", []NumericEncoderOption{WithBlobLayoutV2()}, true},
+		{"v1", nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := uint32(11)
+			inputs := make([][]byte, 0, members)
+			for k := range members {
+				start := handleTestStart + int64(k)*60_000_000
+				enc, err := NewNumericEncoder(time.UnixMicro(start), append([]NumericEncoderOption{WithMetricNames()}, tt.opts...)...)
+				require.NoError(t, err)
+				held := 0
+				for m, name := range names {
+					state = state*1664525 + 1013904223
+					// About one metric in four is absent from this member, which still holds at least one.
+					if state>>30 == 0 && (m != metrics-1 || held > 0) {
+						continue
+					}
+					held++
+					require.NoError(t, enc.StartMetricName(name, 3))
+					for i := range 3 {
+						require.NoError(t, enc.AddDataPoint(start+int64(i)*1_000_000, float64(k*100+m*10+i), ""))
+					}
+					require.NoError(t, enc.EndMetric())
+				}
+				data, err := enc.Finish()
+				require.NoError(t, err)
+				if tt.strip && k%2 == 1 {
+					data, _, err = StripMetricNames(nil, data)
+					require.NoError(t, err)
+				}
+				inputs = append(inputs, data)
+			}
+			bs, err := DecodeBlobSet(inputs...)
+			require.NoError(t, err)
+
+			for _, name := range names {
+				var want []NumericDataPoint
+				for _, dp := range bs.AllNumericsByName(name) {
+					want = append(want, dp)
+				}
+				h, ok := bs.NumericMetricByName(name)
+				require.Equal(t, len(want) > 0, ok, "NumericMetricByName(%s)", name)
+				require.Equal(t, want, collectHandle(&h).points, "NumericMetricByName(%s)", name)
+
+				want = want[:0]
+				for _, dp := range bs.AllNumerics(hash.ID(name)) {
+					want = append(want, dp)
+				}
+				h, ok = bs.NumericMetric(hash.ID(name))
+				require.Equal(t, len(want) > 0, ok, "NumericMetric(%s)", name)
+				require.Equal(t, want, collectHandle(&h).points, "NumericMetric(%s)", name)
+			}
+		})
+	}
 }
 
 // TestNumericMetric_SetMixedMembers pins a set whose members differ per part: one big-endian member,
@@ -1623,5 +1760,835 @@ func TestNumericMetric_MaterializeAllocations(t *testing.T) {
 		p := &h.rest[k]
 		require.Equal(t, p.count, cap(p.values), "part %d values", k)
 		require.Equal(t, p.count, cap(p.tags), "part %d tags", k)
+	}
+}
+
+// searchTestSet builds a set with one blob per element of parts, in that order,
+// each holding metric 1 with those timestamps.
+// A second metric repeats them, so WithSharedTimestamps finds a group to pre-decode.
+func searchTestSet(tb testing.TB, parts [][]int64, opts ...NumericEncoderOption) BlobSet {
+	tb.Helper()
+	blobs := make([]NumericBlob, len(parts))
+	// The values walk in steps of a quarter, so a value column holds changes and repeats, as a real one does.
+	cur := 100.0
+	state := uint32(3)
+	for k, ts := range parts {
+		vals := make([]float64, len(ts))
+		for i := range vals {
+			state = state*1664525 + 1013904223
+			cur += float64(int(state>>30)-1) * 0.25
+			vals[i] = cur
+		}
+		ms := []handleTestMetric{{id: 1, ts: ts, vals: vals}, {id: 2, ts: ts, vals: vals}}
+		blobs[k] = handleTestBlobAt(tb, handleTestStart+int64(k), ms, false, opts...)
+	}
+
+	return NewBlobSet(blobs, nil)
+}
+
+// searchTestHandle returns the handle on metric 1 of searchTestSet.
+func searchTestHandle(tb testing.TB, parts [][]int64, opts ...NumericEncoderOption) NumericMetric {
+	tb.Helper()
+	h, ok := searchTestSet(tb, parts, opts...).NumericMetric(1)
+	require.True(tb, ok)
+
+	return h
+}
+
+// TestNumericMetric_SearchTimestamp pins the search on three points split over two blobs:
+// a target between two points, before the first, after the last, and on a point.
+func TestNumericMetric_SearchTimestamp(t *testing.T) {
+	parts := [][]int64{{100, 201}, {303}}
+	for _, mode := range searchTestModes {
+		t.Run(mode.name, func(t *testing.T) {
+			h := searchTestHandle(t, parts, mode.opts...)
+			require.Equal(t, mode.class, h.TimestampAccess())
+			check := func() {
+				for _, tt := range []struct {
+					target int64
+					index  int
+					found  bool
+				}{
+					{90, 0, false},
+					{100, 0, true},
+					{150, 1, false},
+					{201, 1, true},
+					{256, 2, false},
+					{303, 2, true},
+					{500, 3, false},
+					{math.MinInt64, 0, false},
+					{math.MaxInt64, 3, false},
+				} {
+					index, found := h.SearchTimestamp(tt.target)
+					require.Equal(t, tt.index, index, "SearchTimestamp(%d) index", tt.target)
+					require.Equal(t, tt.found, found, "SearchTimestamp(%d) found", tt.target)
+				}
+			}
+			check()
+			h.Materialize()
+			check()
+		})
+	}
+}
+
+// TestNumericMetric_SearchTimestamp_AgreesWithBinarySearch checks the search against slices.BinarySearch,
+// for every target around a seven-blob metric with repeated timestamps.
+func TestNumericMetric_SearchTimestamp_AgreesWithBinarySearch(t *testing.T) {
+	var (
+		parts [][]int64
+		flat  []int64
+	)
+	cur := int64(1000)
+	state := uint32(1)
+	// Twenty-two blobs, some of one point side by side, so most steps of the search cross a blob boundary.
+	for _, n := range []int{1, 40, 3, 150, 17, 1, 64, 1, 1, 1, 9, 30, 30, 2, 31, 29, 1, 5, 80, 1, 1, 12} {
+		ts := make([]int64, n)
+		for i := range ts {
+			state = state*1664525 + 1013904223
+			cur += int64(state >> 29) // a gap of 0 to 7, so some timestamps repeat
+			ts[i] = cur
+		}
+		parts = append(parts, ts)
+		flat = append(flat, ts...)
+	}
+
+	for _, mode := range searchTestModes {
+		t.Run(mode.name, func(t *testing.T) {
+			h := searchTestHandle(t, parts, mode.opts...)
+			require.Equal(t, len(flat), h.Len())
+			check := func() {
+				for target := flat[0] - 3; target <= flat[len(flat)-1]+3; target++ {
+					wantIndex, wantFound := slices.BinarySearch(flat, target)
+					index, found := h.SearchTimestamp(target)
+					require.Equal(t, wantIndex, index, "SearchTimestamp(%d) index", target)
+					require.Equal(t, wantFound, found, "SearchTimestamp(%d) found", target)
+				}
+			}
+			check()
+			h.Materialize()
+			check()
+		})
+	}
+}
+
+// TestCountBelow checks the branch-free count against slices.BinarySearch on every length a blob's column
+// and its halves pass through, with repeated values.
+func TestCountBelow(t *testing.T) {
+	for n := range 70 {
+		column := make([]int64, n)
+		for i := range column {
+			column[i] = int64(10 + 3*(i/2)) // every value twice
+		}
+		for target := int64(8); target <= int64(10+3*(n/2)+2); target++ {
+			want, _ := slices.BinarySearch(column, target)
+			require.Equal(t, want, countBelow(column, target), "n=%d target=%d", n, target)
+		}
+	}
+}
+
+// TestNumericMetric_PlacementAgreesWithScan checks the placement a handle on many blobs uses against a scan of its parts,
+// at every index and past both ends, over layouts that put its estimate near the part, far below it and far above it,
+// with empty parts among them.
+func TestNumericMetric_PlacementAgreesWithScan(t *testing.T) {
+	layouts := map[string][]int{
+		"even":         {30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30},
+		"heavy first":  {900, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+		"heavy last":   {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 900},
+		"heavy middle": {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 700, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+		"with empties": {5, 0, 0, 7, 3, 0, 9, 1, 0, 0, 0, 4, 6, 2, 0, 8, 1, 1, 0, 5, 0},
+		"empty first":  {0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0},
+		"all empty":    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		// A total near the int64 limit, so the estimate's product overflows.
+		"huge parts": {math.MaxInt64 / 16, math.MaxInt64 / 16, math.MaxInt64 / 16, math.MaxInt64 / 16, 3, 2, 1, 0, 5, 4, math.MaxInt64 / 16},
+	}
+	for name, sizes := range layouts {
+		h := NumericMetric{rest: make([]numericMetricPart, len(sizes)-1)}
+		base := 0
+		for k, n := range sizes {
+			p := h.part(k)
+			p.count, p.base = n, base
+			base += n
+		}
+		require.Greater(t, len(h.rest), locateScanParts, name)
+		require.Equal(t, base, h.Len(), name)
+
+		indexes := []int{-2, -1, base, base + 1, base + 2}
+		if base <= 4096 {
+			for index := range base {
+				indexes = append(indexes, index)
+			}
+		} else {
+			// Too many to walk: the ends of every part.
+			for k := range sizes {
+				if p := h.part(k); p.count > 0 {
+					indexes = append(indexes, p.base, p.base+1, p.base+p.count/2, p.base+p.count-1)
+				}
+			}
+		}
+		for _, index := range indexes {
+			got, local := h.locateBisect(index)
+			if index < 0 || index >= base {
+				require.False(t, local >= 0 && local < got.count, "%s: index %d lands in a part", name, index)
+
+				continue
+			}
+			var want *numericMetricPart
+			for k := range sizes {
+				if p := h.part(k); index >= p.base && index < p.base+p.count {
+					want = p
+				}
+			}
+			require.Same(t, want, got, "%s: part of index %d", name, index)
+			require.Equal(t, index-want.base, local, "%s: local index of %d", name, index)
+		}
+	}
+}
+
+// TestNumericMetric_SearchTimestamp_OnePointBlobs pins the search over blobs of one point each,
+// three of them holding the same timestamp: every step of the search crosses a blob boundary.
+func TestNumericMetric_SearchTimestamp_OnePointBlobs(t *testing.T) {
+	flat := []int64{100, 200, 200, 200, 300}
+	parts := make([][]int64, len(flat))
+	for k, ts := range flat {
+		parts[k] = []int64{ts}
+	}
+	for _, mode := range searchTestModes {
+		h := searchTestHandle(t, parts, mode.opts...)
+		for target := int64(99); target <= 301; target++ {
+			wantIndex, wantFound := slices.BinarySearch(flat, target)
+			index, found := h.SearchTimestamp(target)
+			require.Equal(t, wantIndex, index, "%s: SearchTimestamp(%d) index", mode.name, target)
+			require.Equal(t, wantFound, found, "%s: SearchTimestamp(%d) found", mode.name, target)
+		}
+	}
+}
+
+// TestNumericMetric_SearchTimestamp_OnePoint pins a handle on one blob holding one point.
+func TestNumericMetric_SearchTimestamp_OnePoint(t *testing.T) {
+	for _, mode := range searchTestModes {
+		blob := searchTestSet(t, [][]int64{{100}}, mode.opts...).NumericBlobs()[0]
+		h, ok := blob.Metric(1)
+		require.True(t, ok)
+		for _, tt := range []struct {
+			target int64
+			index  int
+			found  bool
+		}{{math.MinInt64, 0, false}, {90, 0, false}, {100, 0, true}, {101, 1, false}, {math.MaxInt64, 1, false}} {
+			index, found := h.SearchTimestamp(tt.target)
+			require.Equal(t, tt.index, index, "%s: SearchTimestamp(%d) index", mode.name, tt.target)
+			require.Equal(t, tt.found, found, "%s: SearchTimestamp(%d) found", mode.name, tt.target)
+		}
+	}
+}
+
+// TestNumericMetric_SearchTimestamp_Unreadable pins the failure rule:
+// no points, or a timestamp the search needs that cannot be read, answer (Len, false),
+// and a target the readable timestamps settle still answers.
+func TestNumericMetric_SearchTimestamp_Unreadable(t *testing.T) {
+	requireSearch := func(t *testing.T, h *NumericMetric, target int64, wantIndex int, wantFound bool, msg string) {
+		t.Helper()
+		index, found := h.SearchTimestamp(target)
+		require.Equal(t, wantIndex, index, msg)
+		require.Equal(t, wantFound, found, msg)
+	}
+	var zero NumericMetric
+	requireSearch(t, &zero, 100, 0, false, "zero value")
+
+	// The bytes of the first timestamp alone: 8 for Raw, a one-byte varint for the delta codecs.
+	firstOnly := map[string]int{"raw": 8, "delta": 1, "deltapacked": 1}
+	for _, mode := range searchTestModes[:3] {
+		t.Run(mode.name, func(t *testing.T) {
+			h := searchTestHandle(t, [][]int64{{100, 201, 303, 404}, {500, 600}}, mode.opts...)
+			h.first.tsBytes = h.first.tsBytes[:firstOnly[mode.name]]
+			requireSearch(t, &h, 90, 0, false, "a target the first timestamp settles")
+			requireSearch(t, &h, 100, 0, true, "a target the first timestamp settles")
+			requireSearch(t, &h, 450, h.Len(), false, "a target past the readable timestamps of the first blob")
+			requireSearch(t, &h, 550, 5, false, "a target the second blob settles")
+			requireSearch(t, &h, 600, 5, true, "a target the second blob settles")
+
+			h.first.tsBytes = nil
+			requireSearch(t, &h, 90, h.Len(), false, "an unreadable first timestamp")
+
+			h.first.count = 0
+			requireSearch(t, &h, 90, h.Len(), false, "a blob without points")
+		})
+	}
+
+	// A blob without points fails only the searches that read it.
+	h := searchTestHandle(t, [][]int64{{100}, {200}, {300}, {400, 500}}, WithTimestampEncoding(format.TypeDelta))
+	h.rest[0].count = 0
+	requireSearch(t, &h, 460, 4, false, "a target the last blob settles")
+	requireSearch(t, &h, 90, h.Len(), false, "a target whose search reads the blob without points")
+}
+
+// TestNumericMetric_SearchTimestamp_ShortColumns pins the search over a pre-decoded group
+// and over a materialized column that are shorter than the metric's count:
+// the group's tail is read from the payload in one pass, and a short decode fails only past its points.
+func TestNumericMetric_SearchTimestamp_ShortColumns(t *testing.T) {
+	parts := [][]int64{{100, 201, 303, 404}, {500, 600}}
+	h := searchTestHandle(t, parts, WithTimestampEncoding(format.TypeDelta), WithSharedTimestamps())
+	require.Len(t, h.first.shared, 4)
+	h.first.shared = h.first.shared[:1]
+	require.Equal(t, AccessDirect, h.TimestampAccess(), "a short group keeps its class")
+	for _, tt := range []struct {
+		target int64
+		index  int
+		found  bool
+	}{{90, 0, false}, {150, 1, false}, {303, 2, true}, {350, 3, false}, {460, 4, false}, {600, 5, true}, {700, 6, false}} {
+		index, found := h.SearchTimestamp(tt.target)
+		require.Equal(t, tt.index, index, "SearchTimestamp(%d) index", tt.target)
+		require.Equal(t, tt.found, found, "SearchTimestamp(%d) found", tt.target)
+	}
+
+	// A stream that ends after its first timestamp materializes to one point.
+	h = searchTestHandle(t, parts, WithTimestampEncoding(format.TypeDelta))
+	h.first.tsBytes = h.first.tsBytes[:1]
+	h.Materialize()
+	require.Len(t, h.first.timestamps, 1)
+	index, found := h.SearchTimestamp(100)
+	require.Equal(t, 0, index)
+	require.True(t, found)
+	index, found = h.SearchTimestamp(350)
+	require.Equal(t, h.Len(), index, "a target past the decoded points")
+	require.False(t, found)
+	index, found = h.SearchTimestamp(590)
+	require.Equal(t, 5, index)
+	require.False(t, found)
+}
+
+// TestNumericMetric_SearchTimestampAllocatesNothing pins the search's allocations on every timestamp layout:
+// none on a handle resolved beforehand, and none beyond the resolution's own when the handle is resolved per call,
+// which a handle that the search moved to the heap would exceed.
+func TestNumericMetric_SearchTimestampAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	parts := make([][]int64, 8)
+	for k := range parts {
+		parts[k], _, _ = handleTestSeries(50, int64(k)*50*15_000_000, 0)
+	}
+	const want = 5*50 + 21
+	for _, mode := range searchTestModes {
+		bs := searchTestSet(t, parts, mode.opts...)
+		h, ok := bs.NumericMetric(1)
+		require.True(t, ok)
+		target := parts[5][20] + 1
+		var sink int
+		allocs := testing.AllocsPerRun(100, func() {
+			index, _ := h.SearchTimestamp(target)
+			sink += index
+		})
+		require.Zero(t, allocs, mode.name)
+		require.Equal(t, 101*want, sink, mode.name)
+
+		allocs = testing.AllocsPerRun(100, func() {
+			h, _ := bs.NumericMetric(1)
+			index, _ := h.SearchTimestamp(target)
+			sink += index
+		})
+		require.InDelta(t, 1, allocs, 0, "%s: the set resolution's one allocation", mode.name)
+
+		// A handle on one blob has no parts after the first and resolves without allocating.
+		blob := bs.NumericBlobs()[5]
+		allocs = testing.AllocsPerRun(100, func() {
+			h, _ := blob.Metric(1)
+			index, _ := h.SearchTimestamp(target)
+			sink += index
+		})
+		require.Zero(t, allocs, "%s: one blob", mode.name)
+		single, ok := blob.Metric(1)
+		require.True(t, ok)
+		index, found := single.SearchTimestamp(target)
+		require.Equal(t, 21, index, mode.name)
+		require.False(t, found, mode.name)
+	}
+}
+
+// TestNumericMetric_TimestampsSorted pins the check on every timestamp layout, before and after Materialize:
+// it agrees with slices.IsSorted over the handle's timestamps,
+// whether the order breaks inside a blob, between two blobs, or nowhere.
+func TestNumericMetric_TimestampsSorted(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		parts [][]int64
+	}{
+		{"one point", [][]int64{{100}}},
+		{"one blob", [][]int64{{100, 201, 303}}},
+		{"repeated timestamps", [][]int64{{100, 100, 201}, {201, 201}, {303}}},
+		{"touching blobs", [][]int64{{100, 201}, {201, 303}}},
+		{"disorder inside the first blob", [][]int64{{100, 303, 201}, {400}}},
+		{"disorder inside a later blob", [][]int64{{100}, {200, 400, 300}, {500}}},
+		{"disorder at the last point", [][]int64{{100, 201}, {303, 302}}},
+		{"overlapping blobs", [][]int64{{100, 201, 303}, {250, 400}}},
+		{"a blob repeated", [][]int64{{100, 201}, {100, 201}}},
+		{"a later blob before the first", [][]int64{{100, 201}, {300}, {50}}},
+		{"the int64 ends", [][]int64{{math.MinInt64, math.MinInt64, 0}, {math.MaxInt64, math.MaxInt64}}},
+		{"the int64 ends reversed", [][]int64{{math.MaxInt64}, {math.MinInt64}}},
+	} {
+		var flat []int64
+		for _, part := range tt.parts {
+			flat = append(flat, part...)
+		}
+		want := slices.IsSorted(flat)
+		for _, mode := range searchTestModes {
+			h := searchTestHandle(t, tt.parts, mode.opts...)
+			require.Equal(t, len(flat), h.Len())
+			require.Equal(t, want, h.TimestampsSorted(), "%s/%s", tt.name, mode.name)
+			h.Materialize()
+			require.Equal(t, want, h.TimestampsSorted(), "%s/%s materialized", tt.name, mode.name)
+		}
+	}
+}
+
+// TestNumericMetric_TimestampsSorted_Unreadable pins the ends of the rule:
+// a handle without points is sorted, a blob without points is skipped,
+// and a column that cannot be read to its end is not sorted.
+func TestNumericMetric_TimestampsSorted_Unreadable(t *testing.T) {
+	var zero NumericMetric
+	require.True(t, zero.TimestampsSorted(), "zero value")
+
+	parts := [][]int64{{100, 201, 303, 404}, {500, 600}, {700}}
+	for _, mode := range searchTestModes {
+		h := searchTestHandle(t, parts, mode.opts...)
+		require.True(t, h.TimestampsSorted(), mode.name)
+
+		empty := h
+		empty.rest = slices.Clone(h.rest)
+		empty.rest[0].count = 0
+		require.True(t, empty.TimestampsSorted(), "%s: a blob without points", mode.name)
+
+		short := h
+		short.first.tsBytes = short.first.tsBytes[:1]
+		short.first.shared = nil
+		require.False(t, short.TimestampsSorted(), "%s: a truncated column", mode.name)
+
+		unreadable := h
+		unreadable.rest = slices.Clone(h.rest)
+		unreadable.rest[1].tsBytes = nil
+		unreadable.rest[1].shared = nil
+		require.False(t, unreadable.TimestampsSorted(), "%s: an unreadable last blob", mode.name)
+	}
+
+	// A pre-decoded group shorter than the count leaves the tail to the payload, which is read in full.
+	h := searchTestHandle(t, [][]int64{{100, 201, 303, 250}}, WithTimestampEncoding(format.TypeDelta), WithSharedTimestamps())
+	require.Len(t, h.first.shared, 4)
+	h.first.shared = h.first.shared[:2]
+	require.False(t, h.TimestampsSorted(), "disorder past a short group")
+	h = searchTestHandle(t, [][]int64{{100, 201, 303, 404}}, WithTimestampEncoding(format.TypeDelta), WithSharedTimestamps())
+	h.first.shared = h.first.shared[:2]
+	require.True(t, h.TimestampsSorted(), "order past a short group")
+}
+
+// TestNumericMetric_TimestampsSortedAllocatesNothing pins the check's allocations on every timestamp layout.
+func TestNumericMetric_TimestampsSortedAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	parts := make([][]int64, 8)
+	for k := range parts {
+		parts[k], _, _ = handleTestSeries(50, int64(k)*50*15_000_000, 0)
+	}
+	for _, mode := range searchTestModes {
+		h := searchTestHandle(t, parts, mode.opts...)
+		sorted := 0
+		allocs := testing.AllocsPerRun(100, func() {
+			if h.TimestampsSorted() {
+				sorted++
+			}
+		})
+		require.Zero(t, allocs, mode.name)
+		require.Equal(t, 101, sorted, mode.name)
+
+		// Resolved per call on one blob, which allocates nothing: a handle the check moved to the heap would.
+		blob := searchTestSet(t, parts[:1], mode.opts...).NumericBlobs()[0]
+		allocs = testing.AllocsPerRun(100, func() {
+			h, _ := blob.Metric(1)
+			if h.TimestampsSorted() {
+				sorted++
+			}
+		})
+		require.Zero(t, allocs, "%s: resolved per call", mode.name)
+		require.Equal(t, 202, sorted, mode.name)
+	}
+}
+
+// rangeTestPair is one call of a walk's yield: the index and what came with it.
+type rangeTestPair[T any] struct {
+	index int
+	item  T
+}
+
+// rangeTestWindow returns the pairs of a full walk whose index lies in [start, end).
+func rangeTestWindow[T any](full []rangeTestPair[T], start, end int) []rangeTestPair[T] {
+	var window []rangeTestPair[T]
+	for _, pair := range full {
+		if pair.index >= start && pair.index < end {
+			window = append(window, pair)
+		}
+	}
+
+	return window
+}
+
+// requireRangeWalksAgree checks each range walk of h against its full walk cut to the same window,
+// for every start and end from two before the metric to two past it.
+// Each axis is compared with its own full walk, since a short column makes them yield different indices.
+func requireRangeWalksAgree(t *testing.T, h *NumericMetric) {
+	t.Helper()
+	var (
+		points     []rangeTestPair[NumericDataPoint]
+		values     []rangeTestPair[float64]
+		timestamps []rangeTestPair[int64]
+	)
+	h.ForEach(func(i int, dp NumericDataPoint) bool {
+		points = append(points, rangeTestPair[NumericDataPoint]{i, dp})
+
+		return true
+	})
+	h.ForEachValues(func(i int, v float64) bool { values = append(values, rangeTestPair[float64]{i, v}); return true })
+	h.ForEachTimestamps(func(i int, ts int64) bool { timestamps = append(timestamps, rangeTestPair[int64]{i, ts}); return true })
+
+	n := h.Len()
+	for start := -2; start <= n+2; start++ {
+		for end := -2; end <= n+2; end++ {
+			var (
+				gotPoints     []rangeTestPair[NumericDataPoint]
+				gotValues     []rangeTestPair[float64]
+				gotTimestamps []rangeTestPair[int64]
+			)
+			h.ForEachRange(start, end, func(i int, dp NumericDataPoint) bool {
+				gotPoints = append(gotPoints, rangeTestPair[NumericDataPoint]{i, dp})
+
+				return true
+			})
+			h.ForEachValuesRange(start, end, func(i int, v float64) bool {
+				gotValues = append(gotValues, rangeTestPair[float64]{i, v})
+
+				return true
+			})
+			h.ForEachTimestampsRange(start, end, func(i int, ts int64) bool {
+				gotTimestamps = append(gotTimestamps, rangeTestPair[int64]{i, ts})
+
+				return true
+			})
+			require.Equal(t, rangeTestWindow(points, start, end), gotPoints, "ForEachRange(%d, %d)", start, end)
+			require.Equal(t, rangeTestWindow(values, start, end), gotValues, "ForEachValuesRange(%d, %d)", start, end)
+			require.Equal(t, rangeTestWindow(timestamps, start, end), gotTimestamps, "ForEachTimestampsRange(%d, %d)", start, end)
+		}
+	}
+}
+
+// TestNumericMetric_ForEachRange checks the three range walks against the full walks cut to the same window,
+// for every start and end around a twelve-blob metric, before and after Materialize:
+// the indices, the points, a range clamped at either end, and an empty one.
+func TestNumericMetric_ForEachRange(t *testing.T) {
+	var parts [][]int64
+	next := int64(1000)
+	for _, n := range []int{4, 1, 7, 1, 1, 9, 3, 5, 1, 8, 2, 6} {
+		ts := make([]int64, n)
+		for i := range ts {
+			ts[i] = next
+			next += 10
+		}
+		parts = append(parts, ts)
+	}
+	for _, mode := range searchTestModes {
+		t.Run(mode.name, func(t *testing.T) {
+			h := searchTestHandle(t, parts, append(mode.opts, WithValueEncoding(format.TypeChimp))...)
+			require.Equal(t, 48, h.Len())
+			requireRangeWalksAgree(t, &h)
+			h.Materialize()
+			requireRangeWalksAgree(t, &h)
+		})
+	}
+}
+
+// TestNumericMetric_ForEachRange_UnevenParts checks the range walks where the full walks skip or shorten a part,
+// so the three axes no longer yield the same indices:
+// a shared timestamp group shorter than its count, a part without points, a part whose value range is unreadable,
+// a single blob, and blobs with tags.
+func TestNumericMetric_ForEachRange_UnevenParts(t *testing.T) {
+	parts := [][]int64{{10, 20, 30, 40}, {50, 60}, {70, 80, 90}}
+	shared := []NumericEncoderOption{WithTimestampEncoding(format.TypeDelta), WithSharedTimestamps(), WithValueEncoding(format.TypeChimp)}
+
+	t.Run("short shared group", func(t *testing.T) {
+		h := searchTestHandle(t, parts, shared...)
+		h.first.shared = h.first.shared[:1]
+		var indices []int
+		h.ForEachTimestampsRange(2, 6, func(i int, _ int64) bool { indices = append(indices, i); return true })
+		require.Equal(t, []int{4, 5}, indices, "the first blob yields its group, one timestamp, and no more")
+		requireRangeWalksAgree(t, &h)
+	})
+
+	t.Run("part without points", func(t *testing.T) {
+		h := searchTestHandle(t, parts, shared...)
+		h.rest = slices.Clone(h.rest)
+		h.rest[0].count = 0
+		h.rest[1].base -= 2
+		require.Equal(t, 7, h.Len())
+		requireRangeWalksAgree(t, &h)
+	})
+
+	t.Run("unreadable values", func(t *testing.T) {
+		h := searchTestHandle(t, parts, shared...)
+		h.rest = slices.Clone(h.rest)
+		h.rest[0].valBytes, h.rest[0].valOK = nil, false
+		var indices []int
+		h.ForEachValuesRange(0, h.Len(), func(i int, _ float64) bool { indices = append(indices, i); return true })
+		require.Equal(t, []int{0, 1, 2, 3, 6, 7, 8}, indices, "the unreadable blob is skipped and the next one still walked")
+		requireRangeWalksAgree(t, &h)
+	})
+
+	t.Run("single blob", func(t *testing.T) {
+		blob := searchTestSet(t, parts[:1], shared...).NumericBlobs()[0]
+		h, ok := blob.Metric(1)
+		require.True(t, ok)
+		requireRangeWalksAgree(t, &h)
+	})
+
+	t.Run("tags", func(t *testing.T) {
+		blobs := make([]NumericBlob, 3)
+		for k := range blobs {
+			ms := handleTestMetrics(2, 5, handleTestIdentical)
+			for m := range ms {
+				for i := range ms[m].ts {
+					ms[m].ts[i] += int64(k) * 3_600_000_000
+				}
+			}
+			blobs[k] = handleTestBlobAt(t, handleTestStart+int64(k), ms, false,
+				WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeChimp), WithTagsEnabled(true))
+		}
+		h, ok := NewBlobSet(blobs, nil).NumericMetric(1)
+		require.True(t, ok)
+		require.Equal(t, 15, h.Len())
+		requireRangeWalksAgree(t, &h)
+		h.Materialize()
+		requireRangeWalksAgree(t, &h)
+	})
+}
+
+// TestNumericMetric_ForEachRangeStops pins the two ways a range walk ends early, and the handles that walk nothing:
+// a yield that returns false is not called again, a nil yield is never called, and the zero value has no points.
+func TestNumericMetric_ForEachRangeStops(t *testing.T) {
+	parts := make([][]int64, 12)
+	for k := range parts {
+		parts[k] = []int64{int64(10 * k), int64(10*k + 1), int64(10*k + 2)}
+	}
+	h := searchTestHandle(t, parts, WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeChimp))
+	const start, stopAfter = 4, 5
+	var points, values, timestamps int
+	h.ForEachRange(start, h.Len(), func(i int, _ NumericDataPoint) bool {
+		require.Equal(t, start+points, i)
+		points++
+
+		return points < stopAfter
+	})
+	h.ForEachValuesRange(start, h.Len(), func(i int, _ float64) bool {
+		require.Equal(t, start+values, i)
+		values++
+
+		return values < stopAfter
+	})
+	h.ForEachTimestampsRange(start, h.Len(), func(i int, _ int64) bool {
+		require.Equal(t, start+timestamps, i)
+		timestamps++
+
+		return timestamps < stopAfter
+	})
+	require.Equal(t, stopAfter, points)
+	require.Equal(t, stopAfter, values)
+	require.Equal(t, stopAfter, timestamps)
+
+	h.ForEachRange(0, h.Len(), nil)
+	h.ForEachValuesRange(0, h.Len(), nil)
+	h.ForEachTimestampsRange(0, h.Len(), nil)
+
+	var zero NumericMetric
+	zero.ForEachRange(0, 10, func(int, NumericDataPoint) bool { t.Fatal("the zero value has no points"); return false })
+	zero.ForEachValuesRange(0, 10, func(int, float64) bool { t.Fatal("the zero value has no values"); return false })
+	zero.ForEachTimestampsRange(0, 10, func(int, int64) bool { t.Fatal("the zero value has no timestamps"); return false })
+}
+
+// TestNumericMetric_ForEachRangeAllocatesNothing pins the range walks' allocations on every timestamp layout.
+func TestNumericMetric_ForEachRangeAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	parts := make([][]int64, 12)
+	for k := range parts {
+		parts[k], _, _ = handleTestSeries(50, int64(k)*50*15_000_000, 0)
+	}
+	for _, mode := range searchTestModes {
+		h := searchTestHandle(t, parts, append(mode.opts, WithValueEncoding(format.TypeChimp))...)
+		var sink float64
+		allocs := testing.AllocsPerRun(50, func() {
+			h.ForEachRange(120, 430, func(_ int, dp NumericDataPoint) bool { sink += dp.Val; return true })
+		})
+		require.Zero(t, allocs, "%s: ForEachRange", mode.name)
+		allocs = testing.AllocsPerRun(50, func() {
+			h.ForEachValuesRange(120, 430, func(_ int, v float64) bool { sink += v; return true })
+		})
+		require.Zero(t, allocs, "%s: ForEachValuesRange", mode.name)
+		allocs = testing.AllocsPerRun(50, func() {
+			h.ForEachTimestampsRange(120, 430, func(_ int, ts int64) bool { sink += float64(ts); return true })
+		})
+		require.Zero(t, allocs, "%s: ForEachTimestampsRange", mode.name)
+		require.NotZero(t, sink, mode.name)
+
+		// Resolved per call on one blob, which allocates nothing: a handle a walk moved to the heap would.
+		blob := searchTestSet(t, parts[:1], append(mode.opts, WithValueEncoding(format.TypeChimp))...).NumericBlobs()[0]
+		allocs = testing.AllocsPerRun(50, func() {
+			h, _ := blob.Metric(1)
+			h.ForEachRange(10, 40, func(_ int, dp NumericDataPoint) bool { sink += dp.Val; return true })
+			h.ForEachValuesRange(10, 40, func(_ int, v float64) bool { sink += v; return true })
+			h.ForEachTimestampsRange(10, 40, func(_ int, ts int64) bool { sink += float64(ts); return true })
+		})
+		require.Zero(t, allocs, "%s: resolved per call", mode.name)
+	}
+}
+
+// TestSetEntryResolver_EntryNearAgreesWithEntry checks entryNear against entry from every guess, in range and out of it,
+// on every index layout and for every kind of resolver: the guess may change the cost of a lookup, never its answer.
+func TestSetEntryResolver_EntryNearAgreesWithEntry(t *testing.T) {
+	ts, vals := []int64{100, 200}, []float64{1, 2}
+	ids := []uint64{10, 20, 30, 40, 50}
+	ms := make([]handleTestMetric, len(ids))
+	for i, id := range ids {
+		ms[i] = handleTestMetric{id: id, name: "m" + strconv.Itoa(i), ts: ts, vals: vals}
+	}
+	half := append(slices.Clone(ms), handleTestMetric{id: cnH, name: cnA, ts: ts, vals: vals})
+	decode := func(data []byte) NumericBlob {
+		dec, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+		blob, err := dec.Decode()
+		require.NoError(t, err)
+
+		return blob
+	}
+	blobs := map[string]NumericBlob{
+		"ids":          handleTestBlob(t, ms, false),
+		"ids v2":       handleTestBlob(t, ms, false, WithBlobLayoutV2()),
+		"names":        handleTestBlob(t, ms, true),
+		"names v2":     handleTestBlob(t, ms, true, WithBlobLayoutV2()),
+		"collision":    decode(encodeCollisionNumeric(t)),
+		"collision v2": decode(encodeCollisionNumeric(t, WithBlobLayoutV2())),
+		// One name of the colliding pair: the other hashes to its entry and must be told apart by the stored name.
+		"half of a collision":    handleTestBlob(t, half, true),
+		"half of a collision v2": handleTestBlob(t, half, true, WithBlobLayoutV2()),
+		// The colliding ID without names: a resolver by name reads it unless the set excludes stripped members.
+		"nameless collided ID":    handleTestBlob(t, half, false),
+		"nameless collided ID v2": handleTestBlob(t, half, false, WithBlobLayoutV2()),
+	}
+
+	var resolvers []setEntryResolver
+	for _, name := range []string{"m0", "m2", "m4", "absent", cnA, cnB} {
+		id := hash.ID(name)
+		resolvers = append(resolvers,
+			setEntryResolver{metricName: name, byName: true},
+			setEntryResolver{metricName: name, byName: true, skipStripped: true},
+			setEntryResolver{metricID: id},
+			setEntryResolver{metricID: id, target: name, collided: true},
+		)
+	}
+	for _, id := range []uint64{0, 10, 30, 50, 999} {
+		resolvers = append(resolvers, setEntryResolver{metricID: id})
+	}
+
+	for name, b := range blobs {
+		hits := 0
+		for _, r := range resolvers {
+			id := r.metricID
+			if r.byName {
+				id = hash.ID(r.metricName)
+			}
+			want := r.entry(&b)
+			if want != nil {
+				hits++
+			}
+			for guess := -2; guess <= len(b.index.sorted)+2; guess++ {
+				got, next := r.entryNear(&b, id, guess)
+				require.True(t, got == want, "%s: %+v from guess %d", name, r, guess)
+				// The second result is the guess for the next member: the ordinal of the entry the index search found,
+				// and the guess it was given when it found none or left the lookup to entry.
+				if got == nil || r.collided || b.index.byName != nil || (r.byName && r.skipStripped && b.index.names == nil) {
+					require.Equal(t, guess, next, "%s: %+v keeps guess %d", name, r, guess)
+				} else {
+					require.True(t, next >= 0 && next < len(b.index.sorted), "%s: %+v from guess %d returns ordinal %d", name, r, guess, next)
+					require.Same(t, got, &b.index.sorted[next], "%s: %+v from guess %d returns the ordinal of its entry", name, r, guess)
+				}
+			}
+		}
+		require.Positive(t, hits, "%s: no resolver found an entry", name)
+	}
+
+	// An ID held by several entries, which a blob keeps without a name map once its names are stripped:
+	// only the leftmost is the search's answer, so a guess at a later one must not be taken.
+	repeated := indexMaps[section.NumericIndexEntry]{sortedIDs: []uint64{5, 7, 7, 7, 9, 9}}
+	for _, id := range []uint64{4, 5, 7, 8, 9, 10} {
+		want, wantOK := repeated.getOrdinal(id)
+		for guess := -2; guess <= len(repeated.sortedIDs)+2; guess++ {
+			got, ok := repeated.ordinalNear(id, guess)
+			require.Equal(t, wantOK, ok, "ID %d from guess %d", id, guess)
+			require.Equal(t, want, got, "ID %d from guess %d", id, guess)
+		}
+	}
+}
+
+// TestNumericMetric_LeavesOutMembersWithoutPoints pins resolution over members that hold the metric without points,
+// which the decoder accepts and the encoder never writes: the handle is the one a set without those members gives,
+// so its timestamps are searched as theirs are, and a metric no member has points for still has a handle, an empty one.
+func TestNumericMetric_LeavesOutMembersWithoutPoints(t *testing.T) {
+	parts := [][]int64{{100, 201}, {303}, {404, 505}, {606}}
+	for _, mode := range searchTestModes {
+		for _, empty := range [][]int{{0}, {1}, {3}, {0, 1}, {1, 2}, {2, 3}, {0, 1, 2}, {0, 1, 2, 3}} {
+			name := fmt.Sprintf("%s without the points of %v", mode.name, empty)
+			blobs := slices.Clone(searchTestSet(t, parts, mode.opts...).NumericBlobs())
+			var (
+				flat []int64
+				kept int
+			)
+			for k, ts := range parts {
+				if !slices.Contains(empty, k) {
+					flat = append(flat, ts...)
+					kept++
+
+					continue
+				}
+				entry := blobs[k].index.entryByID(1)
+				require.NotNil(t, entry, name)
+				entry.Count = 0
+			}
+			set := NewBlobSet(blobs, nil)
+
+			h, ok := set.NumericMetric(1)
+			require.True(t, ok, name)
+			require.Equal(t, len(flat), h.Len(), name)
+			require.Len(t, h.rest, max(kept-1, 0), name)
+			require.True(t, h.TimestampsSorted(), name)
+			for target := int64(90); target <= 620; target++ {
+				wantIndex, wantFound := slices.BinarySearch(flat, target)
+				index, found := h.SearchTimestamp(target)
+				require.Equal(t, wantIndex, index, "%s: SearchTimestamp(%d) index", name, target)
+				require.Equal(t, wantFound, found, "%s: SearchTimestamp(%d) found", name, target)
+			}
+			var got []int64
+			h.ForEachTimestamps(func(i int, ts int64) bool {
+				require.Len(t, got, i, name)
+				got = append(got, ts)
+
+				return true
+			})
+			require.Equal(t, flat, got, name)
+			for i, want := range flat {
+				ts, ok := h.TimestampAt(i)
+				require.True(t, ok, "%s: TimestampAt(%d)", name, i)
+				require.Equal(t, want, ts, "%s: TimestampAt(%d)", name, i)
+			}
+
+			// The other metric of the same members keeps every point.
+			other, ok := set.NumericMetric(2)
+			require.True(t, ok, name)
+			require.Equal(t, 6, other.Len(), name)
+		}
 	}
 }

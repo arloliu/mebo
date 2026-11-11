@@ -1,8 +1,10 @@
 package blob
 
 import (
+	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -466,4 +468,375 @@ func BenchmarkNumericMetric_ConsumerForEach(b *testing.B) {
 			b.Fatal("unreachable")
 		}
 	})
+}
+
+// BenchmarkNumericMetric_SearchTimestamp measures a timestamp search over 2880 blobs of 30 points,
+// the blob and point counts of a day at one point per second in 30-second blobs, with Chimp values:
+// on a sequential timestamp axis of each codec, and on the group DeltaPacked blobs pre-decode when metrics share it.
+// It times the handle's SearchTimestamp alone, with a ValueAt at the index it returns, and after Materialize,
+// against a scan from the first point and a bisection over TimestampAt, which replays a blob's column on every probe,
+// and the TimestampsSorted check a caller runs once before searching.
+func BenchmarkNumericMetric_SearchTimestamp(b *testing.B) {
+	const members, points = 2880, 30
+	parts := make([][]int64, members)
+	for k := range parts {
+		parts[k], _, _ = handleTestSeries(points, int64(k)*points*15_000_000, 0)
+	}
+	first, last := parts[0][0], parts[members-1][points-1]
+	targets := make([]int64, 1024)
+	state := uint64(1)
+	for i := range targets {
+		state = state*6364136223846793005 + 1442695040888963407
+		targets[i] = first + int64(state>>1)%(last-first)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		opts  []NumericEncoderOption
+		class AccessClass
+	}{
+		{"Delta", []NumericEncoderOption{WithTimestampEncoding(format.TypeDelta)}, AccessSequential},
+		{"DeltaPacked", []NumericEncoderOption{WithTimestampEncoding(format.TypeDeltaPacked)}, AccessSequential},
+		{"DeltaPacked-shared", []NumericEncoderOption{WithTimestampEncoding(format.TypeDeltaPacked), WithSharedTimestamps()}, AccessDirect},
+	} {
+		h := searchTestHandle(b, parts, append(tt.opts, WithValueEncoding(format.TypeChimp))...)
+		require.Equal(b, tt.class, h.TimestampAccess())
+		materialized := h
+		materialized.Materialize()
+
+		b.Run(tt.name+"/SearchTimestamp+ValueAt", func(b *testing.B) {
+			var sink float64
+			var n int
+			b.ReportAllocs()
+			for b.Loop() {
+				index, _ := h.SearchTimestamp(targets[n&1023])
+				v, _ := h.ValueAt(index)
+				sink += v
+				n++
+			}
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+
+		b.Run(tt.name+"/SearchTimestamp", func(b *testing.B) {
+			var sink, n int
+			b.ReportAllocs()
+			for b.Loop() {
+				index, _ := h.SearchTimestamp(targets[n&1023])
+				sink += index
+				n++
+			}
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+
+		b.Run(tt.name+"/SearchTimestamp-materialized", func(b *testing.B) {
+			var sink, n int
+			b.ReportAllocs()
+			for b.Loop() {
+				index, _ := materialized.SearchTimestamp(targets[n&1023])
+				sink += index
+				n++
+			}
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+
+		b.Run(tt.name+"/TimestampsSorted", func(b *testing.B) {
+			var sink int
+			b.ReportAllocs()
+			for b.Loop() {
+				if h.TimestampsSorted() {
+					sink++
+				}
+			}
+			if sink == 0 {
+				b.Fatal("the fixture is sorted")
+			}
+		})
+
+		b.Run(tt.name+"/scan", func(b *testing.B) {
+			var sink, n int
+			b.ReportAllocs()
+			for b.Loop() {
+				target := targets[n&1023]
+				h.ForEachTimestamps(func(i int, ts int64) bool {
+					if ts >= target {
+						sink += i
+
+						return false
+					}
+
+					return true
+				})
+				n++
+			}
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+
+		b.Run(tt.name+"/bisect-TimestampAt", func(b *testing.B) {
+			var sink, n int
+			b.ReportAllocs()
+			for b.Loop() {
+				target := targets[n&1023]
+				lo, hi := 0, h.Len()
+				for lo < hi {
+					mid := (lo + hi) / 2
+					if ts, _ := h.TimestampAt(mid); ts < target {
+						lo = mid + 1
+					} else {
+						hi = mid
+					}
+				}
+				sink += lo
+				n++
+			}
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+	}
+}
+
+// searchPassSet builds about a day of one point per second,
+// with DeltaPacked timestamps two metrics share and Chimp values: the shape the search was written for.
+// The regular set has 2880 blobs of 30 points.
+// The irregular one has blobs of 27 to 33 points, one blob in 64 holding a single point,
+// and three gaps of several hours, so neither an index nor a time maps evenly onto the blobs.
+func searchPassSet(tb testing.TB, irregular bool) BlobSet {
+	tb.Helper()
+	const members = 2880
+	parts := make([][]int64, members)
+	next := handleTestStart
+	state := uint32(7)
+	for k := range parts {
+		points := 30
+		if irregular {
+			state = state*1664525 + 1013904223
+			points = 27 + int(state>>24)%7
+			if k%64 == 63 {
+				points = 1
+			}
+			if k == 400 || k == 1500 || k == 2500 {
+				next += 5 * 3_600_000_000
+			}
+		}
+		parts[k] = make([]int64, points)
+		for i := range parts[k] {
+			parts[k][i] = next
+			next += 1_000_000
+		}
+	}
+
+	return searchTestSet(tb, parts,
+		WithTimestampEncoding(format.TypeDeltaPacked), WithSharedTimestamps(), WithValueEncoding(format.TypeChimp))
+}
+
+// BenchmarkNumericMetric_SearchPass measures one pass of nearest-point lookups over that day:
+// one target per point, 300 ms after it, in increasing order,
+// and per target the search, the timestamps on either side of the index it returns, and the value of the nearer one.
+// It reports the time per lookup on the handle as resolved, on the handle after Materialize,
+// and on the flattened MaterializedNumericMetric with slices.BinarySearch,
+// which is what a caller writes without the search.
+func BenchmarkNumericMetric_SearchPass(b *testing.B) {
+	for _, shape := range []struct {
+		name      string
+		irregular bool
+	}{{"regular", false}, {"irregular", true}} {
+		bs := searchPassSet(b, shape.irregular)
+		h, ok := bs.NumericMetric(1)
+		require.True(b, ok)
+		require.True(b, h.TimestampsSorted())
+		n := h.Len()
+		materialized := h
+		materialized.Materialize()
+		flat, ok := bs.MaterializeNumericMetric(1)
+		require.True(b, ok)
+		targets := make([]int64, n)
+		for i, ts := range flat.Timestamps {
+			targets[i] = ts + 300_000
+		}
+
+		pass := func(b *testing.B, h *NumericMetric) {
+			b.Helper()
+			var sink float64
+			b.ReportAllocs()
+			for b.Loop() {
+				for _, target := range targets {
+					i, _ := h.SearchTimestamp(target)
+					nearest := i - 1
+					if i < n {
+						below, _ := h.TimestampAt(i - 1)
+						at, _ := h.TimestampAt(i)
+						if at-target < target-below {
+							nearest = i
+						}
+					}
+					v, _ := h.ValueAt(nearest)
+					sink += v
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(n), "ns/lookup")
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		}
+		b.Run(shape.name+"/NumericMetric", func(b *testing.B) { pass(b, &h) })
+		b.Run(shape.name+"/NumericMetric-materialized", func(b *testing.B) { pass(b, &materialized) })
+		b.Run(shape.name+"/flat-BinarySearch", func(b *testing.B) {
+			var sink float64
+			b.ReportAllocs()
+			for b.Loop() {
+				for _, target := range targets {
+					i, _ := slices.BinarySearch(flat.Timestamps, target)
+					nearest := i - 1
+					if i < n && flat.Timestamps[i]-target < target-flat.Timestamps[i-1] {
+						nearest = i
+					}
+					sink += flat.Values[nearest]
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(n), "ns/lookup")
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+	}
+}
+
+// BenchmarkNumericMetric_LargeSet measures what a caller pays before its first lookup on 2880 blobs of 200 metrics:
+// decoding the set, resolving one handle by name, a different metric on every iteration,
+// so each resolution reads index entries the one before it did not,
+// and that resolution followed by the TimestampsSorted check and by Materialize.
+func BenchmarkNumericMetric_LargeSet(b *testing.B) {
+	const members, metrics, points = 2880, 200, 30
+	names := make([]string, metrics)
+	for m := range names {
+		names[m] = "svid." + strconv.Itoa(m)
+	}
+	inputs := make([][]byte, members)
+	for k := range inputs {
+		start := handleTestStart + int64(k*points)*1_000_000
+		enc, err := NewNumericEncoder(time.UnixMicro(start), WithLittleEndian(), WithMetricNames(), WithSharedTimestamps(),
+			WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeChimp),
+			WithTimestampCompression(format.CompressionNone), WithValueCompression(format.CompressionNone))
+		require.NoError(b, err)
+		for m, name := range names {
+			require.NoError(b, enc.StartMetricName(name, points))
+			for i := range points {
+				require.NoError(b, enc.AddDataPoint(start+int64(i)*1_000_000, float64(m)+float64(i%7)*0.25, ""))
+			}
+			require.NoError(b, enc.EndMetric())
+		}
+		data, err := enc.Finish()
+		require.NoError(b, err)
+		inputs[k] = data
+	}
+	bs, err := DecodeBlobSet(inputs...)
+	require.NoError(b, err)
+
+	b.Run("DecodeBlobSet", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := DecodeBlobSet(inputs...); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("NumericMetricByName", func(b *testing.B) {
+		var sink, k int
+		b.ReportAllocs()
+		for b.Loop() {
+			h, _ := bs.NumericMetricByName(names[k%metrics])
+			sink += h.Len()
+			k++
+		}
+		if sink == 0 {
+			b.Fatal("no handle resolved")
+		}
+	})
+
+	b.Run("NumericMetricByName+Materialize", func(b *testing.B) {
+		var sink, k int
+		b.ReportAllocs()
+		for b.Loop() {
+			h, _ := bs.NumericMetricByName(names[k%metrics])
+			h.Materialize()
+			sink += h.Len()
+			k++
+		}
+		if sink == 0 {
+			b.Fatal("no handle resolved")
+		}
+	})
+
+	b.Run("NumericMetricByName+TimestampsSorted", func(b *testing.B) {
+		var sink, k int
+		b.ReportAllocs()
+		for b.Loop() {
+			h, _ := bs.NumericMetricByName(names[k%metrics])
+			if h.TimestampsSorted() {
+				sink++
+			}
+			k++
+		}
+		if sink == 0 {
+			b.Fatal("the fixture is sorted")
+		}
+	})
+}
+
+// BenchmarkNumericMetric_WindowWalk measures reading the values of a 600-point window of a day in 2880 blobs,
+// with the window 10%, 50% and 90% of the way through the metric:
+// ForEachValuesRange, and ForEachValues skipping to the window, which is the walk a caller had before it.
+func BenchmarkNumericMetric_WindowWalk(b *testing.B) {
+	bs := searchPassSet(b, false)
+	h, ok := bs.NumericMetric(1)
+	require.True(b, ok)
+	n := h.Len()
+	const window = 600
+	for _, at := range []int{10, 50, 90} {
+		start := n * at / 100
+		end := start + window
+		b.Run(strconv.Itoa(at)+"pct/ForEachValuesRange", func(b *testing.B) {
+			var sink float64
+			b.ReportAllocs()
+			for b.Loop() {
+				h.ForEachValuesRange(start, end, func(_ int, v float64) bool {
+					sink += v
+
+					return true
+				})
+			}
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+		b.Run(strconv.Itoa(at)+"pct/ForEachValues-skip", func(b *testing.B) {
+			var sink float64
+			b.ReportAllocs()
+			for b.Loop() {
+				h.ForEachValues(func(i int, v float64) bool {
+					if i < start {
+						return true
+					}
+					if i >= end {
+						return false
+					}
+					sink += v
+
+					return true
+				})
+			}
+			if sink == -1 {
+				b.Fatal("unreachable")
+			}
+		})
+	}
 }

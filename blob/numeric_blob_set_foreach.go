@@ -63,6 +63,23 @@ func (r setEntryResolver) entry(blob *NumericBlob) *section.NumericIndexEntry {
 	return blob.index.entryFor(r.metricID, r.target, r.collided)
 }
 
+// entryNear is entry with the ordinal the previous member held the metric at, tried before the member's index is searched,
+// and returns the ordinal to try on the next member.
+// id is the metric's ID: metricID, or the hash of metricName for a resolver by name, computed once by the caller.
+// A member whose index maps names itself, and a resolver on a collided ID, take entry as it is.
+func (r setEntryResolver) entryNear(blob *NumericBlob, id uint64, guess int) (*section.NumericIndexEntry, int) {
+	m := &blob.index
+	if r.collided || m.byName != nil || (r.byName && r.skipStripped && m.names == nil) {
+		return r.entry(blob), guess
+	}
+	ord, ok := m.ordinalNear(id, guess)
+	if !ok || (r.byName && m.names != nil && m.names[ord] != r.metricName) {
+		return nil, guess
+	}
+
+	return &m.sorted[ord], ord
+}
+
 func (r setEntryResolver) resolve(blob *NumericBlob) (section.NumericIndexEntry, bool) {
 	if entry := r.entry(blob); entry != nil {
 		return *entry, true

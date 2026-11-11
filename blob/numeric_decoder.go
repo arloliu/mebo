@@ -884,7 +884,11 @@ func (d *NumericDecoder) buildSharedTimestamps(blob *NumericBlob, indexEntries [
 		tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 		decoded := make([]int64, entry.Count)
 		produced := blob.decodeTimestampsSlice(tsBytes, entry.Count, decoded)
-		groups = append(groups, sharedTimestampGroup{offset: entry.TimestampOffset, ts: decoded[:produced]})
+		groups = append(groups, sharedTimestampGroup{
+			offset: entry.TimestampOffset,
+			ts:     decoded[:produced],
+			sorted: slices.IsSorted(decoded[:produced]),
+		})
 	}
 
 	if len(groups) > 0 {
