@@ -40,6 +40,9 @@ var _ BlobReader = NumericBlob{}
 type sharedTimestampGroup struct {
 	offset int
 	ts     []int64
+	// sorted records that ts was found non-decreasing when it was decoded.
+	// False means only that it was not established, so a reader checks the timestamps itself.
+	sorted bool
 }
 
 // sharedTimestamps holds a blob's shared-timestamp groups sorted by offset,
@@ -68,6 +71,24 @@ func (s *sharedTimestamps) lookup(offset int) []int64 {
 	}
 
 	return s.lookupRest(offset)
+}
+
+// sortedAt reports whether the group at the given TimestampOffset was found non-decreasing at open.
+// It is for resolution, which runs once per handle, and not for the point accessors.
+func (s *sharedTimestamps) sortedAt(offset int) bool {
+	if s == nil {
+		return false
+	}
+	if s.first.offset == offset {
+		return s.first.sorted
+	}
+	for i := 1; i < len(s.groups); i++ {
+		if s.groups[i].offset == offset {
+			return s.groups[i].sorted
+		}
+	}
+
+	return false
 }
 
 // lookupRest searches the groups after the first,

@@ -1,12 +1,14 @@
 package blob
 
 import (
+	"math"
 	"slices"
 	"strings"
 
 	"github.com/arloliu/mebo/endian"
 	"github.com/arloliu/mebo/format"
 	ienc "github.com/arloliu/mebo/internal/encoding"
+	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/section"
 )
 
@@ -17,6 +19,13 @@ import (
 // AccessSequential means it replays the column from its start up to the index,
 // and AccessUnsupported means the axis cannot be read and every lookup on it returns false.
 type AccessClass uint8
+
+const (
+	// locateScanParts is the number of parts after the first up to which an index is placed by a scan, not a bisection.
+	locateScanParts = 8
+	// locateStrides is the number of doubling strides locateBisect takes from its estimate before it bisects.
+	locateStrides = 5
+)
 
 // The classes are ordered from best to worst, so the worst of several is their maximum.
 const (
@@ -88,6 +97,9 @@ type numericMetricPart struct {
 	tsOK     bool                // the entry's timestamp range lay inside the payload
 	valOK    bool                // the entry's value range lay inside the payload
 	tagOK    bool                // the entry's tag range lay inside the payload (false without tags)
+	// sharedSorted records that the decoder found the whole shared group non-decreasing when it opened the blob,
+	// which every metric of the group can then rely on without reading the group again.
+	sharedSorted bool
 
 	// Owned by the handle and filled by Materialize, nil until then; never written again once set.
 	// Each holds what its decoder produced, count elements unless the stream ended early.
@@ -126,6 +138,7 @@ func fillNumericMetricPart(p *numericMetricPart, b *NumericBlob, entry *section.
 	p.count = entry.Count
 	p.base = base
 	p.shared = b.sharedTs.lookup(entry.TimestampOffset)
+	p.sharedSorted = p.shared != nil && b.sharedTs.sortedAt(entry.TimestampOffset)
 	p.engine = b.Engine()
 	p.tsBytes, p.tsOK = safeSlice(b.tsPayload, entry.TimestampOffset, entry.TimestampLength)
 	p.valBytes, p.valOK = safeSlice(b.valPayload, entry.ValueOffset, entry.ValueLength)
@@ -137,34 +150,56 @@ func fillNumericMetricPart(p *numericMetricPart, b *NumericBlob, entry *section.
 // numericMetricAcrossBlobs resolves the metric in every member in order:
 // the first contributing member fills first, the others fill rest, allocated once after counting them,
 // each with the points before it as its base.
+//
+// A member that holds the metric without points is left out: it adds nothing to the index,
+// and it has no first timestamp for SearchTimestamp to place it by.
+// When no member has points, the first that holds the metric stands for it and the handle is empty.
+// The encoder refuses a metric without points, so only a blob another writer made has one.
 func numericMetricAcrossBlobs(blobs []NumericBlob, r setEntryResolver) (h NumericMetric, ok bool) {
+	// The members of a set usually hold the same metrics in the same order,
+	// so each member is first asked for the entry at the ordinal the member before it had.
+	id := r.metricID
+	if r.byName {
+		id = hash.ID(r.metricName)
+	}
 	first := -1
 	members := 0
+	ord, firstOrd := 0, 0
 	var firstEntry *section.NumericIndexEntry
 	for i := range blobs {
-		entry := r.entry(&blobs[i])
+		var entry *section.NumericIndexEntry
+		entry, ord = r.entryNear(&blobs[i], id, ord)
 		if entry == nil {
 			continue
 		}
-		if first < 0 {
-			first, firstEntry = i, entry
+		if entry.Count == 0 {
+			if firstEntry == nil {
+				first, firstEntry = i, entry
+			}
+
+			continue
+		}
+		if members == 0 {
+			first, firstEntry, firstOrd = i, entry, ord
 		}
 		members++
 	}
-	if members == 0 {
+	if firstEntry == nil {
 		return NumericMetric{}, false
 	}
 	fillNumericMetricPart(&h.first, &blobs[first], firstEntry, 0)
-	if members == 1 {
+	if members <= 1 {
 		return h, true
 	}
 
 	h.rest = make([]numericMetricPart, members-1)
 	base := h.first.count
 	k := 0
+	ord = firstOrd
 	for i := first + 1; i < len(blobs); i++ {
-		entry := r.entry(&blobs[i])
-		if entry == nil {
+		var entry *section.NumericIndexEntry
+		entry, ord = r.entryNear(&blobs[i], id, ord)
+		if entry == nil || entry.Count == 0 {
 			continue
 		}
 		fillNumericMetricPart(&h.rest[k], &blobs[i], entry, base)
@@ -427,6 +462,119 @@ func (h *NumericMetric) ForEachTimestamps(yield func(index int, ts int64) bool) 
 	}
 }
 
+// ForEachRange calls yield for the data points whose index lies in [start, end), in index order,
+// with the index At accepts: ForEach over a window of the metric.
+//
+// The range is clamped to the metric: a negative start reads from the first point, an end past Len() to the last,
+// and a range left empty yields nothing.
+// The walk begins at the blob that holds start and ends at the one that holds end-1,
+// so the blobs before the window are not decoded; inside the first blob the points before start are decoded and skipped,
+// which costs at most one blob's points.
+// On a handle whose timestamps SearchTimestamp can search, the points of a time window [begin, end] are:
+//
+//	lo, _ := h.SearchTimestamp(begin)
+//	hi := h.Len()
+//	if end < math.MaxInt64 {
+//	    hi, _ = h.SearchTimestamp(end + 1)
+//	}
+//	h.ForEachRange(lo, hi, yield)
+//
+// Parameters:
+//   - start: The index of the first point to yield.
+//   - end: The index after the last point to yield.
+//   - yield: Called with (index, point); return false to stop the walk.
+//     A nil yield walks nothing.
+func (h *NumericMetric) ForEachRange(start, end int, yield func(index int, dp NumericDataPoint) bool) {
+	start, end = max(start, 0), min(end, h.Len())
+	if yield == nil || start >= end {
+		return
+	}
+
+	var (
+		base    int
+		stopped bool
+	)
+	adapter := func(i int, dp NumericDataPoint) bool {
+		index := base + i
+		if index < start {
+			return true
+		}
+		if index >= end || !yield(index, dp) {
+			stopped = true
+
+			return false
+		}
+
+		return true
+	}
+	for k := h.partOrdinal(start); !stopped && k <= len(h.rest); k++ {
+		p := h.part(k)
+		if p.base >= end {
+			return
+		}
+		base = p.base
+		p.forEachPoints(adapter)
+	}
+}
+
+// ForEachValuesRange calls yield for the values whose index lies in [start, end), in index order:
+// ForEachValues over a window of the metric, with the clamping and the cost of ForEachRange.
+//
+// Parameters:
+//   - start: The index of the first value to yield.
+//   - end: The index after the last value to yield.
+//   - yield: Called with (index, value); return false to stop the walk.
+//     A nil yield walks nothing.
+func (h *NumericMetric) ForEachValuesRange(start, end int, yield func(index int, value float64) bool) {
+	start, end = max(start, 0), min(end, h.Len())
+	if yield == nil || start >= end {
+		return
+	}
+
+	adapter := func(index int, value float64) bool {
+		if index < start {
+			return true
+		}
+
+		return index < end && yield(index, value)
+	}
+	for k := h.partOrdinal(start); k <= len(h.rest); k++ {
+		p := h.part(k)
+		if p.base >= end || p.forEachValues(adapter) < 0 {
+			return
+		}
+	}
+}
+
+// ForEachTimestampsRange calls yield for the timestamps whose index lies in [start, end), in index order:
+// ForEachTimestamps over a window of the metric, with the clamping and the cost of ForEachRange.
+//
+// Parameters:
+//   - start: The index of the first timestamp to yield.
+//   - end: The index after the last timestamp to yield.
+//   - yield: Called with (index, timestamp); return false to stop the walk.
+//     A nil yield walks nothing.
+func (h *NumericMetric) ForEachTimestampsRange(start, end int, yield func(index int, ts int64) bool) {
+	start, end = max(start, 0), min(end, h.Len())
+	if yield == nil || start >= end {
+		return
+	}
+
+	adapter := func(index int, ts int64) bool {
+		if index < start {
+			return true
+		}
+
+		return index < end && yield(index, ts)
+	}
+	for k := h.partOrdinal(start); k <= len(h.rest); k++ {
+		p := h.part(k)
+		if p.base >= end || p.forEachTimestamps(adapter) < 0 {
+			return
+		}
+	}
+}
+
 // At returns the data point at the given index: its timestamp, its value and its tag.
 //
 // It agrees with TimestampAt, ValueAt and TagAt at the same index and succeeds only when all three do.
@@ -440,7 +588,15 @@ func (h *NumericMetric) ForEachTimestamps(yield func(index int, ts int64) bool) 
 func (h *NumericMetric) At(index int) (NumericDataPoint, bool) {
 	// A materialized part serves the point from its slices after one placement;
 	// otherwise the part reads each axis from that same placement.
-	p, i := h.locate(index)
+	var (
+		p *numericMetricPart
+		i int
+	)
+	if len(h.rest) > locateScanParts {
+		p, i = h.locateBisect(index)
+	} else {
+		p, i = h.locate(index)
+	}
 	if i >= 0 && i < len(p.values) && (i < len(p.tags) || !p.HasTag()) {
 		if ts, ok := p.timestampFromSlices(i); ok {
 			dp := NumericDataPoint{Ts: ts, Val: p.values[i]}
@@ -473,7 +629,15 @@ func (h *NumericMetric) ValueAt(index int) (float64, bool) {
 	}
 
 	// numericMetricPart.valueAt, written out: calling it measurably slowed the ALP lookups.
-	p, i := h.locate(index)
+	var (
+		p *numericMetricPart
+		i int
+	)
+	if len(h.rest) > locateScanParts {
+		p, i = h.locateBisect(index)
+	} else {
+		p, i = h.locate(index)
+	}
 	count := p.count
 	if i < 0 || i >= count {
 		return 0, false
@@ -524,7 +688,15 @@ func (h *NumericMetric) TimestampAt(index int) (int64, bool) {
 	}
 
 	// numericMetricPart.timestampAt, written out, as ValueAt does.
-	p, i := h.locate(index)
+	var (
+		p *numericMetricPart
+		i int
+	)
+	if len(h.rest) > locateScanParts {
+		p, i = h.locateBisect(index)
+	} else {
+		p, i = h.locate(index)
+	}
 	count := p.count
 	if i < 0 || i >= count {
 		return 0, false
@@ -554,6 +726,86 @@ func (h *NumericMetric) TimestampAt(index int) (int64, bool) {
 	}
 }
 
+// SearchTimestamp returns the first index whose timestamp is not below ts, in the unit the encoder was given,
+// and whether the timestamp there equals ts: the contract of slices.BinarySearch.
+//
+// When every timestamp is below ts it returns (Len(), false).
+// The points of a window [begin, end] are the indices from SearchTimestamp(begin) up to,
+// but not including, SearchTimestamp(end+1), or up to Len() when end is math.MaxInt64.
+// The point nearest ts is the one at the returned index or the one before it.
+//
+// It bisects the blobs the handle spans on their first timestamps, which every encoding reads without a replay,
+// then searches one blob: a bisection when that blob's timestamps are Raw, pre-decoded or materialized,
+// one forward pass over its column otherwise.
+// The cost is therefore a bisection of the blobs plus a search of one blob's points, wherever ts falls in the handle,
+// and no Materialize is needed first.
+// It allocates nothing.
+//
+// The timestamps must be non-decreasing over the whole handle; the result is unspecified otherwise,
+// as with slices.BinarySearch on unsorted input.
+// The members of a set are concatenated in start-time order, not merged,
+// so the precondition fails when a member's first timestamp is below the last timestamp of the member before it,
+// as it is between overlapping members.
+// TimestampsSorted reports whether it holds.
+//
+// Parameters:
+//   - ts: The timestamp to look for.
+//
+// Returns:
+//   - index: The first index whose timestamp is not below ts, or Len() when there is none.
+//   - found: true if the timestamp at index equals ts.
+//     A timestamp the search needs that cannot be read also answers (Len(), false).
+func (h *NumericMetric) SearchTimestamp(ts int64) (index int, found bool) {
+	k, ok := h.partsStartingBelow(ts)
+	if !ok {
+		return h.Len(), false
+	}
+	if k == 0 {
+		// ts is at or before the first point.
+		first, ok := h.first.timestampAt(0)
+		if !ok {
+			return h.Len(), false
+		}
+
+		return 0, first == ts
+	}
+
+	// The first timestamp not below ts is in part k-1, or is the first point of part k when that part ends below ts.
+	p := h.part(k - 1)
+	i, at := p.lowerBound(ts)
+	if i == 0 {
+		return h.Len(), false
+	}
+	if i == p.count {
+		if k == 1+len(h.rest) {
+			return h.Len(), false
+		}
+		var ok bool
+		if at, ok = h.part(k).timestampAt(0); !ok {
+			return h.Len(), false
+		}
+	}
+
+	return p.base + i, at == ts
+}
+
+// TimestampsSorted reports whether the handle's timestamps are non-decreasing over its whole index,
+// which is what SearchTimestamp requires.
+//
+// It reads each timestamp at most once and stops at the first one below its predecessor:
+// a compare per point on a column that is pre-decoded or materialized, a replay of the column otherwise,
+// so its cost follows TimestampAccess.
+// It allocates nothing and caches nothing; a caller that searches a handle many times checks it once.
+// It reports true for a handle without points, and false when a blob's column does not decode to its last point.
+func (h *NumericMetric) TimestampsSorted() bool {
+	last, ok := h.first.sortedFrom(math.MinInt64)
+	for k := 0; ok && k < len(h.rest); k++ {
+		last, ok = h.rest[k].sortedFrom(last)
+	}
+
+	return ok
+}
+
 // TagAt returns the tag at the given index.
 //
 // Tags are variable-length strings walked from the column start,
@@ -572,7 +824,15 @@ func (h *NumericMetric) TagAt(index int) (string, bool) {
 		return h.first.tags[index], true
 	}
 
-	p, i := h.locate(index)
+	var (
+		p *numericMetricPart
+		i int
+	)
+	if len(h.rest) > locateScanParts {
+		p, i = h.locateBisect(index)
+	} else {
+		p, i = h.locate(index)
+	}
 
 	return p.tagAt(i)
 }
@@ -677,8 +937,61 @@ func (h *NumericMetric) part(k int) *numericMetricPart {
 	return &h.rest[k-1]
 }
 
+// partOrdinal returns the ordinal part takes of the part holding index, which the caller keeps within the handle:
+// the last part that starts at or before index, as locateBisect chooses it.
+// It runs once per range walk, so it is a plain bisection.
+func (h *NumericMetric) partOrdinal(index int) int {
+	if index < h.first.count {
+		return 0
+	}
+	// k becomes the number of parts after the first that start at or before index.
+	k, hi := 0, len(h.rest)
+	for k < hi {
+		mid := (k + hi) / 2
+		if h.rest[mid].base <= index {
+			k = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+
+	return k
+}
+
+// partsStartingBelow returns the number of parts whose first timestamp is below ts,
+// and false when a first timestamp it needs cannot be read.
+//
+// It is a branching bisection, not the branch-free one countBelow runs over a blob's points:
+// over thousands of parts the processor gains more from running ahead on a predicted compare,
+// which targets that advance in order make right nearly every time, than it loses on a miss.
+func (h *NumericMetric) partsStartingBelow(ts int64) (int, bool) {
+	// The loop calls part by name: a part pointer handed to a func value would leak the handle to the heap.
+	k, hi := 0, 1+len(h.rest)
+	for k < hi {
+		mid := (k + hi) / 2
+		// The decoded column or the pre-decoded group is read in line; a probe through timestampAt is mostly the call.
+		p := h.part(mid)
+		first, ok := p.timestampFromSlices(0)
+		if !ok || p.count == 0 {
+			if first, ok = p.timestampAt(0); !ok {
+				return 0, false
+			}
+		}
+		if first < ts {
+			k = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+
+	return k, true
+}
+
 // locate returns the part holding index and the index local to that part.
 // A negative index, or one past the last part, lands on the first part with an index its bounds check rejects.
+// It scans the parts, which suits the few blobs of a small set and is small enough to inline;
+// the accessors call locateBisect instead when the handle has more than locateScanParts parts after the first.
+// Each writes that choice out, because one function holding both would not inline.
 func (h *NumericMetric) locate(index int) (*numericMetricPart, int) {
 	if index < h.first.count {
 		return &h.first, index
@@ -698,6 +1011,72 @@ func (h *NumericMetric) locateRest(index int) (*numericMetricPart, int) {
 	}
 
 	return &h.first, -1
+}
+
+// locateBisect is locate for a handle on a set of many blobs, where a scan would walk up to all of them on every lookup.
+// An index past the last part lands on that part with a local index its bounds check rejects.
+//
+// It first estimates the part from the index, as if every part held the same number of points,
+// and steps outward from the estimate in doubling strides, at most locateStrides of them, before it bisects what is left.
+// Blobs of similar sizes, which is what a writer on a timer produces, are placed in two or three reads of a base;
+// the worst case, sizes that put the estimate far off,
+// costs the estimate's read and locateStrides more than a plain bisection.
+func (h *NumericMetric) locateBisect(index int) (*numericMetricPart, int) {
+	if index < h.first.count {
+		return &h.first, index
+	}
+	n := len(h.rest)
+	if n == 0 {
+		return &h.first, index
+	}
+	last := &h.rest[n-1]
+	total := last.base + last.count
+	if index >= total {
+		return last, index - last.base
+	}
+
+	// lo becomes the last part that starts at or before index;
+	// an empty part sharing its base with the part after it never is.
+	// Invariant: rest[lo].base <= index, and rest[hi].base > index when hi < n.
+	lo, hi := 0, n
+	// A product that overflows gives a guess that is wrong, or out of range and replaced:
+	// the steps below are correct from any part.
+	guess := int(uint64(index) * uint64(n) / uint64(total)) //nolint:gosec // 0 <= index < total
+	if uint(guess) >= uint(n) {
+		guess = 0
+	}
+	if h.rest[guess].base <= index {
+		lo = guess
+		for stride, left := 1, locateStrides; left > 0 && lo+stride < hi; stride, left = stride<<1, left-1 {
+			if h.rest[lo+stride].base > index {
+				hi = lo + stride
+
+				break
+			}
+			lo += stride
+		}
+	} else {
+		hi = guess
+		for stride, left := 1, locateStrides; left > 0 && hi-stride > lo; stride, left = stride<<1, left-1 {
+			if h.rest[hi-stride].base <= index {
+				lo = hi - stride
+
+				break
+			}
+			hi -= stride
+		}
+	}
+	for hi-lo > 1 {
+		mid := (lo + hi) / 2
+		if h.rest[mid].base <= index {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	p := &h.rest[lo]
+
+	return p, index - p.base
 }
 
 // restNeedsDecode reports whether any part after the first has an axis Materialize would decode.
@@ -894,6 +1273,138 @@ func (p *numericMetricPart) timestampAt(i int) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// sortedFrom reports whether the part's timestamps are non-decreasing and none is below prev,
+// the last timestamp before the part, and returns the part's last timestamp, or prev for a part without points.
+// A column that cannot be read to its end is not sorted.
+func (p *numericMetricPart) sortedFrom(prev int64) (int64, bool) {
+	if p.count == 0 {
+		return prev, true
+	}
+	if column := p.timestampColumn(); column != nil {
+		// A group the decoder found in order needs its two ends compared, not its points.
+		if p.sharedSorted && len(p.timestamps) != p.count {
+			return column[len(column)-1], column[0] >= prev
+		}
+		for _, ts := range column {
+			if ts < prev {
+				return prev, false
+			}
+			prev = ts
+		}
+
+		return prev, true
+	}
+
+	sorted := true
+	end := NumericBlob{blobBase: p.blobBase}.forEachTimestampsBytes(p.tsBytes, p.count, 0, func(_ int, ts int64) bool {
+		if ts < prev {
+			sorted = false
+
+			return false
+		}
+		prev = ts
+
+		return true
+	})
+
+	return prev, sorted && end == p.count
+}
+
+// lowerBound returns the first local index i whose timestamp is not below ts, with that timestamp in at.
+// The caller has read the part's first timestamp and found it below ts, so i >= 1;
+// i == count means every timestamp is below ts, and at is then unset.
+// i == 0 reports that a timestamp it needs cannot be read, a column that ends early included.
+func (p *numericMetricPart) lowerBound(ts int64) (i int, at int64) {
+	// Bisect only where every probe is a direct read: a shared group shorter than count still classes as direct,
+	// but its tail replays the payload on each probe, so it takes the pass.
+	if column := p.timestampColumn(); column != nil {
+		return lowerBoundInColumn(column, ts)
+	}
+	if p.tsEncType == format.TypeRaw {
+		// Invariant: the timestamp at i-1 is below ts; at is the timestamp at hi when hi < count.
+		i = 1
+		hi := p.count
+		for i < hi {
+			mid := (i + hi) / 2
+			v, ok := p.timestampAt(mid)
+			if !ok {
+				return 0, 0
+			}
+			if v < ts {
+				i = mid + 1
+			} else {
+				hi, at = mid, v
+			}
+		}
+
+		return i, at
+	}
+
+	return p.lowerBoundByReplay(ts)
+}
+
+// lowerBoundInColumn is lowerBound on a decoded column whose first timestamp is below ts.
+func lowerBoundInColumn(column []int64, ts int64) (i int, at int64) {
+	i = 1 + countBelow(column[1:], ts)
+	if i < len(column) {
+		at = column[i]
+	}
+
+	return i, at
+}
+
+// countBelow returns the number of elements of a non-decreasing column that are below ts.
+//
+// The loop runs a number of steps that depends on the column's length alone,
+// and each step adds half the remaining range under a mask made from the compare, not on a branch.
+// Targets that advance one point at a time took a different path through a branching bisection on every call,
+// and over the few dozen points of a blob the processor mispredicted most of them.
+// Only the last compare, of one element, branches.
+func countBelow(column []int64, ts int64) int {
+	// The answer lies in the n elements from i.
+	i := 0
+	n := len(column)
+	for n > 1 {
+		half := n >> 1
+		below := 0
+		if column[i+half-1] < ts {
+			below = 1
+		}
+		i += half & -below
+		n -= half
+	}
+	if n == 1 && column[i] < ts {
+		i++
+	}
+
+	return i
+}
+
+// lowerBoundByReplay is lowerBound by one pass over the payload that stops at the first timestamp not below ts.
+// A bisection would replay the column from its start on every probe.
+// It is a function of its own because its callback captures the results,
+// which keeps them in memory for as long as the function runs.
+func (p *numericMetricPart) lowerBoundByReplay(ts int64) (i int, at int64) {
+	found := false
+	end := NumericBlob{blobBase: p.blobBase}.forEachTimestampsBytes(p.tsBytes, p.count, 0, func(j int, v int64) bool {
+		if v >= ts {
+			i, at, found = j, v, true
+
+			return false
+		}
+
+		return true
+	})
+	if found {
+		return i, at
+	}
+	if end != p.count {
+		return 0, 0
+	}
+
+	return p.count, 0
 }
 
 // valueAt is ValueAt on the part's local index i, for At's fallback (ValueAt writes it out): the column Materialize decoded,

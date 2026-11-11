@@ -334,6 +334,18 @@ func (m *indexMaps[T]) getOrdinal(metricID uint64) (int, bool) {
 	return ord, ok
 }
 
+// ordinalNear is getOrdinal with a guess tried before the index is searched:
+// the ordinal the metric had in another blob of the same set, which usually holds the same metrics in the same order.
+// The guess is taken only when it is the leftmost entry of the ID, which is what the search returns.
+func (m *indexMaps[T]) ordinalNear(metricID uint64, guess int) (int, bool) {
+	ids := m.sortedIDs
+	if uint(guess) < uint(len(ids)) && ids[guess] == metricID && (guess == 0 || ids[guess-1] != metricID) {
+		return guess, true
+	}
+
+	return m.getOrdinal(metricID)
+}
+
 // MetricCount returns the number of metrics in the blob, counting one per index
 // entry — a within-blob collision (two names, one ID) counts as two.
 func (m indexMaps[T]) MetricCount() int {
