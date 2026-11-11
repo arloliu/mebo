@@ -85,12 +85,8 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 	}
 	offset := 2
 
-	// Pre-allocate slice for names
-	names := make([]string, count)
-
-	// Read each name
+	// Walk the lengths first, so that the names can be copied in one piece.
 	for i := range count {
-		// Read name length
 		// Compare against the remaining bytes: offset+n can wrap int on
 		// 32-bit platforms for a payload near 2 GiB.
 		if len(data)-offset < 2 {
@@ -101,15 +97,24 @@ func DecodeMetricNames(data []byte, engine endian.EndianEngine) ([]string, int, 
 		nameLen := engine.Uint16(data[offset:])
 		offset += 2
 
-		// Read name bytes
 		if len(data)-offset < int(nameLen) {
 			return nil, 0, fmt.Errorf("%w: cannot read metric name %d (need %d bytes at offset %d, have %d total)",
 				errs.ErrInvalidMetricNamesPayload, i, nameLen, offset, len(data))
 		}
-
-		// Convert bytes to string (creates a copy)
-		names[i] = string(data[offset : offset+int(nameLen)])
 		offset += int(nameLen)
+	}
+
+	// One copy of the payload, lengths included, that every name is a substring of:
+	// a string per name was one allocation per metric of every blob, most of what decoding a set allocated.
+	// The copy owns its bytes, as each name did, and lives as long as any name taken from it does.
+	payload := string(data[:offset])
+	names := make([]string, count)
+	at := 2
+	for i := range names {
+		nameLen := int(engine.Uint16(data[at:]))
+		at += 2
+		names[i] = payload[at : at+nameLen]
+		at += nameLen
 	}
 
 	return names, offset, nil
