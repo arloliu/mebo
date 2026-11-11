@@ -2519,3 +2519,48 @@ func TestBlobSet_MetricLenNumericPrecedenceOnEmptyEntry(t *testing.T) {
 	require.Equal(t, 0, bs.MetricLen(id))
 	require.Equal(t, 0, bs.MetricLenByName(name))
 }
+
+// TestBlobSet_MetricDuration_MembersWithoutPoints pins the duration over members that hold the metric without points,
+// which the decoder accepts and the encoder never writes: the ends come from the members that have points,
+// by ID and by name on either set, as the handle's Duration takes them.
+func TestBlobSet_MetricDuration_MembersWithoutPoints(t *testing.T) {
+	const name = "duration.metric"
+	id := hash.ID(name)
+	parts := [][]int64{{100, 201}, {303}, {404, 505}, {606}}
+	for _, empty := range [][]int{{}, {0}, {3}, {1}, {0, 3}, {0, 1}, {2, 3}, {0, 1, 2}, {0, 1, 2, 3}} {
+		msg := fmt.Sprintf("without the points of %v", empty)
+		blobs := make([]NumericBlob, len(parts))
+		var flat []int64
+		for k, ts := range parts {
+			vals := make([]float64, len(ts))
+			ms := []handleTestMetric{{name: name, ts: ts, vals: vals}, {name: "other", ts: ts, vals: vals}}
+			blobs[k] = handleTestBlobAt(t, handleTestStart+int64(k), ms, true)
+			if !slices.Contains(empty, k) {
+				flat = append(flat, ts...)
+
+				continue
+			}
+			entry := blobs[k].index.entryByName(name)
+			require.NotNil(t, entry, msg)
+			entry.Count = 0
+		}
+		var want int64
+		if len(flat) > 0 {
+			want = flat[len(flat)-1] - flat[0]
+		}
+
+		bs := NewBlobSet(blobs, nil)
+		require.Equal(t, want, bs.MetricDuration(id), msg)
+		require.Equal(t, want, bs.MetricDurationByName(name), msg)
+		ns, err := NewNumericBlobSet(blobs)
+		require.NoError(t, err, msg)
+		require.Equal(t, want, ns.MetricDuration(id), msg)
+		require.Equal(t, want, ns.MetricDurationByName(name), msg)
+		h, ok := bs.NumericMetricByName(name)
+		require.True(t, ok, msg)
+		require.Equal(t, want, h.Duration(), msg)
+
+		// The other metric of the same members keeps every point.
+		require.Equal(t, int64(506), bs.MetricDurationByName("other"), msg)
+	}
+}
