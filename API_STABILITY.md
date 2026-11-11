@@ -330,6 +330,39 @@ Deprecations:
   which returns the same value.
   It keeps working throughout v1 and will be removed in v2.0.0.
 
+## Additions and Behaviour Changes (v1.14.0)
+
+The additions are purely additive; no existing signature changed.
+
+- **`NumericMetric.SearchTimestamp(ts int64) (index int, found bool)`**:
+  the first index whose timestamp is not below `ts`, and whether that timestamp equals `ts`:
+  the contract of `slices.BinarySearch`.
+  It answers `(Len(), false)` when every timestamp is below `ts`,
+  and also when a timestamp the search needs cannot be read.
+  The handle's timestamps must be non-decreasing; the result is unspecified otherwise.
+- **`NumericMetric.ForEachRange(start, end int, yield)`**, **`ForEachValuesRange`** and **`ForEachTimestampsRange`**:
+  `ForEach`, `ForEachValues` and `ForEachTimestamps` over the indices in `[start, end)`.
+  The range is clamped to the metric and an empty one yields nothing; `yield` receives the handle's index.
+  The blobs before the one that holds `start` are not decoded.
+- **`NumericMetric.TimestampsSorted() bool`**:
+  whether the handle's timestamps are non-decreasing over its whole index.
+  It reads each timestamp at most once, and only the two ends of a shared group the decoder found in order.
+  It reports `false` when a timestamp cannot be read and `true` for a handle without points.
+
+Behaviour changes:
+
+- **`DecodeBlobSet` drops an input that is byte-identical to an earlier input of the same call.**
+  A caller that passed the same encoded blob twice got its points twice; it now gets them once,
+  so for such input the set holds fewer blobs, the lengths of the metrics in the repeated blob decrease,
+  and the indices of their later points shift down.
+  Inputs that differ in any byte are all kept, and `NewBlobSet` keeps every blob it is given.
+  This is a deliberate exception to the promise that stable APIs keep their behaviour within v1:
+  a repeated blob made a metric's timestamps step back, which no reader of the set could use.
+- **Metric names decoded from one blob share one backing string.**
+  A name returned by `MetricNames` and kept after its blob is released keeps that blob's other names alive with it;
+  each name used to be its own allocation.
+  The names still own their bytes, independent of the decoder's input.
+
 ## Go Version Compatibility
 
 ### Minimum Go Version

@@ -236,6 +236,7 @@ func (h *NumericMetric) ForEach(yield func(i int, dp NumericDataPoint) bool)
 func (h *NumericMetric) ForEachValues(yield func(i int, v float64) bool)
 func (h *NumericMetric) ForEachTimestamps(yield func(i int, ts int64) bool)
 func (h *NumericMetric) SearchTimestamp(ts int64) (i int, found bool) // see Time search
+func (h *NumericMetric) TimestampsSorted() bool                       // the precondition of SearchTimestamp; see Time search
 func (h *NumericMetric) TimestampAccess() AccessClass
 func (h *NumericMetric) ValueAccess() AccessClass
 func (h *NumericMetric) Materialize() error                // see Materialize and Columns
@@ -536,8 +537,10 @@ the consumer's window search is a linear scan over every timestamp, repeated per
   A window `[begin, end]` is `lo := SearchTimestamp(begin)` and `hi := SearchTimestamp(end+1) - 1`,
   with `hi = Len()-1` when `end` is `math.MaxInt64`.
   A probe that cannot read its point (an unreadable or incomplete axis) ends the search with `(Len(), false)`.
-- It reads through `TimestampAt`, so on a sequential timestamp axis each probe replays the column;
-  the godoc tells callers to `Materialize()` first when `TimestampAccess()` is not `AccessDirect`.
+- On a `NumericMetric` it shipped in v1.14 without the replay:
+  it bisects the members on their first timestamps, which every encoding reads directly,
+  then searches one member, by bisection on a direct column and by one forward pass on a sequential one,
+  so no `Materialize()` is needed first.
   On a `TextMetric` every axis is sequential until `Materialize`, so its `SearchTimestamp` walks records per probe
   until then; the rule for text is to materialize before searching, and the godoc says so.
   The consumer enables sharing, but sharing is detected per blob at `Finish`:
@@ -557,12 +560,18 @@ the consumer's window search is a linear scan over every timestamp, repeated per
   its wrapper can walk `ForEachTimestamps` once and cache the answer per handle,
   which amortizes over the many windows a plan takes from one handle.
   A check in O(members) would need the first and last timestamp of each member,
-  and on a sequential axis the last one costs a full decode of the member, so mebo does not offer one.
+  and on a sequential axis the last one costs a full decode of the member, so mebo did not offer one.
+  The owner reversed that on 2026-11-11, after measuring both on the consumer's shared DeltaPacked sets:
+  v1.14 has `NumericMetric.TimestampsSorted()`, the O(n) check, at 29 µs for 2880 members of 30 points,
+  where a boundary-only check measured 10 µs and would not have caught disorder inside a member,
+  which the encoder does not reject.
   The one place the consumer already accepts the monotone precondition is `BinarySearchByTime` after `Materialize`,
   which could call `SearchTimestamp`; nothing else in the consumer will at launch.
-  Byte-identical duplicate blobs (the SECS resends) are the consumer's to drop before `DecodeBlobSet`
-  (a hash of the raw bytes, in its repository layer on a cache miss; its owner accepted that on 2026-10-17);
-  dropping them does not make overlapping, non-identical windows monotone, and mebo does not sort or merge points.
+  Byte-identical duplicate blobs (the SECS resends) were first the consumer's to drop before `DecodeBlobSet`
+  (its owner accepted that on 2026-10-17);
+  the owner moved that into mebo on 2026-11-11, and from v1.14 `DecodeBlobSet` drops an input identical to an earlier one,
+  comparing bytes only once an input shares its header and length with an earlier one.
+  Dropping them does not make overlapping, non-identical windows monotone, and mebo does not sort or merge points.
   The consumer's current linear scan is not correct on such input either:
   it stops at the first timestamp past the window, so a point of a later, overlapping member is missed.
   v2 does not change that; it gives a monotone handle a logarithmic search and leaves the non-monotone case where it is.
@@ -583,6 +592,10 @@ Measured in v1.13 (single binary, Ryzen 9 9950X3D), and what v2 keeps or changes
 - Resolution: 16 ns on a blob, no allocation;
   122 to 148 ns on a set with one allocation when more than one member contributes.
   v2 keeps the first-part-inline, rest-in-a-slice layout and the one allocation.
+  An array of each member's first timestamp, built at resolution for `SearchTimestamp` to bisect,
+  was measured on 2026-11-11 and dropped.
+  It took the search from 29 to 21 ns on shared timestamps,
+  at the price of 5% on resolution and of a second allocation, which gate 1 does not allow.
 - The consumer's sets have 60 to 240 members, so a handle there has that many parts.
   A part copies what its lookups need
   (the blob base, the three byte ranges, the shared group, three owned slices, counts): about 220 bytes,
@@ -593,7 +606,7 @@ Measured in v1.13 (single binary, Ryzen 9 9950X3D), and what v2 keeps or changes
   The consumer sees no need to shrink the part: a 240-member handle is the same order as its materialized slices.
   The spec records the number so that gate 8 below can bound it.
 - Placement of an index in `rest` is a linear scan in v1.13;
-  v2 switches to a binary search on the parts' `base` when there are more than eight parts,
+  v1.14 switched to a binary search on the parts' `base` when there are more than eight parts,
   so random access on a 240-member handle costs about 8 comparisons, not up to 240.
 - Resolve-plus-one-scan is the consumer's hot path (one handle, one full `ForEach`).
   Construction must not cost more than the v1 blob-by-blob loop saved: gate 3 below.
@@ -858,16 +871,18 @@ the sections above are written as decided, and this is the record.
 - **Per-metric tag flags.**
   The tag switch is a header bit with no per-entry presence flag, so this is a wire change and out of scope;
   the explicit tag calls and the numeric elision cover the consumer's case.
-- **A deduplicating or merging `BlobSet`.**
-  Rejected: the set's contract is concatenation in start-time order;
-  byte-identical duplicates (the SECS resends) are a few lines in the consumer's repository layer,
+- **A merging `BlobSet`.**
+  Rejected: the set's contract is concatenation in start-time order,
   and merging overlapping windows is a policy mebo should not own.
+  Deduplication was rejected with it and then accepted in its narrowest form on 2026-11-11:
+  `DecodeBlobSet` drops byte-identical inputs (the SECS resends), and nothing looser.
 - **`ForEachFrom(lo, yield)` on handles.**
   Proposed by the consumer: its window iteration restarts at index 0 and decodes every member before the window,
   so `SearchTimestamp` finds the start but the walk still pays for the skipped members.
   A walk starting at `lo` would place `lo` by the parts' binary search and skip inside the first member only,
   which is not the skip count in every decode loop that `Slice` was rejected for.
-  Left out of v2 as additive; a minor release can add it.
+  Left out of v2 as additive; v1.14 added it as `ForEachRange(start, end, yield)` and its values and timestamps forms,
+  with an end index, because the consumer's windows have one.
 - **`iter.Seq` forms on handles.**
   Left out as in v1.13: the consumer avoids them for the iterator allocation; they can be added in a minor release.
 - **A physical `v2/` directory.**
