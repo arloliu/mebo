@@ -183,6 +183,19 @@ and allocates nothing when every axis is direct and the blobs have no tags, so c
 After it, `At` on that metric costs about 3 ns and a `ForEach` over the 600 points about 1.3 µs.
 For one pass over a metric, skip materialization and use the handle's `ForEach`, `ForEachValues` or `ForEachTimestamps`.
 
+To read a window of a metric, call `ForEachRange`, `ForEachValuesRange` or `ForEachTimestampsRange` with its indices:
+the walk starts at the blob that holds the first one, where `ForEach` decodes every blob before the window to skip it.
+
+To find a point by time, call `SearchTimestamp(ts)` on the handle, which returns the first index at or after `ts`,
+rather than bisecting over `TimestampAt`:
+it bisects the blobs on their first timestamps and walks one blob at most, materialized or not.
+It needs timestamps that never decrease over the handle:
+no blob of the set may start below the last timestamp of the blob before it, as overlapping blobs do.
+`DecodeBlobSet` drops byte-identical inputs, which removes the commonest cause, a blob stored twice.
+When the writer cannot rule the rest out, call `TimestampsSorted()` once per handle and keep the answer:
+it reads each timestamp at most once, and only the ends of each blob's timestamps when the blobs share them and the decoder found them in order,
+and a search costs a fraction of a microsecond after it.
+
 ### Tags add overhead — enable them only when needed
 
 Tags are stored as a length-prefixed string per data point.

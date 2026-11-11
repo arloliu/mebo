@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`NumericMetric.SearchTimestamp(ts)`** returns the first index whose timestamp is not below `ts`
+  and whether that timestamp equals `ts`, as `slices.BinarySearch` does, and `Len()` when there is none.
+  On a handle across a `BlobSet` it bisects the member blobs on their first timestamps and then searches one blob,
+  so a search over Delta or DeltaPacked timestamps costs at most one blob's points and needs no `Materialize` first.
+  On 2880 blobs of 30 points (the shape of a day at one point per second, single binary, Ryzen 9 9950X3D)
+  it takes about 30 ns on a shared DeltaPacked group or a materialized handle,
+  and about 0.2 µs on Delta and DeltaPacked columns of the metric's own,
+  where a scan from the first point takes 45 µs on the shared group and 0.1 to 0.16 ms on the others.
+  A pass of 86,400 nearest-point lookups in increasing order, each a search, the two timestamps beside its index
+  and one value, costs 39 ns per lookup on a materialized handle and 137 ns on one with Chimp values left encoded;
+  `slices.BinarySearch` over a flattened copy of the metric costs 29 ns.
+  The timestamps must be non-decreasing over the handle.
+- **`NumericMetric.TimestampsSorted()`** reports whether that holds:
+  8 µs on that set when the blobs share their timestamps, whose order the decoder now records once per blob,
+  and one pass over the timestamps otherwise, 0.2 ms on Delta and 0.3 ms on DeltaPacked.
+- **`NumericMetric.ForEachRange`, `ForEachValuesRange` and `ForEachTimestampsRange`** walk the points
+  whose index lies in `[start, end)`, clamped to the metric, starting at the blob that holds `start`:
+  the blobs before a window are no longer decoded to reach it.
+  The values of a 600-point window of that set take 3.6 µs wherever the window lies,
+  where `ForEachValues` skipping to it takes 55 µs a tenth of the way in and 0.5 ms nine tenths of the way in.
+  With `SearchTimestamp`, a time window `[begin, end]` is the range from `SearchTimestamp(begin)` to `SearchTimestamp(end+1)`.
+
+### Changed
+
+- **`DecodeBlobSet` drops an input that is byte-identical to an earlier input of the same call**,
+  so a blob stored or delivered twice contributes its points once and no longer makes a metric's timestamps step back.
+  A set that was given such duplicates now reports fewer blobs and points.
+  Blobs that overlap in time without being identical are still all kept, and `NewBlobSet` is unchanged.
+- **Index lookups on a `NumericMetric` across more than nine blobs** no longer scan the blobs:
+  `TimestampAt`, `ValueAt`, `TagAt` and `At` estimate the blob from the index and correct the estimate in a few steps.
+  With a plain bisection of the blobs, before the estimate replaced it,
+  a bisection over `TimestampAt` on a handle over 2880 blobs went from 9.6 µs to 0.75 µs.
+- **A blob's metric names are decoded into one string** that every name is a part of, not one string per name:
+  decoding 2880 blobs of 200 named metrics makes 37 thousand allocations, down from 611 thousand.
+  A name kept after its blob is released now keeps that blob's other names alive with it, a few kilobytes.
+- **Resolving a `NumericMetric` across a set** first tries, in each blob,
+  the position the metric had in the blob before it, which is where it is when the blobs hold the same metrics:
+  0.21 ms by name over 2880 blobs of 200 metrics, down from 0.28 ms.
+- **Walking a DeltaPacked timestamp column point by point** no longer copies the decoder's 80-byte state on every point:
+  `ForEachTimestamps` over 2880 unshared 30-point columns went from 271 µs to 155 µs for half the points.
+
 ## [1.13.0] - 2026-10-20
 
 The library code of v1.13.0-rc4, released as v1.13.0 after testing;
