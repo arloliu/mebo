@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-11
+
 ### Added
 
 - **`NumericMetric.SearchTimestamp(ts)`** returns the first index whose timestamp is not below `ts`
@@ -1037,7 +1039,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/arloliu/mebo/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/arloliu/mebo/compare/v1.12.1...v1.13.0
 [1.13.0-rc4]: https://github.com/arloliu/mebo/compare/v1.13.0-rc3...v1.13.0-rc4
 [1.13.0-rc3]: https://github.com/arloliu/mebo/compare/v1.13.0-rc2...v1.13.0-rc3
