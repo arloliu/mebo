@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/internal/hash"
 	"github.com/arloliu/mebo/internal/pool"
 	"github.com/arloliu/mebo/section"
@@ -53,6 +54,24 @@ type handleTestMetric struct {
 	vals []float64
 	tags []string
 }
+
+// mixedSetMember is one member of a set whose members are encoded differently:
+// the metrics it holds, its encoder options, and what those options must make of the blob.
+type mixedSetMember struct {
+	names     []string
+	opts      []NumericEncoderOption
+	tsEnc     format.EncodingType
+	valEnc    format.EncodingType
+	tsComp    format.CompressionType
+	valComp   format.CompressionType
+	tags      bool
+	shared    bool // the blob decoded a shared timestamp group at open
+	v2        bool // the blob has the V2 layout, which sharing implies
+	bigEndian bool
+}
+
+// mixedSetClasses is the worst timestamp and value access class a handle reports for one metric.
+type mixedSetClasses struct{ ts, val AccessClass }
 
 // handleTestSeries returns n timestamps 15 s apart shifted by offset microseconds,
 // n 2-decimal values that repeat the previous one every third point,
@@ -104,6 +123,17 @@ func handleTestBlob(tb testing.TB, metrics []handleTestMetric, names bool, opts 
 // handleTestBlobAt is handleTestBlob with the blob's start time, which orders the members of a set.
 func handleTestBlobAt(tb testing.TB, start int64, metrics []handleTestMetric, names bool, opts ...NumericEncoderOption) NumericBlob {
 	tb.Helper()
+	dec, err := NewNumericDecoder(handleTestBlobBytes(tb, start, metrics, names, opts...))
+	require.NoError(tb, err)
+	blob, err := dec.Decode()
+	require.NoError(tb, err)
+
+	return blob
+}
+
+// handleTestBlobBytes is handleTestBlobAt before the decode: the encoded blob, as DecodeBlobSet takes it.
+func handleTestBlobBytes(tb testing.TB, start int64, metrics []handleTestMetric, names bool, opts ...NumericEncoderOption) []byte {
+	tb.Helper()
 	base := []NumericEncoderOption{
 		WithLittleEndian(),
 		WithTimestampCompression(format.CompressionNone),
@@ -125,12 +155,8 @@ func handleTestBlobAt(tb testing.TB, start int64, metrics []handleTestMetric, na
 	}
 	data, err := enc.Finish()
 	require.NoError(tb, err)
-	dec, err := NewNumericDecoder(data)
-	require.NoError(tb, err)
-	blob, err := dec.Decode()
-	require.NoError(tb, err)
 
-	return blob
+	return data
 }
 
 // handleTestID is the metric ID the blob stores for m: its own ID, or the hash of its name when names were used.
@@ -1211,38 +1237,314 @@ func TestNumericMetric_SetOrdinalsShift(t *testing.T) {
 	}
 }
 
-// TestNumericMetric_SetMixedMembers pins a set whose members differ per part: one big-endian member,
-// one with Raw timestamps among shared DeltaPacked ones,
-// so the handle reports the worst class and each part reads with its own byte order and encoding.
-func TestNumericMetric_SetMixedMembers(t *testing.T) {
-	members := handleTestSetMembers()
-	members[1].opts = []NumericEncoderOption{WithBigEndian()}
-	members[2].opts = []NumericEncoderOption{WithTimestampEncoding(format.TypeRaw)}
-	members[3].opts = []NumericEncoderOption{WithValueEncoding(format.TypeChimp)}
-	bs, expected := handleTestSet(t, members, true,
-		WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP), WithTagsEnabled(true))
+// TestBlobSet_MixedEncodings pins a set whose members were encoded with different options:
+// the reads below yield the encoder's input, each member read with its own byte order, encodings, compression and tags.
+// The set is built by DecodeBlobSet from the encoded members.
+// It is read through the handle (the three walks, the range walks, the search, and the same after Materialize),
+// through the BlobSet point accessors and iterators and the NumericBlobSet callbacks that requireSetHandleAgrees compares with the handle,
+// through a materialized set from both constructors, and through a materialized metric.
+// The first row changes one option per member, on members that hold different metrics,
+// so a handle reports the worst class of the members that hold its metric and reads a big-endian part after the first.
+// The second row puts every timestamp and value encoding in one set, tagged members beside untagged ones,
+// so the members that walk their points over a decoded shared group stand beside the members that decode both columns.
+// The third row changes the compression per member, and gives one member tags so that the set has a tag column to read.
+func TestBlobSet_MixedEncodings(t *testing.T) {
+	const none = format.CompressionNone
+	opts := func(o ...NumericEncoderOption) []NumericEncoderOption { return o }
+	every := []string{"all", "some"}
+
+	for _, tt := range []struct {
+		name    string
+		members []mixedSetMember
+		want    map[string]mixedSetClasses
+	}{
+		{
+			name: "one option differs per member",
+			members: []mixedSetMember{
+				{
+					names: []string{"all", "both"},
+					opts:  opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP), WithTagsEnabled(true)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALP, tsComp: none, valComp: none, tags: true, shared: true, v2: true,
+				},
+				{
+					names: []string{"all", "some"},
+					opts: opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP), WithTagsEnabled(true),
+						WithBigEndian()),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALP, tsComp: none, valComp: none, tags: true, shared: true, v2: true, bigEndian: true,
+				},
+				{
+					names: []string{"all", "one"},
+					opts:  opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeALP), WithTagsEnabled(true)),
+					tsEnc: format.TypeRaw, valEnc: format.TypeALP, tsComp: none, valComp: none, tags: true, shared: true, v2: true,
+				},
+				{
+					names: []string{"all", "some"},
+					opts:  opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeChimp), WithTagsEnabled(true)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeChimp, tsComp: none, valComp: none, tags: true, shared: true, v2: true,
+				},
+			},
+			want: map[string]mixedSetClasses{
+				"all":  {AccessDirect, AccessSequential},
+				"some": {AccessDirect, AccessSequential},
+				"one":  {AccessDirect, AccessDirect},
+				"both": {AccessDirect, AccessDirect},
+			},
+		},
+		{
+			name: "every timestamp and value encoding",
+			members: []mixedSetMember{
+				{
+					names: every, opts: opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeChimp)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeChimp, tsComp: none, valComp: none, shared: true, v2: true,
+				},
+				{
+					names: every, opts: opts(WithBlobLayoutV2(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALPRLE)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALPRLE, tsComp: none, valComp: none, v2: true,
+				},
+				{
+					names: every, opts: opts(WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeRaw), WithTagsEnabled(true)),
+					tsEnc: format.TypeRaw, valEnc: format.TypeRaw, tsComp: none, valComp: none, tags: true,
+				},
+				{
+					names: every, opts: opts(WithBigEndian(), WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeGorilla)),
+					tsEnc: format.TypeDelta, valEnc: format.TypeGorilla, tsComp: none, valComp: none, bigEndian: true,
+				},
+				{
+					names: every, opts: opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeALP)),
+					tsEnc: format.TypeDelta, valEnc: format.TypeALP, tsComp: none, valComp: none, shared: true, v2: true,
+				},
+				{
+					names: every, opts: opts(WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeGorilla)),
+					tsEnc: format.TypeRaw, valEnc: format.TypeGorilla, tsComp: none, valComp: none,
+				},
+				{
+					names: every, opts: opts(WithTimestampEncoding(format.TypeRaw), WithValueEncoding(format.TypeALPRLE), WithTagsEnabled(true)),
+					tsEnc: format.TypeRaw, valEnc: format.TypeALPRLE, tsComp: none, valComp: none, tags: true,
+				},
+				{
+					names: every,
+					opts:  opts(WithBlobLayoutV2(), WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALPRLE)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALPRLE, tsComp: none, valComp: none, shared: true, v2: true,
+				},
+				{
+					names: every, opts: opts(WithTimestampEncoding(format.TypeDelta), WithValueEncoding(format.TypeChimp), WithTagsEnabled(true)),
+					tsEnc: format.TypeDelta, valEnc: format.TypeChimp, tsComp: none, valComp: none, tags: true,
+				},
+			},
+			want: map[string]mixedSetClasses{
+				"all":  {AccessSequential, AccessSequential},
+				"some": {AccessSequential, AccessSequential},
+			},
+		},
+		{
+			name: "compression differs",
+			members: []mixedSetMember{
+				{
+					names: every,
+					opts: opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
+						WithTimestampCompression(format.CompressionZstd), WithValueCompression(format.CompressionZstd)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALP, tsComp: format.CompressionZstd, valComp: format.CompressionZstd, shared: true, v2: true,
+				},
+				{
+					names: every,
+					opts: opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
+						WithTimestampCompression(format.CompressionS2), WithValueCompression(format.CompressionLZ4), WithTagsEnabled(true)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALP, tsComp: format.CompressionS2, valComp: format.CompressionLZ4, tags: true, shared: true, v2: true,
+				},
+				{
+					names: every,
+					opts: opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
+						WithValueCompression(format.CompressionZstd)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALP, tsComp: none, valComp: format.CompressionZstd, shared: true, v2: true,
+				},
+				{
+					names: every,
+					opts: opts(WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(format.TypeALP),
+						WithTimestampCompression(format.CompressionLZ4)),
+					tsEnc: format.TypeDeltaPacked, valEnc: format.TypeALP, tsComp: format.CompressionLZ4, valComp: none, shared: true, v2: true,
+				},
+			},
+			want: map[string]mixedSetClasses{
+				"all":  {AccessDirect, AccessDirect},
+				"some": {AccessDirect, AccessDirect},
+			},
+		},
+	} {
+		for _, names := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/names=%t", tt.name, names), func(t *testing.T) {
+				requireMixedSetReads(t, tt.members, names, tt.want)
+			})
+		}
+	}
+}
+
+// requireMixedSetReads encodes the members, each an hour and 20 points after the one before,
+// decodes them as one set, checks that every member is the blob its row describes,
+// and checks every read path of every metric against the encoder's input.
+// A value holds for five points, so an ALP-RLE member stores its columns as runs.
+func requireMixedSetReads(t *testing.T, members []mixedSetMember, names bool, want map[string]mixedSetClasses) {
+	t.Helper()
+	const points = 20
+	metricID := func(name string) uint64 {
+		if names {
+			return hash.ID(name)
+		}
+
+		return handleTestSetID(name)
+	}
+
+	input := map[string][]NumericDataPoint{}
+	inputs := make([][]byte, len(members))
+	for k, member := range members {
+		ms := make([]handleTestMetric, len(member.names))
+		for m, name := range member.names {
+			metric := handleTestMetric{id: metricID(name), name: name}
+			for i := range points {
+				dp := NumericDataPoint{
+					Ts:  handleTestStart + int64(k*points+i)*15_000_000,
+					Val: math.Round((100+float64(handleTestSetID(name)*1000+uint64(k)*10)+float64(i/5)*0.37)*100) / 100,
+					Tag: "host=" + strconv.Itoa(i%4),
+				}
+				metric.ts, metric.vals, metric.tags = append(metric.ts, dp.Ts), append(metric.vals, dp.Val), append(metric.tags, dp.Tag)
+				if !member.tags {
+					dp.Tag = ""
+				}
+				input[name] = append(input[name], dp)
+			}
+			ms[m] = metric
+		}
+		inputs[k] = handleTestBlobBytes(t, handleTestStart+int64(k)*3_600_000_000, ms, names, member.opts...)
+
+		header, err := section.ParseNumericHeader(inputs[k])
+		require.NoError(t, err)
+		require.Equal(t, member.tsComp, header.Flag.TimestampCompression(), "member %d timestamp compression", k)
+		require.Equal(t, member.valComp, header.Flag.ValueCompression(), "member %d value compression", k)
+	}
+	require.Len(t, input, len(want), "the row names a class for every metric")
+
+	bs, err := DecodeBlobSet(inputs...)
+	require.NoError(t, err)
 	blobs := bs.NumericBlobs()
-	require.True(t, blobs[1].IsBigEndian(), "the second member is big-endian, a part after the first")
-	require.Equal(t, format.TypeRaw, blobs[2].TimestampEncoding())
-	require.Equal(t, format.TypeChimp, blobs[3].ValueEncoding())
+	require.Len(t, blobs, len(members))
+	for k, member := range members {
+		b := &blobs[k]
+		require.Equal(t, member.tsEnc, b.TimestampEncoding(), "member %d timestamp encoding", k)
+		require.Equal(t, member.valEnc, b.ValueEncoding(), "member %d value encoding", k)
+		require.Equal(t, member.tags, b.HasTag(), "member %d tags", k)
+		require.Equal(t, member.bigEndian, b.IsBigEndian(), "member %d byte order", k)
+		require.Equal(t, member.shared, b.sharedTs != nil, "member %d shared timestamp group", k)
+		require.Equal(t, member.v2, b.IsV2Layout(), "member %d layout", k)
+		require.Equal(t, names, b.HasMetricNames(), "member %d stored names", k)
+		for _, name := range member.names {
+			entry := b.index.entryByID(metricID(name))
+			require.NotNil(t, entry, "member %d holds %s", k, name)
+			require.Equal(t, member.shared, b.sharedTs.lookup(entry.TimestampOffset) != nil, "member %d decoded the group of %s", k, name)
+			if member.valEnc == format.TypeALPRLE {
+				require.Equal(t, ienc.ALPRLEMaxSchemeByte, b.valPayload[entry.ValueOffset], "member %d stores %s as runs", k, name)
+			}
+		}
+	}
 
-	h, ok := bs.NumericMetricByName("all")
-	require.True(t, ok)
-	require.Equal(t, 80, h.Len())
-	require.Equal(t, expected["all"].ts, collectTs(&h))
-	requireSetHandleAgrees(t, &h, bs, hash.ID("all"), "all", true, AccessDirect, AccessSequential)
-	requireMaterializedSetHandleAgrees(t, &h, bs, hash.ID("all"), "all", true, AccessDirect, AccessSequential)
+	set, err := NewNumericBlobSet(blobs)
+	require.NoError(t, err)
+	materialized := []MaterializedNumericBlobSet{set.Materialize(), bs.MaterializeNumeric()}
 
-	one, ok := bs.NumericMetricByName("one")
-	require.True(t, ok)
-	require.Equal(t, 20, one.Len())
-	requireSetHandleAgrees(t, &one, bs, hash.ID("one"), "one", true, AccessDirect, AccessDirect)
+	for name, classes := range want {
+		points := input[name]
+		n := len(points)
+		wantTs := make([]int64, n)
+		wantVals := make([]float64, n)
+		wantTags := make([]string, n)
+		for i, dp := range points {
+			wantTs[i], wantVals[i], wantTags[i] = dp.Ts, dp.Val, dp.Tag
+		}
+		id := metricID(name)
 
-	some, ok := bs.NumericMetricByName("some")
-	require.True(t, ok)
-	require.Equal(t, 40, some.Len())
-	requireSetHandleAgrees(t, &some, bs, hash.ID("some"), "some", true, AccessDirect, AccessSequential)
-	requireMaterializedSetHandleAgrees(t, &some, bs, hash.ID("some"), "some", true, AccessDirect, AccessSequential)
+		h, ok := bs.NumericMetric(id)
+		require.True(t, ok, "NumericMetric(%s)", name)
+		if names {
+			byName, ok := bs.NumericMetricByName(name)
+			require.True(t, ok, "NumericMetricByName(%s)", name)
+			require.Equal(t, collectHandle(&h), collectHandle(&byName), "%s by name and by ID", name)
+		}
+
+		// The handle against the input, then every accessor and iterator it replaces against the handle.
+		w := collectHandle(&h)
+		require.Equal(t, points, w.points, "%s ForEach", name)
+		require.Equal(t, wantVals, w.vals, "%s ForEachValues", name)
+		require.Equal(t, wantTs, w.ts, "%s ForEachTimestamps", name)
+		requireSetHandleAgrees(t, &h, bs, id, name, names, classes.ts, classes.val)
+		requireMaterializedSetHandleAgrees(t, &h, bs, id, name, names, classes.ts, classes.val)
+
+		// The search and the range walks, over a window that starts and ends inside a member.
+		require.True(t, h.TimestampsSorted(), "%s TimestampsSorted", name)
+		for i, ts := range wantTs {
+			index, found := h.SearchTimestamp(ts)
+			require.True(t, found, "%s SearchTimestamp(%d)", name, ts)
+			require.Equal(t, i, index, "%s SearchTimestamp(%d)", name, ts)
+			index, found = h.SearchTimestamp(ts + 1)
+			require.False(t, found, "%s SearchTimestamp(%d)", name, ts+1)
+			require.Equal(t, i+1, index, "%s SearchTimestamp(%d)", name, ts+1)
+		}
+		lo, hi := 7, n-7
+		var (
+			rangeIdx    []int
+			rangePoints []NumericDataPoint
+			rangeVals   []float64
+			rangeTs     []int64
+		)
+		h.ForEachRange(lo, hi, func(i int, dp NumericDataPoint) bool {
+			rangeIdx = append(rangeIdx, i)
+			rangePoints = append(rangePoints, dp)
+
+			return true
+		})
+		h.ForEachValuesRange(lo, hi, func(_ int, v float64) bool { rangeVals = append(rangeVals, v); return true })
+		h.ForEachTimestampsRange(lo, hi, func(_ int, ts int64) bool { rangeTs = append(rangeTs, ts); return true })
+		for k, i := range rangeIdx {
+			require.Equal(t, lo+k, i, "%s ForEachRange index", name)
+		}
+		require.Equal(t, points[lo:hi], rangePoints, "%s ForEachRange", name)
+		require.Equal(t, wantVals[lo:hi], rangeVals, "%s ForEachValuesRange", name)
+		require.Equal(t, wantTs[lo:hi], rangeTs, "%s ForEachTimestampsRange", name)
+
+		// The materialized set, from both constructors, and the materialized metric.
+		for _, mat := range materialized {
+			require.Equal(t, n, mat.DataPointCount(id), "%s DataPointCount", name)
+			for i, dp := range points {
+				ts, ok := mat.TimestampAt(id, i)
+				require.True(t, ok, "%s materialized TimestampAt(%d)", name, i)
+				val, ok := mat.ValueAt(id, i)
+				require.True(t, ok, "%s materialized ValueAt(%d)", name, i)
+				tag, ok := mat.TagAt(id, i)
+				require.True(t, ok, "%s materialized TagAt(%d)", name, i)
+				require.Equal(t, dp, NumericDataPoint{Ts: ts, Val: val, Tag: tag}, "%s materialized point %d", name, i)
+			}
+		}
+		metric, ok := bs.MaterializeNumericMetric(id)
+		require.True(t, ok, "MaterializeNumericMetric(%s)", name)
+		require.Equal(t, wantTs, metric.Timestamps, "%s materialized metric timestamps", name)
+		require.Equal(t, wantVals, metric.Values, "%s materialized metric values", name)
+		require.Equal(t, wantTags, metric.Tags, "%s materialized metric tags", name)
+		if !names {
+			continue
+		}
+		byName, ok := bs.MaterializeNumericMetricByName(name)
+		require.True(t, ok, "MaterializeNumericMetricByName(%s)", name)
+		require.Equal(t, metric, byName, "%s materialized metric by name and by ID", name)
+		for _, mat := range materialized {
+			require.Equal(t, n, mat.DataPointCountByName(name), "%s DataPointCountByName", name)
+			for i, dp := range points {
+				ts, ok := mat.TimestampAtByName(name, i)
+				require.True(t, ok, "%s materialized TimestampAtByName(%d)", name, i)
+				val, ok := mat.ValueAtByName(name, i)
+				require.True(t, ok, "%s materialized ValueAtByName(%d)", name, i)
+				tag, ok := mat.TagAtByName(name, i)
+				require.True(t, ok, "%s materialized TagAtByName(%d)", name, i)
+				require.Equal(t, dp, NumericDataPoint{Ts: ts, Val: val, Tag: tag}, "%s materialized point %d by name", name, i)
+			}
+		}
+	}
 }
 
 // TestNumericMetric_SetForEachStops pins the callback-stop semantics across parts:
