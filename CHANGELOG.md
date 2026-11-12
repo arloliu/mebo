@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Faster decoding of numeric blobs, faster point walks on blobs that share timestamps,
+and a faster decode of constant ALP columns, with no change to the API or the encoded bytes.
+
+### Performance
+
+- **Decoding a numeric blob is 31% to 66% faster.**
+  `DecodeBlobSet` over 2880 blobs of 200 metrics and 30 points
+  (little endian, V2 layout, shared DeltaPacked timestamps, no stored names; layout-averaged, Ryzen 9 9950X3D)
+  goes from 20.4 to 8.0 ms with Chimp values, from 27.1 to 14.2 ms with ALP-RLE and from 35.3 to 23.2 ms with tags,
+  and its allocations fall from 31,696 to 23,056.
+  Two changes do it.
+  The decoder found the timestamp offsets that several metrics share with two maps per blob;
+  it now sorts the offsets in an array on the stack.
+  And a compact little-endian index entry is read in place,
+  where a parser was called through a func value for every entry and returned the entry by value.
+  The second change reaches every numeric blob with compact little-endian entries:
+  the same set without shared timestamps decodes in 5.3 ms instead of 11.3.
+- **Point walks read the timestamps a blob has already decoded.**
+  `ForEach` and `ForEachByName` on a `NumericBlob` and a `NumericBlobSet`, and `NumericMetric.ForEach` and `ForEachRange`,
+  decoded a metric's timestamps on every call, also when the blob had decoded them at open as a shared group
+  or `Materialize` had decoded them on the handle.
+  On a blob without tags they now walk the value column alone and pair it with those timestamps:
+  19% to 22% less time per point on 30-point blobs with Chimp or ALP-RLE values (12.0 to 9.5 ns per point with Chimp),
+  and a walk stopped at its first point is 40% to 68% faster, since it no longer decodes the column's timestamps first.
+  ALP and ALP-RLE columns of more than 8192 points, blobs with tags and metrics outside a shared group take the previous path,
+  where a walk stopped at its first point pays about 2 ns for the check.
+  `All`, `AllByName`, `ForEachValues` and `ForEachTimestamps` are unchanged.
+- **A constant ALP or ALP-RLE column decodes by a fill.**
+  A column whose codes are zero bits wide went through the scalar loop, which read zero bits per value.
+  The bulk decode now computes the value once and fills the column: 268 to 27.6 ns at 150 points and 62.7 to 15.5 ns at 30,
+  for flat materialization, `ForEach`, and `ForEachValues` up to 8192 points.
+  `ValueAt` and the streaming readers are unchanged.
+
 ## [1.14.0] - 2026-11-11
 
 ### Added
