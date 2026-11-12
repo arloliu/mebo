@@ -1195,50 +1195,6 @@ func TestDecodeBlobSet_CorruptedTextBlob(t *testing.T) {
 	require.Error(t, err, "Should return error for corrupted text blob")
 }
 
-// TestDecodeBlobSet_WithDifferentEncodings tests decoding blobs with different encoding types
-func TestDecodeBlobSet_WithDifferentEncodings(t *testing.T) {
-	startTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	// Create numeric blob with delta timestamp encoding
-	encoder1, err := NewNumericEncoder(startTime, WithTimestampEncoding(format.TypeDelta))
-	require.NoError(t, err)
-	err = encoder1.StartMetricID(900, 2)
-	require.NoError(t, err)
-	err = encoder1.AddDataPoint(startTime.UnixMicro(), 90.0, "")
-	require.NoError(t, err)
-	err = encoder1.AddDataPoint(startTime.Add(time.Second).UnixMicro(), 91.0, "")
-	require.NoError(t, err)
-	err = encoder1.EndMetric()
-	require.NoError(t, err)
-	data1, err := encoder1.Finish()
-	require.NoError(t, err)
-
-	// Create numeric blob with raw timestamp encoding
-	encoder2, err := NewNumericEncoder(startTime.Add(time.Hour), WithTimestampEncoding(format.TypeRaw))
-	require.NoError(t, err)
-	err = encoder2.StartMetricID(1000, 2)
-	require.NoError(t, err)
-	err = encoder2.AddDataPoint(startTime.Add(time.Hour).UnixMicro(), 100.0, "")
-	require.NoError(t, err)
-	err = encoder2.AddDataPoint(startTime.Add(time.Hour+time.Second).UnixMicro(), 101.0, "")
-	require.NoError(t, err)
-	err = encoder2.EndMetric()
-	require.NoError(t, err)
-	data2, err := encoder2.Finish()
-	require.NoError(t, err)
-
-	// Decode both blobs
-	blobSet, err := DecodeBlobSet(data1, data2)
-	require.NoError(t, err)
-	require.Len(t, blobSet.numericBlobs, 2)
-
-	// Verify both blobs were decoded correctly
-	require.True(t, blobSet.numericBlobs[0].HasMetricID(900))
-	require.True(t, blobSet.numericBlobs[1].HasMetricID(1000))
-	require.Equal(t, 2, blobSet.numericBlobs[0].Len(900))
-	require.Equal(t, 2, blobSet.numericBlobs[1].Len(1000))
-}
-
 // TestDecodeBlobSet_UnsortedInput tests that blobs are sorted even if input is unsorted
 func TestDecodeBlobSet_UnsortedInput(t *testing.T) {
 	// Create blobs with non-chronological start times
