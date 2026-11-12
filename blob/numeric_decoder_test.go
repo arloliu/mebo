@@ -1,8 +1,10 @@
 package blob
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -3006,5 +3008,533 @@ func TestNumericDecoder_buildSharedTimestamps(t *testing.T) {
 			}
 			require.Equal(t, tt.wantOffsets, gotOffsets, "group offsets")
 		})
+	}
+}
+
+// referenceParseIndexEntries is the index parse that parseIndexEntries is compared against:
+// every entry goes through the section parser, which is picked by entry size and called through a func value.
+// It stays as it was written, so that the comparison is against a fixed result.
+func referenceParseIndexEntries(
+	d *NumericDecoder,
+	indexOffset, tsPayloadSize, valPayloadSize, tagPayloadSize int,
+	needMetricIDs bool,
+) ([]section.NumericIndexEntry, []uint64, error) {
+	entrySize := d.header.Flag.IndexEntrySize()
+	// Compare counts before multiplying:
+	// on 32-bit platforms a crafted MetricCount times the entry size can wrap.
+	if indexOffset > len(d.data) || d.metricCount > (len(d.data)-indexOffset)/entrySize {
+		return nil, nil, errs.ErrInvalidIndexEntrySize
+	}
+	indexSize := entrySize * d.metricCount
+
+	// The timestamp payload (or the shared timestamp table before it) must start at or after the end of the index,
+	// never inside the header or index.
+	if indexOffset+indexSize > int(d.header.TimestampPayloadOffset) {
+		return nil, nil, fmt.Errorf("%w: timestamp payload at %d overlaps the index ending at %d",
+			errs.ErrInvalidTimestampPayloadOffset, d.header.TimestampPayloadOffset, indexOffset+indexSize)
+	}
+
+	indexData := d.data[indexOffset : indexOffset+indexSize]
+	// Use int for accumulated offsets to prevent uint16 overflow
+	// Index entries store deltas as uint16/uint32, but absolute offsets can exceed those ranges
+	var lastTsOffset int
+	var lastValOffset int
+	var lastTagOffset int
+
+	// Pre-allocate slices with exact size for better performance
+	// Direct indexing eliminates bounds checking on each append operation
+	indexEntries := make([]section.NumericIndexEntry, d.metricCount)
+	var metricIDs []uint64
+	if needMetricIDs {
+		metricIDs = make([]uint64, d.metricCount)
+	}
+
+	// Select parser based on entry size (compact 16B vs extended 32B)
+	parseEntry := section.ParseNumericIndexEntry
+	if entrySize == section.NumericExtIndexEntrySize {
+		parseEntry = section.ParseNumericIndexEntryExt
+	}
+
+	// V2/V2Ext lookup relies on MetricIDs being non-descending.
+	// Validate that at decode open (before buildIndex selects a lookup representation).
+	// Strictly-decreasing (id < prev) is rejected;
+	// equal adjacent IDs (id == prev) are a legitimate collision and accepted.
+	validateV2Order := d.header.Flag.IsV2()
+
+	var err error
+	for i := 0; i < d.metricCount; i++ {
+		start := i * entrySize
+		end := start + entrySize
+
+		indexEntries[i], err = parseEntry(indexData[start:end], d.engine)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		curEntry := &indexEntries[i]
+
+		// Convert delta offsets to absolute offsets
+		// Accumulate in int to prevent uint16 overflow, entry now has int fields
+		lastTsOffset += curEntry.TimestampOffset
+		lastValOffset += curEntry.ValueOffset
+		lastTagOffset += curEntry.TagOffset
+
+		curEntry.TimestampOffset = lastTsOffset
+		curEntry.ValueOffset = lastValOffset
+		curEntry.TagOffset = lastTagOffset
+
+		if needMetricIDs {
+			metricIDs[i] = curEntry.MetricID
+		}
+
+		// Calculate entry lengths for validation later
+		if i > 0 {
+			prevEntry := &indexEntries[i-1]
+
+			// Reject strictly-decreasing MetricID order on V2/V2Ext:
+			// an unsorted index would make the binary-search lookup silently miss entries.
+			if validateV2Order && curEntry.MetricID < prevEntry.MetricID {
+				return nil, nil, errs.ErrUnsortedIndex
+			}
+
+			// Validate offsets are non-decreasing
+			if lastTsOffset < prevEntry.TimestampOffset ||
+				lastValOffset < prevEntry.ValueOffset ||
+				lastTagOffset < prevEntry.TagOffset {
+				return nil, nil, errs.ErrInvalidIndexOffsets
+			}
+
+			prevEntry.TimestampLength = lastTsOffset - prevEntry.TimestampOffset
+			prevEntry.ValueLength = lastValOffset - prevEntry.ValueOffset
+			prevEntry.TagLength = lastTagOffset - prevEntry.TagOffset
+		}
+	}
+
+	// Calculate the last entry's lengths using decompressed payload sizes
+	if d.metricCount > 0 {
+		lastEntry := &indexEntries[d.metricCount-1]
+
+		// Validate last entry offsets don't exceed payload sizes
+		if lastEntry.TimestampOffset > tsPayloadSize ||
+			lastEntry.ValueOffset > valPayloadSize ||
+			lastEntry.TagOffset > tagPayloadSize {
+			return nil, nil, errs.ErrInvalidIndexOffsets
+		}
+
+		lastEntry.TimestampLength = tsPayloadSize - lastEntry.TimestampOffset
+		lastEntry.ValueLength = valPayloadSize - lastEntry.ValueOffset
+		lastEntry.TagLength = tagPayloadSize - lastEntry.TagOffset
+	}
+
+	// Final validation: ensure offsets are non-negative and lengths are valid
+	if lastTsOffset < 0 || lastValOffset < 0 || lastTagOffset < 0 {
+		return nil, nil, errs.ErrInvalidIndexOffsets
+	}
+
+	return indexEntries, metricIDs, nil
+}
+
+// storedIndexEntry holds the fields of one index entry as the index stores them:
+// each offset is the distance from the previous entry's offset.
+type storedIndexEntry struct {
+	id                  uint64
+	count, ts, val, tag uint32
+	// reserved fills the reserved bytes of an extended entry; a compact entry has none.
+	reserved uint64
+}
+
+// indexLayout is one combination of blob format and byte order an index can be stored in.
+type indexLayout struct {
+	name      string
+	magic     uint16
+	bigEndian bool
+}
+
+// flag returns the header flag of a blob stored in this layout.
+func (l indexLayout) flag() section.NumericFlag {
+	flag := section.NumericFlag{Options: l.magic}
+	if l.bigEndian {
+		flag.WithBigEndian()
+	}
+
+	return flag
+}
+
+// appendStoredIndexEntries appends the entries in the entry size and byte order the flag selects.
+// A compact entry keeps the low 16 bits of the count and of each offset.
+func appendStoredIndexEntries(dst []byte, entries []storedIndexEntry, flag section.NumericFlag) []byte {
+	engine := flag.GetEndianEngine()
+	for _, entry := range entries {
+		dst = engine.AppendUint64(dst, entry.id)
+		if flag.IsV2Ext() {
+			dst = engine.AppendUint32(dst, entry.count)
+			dst = engine.AppendUint32(dst, entry.ts)
+			dst = engine.AppendUint32(dst, entry.val)
+			dst = engine.AppendUint32(dst, entry.tag)
+			dst = engine.AppendUint64(dst, entry.reserved)
+
+			continue
+		}
+		dst = engine.AppendUint16(dst, uint16(entry.count))
+		dst = engine.AppendUint16(dst, uint16(entry.ts))
+		dst = engine.AppendUint16(dst, uint16(entry.val))
+		dst = engine.AppendUint16(dst, uint16(entry.tag))
+	}
+
+	return dst
+}
+
+// absoluteIndexEntries returns what the stored entries parse to:
+// offsets summed up from the stored distances,
+// and each length reaching to the next entry's offset, or to the end of the payload for the last entry.
+func absoluteIndexEntries(stored []storedIndexEntry, tsSize, valSize, tagSize int) []section.NumericIndexEntry {
+	entries := make([]section.NumericIndexEntry, len(stored))
+	var ts, val, tag int
+	for i, entry := range stored {
+		ts += int(entry.ts)
+		val += int(entry.val)
+		tag += int(entry.tag)
+		entries[i] = section.NumericIndexEntry{
+			MetricID:        entry.id,
+			Count:           int(entry.count),
+			TimestampOffset: ts,
+			ValueOffset:     val,
+			TagOffset:       tag,
+		}
+	}
+	for i := range entries {
+		endTs, endVal, endTag := tsSize, valSize, tagSize
+		if i+1 < len(entries) {
+			endTs, endVal, endTag = entries[i+1].TimestampOffset, entries[i+1].ValueOffset, entries[i+1].TagOffset
+		}
+		entries[i].TimestampLength = endTs - entries[i].TimestampOffset
+		entries[i].ValueLength = endVal - entries[i].ValueOffset
+		entries[i].TagLength = endTag - entries[i].TagOffset
+	}
+
+	return entries
+}
+
+// spreadStoredIndexEntries returns n entries with ascending IDs,
+// whose counts and offset distances differ from field to field and from entry to entry.
+func spreadStoredIndexEntries(n int) []storedIndexEntry {
+	entries := make([]storedIndexEntry, n)
+	for i := range entries {
+		step := uint32(i)
+		entries[i] = storedIndexEntry{
+			id:    0x0102030405060708 + uint64(i)*0x0101,
+			count: 1 + step%7,
+			ts:    0x0110 + step%5,
+			val:   0x0220 + step%11,
+			tag:   step % 4,
+		}
+	}
+
+	return entries
+}
+
+func TestNumericDecoder_parseIndexEntries(t *testing.T) {
+	v1LE := indexLayout{name: "V1 little endian", magic: section.MagicNumericV1Opt}
+	v1BE := indexLayout{name: "V1 big endian", magic: section.MagicNumericV1Opt, bigEndian: true}
+	v2LE := indexLayout{name: "V2 little endian", magic: section.MagicNumericV2Opt}
+	v2BE := indexLayout{name: "V2 big endian", magic: section.MagicNumericV2Opt, bigEndian: true}
+	extLE := indexLayout{name: "V2 extended little endian", magic: section.MagicNumericV2ExtOpt}
+	extBE := indexLayout{name: "V2 extended big endian", magic: section.MagicNumericV2ExtOpt, bigEndian: true}
+
+	allLayouts := []indexLayout{v1LE, v1BE, v2LE, v2BE, extLE, extBE}
+	v1Layouts := []indexLayout{v1LE, v1BE}
+	v2Layouts := []indexLayout{v2LE, v2BE, extLE, extBE}
+	extLayouts := []indexLayout{extLE, extBE}
+
+	// The payload sizes of a case that does not set them.
+	const roomy = 1 << 30
+	// The bytes that follow the index stand for the payloads; they hold at least one entry of either size.
+	const payloadBytes = 40
+
+	e := func(id uint64, count, ts, val, tag uint32) storedIndexEntry {
+		return storedIndexEntry{id: id, count: count, ts: ts, val: val, tag: tag}
+	}
+	reserved := func(entry storedIndexEntry, bits uint64) storedIndexEntry {
+		entry.reserved = bits
+
+		return entry
+	}
+	entries := func(list ...storedIndexEntry) []storedIndexEntry { return list }
+
+	// Every field of these three entries has its own value, and no value reads the same in both byte orders.
+	// The offsets add up to 0x3f42, 0x6f72 and 0x9fa2.
+	three := entries(
+		e(0x0102030405060708, 0x0a0b, 0x1112, 0x2122, 0x3132),
+		e(0x1112131415161718, 0x0c0d, 0x1314, 0x2324, 0x3334),
+		e(0xf1f2f3f4f5f6f7f8, 0x0e0f, 0x1b1c, 0x2b2c, 0x3b3c),
+	)
+	// The ID of the last entry is below the one before it.
+	decreasing := entries(
+		e(0x0102030405060708, 0x0a0b, 0x1112, 0x2122, 0x3132),
+		e(0x1112131415161718, 0x0c0d, 0x1314, 0x2324, 0x3334),
+		e(0x1112131415161717, 0x0e0f, 0x1b1c, 0x2b2c, 0x3b3c),
+	)
+
+	tests := []struct {
+		name    string
+		entries []storedIndexEntry
+		// layouts restricts the case to some layouts; none means every layout.
+		layouts []indexLayout
+		// namesSize is the number of bytes between the header and the index.
+		namesSize int
+		// offsetPast moves the index offset handed to the parse past where the index is.
+		offsetPast int
+		// extraMetrics is the number of metrics the count claims beyond the entries stored.
+		extraMetrics int
+		// overlap is the number of bytes by which the timestamp payload starts before the end of the stored entries.
+		overlap int
+		// tsSize, valSize and tagSize are the payload sizes; zero means roomy.
+		tsSize, valSize, tagSize int
+		// exactSizes takes the three sizes as they are, zero included.
+		exactSizes bool
+		wantErr    error
+	}{
+		{name: "a nonzero first offset", entries: three},
+		{name: "the index after a names payload", entries: three, namesSize: 37},
+		{name: "no metric"},
+		{name: "no metric, no payload", exactSizes: true},
+		{name: "one metric", entries: three[:1]},
+		{name: "200 metrics", entries: spreadStoredIndexEntries(200)},
+		{
+			name:    "every distance is zero",
+			entries: entries(e(0x0101, 0x0a0b, 0, 0, 0), e(0x0202, 0x0c0d, 0, 0, 0), e(0x0303, 0x0e0f, 0, 0, 0)),
+		},
+		{
+			name:       "every distance is zero, no payload",
+			entries:    entries(e(0x0101, 0x0a0b, 0, 0, 0), e(0x0202, 0x0c0d, 0, 0, 0)),
+			exactSizes: true,
+		},
+		{
+			name:    "only the timestamp distances are zero",
+			entries: entries(e(0x0101, 0x0a0b, 0, 0x2122, 0x3132), e(0x0202, 0x0c0d, 0, 0x2324, 0x3334)),
+		},
+		{
+			name: "compact distances that add up past 65535",
+			entries: entries(
+				e(0x0101, 0xffff, 0xffff, 0xfffe, 0xfffd),
+				e(0x0202, 0xfffc, 0xffff, 0xfffe, 0xfffd),
+				e(0x0303, 0x0001, 0xfffb, 0xfffa, 0xfff9),
+			),
+		},
+		{
+			name: "extended fields past 16 bits",
+			entries: entries(
+				e(0x0101, 0x00011213, 0x00021415, 0x00031617, 0x00041819),
+				e(0x0202, 0x01020304, 0x02030405, 0x03040506, 0x04050607),
+			),
+			layouts: extLayouts,
+		},
+		{
+			name: "duplicate IDs",
+			entries: entries(
+				e(0x0707, 0x0a0b, 0x1112, 0x2122, 0x3132),
+				e(0x0707, 0x0c0d, 0x1314, 0x2324, 0x3334),
+				e(0x0909, 0x0e0f, 0x1516, 0x2526, 0x3536),
+				e(0x0909, 0x0102, 0x1718, 0x2728, 0x3738),
+			),
+		},
+		{name: "decreasing IDs on V1", entries: decreasing, layouts: v1Layouts},
+		{name: "decreasing IDs on V2", entries: decreasing, layouts: v2Layouts, wantErr: errs.ErrUnsortedIndex},
+		{
+			name:    "the second ID is below the first on V2",
+			entries: entries(three[1], three[0], three[2]),
+			layouts: v2Layouts,
+			wantErr: errs.ErrUnsortedIndex,
+		},
+
+		// The last entry against the payload sizes.
+		{name: "the last offsets end their payloads", entries: three, tsSize: 0x3f42, valSize: 0x6f72, tagSize: 0x9fa2},
+		{
+			name:    "the last timestamp offset is past its payload",
+			entries: three, tsSize: 0x3f41, valSize: 0x6f72, tagSize: 0x9fa2,
+			wantErr: errs.ErrInvalidIndexOffsets,
+		},
+		{
+			name:    "the last value offset is past its payload",
+			entries: three, tsSize: 0x3f42, valSize: 0x6f71, tagSize: 0x9fa2,
+			wantErr: errs.ErrInvalidIndexOffsets,
+		},
+		{
+			name:    "the last tag offset is past its payload",
+			entries: three, tsSize: 0x3f42, valSize: 0x6f72, tagSize: 0x9fa1,
+			wantErr: errs.ErrInvalidIndexOffsets,
+		},
+		{
+			name:    "the offset of the only metric is past its payload",
+			entries: three[:1], tsSize: 0x1111,
+			wantErr: errs.ErrInvalidIndexOffsets,
+		},
+
+		// The index against the blob around it.
+		{
+			name:    "a metric count past the end of the data",
+			entries: three, extraMetrics: 1000,
+			wantErr: errs.ErrInvalidIndexEntrySize,
+		},
+		{
+			name:         "a metric count past the end of the data, without entries",
+			extraMetrics: 3,
+			wantErr:      errs.ErrInvalidIndexEntrySize,
+		},
+		{
+			name:    "an index offset past the end of the data",
+			entries: three, offsetPast: 1 << 20,
+			wantErr: errs.ErrInvalidIndexEntrySize,
+		},
+		{
+			name:    "a metric count that reaches into the timestamp payload",
+			entries: three, extraMetrics: 1,
+			wantErr: errs.ErrInvalidTimestampPayloadOffset,
+		},
+		{
+			name:    "a timestamp payload that starts inside the index",
+			entries: three, overlap: 1,
+			wantErr: errs.ErrInvalidTimestampPayloadOffset,
+		},
+		{
+			name:    "a timestamp payload that starts inside the index after a names payload",
+			entries: three, namesSize: 37, overlap: 16,
+			wantErr: errs.ErrInvalidTimestampPayloadOffset,
+		},
+
+		// Reserved bytes of an extended entry.
+		{
+			name:    "reserved bytes set in the first entry",
+			entries: entries(reserved(three[0], 1), three[1], three[2]),
+			layouts: extLayouts,
+			wantErr: errs.ErrInvalidReservedBytes,
+		},
+		{
+			name:    "reserved bytes set in the last entry",
+			entries: entries(three[0], three[1], reserved(three[2], 1<<63)),
+			layouts: extLayouts,
+			wantErr: errs.ErrInvalidReservedBytes,
+		},
+
+		// Two faults in one index: the one the parse meets first is reported.
+		{
+			name:    "a metric count past the end of the data and a timestamp payload inside the index",
+			entries: three, extraMetrics: 1000, overlap: 4,
+			wantErr: errs.ErrInvalidIndexEntrySize,
+		},
+		{
+			name:    "a timestamp payload inside the index and a decreasing ID",
+			entries: decreasing, overlap: 4,
+			layouts: v2Layouts,
+			wantErr: errs.ErrInvalidTimestampPayloadOffset,
+		},
+		{
+			name:    "a timestamp payload inside the index and reserved bytes set",
+			entries: entries(reserved(three[0], 1), three[1]), overlap: 4,
+			layouts: extLayouts,
+			wantErr: errs.ErrInvalidTimestampPayloadOffset,
+		},
+		{
+			name:    "a decreasing ID ahead of an entry with reserved bytes set",
+			entries: entries(three[1], three[0], reserved(three[2], 1)),
+			layouts: extLayouts,
+			wantErr: errs.ErrUnsortedIndex,
+		},
+		{
+			name:    "a decreasing ID in an entry with reserved bytes set",
+			entries: entries(three[1], reserved(three[0], 1), three[2]),
+			layouts: extLayouts,
+			wantErr: errs.ErrInvalidReservedBytes,
+		},
+		{
+			name:    "reserved bytes set and every field at the 32-bit limit",
+			entries: entries(three[0], reserved(e(0x1112131415161718, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff), 1)),
+			layouts: extLayouts,
+			wantErr: errs.ErrInvalidReservedBytes,
+		},
+		{
+			name:    "a decreasing ID and a last offset past its payload on V1",
+			entries: decreasing, tsSize: 0x3f41,
+			layouts: v1Layouts,
+			wantErr: errs.ErrInvalidIndexOffsets,
+		},
+		{
+			name:    "a decreasing ID and a last offset past its payload on V2",
+			entries: decreasing, tsSize: 0x3f41,
+			layouts: v2Layouts,
+			wantErr: errs.ErrUnsortedIndex,
+		},
+	}
+
+	for _, tt := range tests {
+		layouts := tt.layouts
+		if layouts == nil {
+			layouts = allLayouts
+		}
+		tsSize, valSize, tagSize := tt.tsSize, tt.valSize, tt.tagSize
+		if !tt.exactSizes {
+			tsSize, valSize, tagSize = cmp.Or(tsSize, roomy), cmp.Or(valSize, roomy), cmp.Or(tagSize, roomy)
+		}
+
+		for _, layout := range layouts {
+			flag := layout.flag()
+			indexOffset := section.HeaderSize + tt.namesSize
+
+			// Bytes outside the index are nonzero, so that a read from the wrong place shows.
+			data := bytes.Repeat([]byte{0xa5}, indexOffset)
+			data = appendStoredIndexEntries(data, tt.entries, flag)
+			tsPayloadOffset := len(data) - tt.overlap
+			data = append(data, bytes.Repeat([]byte{0x5a}, payloadBytes)...)
+
+			newDecoder := func() *NumericDecoder {
+				return &NumericDecoder{
+					data:        slices.Clone(data),
+					metricCount: len(tt.entries) + tt.extraMetrics,
+					engine:      flag.GetEndianEngine(),
+					header:      &section.NumericHeader{Flag: flag, TimestampPayloadOffset: uint32(tsPayloadOffset)},
+				}
+			}
+
+			for _, needMetricIDs := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/metric IDs %t", tt.name, layout.name, needMetricIDs), func(t *testing.T) {
+					reference := newDecoder()
+					wantEntries, wantIDs, wantErr := referenceParseIndexEntries(
+						reference, indexOffset+tt.offsetPast, tsSize, valSize, tagSize, needMetricIDs)
+
+					decoder := newDecoder()
+					gotEntries, gotIDs, gotErr := decoder.parseIndexEntries(
+						indexOffset+tt.offsetPast, tsSize, valSize, tagSize, needMetricIDs)
+
+					require.Equal(t, data, decoder.data, "blob bytes")
+
+					require.Equal(t, wantErr == nil, gotErr == nil, "error: want %v, got %v", wantErr, gotErr)
+					require.Equal(t, wantEntries == nil, gotEntries == nil, "nil entries")
+					require.Equal(t, wantEntries, gotEntries, "entries")
+					require.Equal(t, wantIDs == nil, gotIDs == nil, "nil metric IDs")
+					require.Equal(t, wantIDs, gotIDs, "metric IDs")
+
+					if tt.wantErr != nil {
+						require.ErrorIs(t, wantErr, tt.wantErr)
+						require.ErrorIs(t, gotErr, tt.wantErr)
+						require.EqualError(t, gotErr, wantErr.Error())
+						// With the same sentinel and the same text, an error that wraps nothing is the sentinel itself.
+						require.Equal(t, errors.Unwrap(wantErr) == nil, errors.Unwrap(gotErr) == nil, "wrapped error")
+						require.Nil(t, gotEntries)
+						require.Nil(t, gotIDs)
+
+						return
+					}
+
+					require.NoError(t, wantErr)
+					require.NoError(t, gotErr)
+					fromStored := absoluteIndexEntries(tt.entries, tsSize, valSize, tagSize)
+					require.Equal(t, fromStored, gotEntries, "entries from the stored fields")
+					require.Equal(t, needMetricIDs, gotIDs != nil, "metric IDs only when asked for")
+					for i := range gotIDs {
+						require.Equal(t, tt.entries[i].id, gotIDs[i], "metric ID %d", i)
+					}
+				})
+			}
+		}
 	}
 }
