@@ -1094,6 +1094,8 @@ func (h *NumericMetric) restNeedsDecode() bool {
 
 // forEachPoints is forEachFromEntry over the part's own ranges: nothing when a required range was invalid.
 // After a full Materialize it zips the decoded slices, and decoded tags are never decoded again.
+// With decoded timestamps and values that stay encoded, on a blob without tags,
+// it pairs the value column with the timestamps when forEachPointsOverTimestamps can.
 func (p *numericMetricPart) forEachPoints(yield func(int, NumericDataPoint) bool) {
 	if p.count == 0 || !p.tsOK || !p.valOK || (p.HasTag() && !p.tagOK) {
 		return
@@ -1106,12 +1108,17 @@ func (p *numericMetricPart) forEachPoints(yield func(int, NumericDataPoint) bool
 		NumericBlob{blobBase: p.blobBase}.forEachDataPoint(p.tsBytes, p.valBytes, p.tagBytes, p.count, yield)
 		return
 	}
-	if ts := p.timestampColumn(); ts != nil && len(p.values) == p.count {
+	ts := p.timestampColumn()
+	if ts != nil && len(p.values) == p.count {
 		forEachZipped(ts, p.values, tags, yield)
 		return
 	}
 	if tags == nil {
-		NumericBlob{blobBase: p.blobBase}.forEachDataPoint(p.tsBytes, p.valBytes, nil, p.count, yield)
+		b := NumericBlob{blobBase: p.blobBase}
+		if ts == nil || !b.forEachPointsOverTimestamps(ts, p.valBytes, p.count, yield) {
+			b.forEachDataPoint(p.tsBytes, p.valBytes, nil, p.count, yield)
+		}
+
 		return
 	}
 
