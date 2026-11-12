@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Benchmark Date** | 2026-10-11 |
+| **Benchmark Date** | 2026-11-12 |
 | **Platform** | linux/amd64 (AMD Ryzen 9 9950X3D 16-Core Processor), Go go1.26.7 |
 | **Data** | `mix_monitoring` profile: 100 metrics × 150 points = 15,000 data points |
 | **Timing** | Layout-averaged `testing.Benchmark`: 4 code layouts × 4 rounds, 16 runs per cell at a 50ms benchtime, pinned to CPU 6 (AMD Ryzen 9 9950X3D 16-Core Processor) with GOMAXPROCS=1; every data set measured in one process per run. The layouts vary the placement of the repository's code only, not the runtime's or the standard library's. |
@@ -31,11 +31,11 @@
 
 | Goal | Configuration | Key number | Cost |
 |---|---|---|---|
-| **Production-like blob** (mixed monitoring metrics, shared timestamps) | Shared DeltaPacked + ALP-RLE | 2.593 bytes/point on `mix_monitoring`, 32.6% smaller than Shared DeltaPacked + Chimp (3.846); 12.8–47.5% smaller on the other three mixes | Takes 1.82× Chimp's encode time with AVX-512 (314,970 vs 173,061 ns/op), several times longer without it; readers must know ALP-RLE and the V2 format |
+| **Production-like blob** (mixed monitoring metrics, shared timestamps) | Shared DeltaPacked + ALP-RLE | 2.593 bytes/point on `mix_monitoring`, 32.6% smaller than Shared DeltaPacked + Chimp (3.846); 12.8–47.5% smaller on the other three mixes | Takes 1.80× Chimp's encode time with AVX-512 (314,237 vs 174,415 ns/op), several times longer without it, and 1.85× Chimp's time to open the blob (2,879 vs 1,553 ns/op); readers must know ALP-RLE and the V2 format |
 | **Full-precision values without repeats** | Shared DeltaPacked + Chimp | 6.384 bytes/point on `worst_case`; ALP-RLE is 2.0% larger there | Needs V2 readers, like any shared-timestamp blob |
-| **Fastest encode with a value codec** | Delta + Gorilla, or Shared DeltaPacked + Gorilla with V2 readers | 145,010 and 160,245 ns/op, equivalent; Delta + Raw (117,556 ns/op, 9.340 bytes/point) is the floor | 5.096 and 3.893 bytes/point, 97% and 50% more than ALP-RLE |
-| **Random access** (`ValueAt`) | Shared DeltaPacked + ALP or ALP-RLE | 1,864 and 2,151 ns/op per 100 lookups (equivalent), against 48,707 for Chimp | With AVX-512, ALP takes 1.43× and ALP-RLE 1.82× Chimp's encode time (several times longer without it); readers must know the codec and the V2 format |
-| **Library default** (`NewDefaultNumericEncoder`) | Delta + Gorilla | 5.096 bytes/point, 97% more than the first row | No shared-timestamp or ALP-RLE reader requirement |
+| **Fastest encode with a value codec** | Delta + Gorilla, or Shared DeltaPacked + Gorilla with V2 readers | 145,902 and 161,979 ns/op on `mix_monitoring`, equivalent; Delta + Raw (118,233 ns/op, 9.340 bytes/point) is the floor | 5.096 and 3.893 bytes/point, 97% and 50% more than ALP-RLE |
+| **Random access** (`ValueAt`) | Shared DeltaPacked + ALP or ALP-RLE | 1,874 and 2,156 ns/op per 100 lookups on `mix_monitoring` (equivalent), against 48,733 for Chimp | With AVX-512, ALP takes 1.41× and ALP-RLE 1.80× Chimp's encode time (several times longer without it); readers must know the codec and the V2 format |
+| **Library default** (`NewDefaultNumericEncoder`) | Delta + Gorilla | 5.096 bytes/point on `mix_monitoring`, 97% more than the first row | No shared-timestamp or ALP-RLE reader requirement |
 
 ## Benchmark Methodology
 
@@ -114,36 +114,36 @@ Sorted by encoded size (most efficient first):
 
 | Configuration | Bytes/Point | Space Savings | vs Raw | Encode (ns/op) | Decode (ns/op) | Iterate (ns/op) |
 |---|---:|---:|---:|---:|---:|---:|
-| Shared Delta + ALP-RLE | 2.591 | 83.9% | 6.216× | 309,087 | 4,901 | 83,125 |
-| Shared DeltaPacked + ALP-RLE | 2.593 | 83.9% | 6.211× | 314,970 | 4,924 | 84,811 |
-| Shared Raw + ALP-RLE | 2.660 | 83.5% | 6.057× | 319,768 | 4,847 | 74,385 |
-| Shared Delta + ALP | 2.820 | 82.5% | 5.712× | 241,235 | 4,323 | 79,373 |
-| Shared DeltaPacked + ALP | 2.822 | 82.5% | 5.708× | 247,500 | 4,329 | 81,086 |
-| Shared Raw + ALP | 2.888 | 82.1% | 5.578× | 252,202 | 4,257 | 71,243 |
-| Delta + ALP-RLE | 3.797 | 76.4% | 4.242× | 300,226 | 3,991 | 81,240 |
-| Shared Delta + Chimp | 3.844 | 76.1% | 4.190× | 167,097 | 3,570 | 105,839 |
-| Shared DeltaPacked + Chimp | 3.846 | 76.1% | 4.188× | 173,061 | 3,578 | 109,732 |
-| Shared Delta + Gorilla | 3.890 | 75.8% | 4.141× | 156,156 | 3,598 | 94,023 |
-| Shared DeltaPacked + Gorilla | 3.893 | 75.8% | 4.138× | 160,245 | 3,580 | 94,099 |
-| Shared Raw + Chimp | 3.912 | 75.7% | 4.117× | 181,603 | 3,544 | 131,569 |
-| Shared Raw + Gorilla | 3.959 | 75.4% | 4.069× | 168,408 | 3,514 | 115,800 |
-| DeltaPacked + ALP-RLE | 3.997 | 75.2% | 4.030× | 306,671 | 3,973 | 82,877 |
-| Delta + ALP | 4.026 | 75.0% | 4.001× | 232,679 | 3,589 | 78,629 |
-| DeltaPacked + ALP | 4.226 | 73.8% | 3.812× | 237,471 | 3,590 | 79,191 |
-| Delta + Chimp | 5.050 | 68.6% | 3.190× | 156,024 | 2,877 | 104,909 |
-| Delta + Gorilla | 5.096 | 68.4% | 3.161× | 145,010 | 2,878 | 93,932 |
-| DeltaPacked + Chimp | 5.250 | 67.4% | 3.068× | 160,509 | 2,880 | 109,117 |
-| DeltaPacked + Gorilla | 5.296 | 67.1% | 3.042× | 147,249 | 2,876 | 92,393 |
-| Shared Delta + Raw | 8.134 | 49.5% | 1.980× | 129,000 | 3,596 | 80,916 |
-| Shared DeltaPacked + Raw | 8.136 | 49.5% | 1.980× | 134,829 | 3,651 | 55,630 |
-| Shared Raw + Raw | 8.202 | 49.1% | 1.964× | 139,740 | 3,596 | 81,974 |
-| Delta + Raw | 9.340 | 42.0% | 1.725× | 117,556 | 2,908 | 81,841 |
-| DeltaPacked + Raw | 9.540 | 40.8% | 1.689× | 121,776 | 2,917 | 54,449 |
-| Raw + ALP-RLE | 10.566 | 34.4% | 1.525× | 301,290 | 4,015 | 72,588 |
-| Raw + ALP | 10.794 | 33.0% | 1.492× | 233,682 | 3,634 | 69,430 |
-| Raw + Chimp | 11.819 | 26.6% | 1.363× | 164,703 | 2,919 | 131,122 |
-| Raw + Gorilla | 11.865 | 26.3% | 1.358× | 150,793 | 2,918 | 115,055 |
-| Raw + Raw | 16.109 | 0.0% | 1.000× | 119,567 | 2,951 | 80,125 |
+| Shared Delta + ALP-RLE | 2.591 | 83.9% | 6.216× | 308,234 | 2,883 | 83,924 |
+| Shared DeltaPacked + ALP-RLE | 2.593 | 83.9% | 6.211× | 314,237 | 2,879 | 85,048 |
+| Shared Raw + ALP-RLE | 2.660 | 83.5% | 6.057× | 316,414 | 2,805 | 74,781 |
+| Shared Delta + ALP | 2.820 | 82.5% | 5.712× | 240,046 | 2,283 | 80,598 |
+| Shared DeltaPacked + ALP | 2.822 | 82.5% | 5.708× | 246,040 | 2,299 | 81,399 |
+| Shared Raw + ALP | 2.888 | 82.1% | 5.578× | 249,519 | 2,205 | 71,092 |
+| Delta + ALP-RLE | 3.797 | 76.4% | 4.242× | 299,613 | 3,004 | 82,508 |
+| Shared Delta + Chimp | 3.844 | 76.1% | 4.190× | 169,819 | 1,540 | 105,306 |
+| Shared DeltaPacked + Chimp | 3.846 | 76.1% | 4.188× | 174,415 | 1,553 | 109,164 |
+| Shared Delta + Gorilla | 3.890 | 75.8% | 4.141× | 157,757 | 1,533 | 95,735 |
+| Shared DeltaPacked + Gorilla | 3.893 | 75.8% | 4.138× | 161,979 | 1,544 | 95,701 |
+| Shared Raw + Chimp | 3.912 | 75.7% | 4.117× | 184,496 | 1,475 | 129,983 |
+| Shared Raw + Gorilla | 3.959 | 75.4% | 4.069× | 170,111 | 1,470 | 116,241 |
+| DeltaPacked + ALP-RLE | 3.997 | 75.2% | 4.030× | 304,037 | 3,008 | 83,595 |
+| Delta + ALP | 4.026 | 75.0% | 4.001× | 232,721 | 2,621 | 79,412 |
+| DeltaPacked + ALP | 4.226 | 73.8% | 3.812× | 236,443 | 2,619 | 80,376 |
+| Delta + Chimp | 5.050 | 68.6% | 3.190× | 158,888 | 1,902 | 104,847 |
+| Delta + Gorilla | 5.096 | 68.4% | 3.161× | 145,902 | 1,896 | 95,865 |
+| DeltaPacked + Chimp | 5.250 | 67.4% | 3.068× | 162,444 | 1,896 | 108,134 |
+| DeltaPacked + Gorilla | 5.296 | 67.1% | 3.042× | 148,951 | 1,902 | 94,499 |
+| Shared Delta + Raw | 8.134 | 49.5% | 1.980× | 130,217 | 1,579 | 82,866 |
+| Shared DeltaPacked + Raw | 8.136 | 49.5% | 1.980× | 135,019 | 1,604 | 56,581 |
+| Shared Raw + Raw | 8.202 | 49.1% | 1.964× | 140,623 | 1,511 | 82,457 |
+| Delta + Raw | 9.340 | 42.0% | 1.725× | 118,233 | 1,938 | 83,856 |
+| DeltaPacked + Raw | 9.540 | 40.8% | 1.689× | 121,726 | 1,934 | 55,034 |
+| Raw + ALP-RLE | 10.566 | 34.4% | 1.525× | 301,702 | 3,057 | 73,906 |
+| Raw + ALP | 10.794 | 33.0% | 1.492× | 232,616 | 2,647 | 70,239 |
+| Raw + Chimp | 11.819 | 26.6% | 1.363× | 166,375 | 1,938 | 129,880 |
+| Raw + Gorilla | 11.865 | 26.3% | 1.358× | 151,821 | 1,940 | 117,274 |
+| Raw + Raw | 16.109 | 0.0% | 1.000× | 120,284 | 1,976 | 80,745 |
 
 ### Key Observations
 
@@ -156,36 +156,48 @@ Sorted by encoded size (most efficient first):
   That is 31.8% of Delta + ALP-RLE (3.797 → 2.591) and 23.9% of Delta + Chimp (5.050 → 3.844).
   Without shared timestamps, Delta + ALP-RLE (3.797) is already 1.3% smaller than Shared DeltaPacked + Chimp,
   so the value codec alone recovers what shared timestamps save.
-- **With shared timestamps, the timestamp encoding hardly changes the size**:
+  With shared timestamps, the timestamp encoding hardly changes the size:
   Shared Delta, DeltaPacked and Raw + ALP-RLE take 2.591, 2.593 and 2.660 bytes/point.
   Per metric, DeltaPacked costs 0.200 bytes/point more than Delta (3.997 vs 3.797 with ALP-RLE),
   and Raw timestamps cost 6.769 more (10.566).
 - **Encoding is the ALP family's cost.**
-  Shared DeltaPacked + ALP-RLE encodes in 314,970 ns/op (21.0 ns/point), 1.82× Chimp's 173,061 (11.5 ns/point);
-  plain ALP takes 247,500 ns/op, 1.43× Chimp, and ALP-RLE takes 1.27× plain ALP; all three comparisons are decided.
+  Shared DeltaPacked + ALP-RLE encodes in 314,237 ns/op (20.95 ns/point), 1.80× Chimp's 174,415 (11.63 ns/point);
+  plain ALP takes 246,040 ns/op, 1.41× Chimp, and ALP-RLE takes 1.28× plain ALP; all three comparisons are decided.
   Across the profiles below, ALP-RLE's encode time is equivalent to Chimp's on `decimal_gauge_2dp` only
-  and 1.37× (`decimal_gauge_4dp`) to 2.58× (`sparse_constant`) Chimp's elsewhere.
+  and 1.34× (`decimal_gauge_4dp`) to 2.52× (`sparse_constant`) Chimp's elsewhere.
   These runs use the AVX-512 exponent search;
   CPUs without AVX-512DQ run the scalar search and encode the ALP family several times slower
   (see [the search design](specs/alp-simd-ef-search-design.md#results)).
 - **Reads are faster with ALP-RLE, except for opening the blob.**
-  `ValueAt` takes 2,151 ns/op against Chimp's 48,707 (22.6× faster),
+  `ValueAt` takes 2,156 ns/op against Chimp's 48,733 (22.6× faster),
   because Chimp decodes its XOR chain from the start of the column.
-  Iteration takes 84,811 against 109,732 ns/op (1.29× faster).
-  Opening the blob takes 4,924 against 3,578 ns/op (1.38× slower), about 1.4 µs more per blob.
+  Iteration with `All(metricID)` takes 85,048 against 109,164 ns/op (1.28× faster);
+  `ForEach` and the other point walks are not timed in this report.
+  Opening the blob takes 2,879 against 1,553 ns/op (1.85× slower), about 1.3 µs more per blob;
+  plain ALP opens in 2,299 ns/op, 1.48× Chimp's time.
+  All four comparisons are decided.
 - **DeltaPacked and Delta timestamps iterate equivalently with every compressed value codec.**
-  Shared DeltaPacked + Chimp takes 109,732 ns/op and Shared Delta + Chimp 105,839;
-  Shared DeltaPacked + Gorilla takes 94,099 and Shared Delta + Gorilla 94,023;
-  with ALP-RLE, 84,811 and 83,125; all three pairs are equivalent.
-  With Raw values DeltaPacked is the faster of the two, 1.45× (Shared, 55,630 against 80,916 ns/op),
+  Shared DeltaPacked + Chimp takes 109,164 ns/op and Shared Delta + Chimp 105,306;
+  Shared DeltaPacked + Gorilla takes 95,701 and Shared Delta + Gorilla 95,735;
+  with ALP-RLE, 85,048 and 83,924; all three pairs are equivalent.
+  With Raw values DeltaPacked is the faster of the two, 1.46× (Shared, 56,581 against 82,866 ns/op),
   because its timestamps are decoded a whole column at a time;
-  DeltaPacked + Raw (54,449) and Shared DeltaPacked + Raw iterate fastest of all 30 combos,
+  DeltaPacked + Raw (55,034) and Shared DeltaPacked + Raw iterate fastest of all 30 combos,
   at 3.1–3.7× ALP-RLE's size (9.540 and 8.136 bytes/point).
-  Among the compressed codecs, ALP-RLE iterates 1.29× faster than Chimp and is equivalent to Gorilla.
-- **Shared `TimestampAt` reads 935–943 ns/op** across the 15 shared combos, whatever the codecs:
+  Among the compressed codecs, ALP-RLE iterates 1.28× faster than Chimp and is equivalent to Gorilla.
+- **Shared timestamps also make two reads cheaper on `mix_monitoring`: `TimestampAt`, and opening the blob with Gorilla, Chimp or Raw values.**
+  Shared `TimestampAt` reads 931–936 ns/op across the 15 shared combos, whatever the codecs:
   the pre-decoded shared column is found by an inlined group lookup
   (`specs/index-entry-by-pointer-design.md`, "Follow-up");
-  per-metric Delta and DeltaPacked timestamps take 12,888–13,009 and 9,484–9,601 ns/op, decoded from the column's start.
+  per-metric Delta and DeltaPacked timestamps take 13,034–13,288 and 9,485–9,658 ns/op, decoded from the column's start.
+  The nine shared combos with Gorilla, Chimp or Raw values open in 1,470–1,604 ns/op and their per-metric counterparts in 1,896–1,976,
+  1.21–1.32× faster and decided for every pair,
+  although a shared blob also decodes its shared timestamp column when it is opened (8 allocs/op against 7).
+  With ALP values the shared combos take 2,205–2,299 ns/op against 2,619–2,647:
+  1.20× faster and decided with Raw timestamps, equivalent with Delta and DeltaPacked.
+  With ALP-RLE the two are equivalent (2,805–2,883 against 3,004–3,057).
+  The decode cell is timed on this data set only, at 100 metrics × 150 points;
+  this report does not measure the open at other metric counts or column lengths.
 
 ## Encode Performance
 
@@ -193,36 +205,36 @@ Encoding speed and memory allocation for each combination:
 
 | Configuration | Speed (ns/op) | Memory (B/op) | Allocs/op |
 |---|---:|---:|---:|
-| Delta + Raw | 117,556 | 168,205 | 31 |
-| Raw + Raw | 119,567 | 266,506 | 31 |
-| DeltaPacked + Raw | 121,776 | 168,237 | 31 |
-| Shared Delta + Raw | 129,000 | 312,626 | 59 |
-| Shared DeltaPacked + Raw | 134,829 | 316,020 | 59 |
-| Shared Raw + Raw | 139,740 | 426,356 | 59 |
-| Delta + Gorilla | 145,010 | 102,708 | 31 |
-| DeltaPacked + Gorilla | 147,249 | 102,740 | 31 |
-| Raw + Gorilla | 150,793 | 201,008 | 31 |
-| Delta + Chimp | 156,024 | 102,692 | 31 |
-| Shared Delta + Gorilla | 156,156 | 189,776 | 59 |
-| Shared DeltaPacked + Gorilla | 160,245 | 193,169 | 59 |
-| DeltaPacked + Chimp | 160,509 | 102,724 | 31 |
-| Raw + Chimp | 164,703 | 200,992 | 31 |
-| Shared Delta + Chimp | 167,097 | 189,760 | 59 |
-| Shared Raw + Gorilla | 168,408 | 295,312 | 59 |
-| Shared DeltaPacked + Chimp | 173,061 | 193,152 | 59 |
-| Shared Raw + Chimp | 181,603 | 295,296 | 59 |
-| Delta + ALP | 232,679 | 96,736 | 71 |
-| Raw + ALP | 233,682 | 195,051 | 71 |
-| DeltaPacked + ALP | 237,471 | 96,768 | 71 |
-| Shared Delta + ALP | 241,235 | 167,429 | 99 |
-| Shared DeltaPacked + ALP | 247,500 | 170,822 | 99 |
-| Shared Raw + ALP | 252,202 | 272,983 | 100 |
-| Delta + ALP-RLE | 300,226 | 90,583 | 79 |
-| Raw + ALP-RLE | 301,290 | 197,094 | 79 |
-| DeltaPacked + ALP-RLE | 306,671 | 98,808 | 79 |
-| Shared Delta + ALP-RLE | 309,087 | 161,275 | 107 |
-| Shared DeltaPacked + ALP-RLE | 314,970 | 164,668 | 107 |
-| Shared Raw + ALP-RLE | 319,768 | 266,827 | 107 ‡ |
+| Delta + Raw | 118,233 | 168,205 | 31 |
+| Raw + Raw | 120,284 | 266,506 | 31 |
+| DeltaPacked + Raw | 121,726 | 168,237 | 31 |
+| Shared Delta + Raw | 130,217 | 312,626 | 59 |
+| Shared DeltaPacked + Raw | 135,019 | 316,020 | 59 |
+| Shared Raw + Raw | 140,623 | 426,356 | 59 |
+| Delta + Gorilla | 145,902 | 102,708 | 31 |
+| DeltaPacked + Gorilla | 148,951 | 102,740 | 31 |
+| Raw + Gorilla | 151,821 | 201,008 | 31 |
+| Shared Delta + Gorilla | 157,757 | 189,776 | 59 |
+| Delta + Chimp | 158,888 | 102,692 | 31 |
+| Shared DeltaPacked + Gorilla | 161,979 | 193,169 | 59 |
+| DeltaPacked + Chimp | 162,444 | 102,724 | 31 |
+| Raw + Chimp | 166,375 | 200,992 | 31 |
+| Shared Delta + Chimp | 169,819 | 189,760 | 59 |
+| Shared Raw + Gorilla | 170,111 | 295,312 | 59 |
+| Shared DeltaPacked + Chimp | 174,415 | 193,152 | 59 |
+| Shared Raw + Chimp | 184,496 | 295,296 | 59 |
+| Raw + ALP | 232,616 | 195,051 | 71 |
+| Delta + ALP | 232,721 | 96,736 | 71 |
+| DeltaPacked + ALP | 236,443 | 96,768 | 71 |
+| Shared Delta + ALP | 240,046 | 167,429 | 99 |
+| Shared DeltaPacked + ALP | 246,040 | 170,823 | 99 |
+| Shared Raw + ALP | 249,519 | 272,984 | 100 |
+| Delta + ALP-RLE | 299,613 | 90,582 | 79 |
+| Raw + ALP-RLE | 301,702 | 197,094 | 79 |
+| DeltaPacked + ALP-RLE | 304,037 | 98,808 | 79 |
+| Shared Delta + ALP-RLE | 308,234 | 161,275 | 107 |
+| Shared DeltaPacked + ALP-RLE | 314,237 | 164,668 | 107 |
+| Shared Raw + ALP-RLE | 316,414 | 266,826 | 107 ‡ |
 
 ## Decode Performance
 
@@ -230,36 +242,36 @@ Decoding speed (`NewDecoder` + `Decode`, which opens the blob) and memory alloca
 
 | Configuration | Speed (ns/op) | Memory (B/op) | Allocs/op |
 |---|---:|---:|---:|
-| DeltaPacked + Gorilla | 2,876 | 9,016 | 7 |
-| Delta + Chimp | 2,877 | 9,016 | 7 |
-| Delta + Gorilla | 2,878 | 9,016 | 7 |
-| DeltaPacked + Chimp | 2,880 | 9,016 | 7 |
-| Delta + Raw | 2,908 | 9,016 | 7 |
-| DeltaPacked + Raw | 2,917 | 9,016 | 7 |
-| Raw + Gorilla | 2,918 | 9,016 | 7 |
-| Raw + Chimp | 2,919 | 9,016 | 7 |
-| Raw + Raw | 2,951 | 9,016 | 7 |
-| Shared Raw + Gorilla | 3,514 | 11,352 | 11 |
-| Shared Raw + Chimp | 3,544 | 11,352 | 11 |
-| Shared Delta + Chimp | 3,570 | 11,352 | 11 |
-| Shared DeltaPacked + Chimp | 3,578 | 11,352 | 11 |
-| Shared DeltaPacked + Gorilla | 3,580 | 11,352 | 11 |
-| Delta + ALP | 3,589 | 9,016 | 7 |
-| DeltaPacked + ALP | 3,590 | 9,016 | 7 |
-| Shared Raw + Raw | 3,596 | 11,352 | 11 |
-| Shared Delta + Raw | 3,596 | 11,352 | 11 |
-| Shared Delta + Gorilla | 3,598 | 11,352 | 11 |
-| Raw + ALP | 3,634 | 9,016 | 7 |
-| Shared DeltaPacked + Raw | 3,651 | 11,352 | 11 |
-| DeltaPacked + ALP-RLE | 3,973 | 9,016 | 7 |
-| Delta + ALP-RLE | 3,991 | 9,016 | 7 |
-| Raw + ALP-RLE | 4,015 | 9,016 | 7 |
-| Shared Raw + ALP | 4,257 | 11,352 | 11 |
-| Shared Delta + ALP | 4,323 | 11,352 | 11 |
-| Shared DeltaPacked + ALP | 4,329 | 11,352 | 11 |
-| Shared Raw + ALP-RLE | 4,847 | 11,352 | 11 |
-| Shared Delta + ALP-RLE | 4,901 | 11,352 | 11 |
-| Shared DeltaPacked + ALP-RLE | 4,924 | 11,352 | 11 |
+| Shared Raw + Gorilla | 1,470 | 9,024 | 8 |
+| Shared Raw + Chimp | 1,475 | 9,024 | 8 |
+| Shared Raw + Raw | 1,511 | 9,024 | 8 |
+| Shared Delta + Gorilla | 1,533 | 9,024 | 8 |
+| Shared Delta + Chimp | 1,540 | 9,024 | 8 |
+| Shared DeltaPacked + Gorilla | 1,544 | 9,024 | 8 |
+| Shared DeltaPacked + Chimp | 1,553 | 9,024 | 8 |
+| Shared Delta + Raw | 1,579 | 9,024 | 8 |
+| Shared DeltaPacked + Raw | 1,604 | 9,024 | 8 |
+| DeltaPacked + Chimp | 1,896 | 9,016 | 7 |
+| Delta + Gorilla | 1,896 | 9,016 | 7 |
+| DeltaPacked + Gorilla | 1,902 | 9,016 | 7 |
+| Delta + Chimp | 1,902 | 9,016 | 7 |
+| DeltaPacked + Raw | 1,934 | 9,016 | 7 |
+| Raw + Chimp | 1,938 | 9,016 | 7 |
+| Delta + Raw | 1,938 | 9,016 | 7 |
+| Raw + Gorilla | 1,940 | 9,016 | 7 |
+| Raw + Raw | 1,976 | 9,016 | 7 |
+| Shared Raw + ALP | 2,205 | 9,024 | 8 |
+| Shared Delta + ALP | 2,283 | 9,024 | 8 |
+| Shared DeltaPacked + ALP | 2,299 | 9,024 | 8 |
+| DeltaPacked + ALP | 2,619 | 9,016 | 7 |
+| Delta + ALP | 2,621 | 9,016 | 7 |
+| Raw + ALP | 2,647 | 9,016 | 7 |
+| Shared Raw + ALP-RLE | 2,805 | 9,024 | 8 |
+| Shared DeltaPacked + ALP-RLE | 2,879 | 9,024 | 8 |
+| Shared Delta + ALP-RLE | 2,883 | 9,024 | 8 |
+| Delta + ALP-RLE | 3,004 | 9,016 | 7 |
+| DeltaPacked + ALP-RLE | 3,008 | 9,016 | 7 |
+| Raw + ALP-RLE | 3,057 | 9,016 | 7 |
 
 ## Iteration Performance
 
@@ -267,36 +279,36 @@ Sequential iteration speed (iterating all data points via `blob.All(metricID)`):
 
 | Configuration | Speed (ns/op) | Memory (B/op) | Allocs/op |
 |---|---:|---:|---:|
-| DeltaPacked + Raw | 54,449 | 11,208 | 301 |
-| Shared DeltaPacked + Raw | 55,630 | 11,208 | 301 |
-| Raw + ALP | 69,430 | 265,642 | 501 |
-| Shared Raw + ALP | 71,243 | 265,641 | 501 |
-| Raw + ALP-RLE | 72,588 | 265,642 | 501 |
-| Shared Raw + ALP-RLE | 74,385 | 265,641 | 501 |
-| Delta + ALP | 78,629 | 265,641 | 501 |
-| DeltaPacked + ALP | 79,191 | 265,641 | 501 |
-| Shared Delta + ALP | 79,373 | 265,641 | 501 |
-| Raw + Raw | 80,125 | 14,408 | 401 |
-| Shared Delta + Raw | 80,916 | 12,808 | 401 |
-| Shared DeltaPacked + ALP | 81,086 | 265,641 | 501 |
-| Delta + ALP-RLE | 81,240 | 265,641 | 501 |
-| Delta + Raw | 81,841 | 12,808 | 401 |
-| Shared Raw + Raw | 81,974 | 14,408 | 401 |
-| DeltaPacked + ALP-RLE | 82,877 | 265,641 | 501 |
-| Shared Delta + ALP-RLE | 83,125 | 265,641 | 501 |
-| Shared DeltaPacked + ALP-RLE | 84,811 | 265,641 | 501 |
-| DeltaPacked + Gorilla | 92,393 | 9,608 | 301 |
-| Delta + Gorilla | 93,932 | 9,608 | 301 |
-| Shared Delta + Gorilla | 94,023 | 9,608 | 301 |
-| Shared DeltaPacked + Gorilla | 94,099 | 9,608 | 301 |
-| Delta + Chimp | 104,909 | 9,608 | 301 |
-| Shared Delta + Chimp | 105,839 | 9,608 | 301 |
-| DeltaPacked + Chimp | 109,117 | 9,608 | 301 |
-| Shared DeltaPacked + Chimp | 109,732 | 9,608 | 301 |
-| Raw + Gorilla | 115,055 | 11,208 | 301 |
-| Shared Raw + Gorilla | 115,800 | 11,208 | 301 |
-| Raw + Chimp | 131,122 | 11,208 | 301 |
-| Shared Raw + Chimp | 131,569 | 11,208 | 301 |
+| DeltaPacked + Raw | 55,034 | 11,208 | 301 |
+| Shared DeltaPacked + Raw | 56,581 | 11,208 | 301 |
+| Raw + ALP | 70,239 | 265,642 | 501 |
+| Shared Raw + ALP | 71,092 | 265,641 | 501 |
+| Raw + ALP-RLE | 73,906 | 265,642 | 501 |
+| Shared Raw + ALP-RLE | 74,781 | 265,641 | 501 |
+| Delta + ALP | 79,412 | 265,641 | 501 |
+| DeltaPacked + ALP | 80,376 | 265,641 | 501 |
+| Shared Delta + ALP | 80,598 | 265,641 | 501 |
+| Raw + Raw | 80,745 | 14,408 | 401 |
+| Shared DeltaPacked + ALP | 81,399 | 265,641 | 501 |
+| Shared Raw + Raw | 82,457 | 14,408 | 401 |
+| Delta + ALP-RLE | 82,508 | 265,641 | 501 |
+| Shared Delta + Raw | 82,866 | 12,808 | 401 |
+| DeltaPacked + ALP-RLE | 83,595 | 265,641 | 501 |
+| Delta + Raw | 83,856 | 12,808 | 401 |
+| Shared Delta + ALP-RLE | 83,924 | 265,641 | 501 |
+| Shared DeltaPacked + ALP-RLE | 85,048 | 265,641 | 501 |
+| DeltaPacked + Gorilla | 94,499 | 9,608 | 301 |
+| Shared DeltaPacked + Gorilla | 95,701 | 9,608 | 301 |
+| Shared Delta + Gorilla | 95,735 | 9,608 | 301 |
+| Delta + Gorilla | 95,865 | 9,608 | 301 |
+| Delta + Chimp | 104,847 | 9,608 | 301 |
+| Shared Delta + Chimp | 105,306 | 9,608 | 301 |
+| DeltaPacked + Chimp | 108,134 | 9,608 | 301 |
+| Shared DeltaPacked + Chimp | 109,164 | 9,608 | 301 |
+| Shared Raw + Gorilla | 116,241 | 11,208 | 301 |
+| Raw + Gorilla | 117,274 | 11,208 | 301 |
+| Raw + Chimp | 129,880 | 11,208 | 301 |
+| Shared Raw + Chimp | 129,983 | 11,208 | 301 |
 
 ## Random Access Performance
 
@@ -319,36 +331,36 @@ not a best case (index 0) or worst case (last index).
 
 | Configuration | ValueAt (ns/op) | Value complexity | TimestampAt (ns/op) | Timestamp complexity |
 |---|---:|---|---:|---|
-| Shared DeltaPacked + Raw | 1,168 | O(1) | 939 | O(1), cached when the blob is opened |
-| Shared Delta + Raw | 1,172 | O(1) | 937 | O(1), cached when the blob is opened |
-| Shared Raw + Raw | 1,171 | O(1) | 938 | O(1), cached when the blob is opened |
-| Raw + Raw | 1,349 | O(1) | 1,415 | O(1) |
-| Shared DeltaPacked + ALP | 1,864 | O(1) + O(log k) exceptions | 937 | O(1), cached when the blob is opened |
-| Shared Delta + ALP | 1,864 | O(1) + O(log k) exceptions | 937 | O(1), cached when the blob is opened |
-| Shared Raw + ALP | 1,864 | O(1) + O(log k) exceptions | 937 | O(1), cached when the blob is opened |
-| Shared Raw + ALP-RLE | 2,149 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 937 | O(1), cached when the blob is opened |
-| Shared DeltaPacked + ALP-RLE | 2,151 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 938 | O(1), cached when the blob is opened |
-| Shared Delta + ALP-RLE | 2,159 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 937 | O(1), cached when the blob is opened |
-| Raw + ALP | 2,424 | O(1) + O(log k) exceptions | 1,443 | O(1) |
-| Raw + ALP-RLE | 2,661 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 1,420 | O(1) |
-| DeltaPacked + Raw | 1,346 | O(1) | 9,601 | O(index), sequential decode from the start |
-| DeltaPacked + ALP | 2,408 | O(1) + O(log k) exceptions | 9,548 | O(index), sequential decode from the start |
-| DeltaPacked + ALP-RLE | 2,660 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 9,484 | O(index), sequential decode from the start |
-| Delta + Raw | 1,373 | O(1) | 13,009 | O(index), sequential decode from the start |
-| Delta + ALP | 2,434 | O(1) + O(log k) exceptions | 12,888 | O(index), sequential decode from the start |
-| Delta + ALP-RLE | 2,654 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 12,914 | O(index), sequential decode from the start |
-| Shared Delta + Chimp | 48,691 | O(index), sequential XOR decode from the start | 935 | O(1), cached when the blob is opened |
-| Shared DeltaPacked + Chimp | 48,707 | O(index), sequential XOR decode from the start | 936 | O(1), cached when the blob is opened |
-| Shared Raw + Chimp | 48,796 | O(index), sequential XOR decode from the start | 943 | O(1), cached when the blob is opened |
-| Raw + Chimp | 49,182 | O(index), sequential XOR decode from the start | 1,443 | O(1) |
-| Shared DeltaPacked + Gorilla | 49,873 | O(index), sequential XOR decode from the start | 937 | O(1), cached when the blob is opened |
-| Shared Raw + Gorilla | 49,900 | O(index), sequential XOR decode from the start | 937 | O(1), cached when the blob is opened |
-| Shared Delta + Gorilla | 50,034 | O(index), sequential XOR decode from the start | 937 | O(1), cached when the blob is opened |
-| Raw + Gorilla | 50,346 | O(index), sequential XOR decode from the start | 1,437 | O(1) |
-| DeltaPacked + Chimp | 49,257 | O(index), sequential XOR decode from the start | 9,527 | O(index), sequential decode from the start |
-| DeltaPacked + Gorilla | 50,440 | O(index), sequential XOR decode from the start | 9,555 | O(index), sequential decode from the start |
-| Delta + Chimp | 49,114 | O(index), sequential XOR decode from the start | 12,926 | O(index), sequential decode from the start |
-| Delta + Gorilla | 50,172 | O(index), sequential XOR decode from the start | 12,953 | O(index), sequential decode from the start |
+| Shared Raw + Raw | 1,161 | O(1) | 931 | O(1), cached when the blob is opened |
+| Shared Delta + Raw | 1,163 | O(1) | 932 | O(1), cached when the blob is opened |
+| Shared DeltaPacked + Raw | 1,161 | O(1) | 936 | O(1), cached when the blob is opened |
+| Raw + Raw | 1,372 | O(1) | 1,419 | O(1) |
+| Shared Delta + ALP | 1,868 | O(1) + O(log k) exceptions | 934 | O(1), cached when the blob is opened |
+| Shared Raw + ALP | 1,871 | O(1) + O(log k) exceptions | 933 | O(1), cached when the blob is opened |
+| Shared DeltaPacked + ALP | 1,874 | O(1) + O(log k) exceptions | 934 | O(1), cached when the blob is opened |
+| Shared Delta + ALP-RLE | 2,155 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 931 | O(1), cached when the blob is opened |
+| Shared Raw + ALP-RLE | 2,154 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 935 | O(1), cached when the blob is opened |
+| Shared DeltaPacked + ALP-RLE | 2,156 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 933 | O(1), cached when the blob is opened |
+| Raw + ALP | 2,456 | O(1) + O(log k) exceptions | 1,444 | O(1) |
+| Raw + ALP-RLE | 2,681 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 1,447 | O(1) |
+| DeltaPacked + Raw | 1,380 | O(1) | 9,556 | O(index), sequential decode from the start |
+| DeltaPacked + ALP | 2,448 | O(1) + O(log k) exceptions | 9,571 | O(index), sequential decode from the start |
+| DeltaPacked + ALP-RLE | 2,696 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 9,485 | O(index), sequential decode from the start |
+| Delta + Raw | 1,366 | O(1) | 13,047 | O(index), sequential decode from the start |
+| Delta + ALP | 2,455 | O(1) + O(log k) exceptions | 13,241 | O(index), sequential decode from the start |
+| Delta + ALP-RLE | 2,679 | O(index/64) bitmap rank + O(1) + O(log k) exceptions | 13,252 | O(index), sequential decode from the start |
+| Shared Delta + Chimp | 48,452 | O(index), sequential XOR decode from the start | 934 | O(1), cached when the blob is opened |
+| Shared DeltaPacked + Chimp | 48,733 | O(index), sequential XOR decode from the start | 934 | O(1), cached when the blob is opened |
+| Shared Raw + Chimp | 48,803 | O(index), sequential XOR decode from the start | 933 | O(1), cached when the blob is opened |
+| Raw + Chimp | 49,078 | O(index), sequential XOR decode from the start | 1,435 | O(1) |
+| Shared DeltaPacked + Gorilla | 50,117 | O(index), sequential XOR decode from the start | 934 | O(1), cached when the blob is opened |
+| Shared Raw + Gorilla | 50,139 | O(index), sequential XOR decode from the start | 933 | O(1), cached when the blob is opened |
+| Shared Delta + Gorilla | 50,145 | O(index), sequential XOR decode from the start | 934 | O(1), cached when the blob is opened |
+| Raw + Gorilla | 50,663 | O(index), sequential XOR decode from the start | 1,433 | O(1) |
+| DeltaPacked + Chimp | 49,236 | O(index), sequential XOR decode from the start | 9,566 | O(index), sequential decode from the start |
+| DeltaPacked + Gorilla | 50,274 | O(index), sequential XOR decode from the start | 9,658 | O(index), sequential decode from the start |
+| Delta + Chimp | 49,098 | O(index), sequential XOR decode from the start | 13,034 | O(index), sequential decode from the start |
+| Delta + Gorilla | 50,372 | O(index), sequential XOR decode from the start | 13,288 | O(index), sequential decode from the start |
 
 ## Scaling Analysis
 
@@ -652,86 +664,86 @@ Where two codecs produce identical columns (for example ALP and ALP-RLE on a pro
 
 | Profile | Codec | Encode ns/point | Iterate ns/point | ValueAt ns/op | Encode allocs/blob |
 |---|---|---:|---:|---:|---:|
-| `mix_fullprec` | Raw | 9.00 | **3.72** | 1,167 | 59 |
-|  | Gorilla | 11.37 | 6.65 | 48,259 | 59 |
-|  | Chimp | 12.50 | 7.93 | 46,613 | 59 |
-|  | ALP | 18.17 | 5.80 | 1,962 | 124 |
-|  | ALP-RLE | 25.27 | 6.02 | 2,289 | 158 |
-| `mix_integer` | Raw | 8.97 | **3.73** | 1,173 | 59 |
-|  | Gorilla | 10.33 | 5.92 | 50,558 | 59 |
-|  | Chimp | 11.20 | 7.19 | 51,518 | 59 |
-|  | ALP | 16.19 | 5.36 | 1,839 | 93 |
-|  | ALP-RLE | 17.58 | 5.41 | 1,984 | 98 |
-| `mix_monitoring` | Raw | 8.99 | **3.71** | 1,168 | 59 |
-|  | Gorilla | 10.68 | 6.27 | 49,873 | 59 |
-|  | Chimp | 11.54 | 7.32 | 48,707 | 59 |
-|  | ALP | 16.50 | 5.41 | 1,864 | 99 |
-|  | ALP-RLE | 21.00 | 5.65 | 2,151 | 107 |
-| `mix_sensor` | Raw | 8.96 | **3.73** | 1,174 | 59 |
-|  | Gorilla | 10.91 | 6.30 | 44,987 | 59 |
-|  | Chimp | 11.93 | 7.46 | 43,341 | 59 |
-|  | ALP | 16.54 | 5.41 | 1,868 | 99 |
-|  | ALP-RLE | 23.44 | 5.79 | 2,306 | 107 |
-| `cal_1dp_step0.01` | Raw | 8.84 | **3.73** | 1,172 | 59 |
-|  | Gorilla | 10.02 | 6.21 | 28,571 | 59 |
-|  | Chimp | 10.07 | 6.50 | 31,162 | 59 |
-|  | ALP | 15.24 | 5.07 | 1,823 | 77 |
-|  | ALP-RLE | 23.97 | 5.56 | 2,368 | 85 |
-| `cal_1dp_step0.03` | Raw | 8.82 | **3.74** | 1,170 | 59 |
-|  | Gorilla | 11.62 | 6.96 | 50,086 | 59 |
-|  | Chimp | 12.84 | 8.42 | 47,492 | 59 |
-|  | ALP | 15.11 | 5.11 | 1,812 | 74 |
-|  | ALP-RLE | 20.65 | 5.41 | 2,081 | 82 |
-| `cal_2dp_hold30` | Raw | 8.77 | **3.73** | 1,169 | 59 |
-|  | Gorilla | 12.12 | 7.40 | 54,925 | 59 |
-|  | Chimp | 13.58 | 8.84 | 50,477 | 59 |
-|  | ALP | 15.42 | 5.13 | 1,800 | 79 |
-|  | ALP-RLE | 25.03 | 5.62 | 2,292 | 87 |
-| `cal_2dp_hold50` | Raw | 8.87 | **3.72** | 1,170 | 59 |
-|  | Gorilla | 12.07 | 7.59 | 43,658 | 59 |
-|  | Chimp | 12.58 | 8.41 | 41,149 | 59 |
-|  | ALP | 15.44 | 5.16 | 1,810 | 80 |
-|  | ALP-RLE | 25.09 | 5.62 | 2,292 | 89 |
-| `cal_2dp_hold70` | Raw | 8.81 | **3.73** | 1,172 | 59 |
-|  | Gorilla | 10.39 | 6.36 | 30,017 | 59 |
-|  | Chimp | 10.42 | 6.65 | 32,147 | 59 |
-|  | ALP | 15.46 | 5.13 | 1,817 | 81 |
-|  | ALP-RLE | 25.74 | 5.64 | 2,315 | 88 |
-| `cal_2dp_step0.005` | Raw | 8.85 | **3.73** | 1,174 | 59 |
-|  | Gorilla | 11.85 | 7.28 | 60,024 | 59 |
-|  | Chimp | 11.85 | 7.75 | 50,242 | 59 |
-|  | ALP | 15.32 | 5.13 | 1,825 | 84 |
-|  | ALP-RLE | 18.76 | 5.27 | 1,960 | 94 |
-| `counter` | Raw | 8.76 | **3.74** | 1,169 | 59 |
-|  | Gorilla | 10.41 | 6.63 | 56,468 | 59 |
-|  | Chimp | 10.56 | 6.83 | 56,208 | 59 |
-|  | ALP | 14.97 | 5.14 | 1,791 | 69 |
-|  | ALP-RLE | 15.47 | 5.18 | 1,791 | 69 |
-| `decimal_gauge_2dp` | Raw | 8.79 | **3.73** | 1,173 | 59 |
-|  | Gorilla | 11.20 | 6.01 | 63,713 | 59 |
-|  | Chimp | 13.91 | 8.81 | 65,697 | 59 |
-|  | ALP | 15.19 | 5.15 | 1,793 | 69 |
-|  | ALP-RLE | 15.65 | 5.15 | 1,790 | 69 |
-| `decimal_gauge_4dp` | Raw | 8.78 | **3.74** | 1,170 | 59 |
-|  | Gorilla | 11.20 | 5.94 | 64,153 | 59 |
-|  | Chimp | 13.91 | 8.84 | 67,103 | 59 |
-|  | ALP | 18.41 | 5.08 | 1,984 | 156 |
-|  | ALP-RLE | 19.02 | 5.10 | 1,975 | 156 |
-| `sparse_constant` | Raw | 8.79 | **3.72** | 1,170 | 59 |
-|  | Gorilla | 7.80 | 4.63 | 16,354 | 59 |
-|  | Chimp | 7.87 | 4.85 | 23,070 | 59 |
-|  | ALP | 15.29 | 5.17 | 1,809 | 81 |
-|  | ALP-RLE | 20.29 | 5.56 | 2,484 | 87 |
-| `legacy_random_walk` | Raw | 9.47 | **3.70** | 1,165 | 59 |
-|  | Gorilla | 11.75 | 5.95 | 63,553 | 59 |
-|  | Chimp | 14.36 | 8.90 | 66,883 | 59 |
-|  | ALP | 20.33 | 6.19 | 2,060 | 150 |
-|  | ALP-RLE | 20.82 | 6.13 | 2,057 | 150 ‡ |
-| `worst_case` | Raw | 8.78 | **3.70** | 1,170 | 59 |
-|  | Gorilla | 11.10 | 5.97 | 63,315 | 59 |
-|  | Chimp | 13.94 | 8.85 | 67,017 | 59 |
-|  | ALP | 19.73 | 6.10 | 2,042 | 145 |
-|  | ALP-RLE | 20.07 | 6.07 | 2,042 | 145 ‡ |
+| `mix_fullprec` | Raw | 9.07 | **3.78** | 1,162 | 59 |
+|  | Gorilla | 11.51 | 6.78 | 48,323 | 59 |
+|  | Chimp | 12.60 | 7.92 | 46,698 | 59 |
+|  | ALP | 18.09 | 5.83 | 1,957 | 124 |
+|  | ALP-RLE | 25.07 | 6.00 | 2,300 | 158 |
+| `mix_integer` | Raw | 9.02 | **3.78** | 1,162 | 59 |
+|  | Gorilla | 10.47 | 6.04 | 50,430 | 59 |
+|  | Chimp | 11.28 | 7.19 | 51,579 | 59 |
+|  | ALP | 16.08 | 5.38 | 1,847 | 93 |
+|  | ALP-RLE | 17.52 | 5.49 | 1,996 | 98 |
+| `mix_monitoring` | Raw | 9.00 | **3.77** | 1,161 | 59 |
+|  | Gorilla | 10.80 | 6.38 | 50,117 | 59 |
+|  | Chimp | 11.63 | 7.28 | 48,733 | 59 |
+|  | ALP | 16.40 | 5.43 | 1,874 | 99 |
+|  | ALP-RLE | 20.95 | 5.67 | 2,156 | 107 |
+| `mix_sensor` | Raw | 9.00 | **3.77** | 1,165 | 59 |
+|  | Gorilla | 11.00 | 6.41 | 45,037 | 59 |
+|  | Chimp | 11.99 | 7.41 | 43,145 | 59 |
+|  | ALP | 16.42 | 5.41 | 1,873 | 99 |
+|  | ALP-RLE | 23.30 | 5.81 | 2,311 | 107 |
+| `cal_1dp_step0.01` | Raw | 8.89 | **3.78** | 1,163 | 59 |
+|  | Gorilla | 10.21 | 6.32 | 28,877 | 59 |
+|  | Chimp | 10.11 | 6.48 | 31,323 | 59 |
+|  | ALP | 15.16 | 5.14 | 1,816 | 77 |
+|  | ALP-RLE | 23.89 | 5.61 | 2,365 | 85 |
+| `cal_1dp_step0.03` | Raw | 8.78 | **3.78** | 1,161 | 59 |
+|  | Gorilla | 11.79 | 7.10 | 50,373 | 59 |
+|  | Chimp | 13.03 | 8.35 | 47,599 | 59 |
+|  | ALP | 15.05 | 5.15 | 1,804 | 74 |
+|  | ALP-RLE | 20.57 | 5.43 | 2,076 | 82 |
+| `cal_2dp_hold30` | Raw | 8.80 | **3.76** | 1,160 | 59 |
+|  | Gorilla | 12.32 | 7.55 | 54,883 | 59 |
+|  | Chimp | 13.72 | 8.80 | 50,939 | 59 |
+|  | ALP | 15.29 | 5.17 | 1,800 | 79 |
+|  | ALP-RLE | 24.93 | 5.66 | 2,285 | 87 |
+| `cal_2dp_hold50` | Raw | 8.82 | **3.76** | 1,161 | 59 |
+|  | Gorilla | 12.19 | 7.69 | 43,501 | 59 |
+|  | Chimp | 12.63 | 8.36 | 41,416 | 59 |
+|  | ALP | 15.34 | 5.18 | 1,801 | 80 |
+|  | ALP-RLE | 25.04 | 5.65 | 2,290 | 89 |
+| `cal_2dp_hold70` | Raw | 8.83 | **3.78** | 1,163 | 59 |
+|  | Gorilla | 10.54 | 6.54 | 29,999 | 59 |
+|  | Chimp | 10.50 | 6.64 | 32,502 | 59 |
+|  | ALP | 15.44 | 5.17 | 1,807 | 81 |
+|  | ALP-RLE | 25.65 | 5.68 | 2,310 | 88 |
+| `cal_2dp_step0.005` | Raw | 8.84 | **3.77** | 1,164 | 59 |
+|  | Gorilla | 12.05 | 7.38 | 59,742 | 59 |
+|  | Chimp | 11.92 | 7.71 | 50,225 | 59 |
+|  | ALP | 15.34 | 5.21 | 1,816 | 84 |
+|  | ALP-RLE | 18.69 | 5.32 | 1,953 | 94 |
+| `counter` | Raw | 8.82 | **3.76** | 1,162 | 59 |
+|  | Gorilla | 10.47 | 6.70 | 55,997 | 59 |
+|  | Chimp | 10.57 | 6.79 | 56,012 | 59 |
+|  | ALP | 14.91 | 5.17 | 1,785 | 69 |
+|  | ALP-RLE | 15.35 | 5.21 | 1,786 | 69 |
+| `decimal_gauge_2dp` | Raw | 8.82 | **3.78** | 1,160 | 59 |
+|  | Gorilla | 11.29 | 6.12 | 64,136 | 59 |
+|  | Chimp | 14.02 | 8.80 | 65,599 | 59 |
+|  | ALP | 15.11 | 5.18 | 1,787 | 69 |
+|  | ALP-RLE | 15.59 | 5.17 | 1,784 | 69 |
+| `decimal_gauge_4dp` | Raw | 8.82 | **3.77** | 1,161 | 59 |
+|  | Gorilla | 11.24 | 6.08 | 64,313 | 59 |
+|  | Chimp | 14.04 | 8.85 | 67,241 | 59 |
+|  | ALP | 18.32 | 5.16 | 1,973 | 156 |
+|  | ALP-RLE | 18.77 | 5.17 | 1,971 | 156 |
+| `sparse_constant` | Raw | 8.83 | **3.77** | 1,163 | 59 |
+|  | Gorilla | 8.01 | 4.83 | 16,446 | 59 |
+|  | Chimp | 7.97 | 4.82 | 23,545 | 59 |
+|  | ALP | 15.26 | 5.18 | 1,802 | 81 |
+|  | ALP-RLE | 20.07 | 5.60 | 2,478 | 87 |
+| `legacy_random_walk` | Raw | 9.58 | **3.77** | 1,160 | 59 |
+|  | Gorilla | 11.88 | 6.04 | 63,415 | 59 |
+|  | Chimp | 14.49 | 8.84 | 66,935 | 59 |
+|  | ALP | 20.22 | 6.17 | 2,059 | 150 ‡ |
+|  | ALP-RLE | 20.72 | 6.19 | 2,057 | 150 ‡ |
+| `worst_case` | Raw | 8.78 | **3.76** | 1,163 | 59 |
+|  | Gorilla | 11.20 | 6.05 | 63,417 | 59 |
+|  | Chimp | 14.00 | 8.81 | 67,250 | 59 |
+|  | ALP | 19.49 | 6.14 | 2,044 | 145 ‡ |
+|  | ALP-RLE | 19.95 | 6.12 | 2,039 | 145 ‡ |
 
 ### ALP-RLE speed, layout-averaged
 
@@ -786,6 +798,7 @@ The encode row without forced repeats uses the same gauge with no holds; no colu
 
 Sizes below are Shared DeltaPacked bytes/point from the tables above;
 timings come from the profile runs, which time the Shared DeltaPacked combos and Delta + Gorilla.
+The profile runs time encode, `All()` iteration and `ValueAt`; opening the blob is timed on the main data set only.
 
 - **ALP-RLE is the smallest value codec on all four mixes**, against Chimp:
   32.6% smaller on `mix_monitoring`, 46.3% on `mix_sensor`, 47.5% on `mix_integer` and 12.8% on `mix_fullprec`.
@@ -806,25 +819,25 @@ timings come from the profile runs, which time the Shared DeltaPacked combos and
   and in either case not for blobs dominated by mostly-constant metrics or with repeating full-precision ones.
   On shapes with few repeats ALP stays close to ALP-RLE's size and encodes faster:
   on `cal_1dp_step0.03` it takes 0.830 bytes/point against 0.789 (5.1% more)
-  and encodes in 15.11 ns/point, against 20.65 for ALP-RLE (1.37× faster) and 12.84 for Chimp (equivalent).
+  and encodes in 15.05 ns/point, against 20.57 for ALP-RLE (1.37× faster) and 13.03 for Chimp (equivalent).
 - **Repeats decide ALP-RLE's lead over ALP**: on the 2-decimal gauge it is 17.0% smaller with 30% of points repeating,
   33.1% with 50% and 49.6% with 70%,
-  and on those three it takes 1.62–1.66× plain ALP's encode time.
+  and on those three it takes 1.63–1.66× plain ALP's encode time.
 - **Random access favors the ALP family on every profile; iteration on most; encoding is its cost.**
-  `ValueAt` is 9.3× (`sparse_constant`) to 36.7× (`decimal_gauge_2dp`) faster with ALP-RLE than with Chimp, all decided.
+  `ValueAt` is 9.5× (`sparse_constant`) to 36.8× (`decimal_gauge_2dp`) faster with ALP-RLE than with Chimp, all decided.
   ALP-RLE iterates faster than Chimp on 13 profiles,
-  1.29× (`mix_sensor`) to 1.73× (`decimal_gauge_4dp`),
+  1.28× (`mix_sensor`) to 1.71× (`decimal_gauge_4dp`),
   and is equivalent to it on `cal_1dp_step0.01`, `cal_2dp_hold70` and `sparse_constant`.
-  Against Gorilla it iterates 1.28–1.38× faster on `counter`, `cal_1dp_step0.03`, `cal_2dp_hold30`, `cal_2dp_hold50`
+  Against Gorilla it iterates 1.29–1.39× faster on `counter`, `cal_1dp_step0.03`, `cal_2dp_hold30`, `cal_2dp_hold50`
   and `cal_2dp_step0.005`, and is equivalent everywhere else, the four mixes included.
-  The ALP family iterates at 5.07–6.19 ns/point on every profile;
-  the XOR codecs range wider (Gorilla 4.63–7.59, Chimp 4.85–8.90).
-  Raw values iterate faster than the ALP family on every profile (3.70–3.74 ns/point, 1.36–1.66× faster than ALP-RLE)
+  The ALP family iterates at 5.14–6.19 ns/point on every profile;
+  the XOR codecs range wider (Gorilla 4.83–7.69, Chimp 4.82–8.85).
+  Raw values iterate faster than the ALP family on every profile (3.76–3.78 ns/point, 1.37–1.64× faster than ALP-RLE)
   at 8.135–8.144 bytes/point, so they pay off only where bytes do not matter.
-  On `sparse_constant`, per-metric Delta + Gorilla iterates 1.32× faster than Shared DeltaPacked + ALP-RLE
-  (62,954 against 83,366 ns/op).
+  On `sparse_constant`, per-metric Delta + Gorilla iterates 1.31× faster than Shared DeltaPacked + ALP-RLE
+  (4.27 against 5.60 ns/point).
   ALP-RLE's encode time is equivalent to Chimp's on `decimal_gauge_2dp`,
-  and 1.37× (`decimal_gauge_4dp`) to 2.58× (`sparse_constant`) Chimp's on the other profiles.
+  and 1.34× (`decimal_gauge_4dp`) to 2.52× (`sparse_constant`) Chimp's on the other profiles.
   Without repeats it encodes the same columns as ALP, so the 1.02–1.03× gaps there are noise;
   with repeats it takes up to 1.66× ALP's time (`cal_2dp_hold70`),
   and the [layout-averaged codec benchmarks](#alp-rle-speed-layout-averaged) measure 1.77× on the half-repeated gauge.
@@ -833,9 +846,9 @@ timings come from the profile runs, which time the Shared DeltaPacked combos and
   `cal_1dp_step0.01` (2.012 against 2.066) and `cal_2dp_hold70` (2.165 against 2.184);
   Chimp is 0.8–2.6% smaller on the four mixes.
   Their encode times are equivalent on most profiles;
-  Chimp takes 1.22–1.26× Gorilla's on `legacy_random_walk`, `decimal_gauge_2dp`, `decimal_gauge_4dp` and `worst_case`,
-  and Gorilla iterates 1.47–1.50× faster than Chimp on those four
-  and 1.21× on `mix_integer` and `cal_1dp_step0.03` (equivalent elsewhere).
+  Chimp takes 1.22–1.25× Gorilla's on `legacy_random_walk`, `decimal_gauge_2dp`, `decimal_gauge_4dp` and `worst_case`,
+  and Gorilla iterates 1.44–1.46× faster than Chimp on those four;
+  on the other twelve profiles their iteration is equivalent.
 - **A blob applies one value codec to all its metrics**, so a mixed blob always pays for its worst-fitting part.
   Per-column codec selection would remove that trade-off;
   see [`adaptive_selector_experiments.md`](perf/adaptive_selector_experiments.md)
@@ -855,9 +868,9 @@ What do the blob's metrics hold?
 ├─ Decimal values, counters or repeats (most monitoring data, and all four mixes here)
 │  ├─ Encode time on a hot path? (AVX-512 timings; see the note below the tree)
 │  │  ├─ Readers know ALP, and neither mostly-constant nor repeating full-precision metrics dominate
-│  │  │  → Shared DeltaPacked + ALP: 2.822, 1.43× Chimp's encode time (ALP-RLE 1.82×)
+│  │  │  → Shared DeltaPacked + ALP: 2.822, 1.41× Chimp's encode time (ALP-RLE 1.80×)
 │  │  │    (traps: sparse_constant 1.244 against Chimp's 0.742; mix_fullprec 20.1% above Chimp)
-│  │  └─ Otherwise → Shared DeltaPacked + Chimp: 3.846, encode 173,061 ns/op
+│  │  └─ Otherwise → Shared DeltaPacked + Chimp: 3.846, encode 174,415 ns/op
 │  └─ No → which codecs do your readers know?
 │     ├─ ALP-RLE          → Shared DeltaPacked + ALP-RLE: 2.593, 32.6% below Chimp
 │     ├─ ALP, not ALP-RLE → Shared DeltaPacked + ALP: 2.822, 26.6% below Chimp,
@@ -865,13 +878,13 @@ What do the blob's metrics hold?
 │     │                     or mostly-constant metrics dominate (sparse_constant: 1.244 against 0.742)
 │     └─ Neither          → Shared DeltaPacked + Chimp: 3.846
 ├─ Full-precision values without repeats (worst_case)
-│  └─ Shared DeltaPacked + Chimp: 6.384; ALP-RLE is 2.0% larger and takes 1.44× its encode time
+│  └─ Shared DeltaPacked + Chimp: 6.384; ALP-RLE is 2.0% larger and takes 1.42× its encode time
 └─ 5 points per metric or fewer
    └─ Shared DeltaPacked + Chimp: 8.364 at 5 points, against 8.770 for ALP-RLE
       (ALP-RLE is smaller at 10 points; 6 to 9 were not measured)
 
-Heavy random access favors ALP or ALP-RLE on every branch: ValueAt takes 1,864 and 2,151 ns/op
-per 100 lookups, Chimp 48,707 (on worst_case, ALP-RLE is 32.8× faster for 2.0% more bytes).
+Heavy random access favors ALP or ALP-RLE on every branch: ValueAt takes 1,874 and 2,156 ns/op
+per 100 lookups, Chimp 48,733 (on worst_case, ALP-RLE is 33.0× faster for 2.0% more bytes).
 ```
 
 The encode figures come from CPUs with AVX-512DQ, where the encoder searches ALP's exponents with vector kernels;
@@ -880,17 +893,22 @@ and ALP and ALP-RLE encode several times slower than these tables show
 (see [the search design](specs/alp-simd-ef-search-design.md#results)).
 On the Chimp leaves, Shared Delta timestamps take the same space (3.844 against 3.846 on `mix_monitoring`)
 and their iteration is equivalent under the comparison rule, so either timestamp encoding serves.
+Opening a blob costs more on the ALP leaves:
+on `mix_monitoring`, Shared DeltaPacked + ALP-RLE opens in 2,879 ns/op and Shared DeltaPacked + ALP in 2,299,
+against 1,553 for Shared DeltaPacked + Chimp (1.85× and 1.48× its time).
+That is 1.3 µs and 0.7 µs per blob of 100 metrics,
+which counts for readers that open many blobs and read few points from each.
 
 ### Configuration Selection
 
 | Use case | Configuration | Key numbers | Rationale and cost |
 |---|---|---|---|
-| **Monitoring blobs with shared timestamps** (production-like) | Shared DeltaPacked + ALP-RLE | `mix_monitoring`: 2.593 bytes/point, 32.6% below Shared DeltaPacked + Chimp; 12.8–47.5% below on the other mixes | Smallest on every mix and on every single-kind profile with decimals or repeats; `ValueAt` 22.6× and iteration 1.29× faster than Chimp. Takes 1.82× Chimp's encode time (314,970 vs 173,061 ns/op) with AVX-512, several times longer without it; readers must know ALP-RLE and V2. Shared Delta is effectively the same size (2.591), with equivalent timings. |
-| **Same metrics, readers without V2** | Delta + ALP-RLE | `mix_monitoring`: 3.797 bytes/point | 1.3% below Shared DeltaPacked + Chimp without shared timestamps; takes 1.73× that combo's encode time (300,226 ns/op) and needs ALP-RLE readers. |
-| **V2 readers that know ALP but not ALP-RLE** | Shared DeltaPacked + ALP | `mix_monitoring`: 2.822 bytes/point, 26.6% below Chimp | Takes 1.43× Chimp's encode time with AVX-512 against ALP-RLE's 1.82×, the cheaper ALP codec to encode. A trap when full-precision metrics repeat: `mix_fullprec` takes 4.699, 20.1% above Chimp. |
-| **Encode-bound producers** | Shared DeltaPacked + Gorilla or Chimp | `mix_monitoring`: 3.893 and 3.846 bytes/point; encode 160,245 and 173,061 ns/op, equivalent | The fastest encode with a value codec among the Shared DeltaPacked combos. Shared Delta timestamps are the same size, and their iteration is equivalent on `mix_monitoring`. Costs 48–50% more bytes than ALP-RLE, and `ValueAt` is O(index). |
-| **Full-precision values without repeats** | Shared DeltaPacked + Chimp | `worst_case`: 6.384 bytes/point | ALP-RLE is 2.0% larger and takes 1.44× Chimp's encode time with AVX-512; pick it only if `ValueAt` dominates reads (32.8× faster than Chimp there). |
-| **Random-access reads** | Shared DeltaPacked + ALP or ALP-RLE | `mix_monitoring`: `ValueAt` 1,864 and 2,151 ns/op (equivalent), `TimestampAt` 937 and 938 | 26.1× and 22.6× faster than Chimp on `ValueAt`. Shared timestamps make `TimestampAt` O(1); per-metric Delta takes 12,888–13,009 ns/op. Raw values take 1,168 ns/op at 8.136 bytes/point, 1.60× faster than ALP and 1.84× faster than ALP-RLE. |
+| **Monitoring blobs with shared timestamps** (production-like) | Shared DeltaPacked + ALP-RLE | `mix_monitoring`: 2.593 bytes/point, 32.6% below Shared DeltaPacked + Chimp; 12.8–47.5% below on the other mixes | Smallest on every mix and on every single-kind profile with decimals or repeats; `ValueAt` 22.6× and iteration 1.28× faster than Chimp. Takes 1.80× Chimp's encode time (314,237 vs 174,415 ns/op) with AVX-512, several times longer without it, and 1.85× Chimp's time to open the blob (2,879 vs 1,553 ns/op); readers must know ALP-RLE and V2. Shared Delta is effectively the same size (2.591), with equivalent timings. |
+| **Same metrics, readers without V2** | Delta + ALP-RLE | `mix_monitoring`: 3.797 bytes/point | 1.3% below Shared DeltaPacked + Chimp without shared timestamps; takes 1.72× that combo's encode time (299,613 ns/op) and needs ALP-RLE readers. |
+| **V2 readers that know ALP but not ALP-RLE** | Shared DeltaPacked + ALP | `mix_monitoring`: 2.822 bytes/point, 26.6% below Chimp | Takes 1.41× Chimp's encode time with AVX-512 against ALP-RLE's 1.80×, the cheaper ALP codec to encode. A trap when full-precision metrics repeat: `mix_fullprec` takes 4.699, 20.1% above Chimp. |
+| **Encode-bound producers** | Shared DeltaPacked + Gorilla or Chimp | `mix_monitoring`: 3.893 and 3.846 bytes/point; encode 161,979 and 174,415 ns/op, equivalent | The fastest encode with a value codec among the Shared DeltaPacked combos. Shared Delta timestamps are the same size, and their iteration is equivalent on `mix_monitoring`. Costs 48–50% more bytes than ALP-RLE, and `ValueAt` is O(index). |
+| **Full-precision values without repeats** | Shared DeltaPacked + Chimp | `worst_case`: 6.384 bytes/point | ALP-RLE is 2.0% larger and takes 1.42× Chimp's encode time with AVX-512; pick it only if `ValueAt` dominates reads (33.0× faster than Chimp there). |
+| **Random-access reads** | Shared DeltaPacked + ALP or ALP-RLE | `mix_monitoring`: `ValueAt` 1,874 and 2,156 ns/op (equivalent), `TimestampAt` 934 and 933 | 26.0× and 22.6× faster than Chimp on `ValueAt`. Shared timestamps make `TimestampAt` O(1); per-metric Delta takes 13,034–13,288 ns/op. Raw values take 1,161 ns/op at 8.136 bytes/point, 1.61× faster than ALP and 1.86× faster than ALP-RLE. |
 | **Library default** (`NewDefaultNumericEncoder`) | Delta + Gorilla | `mix_monitoring`: 5.096 bytes/point | No V2 or ALP-RLE reader requirement; 97% larger than Shared DeltaPacked + ALP-RLE. |
 
 ### Points-per-Metric Guidelines

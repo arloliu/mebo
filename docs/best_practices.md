@@ -92,7 +92,7 @@ DeltaPacked vs Delta: DeltaPacked uses Group Varint, meant for **faster decode/i
 Size difference is marginal: about 0.2 bytes/point per metric on the benchmark mix, and 0.002 with shared timestamps.
 In the layout-averaged report run, DeltaPacked's iteration is equivalent to Delta's with every compressed value codec
 (the gap stays under the 20% that the report counts as a difference),
-and DeltaPacked iterates 1.45× faster than Delta with Raw values;
+and DeltaPacked iterates 1.46× faster than Delta with Raw values and shared timestamps (1.52× without);
 either is fine with a compressed codec, and DeltaPacked suits Raw values read by iteration.
 
 Chimp vs Gorilla: Chimp is 0.8–2.6% smaller on the benchmark mixes, but Gorilla is smaller on counters and mostly-constant values.
