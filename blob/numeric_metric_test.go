@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/arloliu/mebo/format"
 	"github.com/arloliu/mebo/internal/hash"
+	"github.com/arloliu/mebo/internal/pool"
 	"github.com/arloliu/mebo/section"
 )
 
@@ -2590,5 +2592,555 @@ func TestNumericMetric_LeavesOutMembersWithoutPoints(t *testing.T) {
 			require.True(t, ok, name)
 			require.Equal(t, 6, other.Len(), name)
 		}
+	}
+}
+
+// referencePartForEachPoints is the forEachPoints of a part as it was,
+// before it paired a value column with decoded timestamps.
+// It stays as it was written, so that the comparison is against a fixed walk.
+func referencePartForEachPoints(p *numericMetricPart, yield func(int, NumericDataPoint) bool) {
+	if p.count == 0 || !p.tsOK || !p.valOK || (p.HasTag() && !p.tagOK) {
+		return
+	}
+	tags := p.tags
+	if len(tags) != p.count {
+		tags = nil
+	}
+	if p.HasTag() && tags == nil {
+		NumericBlob{blobBase: p.blobBase}.forEachDataPoint(p.tsBytes, p.valBytes, p.tagBytes, p.count, yield)
+		return
+	}
+	if ts := p.timestampColumn(); ts != nil && len(p.values) == p.count {
+		forEachZipped(ts, p.values, tags, yield)
+		return
+	}
+	if tags == nil {
+		NumericBlob{blobBase: p.blobBase}.forEachDataPoint(p.tsBytes, p.valBytes, nil, p.count, yield)
+		return
+	}
+
+	untagged := p.blobBase
+	untagged.flags &^= section.FlagTagEnabled
+	NumericBlob{blobBase: untagged}.forEachDataPoint(p.tsBytes, p.valBytes, nil, p.count, func(i int, dp NumericDataPoint) bool {
+		if i >= len(tags) {
+			return false
+		}
+		dp.Tag = tags[i]
+
+		return yield(i, dp)
+	})
+}
+
+// referenceHandleForEach is NumericMetric.ForEach as it is, with every part walked by referencePartForEachPoints.
+func referenceHandleForEach(h *NumericMetric, yield func(int, NumericDataPoint) bool) {
+	if yield == nil {
+		return
+	}
+	if len(h.rest) == 0 {
+		referencePartForEachPoints(&h.first, yield)
+
+		return
+	}
+
+	var (
+		base    int
+		stopped bool
+	)
+	adapter := func(i int, dp NumericDataPoint) bool {
+		if !yield(base+i, dp) {
+			stopped = true
+
+			return false
+		}
+
+		return true
+	}
+	referencePartForEachPoints(&h.first, adapter)
+	for k := range h.rest {
+		if stopped {
+			return
+		}
+		base = h.rest[k].base
+		referencePartForEachPoints(&h.rest[k], adapter)
+	}
+}
+
+// referenceHandleForEachRange is NumericMetric.ForEachRange as it is,
+// with every part walked by referencePartForEachPoints.
+func referenceHandleForEachRange(h *NumericMetric, start, end int, yield func(int, NumericDataPoint) bool) {
+	start, end = max(start, 0), min(end, h.Len())
+	if yield == nil || start >= end {
+		return
+	}
+
+	var (
+		base    int
+		stopped bool
+	)
+	adapter := func(i int, dp NumericDataPoint) bool {
+		index := base + i
+		if index < start {
+			return true
+		}
+		if index >= end || !yield(index, dp) {
+			stopped = true
+
+			return false
+		}
+
+		return true
+	}
+	for k := h.partOrdinal(start); !stopped && k <= len(h.rest); k++ {
+		p := h.part(k)
+		if p.base >= end {
+			return
+		}
+		base = p.base
+		referencePartForEachPoints(p, adapter)
+	}
+}
+
+// handleWalkStops returns the call numbers a walk of h is stopped at: those of pointWalkStops,
+// and around every call that is the first of a member after the first,
+// so that a stop falls on each side of a member boundary.
+func handleWalkStops(h *NumericMetric, full pointWalk) []int {
+	stops := pointWalkStops(len(full.calls))
+	for call := 1; call < len(full.calls); call++ {
+		for k := range h.rest {
+			if full.calls[call].idx != h.rest[k].base {
+				continue
+			}
+			for _, stop := range []int{call, call + 1} {
+				if !slices.Contains(stops, stop) {
+					stops = append(stops, stop)
+				}
+			}
+		}
+	}
+
+	return stops
+}
+
+// handleWalkWindows returns the ranges ForEachRange is checked on: a middle one, and, when thorough,
+// the whole handle, a range clamped at both ends, empty and inverted ones,
+// and ranges that begin, end and straddle at the first point of every member after the first.
+func handleWalkWindows(h *NumericMetric, thorough bool) [][2]int {
+	n := h.Len()
+	windows := [][2]int{{n / 3, 2 * n / 3}}
+	if !thorough {
+		return windows
+	}
+	windows = append(windows, [][2]int{{0, n}, {-3, n + 5}, {n, n + 1}, {2, 2}, {5, 2}, {n - 1, n}}...)
+	for k := range h.rest {
+		base := h.rest[k].base
+		windows = append(windows, [][2]int{{base - 1, base + 1}, {base, base + 1}, {0, base}, {base, n}}...)
+	}
+
+	return windows
+}
+
+// requireHandlePointWalksAgree compares ForEach and ForEachRange of h with the reference walks,
+// for a full walk and for a stop at the first, a middle and the last point and on both sides of every member boundary.
+// Without thorough it checks one range, and only the full walk and the stop at the last point,
+// which keeps handles with long columns quick.
+func requireHandlePointWalksAgree(t *testing.T, fixture string, h *NumericMetric, thorough bool) {
+	t.Helper()
+	walks := []struct {
+		entryPoint     string
+		reference, got pointWalkFunc
+	}{{
+		"ForEach",
+		func(yield func(int, NumericDataPoint) bool) { referenceHandleForEach(h, yield) },
+		func(yield func(int, NumericDataPoint) bool) { h.ForEach(yield) },
+	}}
+	for _, w := range handleWalkWindows(h, thorough) {
+		walks = append(walks, struct {
+			entryPoint     string
+			reference, got pointWalkFunc
+		}{
+			fmt.Sprintf("ForEachRange(%d, %d)", w[0], w[1]),
+			func(yield func(int, NumericDataPoint) bool) { referenceHandleForEachRange(h, w[0], w[1], yield) },
+			func(yield func(int, NumericDataPoint) bool) { h.ForEachRange(w[0], w[1], yield) },
+		})
+	}
+	for _, w := range walks {
+		where := fixture + " " + w.entryPoint
+		full := requireSamePointWalk(t, where, 0, w.reference, w.got)
+		stops := []int{len(full.calls)}
+		if thorough {
+			stops = handleWalkStops(h, full)
+		}
+		for _, stop := range stops {
+			if stop != 0 {
+				requireSamePointWalk(t, where, stop, w.reference, w.got)
+			}
+		}
+	}
+}
+
+// cutPartValues cuts the value column of p to keep bytes,
+// as a slice that keeps its capacity or, when clamp is set, one whose capacity ends with it.
+func cutPartValues(p *numericMetricPart, keep int, clamp bool) {
+	if clamp {
+		p.valBytes = p.valBytes[:keep:keep]
+
+		return
+	}
+	p.valBytes = p.valBytes[:keep]
+}
+
+// requirePartTimestampColumn checks that every part of h has a decoded timestamp column of its point count,
+// which is what lets a walk pair the value column with it.
+func requirePartTimestampColumn(t *testing.T, fixture string, h *NumericMetric) {
+	t.Helper()
+	for k := range 1 + len(h.rest) {
+		p := h.part(k)
+		require.Len(t, p.timestampColumn(), p.count, "%s: decoded timestamps of part %d", fixture, k)
+	}
+}
+
+// TestNumericMetric_ForEachWrappers pins what the handle's ForEach and ForEachRange do around the walk of a part,
+// on a handle whose walk pairs the value column with shared timestamps:
+// a missing metric has no handle, the zero handle and a nil callback walk nothing, and a walk stopped at once calls once.
+func TestNumericMetric_ForEachWrappers(t *testing.T) {
+	spec := pointWalkSpec{tsEnc: format.TypeDeltaPacked, valEnc: format.TypeChimp, shared: true, metrics: 3, points: 9}
+	_, blob, names := buildPointWalkBlob(t, spec)
+	_, ok := blob.Metric(hash.ID("no.such.metric"))
+	require.False(t, ok, "a handle on a missing metric")
+	_, ok = blob.MetricByName("no.such.metric")
+	require.False(t, ok, "a handle on a missing metric name")
+
+	calls := 0
+	count := func(int, NumericDataPoint) bool {
+		calls++
+
+		return true
+	}
+	var zero NumericMetric
+	zero.ForEach(count)
+	zero.ForEachRange(0, 10, count)
+	require.Zero(t, calls, "calls on the zero handle")
+
+	h, ok := blob.MetricByName(names[0])
+	require.True(t, ok)
+	requirePartTimestampColumn(t, spec.String(), &h)
+	h.ForEach(nil)
+	h.ForEachRange(0, h.Len(), nil)
+	h.ForEach(count)
+	require.Equal(t, 9, calls)
+	h.ForEachRange(-4, 100, count)
+	require.Equal(t, 18, calls, "a range clamped to the handle")
+	h.ForEachRange(3, 3, count)
+	h.ForEachRange(9, 12, count)
+	require.Equal(t, 18, calls, "empty ranges")
+	h.ForEach(func(int, NumericDataPoint) bool {
+		calls++
+
+		return false
+	})
+	require.Equal(t, 19, calls, "a walk stopped at the first point")
+}
+
+// TestNumericMetric_ForEachOverMaterializedTimestamps pins ForEach and ForEachRange on a handle
+// whose timestamps Materialize decoded while its values stay encoded:
+// Raw, ALP and ALP-RLE values beside Delta or DeltaPacked timestamps that no group shares.
+// The walks are compared before Materialize, after it, and after it on every length of the value column cut in memory,
+// as a slice that keeps its capacity and as one clamped to its length.
+func TestNumericMetric_ForEachOverMaterializedTimestamps(t *testing.T) {
+	const points = 21
+	zeroPointWalkPools(t, points)
+	for _, tsEnc := range []format.EncodingType{format.TypeDelta, format.TypeDeltaPacked} {
+		for _, valEnc := range []format.EncodingType{format.TypeRaw, format.TypeALP, format.TypeALPRLE} {
+			for _, bigEndian := range []bool{false, true} {
+				spec := pointWalkSpec{tsEnc: tsEnc, valEnc: valEnc, bigEndian: bigEndian, metrics: 2, points: points}
+				t.Run(spec.String(), func(t *testing.T) {
+					_, blob, names := buildPointWalkBlob(t, spec)
+					h, ok := blob.MetricByName(names[0])
+					require.True(t, ok)
+					require.Nil(t, h.first.timestampColumn(), "decoded timestamps before Materialize")
+					requireHandlePointWalksAgree(t, spec.String()+" handle", &h, true)
+
+					h.Materialize()
+					require.Nil(t, h.first.shared)
+					require.Nil(t, h.first.values, "the values stay encoded")
+					requirePartTimestampColumn(t, spec.String(), &h)
+					requireHandlePointWalksAgree(t, spec.String()+" materialized handle", &h, true)
+
+					for keep := 0; keep <= len(h.first.valBytes); keep++ {
+						for _, clamp := range []bool{false, true} {
+							cut := h
+							cutPartValues(&cut.first, keep, clamp)
+							fixture := fmt.Sprintf("%s materialized handle, value bytes kept=%d clamped=%t", spec, keep, clamp)
+							requireHandlePointWalksAgree(t, fixture, &cut, true)
+						}
+					}
+				})
+			}
+		}
+	}
+
+	t.Run("raw value range of a two-point metric", func(t *testing.T) {
+		for _, tsEnc := range []format.EncodingType{format.TypeDelta, format.TypeDeltaPacked} {
+			for _, bigEndian := range []bool{false, true} {
+				spec := pointWalkSpec{tsEnc: tsEnc, valEnc: format.TypeRaw, bigEndian: bigEndian, metrics: 2, points: 2}
+				_, blob, names := buildPointWalkBlob(t, spec)
+				h, ok := blob.MetricByName(names[0])
+				require.True(t, ok)
+				h.Materialize()
+				requirePartTimestampColumn(t, spec.String(), &h)
+				var values []byte
+				for _, v := range []float64{1.5, -2.25, 3.125} {
+					values = blob.Engine().AppendUint64(values, math.Float64bits(v))
+				}
+				for _, length := range []int{0, 7, 8, 9, 15, 16, 17, 24} {
+					for _, clamp := range []bool{false, true} {
+						cut := h
+						cut.first.valBytes = values
+						cutPartValues(&cut.first, length, clamp)
+						fixture := fmt.Sprintf("%s materialized handle, value range of %d bytes clamped=%t", spec, length, clamp)
+						requireHandlePointWalksAgree(t, fixture, &cut, true)
+					}
+				}
+			}
+		}
+	})
+}
+
+// TestNumericMetric_ForEachOverMaterializedTimestampsCutALPColumns is TestNumericBlob_ForEachCutALPColumns on a handle
+// whose timestamps Materialize decoded: each ALP and ALP-RLE layout, cut in memory inside each of its regions,
+// at the largest column the decode pool keeps a buffer for and at one point more.
+func TestNumericMetric_ForEachOverMaterializedTimestampsCutALPColumns(t *testing.T) {
+	limit := pool.MaxPooledDecodeFloat64s
+	zeroPointWalkPools(t, limit)
+	for _, series := range alpCutSeries() {
+		for _, points := range []int{limit, limit + 1} {
+			t.Run(fmt.Sprintf("%s/%d", series.name, points), func(t *testing.T) {
+				spec := pointWalkSpec{tsEnc: format.TypeDeltaPacked, valEnc: series.valEnc, metrics: 2, points: points}
+				data, names := encodePointWalkBlob(t, spec, func(m int) ([]int64, []float64, []string) {
+					ts, vals, tags := pointWalkSeries(points, m, false)
+					if series.values != nil {
+						vals = series.values(points)
+					}
+
+					return ts, vals, tags
+				})
+				blob, err := decodePointWalkBlob(data)
+				require.NoError(t, err)
+				h, ok := blob.MetricByName(names[0])
+				require.True(t, ok)
+				h.Materialize()
+				require.Nil(t, h.first.shared)
+				requirePartTimestampColumn(t, spec.String(), &h)
+				if series.values == nil {
+					h.first.valBytes = []byte{2}
+					for i := range points {
+						h.first.valBytes = blob.Engine().AppendUint64(h.first.valBytes, math.Float64bits(float64(i)+0.5))
+					}
+				}
+				require.Equal(t, series.scheme, h.first.valBytes[0], "the layout of the column")
+				requireHandlePointWalksAgree(t, fmt.Sprintf("%s %s materialized handle", spec, series.name), &h, false)
+
+				for _, keep := range alpColumnCuts(t, h.first.valBytes, points, blob.Engine()) {
+					for _, clamp := range []bool{false, true} {
+						cut := h
+						cutPartValues(&cut.first, keep, clamp)
+						fixture := fmt.Sprintf("%s %s materialized handle, value bytes kept=%d clamped=%t", spec, series.name, keep, clamp)
+						requireHandlePointWalksAgree(t, fixture, &cut, false)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestNumericMetric_ForEachKeepsMaterializedValues pins which walk a handle takes once Materialize decoded its values:
+// with Gorilla or Chimp values and a decoded timestamp column it yields the two decoded columns,
+// and never decodes the value bytes again.
+// The value bytes are cut after Materialize, so a walk that read them would end early.
+func TestNumericMetric_ForEachKeepsMaterializedValues(t *testing.T) {
+	const points = 21
+	for _, tsEnc := range pointWalkTimestampEncodings {
+		for _, valEnc := range []format.EncodingType{format.TypeGorilla, format.TypeChimp} {
+			for _, shared := range []bool{false, true} {
+				spec := pointWalkSpec{tsEnc: tsEnc, valEnc: valEnc, shared: shared, metrics: 2, points: points}
+				_, blob, names := buildPointWalkBlob(t, spec)
+				h, ok := blob.MetricByName(names[0])
+				require.True(t, ok)
+				encoded := recordPointWalk(0, h.ForEach)
+				require.Len(t, encoded.calls, points, spec.String())
+
+				h.Materialize()
+				require.Len(t, h.first.values, points, "%s: decoded values", spec)
+				if shared || tsEnc != format.TypeRaw {
+					requirePartTimestampColumn(t, spec.String(), &h)
+				}
+				for _, keep := range []int{0, 1, len(h.first.valBytes) / 2} {
+					cut := h
+					cutPartValues(&cut.first, keep, true)
+					fixture := fmt.Sprintf("%s materialized handle, value bytes kept=%d", spec, keep)
+					requireHandlePointWalksAgree(t, fixture, &cut, true)
+					if h.first.timestampColumn() == nil {
+						continue
+					}
+					if diff := diffPointWalks(encoded, recordPointWalk(0, cut.ForEach)); diff != "" {
+						t.Fatalf("%s ForEach against the walk before Materialize: %s", fixture, diff)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestNumericMetric_ForEachSetMembers pins ForEach and ForEachRange on a handle that spans the members of a set
+// whose timestamps are shared, one of them with tags,
+// so that some members pair their value column with the shared timestamps and one takes the encoding dispatch:
+// every member starts at its declared base,
+// a stop ends the whole walk on either side of a member boundary,
+// and a range is clamped to the handle.
+// It also pins a member whose value column was cut in memory in front of a complete one,
+// and a member whose group is short.
+func TestNumericMetric_ForEachSetMembers(t *testing.T) {
+	const points = 20 // per member, as handleTestSet writes them
+	zeroPointWalkPools(t, points)
+	for _, valEnc := range pointWalkValueEncodings {
+		t.Run(valEnc.String(), func(t *testing.T) {
+			members := handleTestSetMembers()
+			members[1].opts = []NumericEncoderOption{WithTagsEnabled(true)}
+			bs, _ := handleTestSet(t, members, true,
+				WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(valEnc))
+			for _, name := range handleTestSetNames {
+				h, ok := bs.NumericMetricByName(name)
+				require.True(t, ok, name)
+				requirePartTimestampColumn(t, name, &h)
+				requireHandlePointWalksAgree(t, name+" set handle", &h, true)
+				copied, materialized := h, h
+				materialized.Materialize()
+				requireHandlePointWalksAgree(t, name+" materialized set handle", &materialized, true)
+				requireHandlePointWalksAgree(t, name+" set handle copied before Materialize", &copied, true)
+			}
+
+			h, ok := bs.NumericMetricByName("all")
+			require.True(t, ok)
+			require.Len(t, h.rest, 3)
+			require.True(t, h.rest[0].HasTag(), "the second member has tags")
+			require.False(t, h.rest[1].HasTag(), "the third member has none")
+			full := recordPointWalk(0, h.ForEach)
+			require.Len(t, full.calls, 4*points)
+			for i, call := range full.calls {
+				require.Equal(t, i, call.idx, "index of call %d", i)
+			}
+
+			// The third member's value column loses its second half: its rows end early or its decoder faults,
+			// and the member behind it still starts at its declared base.
+			short := h
+			short.rest = slices.Clone(h.rest)
+			cutPartValues(&short.rest[1], len(short.rest[1].valBytes)/2, true)
+			requireHandlePointWalksAgree(t, "set handle with a cut member", &short, true)
+			cut := recordPointWalk(0, short.ForEach)
+			if cut.end == pointWalkReturned && len(cut.calls) < 4*points {
+				require.Equal(t, short.rest[2].base, cut.calls[len(cut.calls)-points].idx, "first index of the member behind the cut one")
+			}
+
+			// The third member's group loses its tail, so that member takes the encoding dispatch.
+			group := h
+			group.rest = slices.Clone(h.rest)
+			group.rest[1].shared = group.rest[1].shared[:5]
+			require.Nil(t, group.rest[1].timestampColumn())
+			requireHandlePointWalksAgree(t, "set handle with a short group", &group, true)
+		})
+	}
+}
+
+// TestNumericMetric_ForEachOverSharedTimestampsAllocatesNothing pins the allocations of the set handle's walks
+// that pair value columns with shared timestamps: none for Gorilla and Chimp values,
+// and none for ALP and ALP-RLE values once the decode pool holds a buffer.
+// The callback is a literal built inside the measured function and captures a local.
+func TestNumericMetric_ForEachOverSharedTimestampsAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	for _, valEnc := range []format.EncodingType{format.TypeGorilla, format.TypeChimp, format.TypeALP, format.TypeALPRLE} {
+		bs, _ := handleTestSet(t, handleTestSetMembers(), true,
+			WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(valEnc))
+		h, ok := bs.NumericMetricByName("all")
+		require.True(t, ok)
+		require.Len(t, h.rest, 3)
+		requirePartTimestampColumn(t, valEnc.String(), &h)
+
+		var sink float64
+		allocs := testing.AllocsPerRun(20, func() {
+			var sum float64
+			h.ForEach(func(_ int, dp NumericDataPoint) bool { sum += dp.Val + float64(dp.Ts); return true })
+			sink += sum
+		})
+		require.Zerof(t, allocs, "%s ForEach", valEnc)
+		allocs = testing.AllocsPerRun(20, func() {
+			var sum float64
+			h.ForEachRange(5, 70, func(_ int, dp NumericDataPoint) bool { sum += dp.Val + float64(dp.Ts); return true })
+			sink += sum
+		})
+		require.Zerof(t, allocs, "%s ForEachRange", valEnc)
+		require.NotZero(t, sink)
+	}
+}
+
+// TestNumericMetric_ForEachConcurrentWalks pins that a walk over shared timestamps only reads the handle:
+// several goroutines walk one handle at once and each yields the handle's points,
+// which the race detector checks in make test.
+// It also starts a walk from inside the callback of another one:
+// with ALP values both decode into pooled buffers, and the outer walk must still yield its own values afterwards.
+func TestNumericMetric_ForEachConcurrentWalks(t *testing.T) {
+	const walkers, rounds = 8, 25
+	for _, valEnc := range []format.EncodingType{format.TypeChimp, format.TypeALP, format.TypeALPRLE} {
+		t.Run(valEnc.String(), func(t *testing.T) {
+			bs, _ := handleTestSet(t, handleTestSetMembers(), true,
+				WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked), WithValueEncoding(valEnc))
+			h, ok := bs.NumericMetricByName("all")
+			require.True(t, ok)
+			requirePartTimestampColumn(t, valEnc.String(), &h)
+			want := recordPointWalk(0, func(yield func(int, NumericDataPoint) bool) { referenceHandleForEach(&h, yield) })
+			require.Len(t, want.calls, h.Len())
+			window := recordPointWalk(0, func(yield func(int, NumericDataPoint) bool) { referenceHandleForEachRange(&h, 15, 65, yield) })
+
+			diffs := make(chan string, walkers)
+			var wg sync.WaitGroup
+			for range walkers {
+				wg.Go(func() {
+					for range rounds {
+						diff := diffPointWalks(want, recordPointWalk(0, h.ForEach))
+						if diff == "" {
+							diff = diffPointWalks(window, recordPointWalk(0, func(yield func(int, NumericDataPoint) bool) {
+								h.ForEachRange(15, 65, yield)
+							}))
+						}
+						if diff != "" {
+							diffs <- diff
+
+							return
+						}
+					}
+				})
+			}
+			wg.Wait()
+			close(diffs)
+			for diff := range diffs {
+				t.Errorf("a concurrent walk: %s", diff)
+			}
+
+			outer := recordPointWalk(0, func(yield func(int, NumericDataPoint) bool) {
+				h.ForEach(func(i int, dp NumericDataPoint) bool {
+					if i == 0 || i == h.Len()/2 {
+						if diff := diffPointWalks(want, recordPointWalk(0, h.ForEach)); diff != "" {
+							t.Errorf("a walk started inside the callback at index %d: %s", i, diff)
+						}
+					}
+
+					return yield(i, dp)
+				})
+			})
+			if diff := diffPointWalks(want, outer); diff != "" {
+				t.Errorf("the outer walk around nested ones: %s", diff)
+			}
+		})
 	}
 }

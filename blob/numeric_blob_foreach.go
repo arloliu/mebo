@@ -53,6 +53,9 @@ func forEachDeltaPackedRawNative(
 // DeltaPacked timestamps with Gorilla or Chimp values, or with Raw values in the host's byte order, without tags,
 // likewise decode the whole timestamp column into a pooled buffer before the first callback when it has up to 8192 points,
 // so a walk that stops after a few points costs more than it did point by point; longer columns decode point by point.
+// On a blob without tags, a metric that shares its timestamps with another one reads the timestamps decoded
+// when the blob was opened, provided they hold exactly the metric's point count, and the walk decodes its values only,
+// unless the values are ALP or ALP-RLE in a column of more than 8192 points or Raw in a range of another size.
 //
 // Parameters:
 //   - metricID: The metric ID to iterate over.
@@ -109,6 +112,9 @@ func (b NumericBlob) ForEachByName(metricName string, yield func(idx int, dp Num
 
 // forEachFromEntry slices the payloads for the entry and dispatches to the
 // encoding-specific iteration body.
+// When the entry's shared timestamps were decoded at open,
+// it pairs the value column with them instead of decoding them again;
+// see forEachPointsOverTimestamps for when it can.
 func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield func(int, NumericDataPoint) bool) {
 	if entry.Count == 0 {
 		return
@@ -132,7 +138,64 @@ func (b NumericBlob) forEachFromEntry(entry section.NumericIndexEntry, yield fun
 		}
 	}
 
+	// A blob with tags, and a metric outside a shared group, which has no decoded timestamps,
+	// go to the dispatch without another call.
+	if !b.HasTag() {
+		if ts := b.sharedTs.lookup(entry.TimestampOffset); ts != nil && b.forEachPointsOverTimestamps(ts, valBytes, entry.Count, yield) {
+			return
+		}
+	}
+
 	b.forEachDataPoint(tsBytes, valBytes, tagBytes, entry.Count, yield)
+}
+
+// forEachPointsOverTimestamps pairs the value column with ts and reports whether it did.
+// ts is the column's timestamps decoded earlier:
+// a shared group decoded at open, or the timestamps a handle's Materialize decoded.
+// The caller has checked the entry's ranges, and falls back to forEachDataPoint when the result is false.
+//
+// It reads ts and never the timestamp bytes,
+// so it stands for forEachDataPoint only while ts is what those bytes decode to, which decoding guarantees.
+// Under that premise it walks only when the outcome is the one forEachDataPoint has on the same bytes:
+//   - The blob has no tags.
+//   - ts holds exactly count timestamps, which the timestamp loops of forEachDataPoint then yield as well.
+//   - Gorilla and Chimp values need nothing more: both walks end where the value stream does.
+//   - ALP and ALP-RLE values need a column within the decode pool's limit.
+//     forEachDataPoint decodes the whole value column before the first callback, and so does forEachValuesBytes up to that limit;
+//     past it forEachValuesBytes streams, and would call back before it met a fault in a column shortened in memory.
+//   - Raw values need a range of exactly count*8 bytes.
+//     forEachDataPoint reads each value by index and yields count points whatever the range holds,
+//     while forEachValuesBytes yields nothing for a shorter range.
+//
+// It writes nothing, and yield stays on the caller's stack: forEachValuesBytes calls its loops by name.
+func (b NumericBlob) forEachPointsOverTimestamps(ts []int64, valBytes []byte, count int, yield func(int, NumericDataPoint) bool) bool {
+	if b.HasTag() || len(ts) != count {
+		return false
+	}
+
+	switch b.ValueEncoding() {
+	case format.TypeGorilla, format.TypeChimp:
+		// Nothing more to check.
+	case format.TypeALP, format.TypeALPRLE:
+		if count > pool.MaxPooledDecodeFloat64s {
+			return false
+		}
+	case format.TypeRaw:
+		if len(valBytes)/8 != count || len(valBytes)%8 != 0 {
+			return false
+		}
+	case format.TypeDelta, format.TypeDeltaPacked:
+		// Timestamp-only encodings: header validation rejects them as value encodings.
+		fallthrough
+	default:
+		return false
+	}
+
+	b.forEachValuesBytes(valBytes, count, 0, func(i int, val float64) bool {
+		return yield(i, NumericDataPoint{Ts: ts[i], Val: val})
+	})
+
+	return true
 }
 
 // forEachDataPoint calls the static loop of the blob's encoding pair with yield.
