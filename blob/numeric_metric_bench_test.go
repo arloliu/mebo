@@ -12,6 +12,31 @@ import (
 	"github.com/arloliu/mebo/internal/hash"
 )
 
+const (
+	// consumerSetOneGroup gives every metric the same timestamps, which the encoder stores once.
+	consumerSetOneGroup consumerSetSharing = iota
+	// consumerSetPairs shifts each pair of metrics by its ordinal in microseconds: one group per pair.
+	consumerSetPairs
+	// consumerSetDistinct shifts every metric by its ordinal in microseconds: no two columns are alike.
+	consumerSetDistinct
+)
+
+// consumerSetSharing is how the metrics of one blob of a consumer set relate their timestamp columns.
+type consumerSetSharing uint8
+
+// consumerSet describes a set of blobs encoded with the consumer's options:
+// little endian, the V2 layout, shared DeltaPacked timestamps, no compression and no stored metric names.
+// Every blob holds the same metrics, one point per second, and starts where the blob before it ends.
+type consumerSet struct {
+	blobs, metrics, points int
+	valEnc                 format.EncodingType
+	tags                   bool
+	sharing                consumerSetSharing
+	// byName starts the metrics by name, which hashes the name into the ID and stores no name.
+	// Otherwise they are started by ID.
+	byName bool
+}
+
 // BenchmarkNumericMetric_Lookup measures one ValueAt plus one TimestampAt per metric over the gate fixture
 // (100 metrics × 150 points, shared DeltaPacked timestamps, index (m*37) % 150),
 // through the NumericBlob accessors and through handles resolved once.
@@ -839,4 +864,315 @@ func BenchmarkNumericMetric_WindowWalk(b *testing.B) {
 			}
 		})
 	}
+}
+
+// consumerSetName is the name of metric m of a consumer set started by name.
+func consumerSetName(m int) string {
+	return "svid." + strconv.Itoa(m)
+}
+
+// consumerSetID is the ID of metric m of a consumer set started by ID.
+// The IDs are scattered like hashes, so the index order differs from the order the metrics were added in.
+func consumerSetID(m int) uint64 {
+	return uint64(m+1) * 0x9E3779B97F4A7C15
+}
+
+// consumerSetInputs encodes the blobs of c.
+// The values are two-decimal numbers that change on about half the points,
+// since a constant column would hide the cost of the value codec.
+// It decodes the first blob and fails unless it has the layout, the tags, the absence of names
+// and the number of shared timestamp groups that c asks for.
+func consumerSetInputs(tb testing.TB, c consumerSet) [][]byte {
+	tb.Helper()
+	opts := []NumericEncoderOption{
+		WithLittleEndian(), WithBlobLayoutV2(), WithSharedTimestamps(),
+		WithTimestampEncoding(format.TypeDeltaPacked), WithTimestampCompression(format.CompressionNone),
+		WithValueEncoding(c.valEnc), WithValueCompression(format.CompressionNone), WithTagsEnabled(c.tags),
+	}
+	ts := make([]int64, c.points)
+	vals := make([]float64, c.points)
+	// The tags are two bytes long: the tag payload is always zstd-compressed,
+	// and longer tags would turn the rows with tags into a measurement of its decompression.
+	var tags []string
+	if c.tags {
+		tags = make([]string, c.points)
+		for i := range tags {
+			tags[i] = "s" + strconv.Itoa(i%4)
+		}
+	}
+	// Each metric walks in hundredths, which keeps its values exact two-decimal numbers.
+	cents := make([]int64, c.metrics)
+	for m := range cents {
+		cents[m] = 10_000 + int64(m)*100
+	}
+	state := uint64(17)
+	inputs := make([][]byte, c.blobs)
+	for k := range inputs {
+		start := handleTestStart + int64(k*c.points)*1_000_000
+		enc, err := NewNumericEncoder(time.UnixMicro(start), opts...)
+		require.NoError(tb, err)
+		for m := range c.metrics {
+			first := start + c.shift(m)
+			for i := range ts {
+				state = state*6364136223846793005 + 1442695040888963407
+				if state>>63 == 0 {
+					cents[m] += int64(state>>40)%201 - 100
+				}
+				ts[i] = first + int64(i)*1_000_000
+				vals[i] = float64(cents[m]) / 100
+			}
+			if c.byName {
+				require.NoError(tb, enc.StartMetricName(consumerSetName(m), c.points))
+			} else {
+				require.NoError(tb, enc.StartMetricID(consumerSetID(m), c.points))
+			}
+			require.NoError(tb, enc.AddDataPoints(ts, vals, tags))
+			require.NoError(tb, enc.EndMetric())
+		}
+		inputs[k], err = enc.Finish()
+		require.NoError(tb, err)
+	}
+
+	dec, err := NewNumericDecoder(inputs[0])
+	require.NoError(tb, err)
+	blob, err := dec.Decode()
+	require.NoError(tb, err)
+	require.True(tb, blob.IsV2Layout())
+	require.False(tb, blob.HasMetricNames())
+	require.Equal(tb, c.tags, blob.HasTag())
+	groups := 0
+	if blob.sharedTs != nil {
+		groups = len(blob.sharedTs.groups)
+	}
+	require.Equal(tb, c.groups(), groups, "shared timestamp groups")
+
+	return inputs
+}
+
+// BenchmarkNumericMetric_SetDecode measures DecodeBlobSet over blobs of 30 points encoded the way the consumer does,
+// with the metrics started by name and no names stored, and reports the time per blob.
+// The rows of 200 metrics decode 2880 blobs, a day at one point per second:
+// one timestamp group for every metric with Chimp values, with tags beside them, and with ALP-RLE values;
+// 100 groups of two metrics;
+// and no two metrics alike, which leaves the blob without a shared group although the encoder looked for one.
+// The rows of 255, 256, 257 and 1000 metrics in one group decode 288 blobs:
+// the time is reported per blob, and a tenth of the blobs keeps the largest fixture as quick to build as the others.
+// Each row builds its fixture inside its own sub-benchmark, so a filtered run builds only the fixtures it measures.
+func BenchmarkNumericMetric_SetDecode(b *testing.B) {
+	for _, tt := range []struct {
+		name           string
+		blobs, metrics int
+		valEnc         format.EncodingType
+		tags           bool
+		sharing        consumerSetSharing
+	}{
+		{"Chimp", 2880, 200, format.TypeChimp, false, consumerSetOneGroup},
+		{"Chimp-tags", 2880, 200, format.TypeChimp, true, consumerSetOneGroup},
+		{"ALPRLE", 2880, 200, format.TypeALPRLE, false, consumerSetOneGroup},
+		{"Chimp-100groups", 2880, 200, format.TypeChimp, false, consumerSetPairs},
+		{"Chimp-distinct", 2880, 200, format.TypeChimp, false, consumerSetDistinct},
+		{"Chimp-255metrics", 288, 255, format.TypeChimp, false, consumerSetOneGroup},
+		{"Chimp-256metrics", 288, 256, format.TypeChimp, false, consumerSetOneGroup},
+		{"Chimp-257metrics", 288, 257, format.TypeChimp, false, consumerSetOneGroup},
+		{"Chimp-1000metrics", 288, 1000, format.TypeChimp, false, consumerSetOneGroup},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			inputs := consumerSetInputs(b, consumerSet{
+				blobs: tt.blobs, metrics: tt.metrics, points: 30,
+				valEnc: tt.valEnc, tags: tt.tags, sharing: tt.sharing, byName: true,
+			})
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := DecodeBlobSet(inputs...); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(tt.blobs), "ns/blob")
+		})
+	}
+}
+
+// BenchmarkNumericMetric_SetForEach measures a walk over the points of one metric of a consumer set of 86,400 points,
+// through the handle's ForEach, with the handle resolved once, and through ForEach on every blob in turn.
+// The set holds 8 metrics started by ID, in 8640, 2880 or 576 blobs of 10, 30 or 150 points,
+// with Chimp or ALP-RLE values, with the timestamps shared by every metric or distinct for each, and with or without tags.
+// The full rows walk to the end.
+// The first rows stop at the first point: the handle's walk ends there,
+// and the walk over the blobs stops at the first point of each blob, since a blob's ForEach reports no stop.
+// ns/point is the time per callback: per point in the full rows, per walk on the handle and per blob otherwise.
+// Each fixture is built inside its own sub-benchmark, so a filtered run builds only the fixtures it measures.
+func BenchmarkNumericMetric_SetForEach(b *testing.B) {
+	const metrics, total = 8, 86_400
+	id := consumerSetID(3)
+	type row struct {
+		name string
+		set  consumerSet
+	}
+	var rows []row
+	for _, enc := range []row{
+		{"Chimp", consumerSet{valEnc: format.TypeChimp}},
+		{"ALPRLE", consumerSet{valEnc: format.TypeALPRLE}},
+	} {
+		for _, points := range []int{10, 30, 150} {
+			for _, sharing := range []row{
+				{"shared", consumerSet{sharing: consumerSetOneGroup}},
+				{"distinct", consumerSet{sharing: consumerSetDistinct}},
+			} {
+				for _, tags := range []row{{"no-tags", consumerSet{}}, {"with-tags", consumerSet{tags: true}}} {
+					rows = append(rows, row{
+						enc.name + "/" + strconv.Itoa(points) + "pts/" + sharing.name + "/" + tags.name,
+						consumerSet{
+							blobs: total / points, metrics: metrics, points: points,
+							valEnc: enc.set.valEnc, tags: tags.set.tags, sharing: sharing.set.sharing,
+						},
+					})
+				}
+			}
+		}
+	}
+
+	for _, r := range rows {
+		b.Run(r.name, func(b *testing.B) {
+			bs, err := DecodeBlobSet(consumerSetInputs(b, r.set)...)
+			require.NoError(b, err)
+			h, ok := bs.NumericMetric(id)
+			require.True(b, ok)
+			require.Equal(b, total, h.Len())
+			blobs := bs.NumericBlobs()
+			require.Len(b, blobs, r.set.blobs)
+
+			for _, walk := range []struct {
+				name                    string
+				more                    bool
+				handleCalls, blobsCalls int
+			}{{"full", true, total, total}, {"first", false, 1, len(blobs)}} {
+				more := walk.more
+				b.Run("handle/"+walk.name, func(b *testing.B) {
+					var sink int64
+					b.ReportAllocs()
+					for b.Loop() {
+						h.ForEach(func(_ int, dp NumericDataPoint) bool {
+							sink += dp.Ts + int64(dp.Val) + int64(len(dp.Tag))
+
+							return more
+						})
+					}
+					b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(walk.handleCalls), "ns/point")
+					if sink == -1 {
+						b.Fatal("unreachable")
+					}
+				})
+				b.Run("blobs/"+walk.name, func(b *testing.B) {
+					var sink int64
+					b.ReportAllocs()
+					for b.Loop() {
+						for i := range blobs {
+							blobs[i].ForEach(id, func(_ int, dp NumericDataPoint) bool {
+								sink += dp.Ts + int64(dp.Val) + int64(len(dp.Tag))
+
+								return more
+							})
+						}
+					}
+					b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(walk.blobsCalls), "ns/point")
+					if sink == -1 {
+						b.Fatal("unreachable")
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkNumericMetric_SetResolveUnnamed measures NumericMetricByName on a consumer set that stores no names:
+// 120, 960 and 2880 blobs of 200 metrics started by name, 30 points each, in one timestamp group.
+// The resolve rows time the resolution alone; both kinds of row report the time per blob.
+// The window600 rows time what a windowed reader does with the handle:
+// the resolution, two SearchTimestamp calls for the ends of a window in the middle of the metric,
+// and a ForEachValuesRange over its 600 points.
+// Every iteration resolves a different metric, so each resolution reads index entries the one before it did not.
+// Each fixture is built inside its own sub-benchmark, so a filtered run builds only the fixtures it measures.
+func BenchmarkNumericMetric_SetResolveUnnamed(b *testing.B) {
+	const metrics, points, window = 200, 30, 600
+	names := make([]string, metrics)
+	for m := range names {
+		names[m] = consumerSetName(m)
+	}
+	for _, blobs := range []int{120, 960, 2880} {
+		b.Run(strconv.Itoa(blobs)+"blobs", func(b *testing.B) {
+			bs, err := DecodeBlobSet(consumerSetInputs(b, consumerSet{
+				blobs: blobs, metrics: metrics, points: points, valEnc: format.TypeChimp, byName: true,
+			})...)
+			require.NoError(b, err)
+			h, ok := bs.NumericMetricByName(names[0])
+			require.True(b, ok)
+			n := h.Len()
+			require.Equal(b, blobs*points, n)
+			// Every metric has the same timestamps, so one pair of targets bounds the same window in each.
+			from, _ := h.TimestampAt(n / 2)
+			to, _ := h.TimestampAt(n/2 + window)
+			lo, _ := h.SearchTimestamp(from)
+			hi, _ := h.SearchTimestamp(to)
+			require.Equal(b, window, hi-lo)
+
+			b.Run("resolve", func(b *testing.B) {
+				var sink, k int
+				b.ReportAllocs()
+				for b.Loop() {
+					h, _ := bs.NumericMetricByName(names[k%metrics])
+					sink += h.Len()
+					k++
+				}
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(blobs), "ns/blob")
+				if sink == 0 {
+					b.Fatal("no handle resolved")
+				}
+			})
+
+			b.Run("window600", func(b *testing.B) {
+				var sink float64
+				var k int
+				b.ReportAllocs()
+				for b.Loop() {
+					h, _ := bs.NumericMetricByName(names[k%metrics])
+					lo, _ := h.SearchTimestamp(from)
+					hi, _ := h.SearchTimestamp(to)
+					h.ForEachValuesRange(lo, hi, func(_ int, v float64) bool {
+						sink += v
+
+						return true
+					})
+					k++
+				}
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(blobs), "ns/blob")
+				if sink == 0 {
+					b.Fatal("no value read")
+				}
+			})
+		})
+	}
+}
+
+// shift is the offset in microseconds of the timestamps of metric m, which decides the columns it shares.
+func (c consumerSet) shift(m int) int64 {
+	if c.sharing == consumerSetPairs {
+		return int64(m / 2)
+	}
+	if c.sharing == consumerSetDistinct {
+		return int64(m)
+	}
+
+	return 0
+}
+
+// groups is the number of shared timestamp groups a decoded blob of the set holds.
+func (c consumerSet) groups() int {
+	if c.sharing == consumerSetPairs {
+		return c.metrics / 2
+	}
+	if c.sharing == consumerSetDistinct {
+		return 0
+	}
+
+	return 1
 }
