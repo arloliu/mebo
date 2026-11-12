@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-11-12
+
 Faster decoding of numeric blobs, faster point walks on blobs that share timestamps,
 and a faster decode of constant ALP columns, with no change to the API or the encoded bytes.
 
@@ -1072,7 +1074,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.14.1...HEAD
+[1.14.1]: https://github.com/arloliu/mebo/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/arloliu/mebo/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/arloliu/mebo/compare/v1.12.1...v1.13.0
 [1.13.0-rc4]: https://github.com/arloliu/mebo/compare/v1.13.0-rc3...v1.13.0-rc4
