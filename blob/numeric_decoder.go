@@ -1,7 +1,6 @@
 package blob
 
 import (
-	"cmp"
 	"fmt"
 	"math"
 	"slices"
@@ -861,38 +860,67 @@ func (d *NumericDecoder) decompressPayloads(tsOffset, valOffset, tagOffset int) 
 // with the pre-decoded timestamps of every offset that several metrics share.
 // This avoids redundant decoding when iterating timestamps across many metrics
 // that share the same underlying timestamp data.
+// A group is decoded from the first entry in index order that references its offset,
+// and its slice is non-nil even when nothing decodes.
+// A blob in which no two metrics share an offset keeps a nil table.
 func (d *NumericDecoder) buildSharedTimestamps(blob *NumericBlob, indexEntries []section.NumericIndexEntry) {
-	// Count how many metrics reference each TimestampOffset
-	refCount := make(map[int]int, d.metricCount)
-	for i := range indexEntries[:d.metricCount] {
-		refCount[indexEntries[i].TimestampOffset]++
+	entries := indexEntries[:d.metricCount]
+
+	// Once sorted, an offset that several metrics reference is a run of equal values.
+	// A map of reference counts would allocate on every blob;
+	// the array keeps the offsets of up to 256 metrics on the stack.
+	var stack [256]int
+	offsets := stack[:0]
+	for i := range entries {
+		offsets = append(offsets, entries[i].TimestampOffset)
+	}
+	slices.Sort(offsets)
+
+	// Keep one offset of each run longer than one, at the front of the same slice.
+	shared := offsets[:0]
+	for i := 0; i < len(offsets); {
+		j := i + 1
+		for j < len(offsets) && offsets[j] == offsets[i] {
+			j++
+		}
+		if j-i > 1 {
+			shared = append(shared, offsets[i])
+		}
+		i = j
+	}
+	if len(shared) == 0 {
+		return
 	}
 
-	// Pre-decode only offsets used by more than one metric, once each
-	var groups []sharedTimestampGroup
-	seen := make(map[int]struct{})
-	for i := range indexEntries[:d.metricCount] {
-		entry := &indexEntries[i]
-		if refCount[entry.TimestampOffset] <= 1 {
+	// Every kept offset stood for at least two,
+	// so the slots behind the kept ones are free to mark the groups already decoded.
+	filled := offsets[len(shared) : 2*len(shared)]
+	clear(filled)
+
+	// Decode each group once, from the first entry in index order that references it.
+	groups := make([]sharedTimestampGroup, len(shared))
+	remaining := len(groups)
+	for i := range entries {
+		entry := &entries[i]
+		g, ok := slices.BinarySearch(shared, entry.TimestampOffset)
+		if !ok || filled[g] != 0 {
 			continue
 		}
-		if _, exists := seen[entry.TimestampOffset]; exists {
-			continue
-		}
-		seen[entry.TimestampOffset] = struct{}{}
+		filled[g] = 1
 
 		tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
 		decoded := make([]int64, entry.Count)
 		produced := blob.decodeTimestampsSlice(tsBytes, entry.Count, decoded)
-		groups = append(groups, sharedTimestampGroup{
+		groups[g] = sharedTimestampGroup{
 			offset: entry.TimestampOffset,
 			ts:     decoded[:produced],
 			sorted: slices.IsSorted(decoded[:produced]),
-		})
+		}
+
+		if remaining--; remaining == 0 {
+			break
+		}
 	}
 
-	if len(groups) > 0 {
-		slices.SortFunc(groups, func(a, b sharedTimestampGroup) int { return cmp.Compare(a.offset, b.offset) })
-		blob.sharedTs = &sharedTimestamps{first: groups[0], groups: groups}
-	}
+	blob.sharedTs = &sharedTimestamps{first: groups[0], groups: groups}
 }
