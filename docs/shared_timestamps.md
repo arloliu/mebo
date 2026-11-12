@@ -173,7 +173,10 @@ Net effect for a typical decode-then-iterate workflow (150 metrics × 100 points
 | 150 metrics × 10 pts  | 15.0 KB / 6 allocs | 20.8 KB / 12 allocs | +5.8 KB / +6 allocs |
 | 150 metrics × 100 pts | 32.1 KB / 6 allocs | 39.5 KB / 12 allocs | +7.4 KB / +6 allocs |
 
-The extra allocations are: refcount map, cache map, and decoded `[]int64` slices (one per unique timestamp group).
+The extra allocations in this table are a refcount map, a cache map, and the decoded `[]int64` slices (one per unique timestamp group).
+The decoder no longer builds either map: it finds the groups by sorting the timestamp offsets, and keeps them in a table sorted by offset.
+The table above was measured before that and overstates today's cost;
+the [Performance Guide](performance.md) reports 8 allocations to open a shared blob against 7 without sharing on `mix_monitoring`.
 
 ## How It Works Internally
 
