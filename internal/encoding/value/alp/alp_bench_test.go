@@ -107,6 +107,46 @@ func BenchmarkALPDecodeAll_150Points(b *testing.B) {
 	}
 }
 
+// BenchmarkALPDecodeAll_ConstantColumn decodes one constant column, whose codes are zero bits wide,
+// beside one bit-packed column of the same length, at 30 points and at a typical blob's 150.
+func BenchmarkALPDecodeAll_ConstantColumn(b *testing.B) {
+	eng := endian.GetLittleEndianEngine()
+	dec := NewNumericALPDecoder(eng)
+	shapes := []struct {
+		name     string
+		constant bool
+	}{
+		{"constant", true},
+		{"packed", false},
+	}
+	for _, points := range []int{30, 150} {
+		for _, shape := range shapes {
+			b.Run("points="+strconv.Itoa(points)+"/"+shape.name, func(b *testing.B) {
+				values := genALPColumns(1, points, 2, 42)[0]
+				if shape.constant {
+					for i := range values {
+						values[i] = 123.45
+					}
+				}
+				col := alpEncodeSlice(values, eng)
+				if col[0] != alpSchemeMain || (col[3] == 0) != shape.constant {
+					b.Fatalf("fixture has scheme byte %d and %d-bit codes", col[0], col[3])
+				}
+				dst := make([]float64, points)
+				var sink float64
+				b.ReportAllocs()
+				for b.Loop() {
+					n := dec.DecodeAll(col, points, dst)
+					sink += dst[n-1]
+				}
+				if sink == -1 {
+					b.Fatal("unreachable")
+				}
+			})
+		}
+	}
+}
+
 // BenchmarkALPDecodeKernelWidths isolates the AVX-512 decode kernel:
 // for a spread of code widths it times the kernel against the generated scalar kernel
 // (numeric_alp_kernels_gen.go) that decodeMainInto falls back to,
