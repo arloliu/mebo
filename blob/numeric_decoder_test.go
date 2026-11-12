@@ -1,6 +1,10 @@
 package blob
 
 import (
+	"cmp"
+	"encoding/binary"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -2752,6 +2756,255 @@ func TestNumericDecoder_RejectsIndexOffsetMismatch(t *testing.T) {
 
 			engine.PutUint32(data[16:20], indexOffset+1)
 			require.ErrorIs(t, decodeNumericBlob(data), errs.ErrMetricNamesExtentMismatch)
+		})
+	}
+}
+
+// referenceSharedTimestamps is the map-based search for shared-timestamp groups
+// that buildSharedTimestamps is compared against.
+// It stays as it was written, so that the comparison is against a fixed result.
+func referenceSharedTimestamps(blob *NumericBlob, indexEntries []section.NumericIndexEntry, metricCount int) {
+	// Count how many metrics reference each TimestampOffset
+	refCount := make(map[int]int, metricCount)
+	for i := range indexEntries[:metricCount] {
+		refCount[indexEntries[i].TimestampOffset]++
+	}
+
+	// Pre-decode only offsets used by more than one metric, once each
+	var groups []sharedTimestampGroup
+	seen := make(map[int]struct{})
+	for i := range indexEntries[:metricCount] {
+		entry := &indexEntries[i]
+		if refCount[entry.TimestampOffset] <= 1 {
+			continue
+		}
+		if _, exists := seen[entry.TimestampOffset]; exists {
+			continue
+		}
+		seen[entry.TimestampOffset] = struct{}{}
+
+		tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+		decoded := make([]int64, entry.Count)
+		produced := blob.decodeTimestampsSlice(tsBytes, entry.Count, decoded)
+		groups = append(groups, sharedTimestampGroup{
+			offset: entry.TimestampOffset,
+			ts:     decoded[:produced],
+			sorted: slices.IsSorted(decoded[:produced]),
+		})
+	}
+
+	if len(groups) > 0 {
+		slices.SortFunc(groups, func(a, b sharedTimestampGroup) int { return cmp.Compare(a.offset, b.offset) })
+		blob.sharedTs = &sharedTimestamps{first: groups[0], groups: groups}
+	}
+}
+
+// rawTimestampPayload returns a little-endian raw timestamp payload holding the given timestamps.
+func rawTimestampPayload(timestamps ...int64) []byte {
+	payload := make([]byte, 0, len(timestamps)*8)
+	for _, ts := range timestamps {
+		payload = binary.LittleEndian.AppendUint64(payload, uint64(ts))
+	}
+
+	return payload
+}
+
+// sharedTsEntry returns an index entry that reads count timestamps from length bytes,
+// starting at the given eight-byte slot of a raw timestamp payload.
+func sharedTsEntry(slot, length, count int) section.NumericIndexEntry {
+	return section.NumericIndexEntry{TimestampOffset: slot * 8, TimestampLength: length, Count: count}
+}
+
+// spreadSharedTsEntries returns entries that reference the first slots of a raw timestamp payload out of order:
+// entry i reads slot (i*7) % groups, so groups must not be a multiple of 7.
+// The entries of one slot disagree on their count, one timestamp for the first and more for the later ones,
+// so that a group shows which of its entries it was decoded from.
+func spreadSharedTsEntries(metrics, groups int) []section.NumericIndexEntry {
+	entries := make([]section.NumericIndexEntry, metrics)
+	for i := range entries {
+		count := 1 + min(i/groups, 2)
+		entries[i] = sharedTsEntry((i*7)%groups, count*8, count)
+	}
+
+	return entries
+}
+
+// slotOffsets returns the timestamp offsets of the first n slots of a raw timestamp payload.
+func slotOffsets(n int) []int {
+	offsets := make([]int, n)
+	for i := range offsets {
+		offsets[i] = i * 8
+	}
+
+	return offsets
+}
+
+func TestNumericDecoder_buildSharedTimestamps(t *testing.T) {
+	// Slot i of the default payload holds the timestamp 1000+i.
+	ascending := make([]int64, 512)
+	for i := range ascending {
+		ascending[i] = 1000 + int64(i)
+	}
+	ascendingPayload := rawTimestampPayload(ascending...)
+
+	e := sharedTsEntry
+	entries := func(list ...section.NumericIndexEntry) []section.NumericIndexEntry { return list }
+
+	tests := []struct {
+		name    string
+		entries []section.NumericIndexEntry
+		// ignored is the number of trailing entries that lie past the metric count.
+		ignored int
+		// payload replaces the default payload when set.
+		payload []byte
+		// wantOffsets lists the offsets of the expected groups; none means a nil table.
+		wantOffsets []int
+	}{
+		{
+			name:        "one group shared by every metric",
+			entries:     entries(e(0, 24, 3), e(0, 24, 3), e(0, 24, 3), e(0, 24, 3)),
+			wantOffsets: []int{0},
+		},
+		{
+			name:        "several groups",
+			entries:     entries(e(0, 16, 2), e(0, 16, 2), e(2, 24, 3), e(2, 24, 3), e(5, 8, 1), e(5, 8, 1)),
+			wantOffsets: []int{0, 16, 40},
+		},
+		{
+			name:        "a group interleaved with unshared metrics",
+			entries:     entries(e(0, 8, 1), e(1, 16, 2), e(3, 8, 1), e(1, 16, 2), e(4, 8, 1)),
+			wantOffsets: []int{8},
+		},
+		{
+			name:    "no shared offset",
+			entries: entries(e(0, 8, 1), e(1, 8, 1), e(2, 8, 1)),
+		},
+		{
+			name:    "a single metric",
+			entries: entries(e(0, 8, 1)),
+		},
+		{
+			name:        "offsets out of order",
+			entries:     entries(e(3, 16, 2), e(0, 16, 2), e(3, 16, 2)),
+			wantOffsets: []int{24},
+		},
+		{
+			name:        "groups met in descending offset order",
+			entries:     entries(e(6, 8, 1), e(3, 16, 2), e(0, 24, 3), e(6, 8, 1), e(3, 16, 2), e(0, 24, 3)),
+			wantOffsets: []int{0, 24, 48},
+		},
+		{
+			// The entry that owns the timestamps is the third one;
+			// the first one was pointed at them and reads fewer.
+			name:        "the first entry of a group is not the one that owns the timestamps",
+			entries:     entries(e(4, 16, 2), e(0, 8, 1), e(4, 24, 3)),
+			wantOffsets: []int{32},
+		},
+		{
+			name:        "the first entry of a group reads more than a later one",
+			entries:     entries(e(0, 32, 4), e(9, 8, 1), e(0, 16, 2)),
+			wantOffsets: []int{0},
+		},
+		{
+			name:        "an entry without points ahead of one with points",
+			entries:     entries(e(0, 0, 0), e(0, 24, 3)),
+			wantOffsets: []int{0},
+		},
+		{
+			name:        "an entry with points ahead of one without",
+			entries:     entries(e(0, 24, 3), e(0, 0, 0)),
+			wantOffsets: []int{0},
+		},
+		{
+			// Twelve bytes are not a whole number of raw timestamps, so nothing decodes.
+			name:        "a group that decodes to no timestamp",
+			entries:     entries(e(0, 12, 2), e(0, 12, 2)),
+			wantOffsets: []int{0},
+		},
+		{
+			name:        "a group that decodes to fewer timestamps than its count",
+			entries:     entries(e(0, 24, 5), e(0, 16, 5)),
+			wantOffsets: []int{0},
+		},
+		{
+			name:        "a group whose timestamps are not sorted beside a sorted one",
+			entries:     entries(e(0, 24, 3), e(0, 24, 3), e(3, 16, 2), e(3, 16, 2)),
+			payload:     rawTimestampPayload(30, 10, 20, 40, 40),
+			wantOffsets: []int{0, 24},
+		},
+		{name: "8 groups", entries: spreadSharedTsEntries(16, 8), wantOffsets: slotOffsets(8)},
+		{name: "9 groups", entries: spreadSharedTsEntries(18, 9), wantOffsets: slotOffsets(9)},
+		{name: "255 metrics", entries: spreadSharedTsEntries(255, 85), wantOffsets: slotOffsets(85)},
+		{name: "256 metrics", entries: spreadSharedTsEntries(256, 85), wantOffsets: slotOffsets(85)},
+		{name: "257 metrics", entries: spreadSharedTsEntries(257, 85), wantOffsets: slotOffsets(85)},
+		{name: "1000 metrics", entries: spreadSharedTsEntries(1000, 333), wantOffsets: slotOffsets(333)},
+		{name: "256 metrics in one group", entries: spreadSharedTsEntries(256, 1), wantOffsets: []int{0}},
+		{name: "257 metrics in one group", entries: spreadSharedTsEntries(257, 1), wantOffsets: []int{0}},
+		{
+			name: "no metric",
+		},
+		{
+			name:    "no metric, with entries past the metric count",
+			entries: entries(e(0, 8, 1), e(0, 8, 1)),
+			ignored: 2,
+		},
+		{
+			name:    "an entry past the metric count repeats an unshared offset",
+			entries: entries(e(0, 8, 1), e(1, 8, 1), e(0, 8, 1)),
+			ignored: 1,
+		},
+		{
+			name:        "entries past the metric count would add a group",
+			entries:     entries(e(0, 8, 1), e(0, 8, 1), e(1, 8, 1), e(1, 8, 1), e(1, 8, 1)),
+			ignored:     2,
+			wantOffsets: []int{0},
+		},
+	}
+
+	requireSameGroup := func(t *testing.T, want, got sharedTimestampGroup, what string) {
+		t.Helper()
+		require.Equal(t, want.offset, got.offset, "%s: offset", what)
+		require.Equal(t, want.ts == nil, got.ts == nil, "%s: nil timestamps", what)
+		require.Equal(t, want.ts, got.ts, "%s: timestamps", what)
+		require.Equal(t, want.sorted, got.sorted, "%s: sorted", what)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wantPayload := tt.payload
+			if wantPayload == nil {
+				wantPayload = ascendingPayload
+			}
+			metricCount := len(tt.entries) - tt.ignored
+			indexEntries := slices.Clone(tt.entries)
+			tsPayload := slices.Clone(wantPayload)
+
+			// Raw little-endian timestamps, read through the byte-order engine.
+			want := NumericBlob{blobBase: blobBase{tsEncType: format.TypeRaw}, tsPayload: tsPayload}
+			referenceSharedTimestamps(&want, indexEntries, metricCount)
+
+			got := NumericBlob{blobBase: blobBase{tsEncType: format.TypeRaw}, tsPayload: tsPayload}
+			decoder := &NumericDecoder{metricCount: metricCount}
+			decoder.buildSharedTimestamps(&got, indexEntries)
+
+			require.Equal(t, tt.entries, indexEntries, "index entries")
+			require.Equal(t, wantPayload, tsPayload, "timestamp payload")
+
+			require.Equal(t, want.sharedTs == nil, got.sharedTs == nil, "nil table")
+			require.Equal(t, len(tt.wantOffsets) == 0, got.sharedTs == nil, "nil table without a shared offset")
+			if want.sharedTs == nil {
+				return
+			}
+
+			requireSameGroup(t, want.sharedTs.first, got.sharedTs.first, "first")
+			require.Len(t, got.sharedTs.groups, len(want.sharedTs.groups))
+			gotOffsets := make([]int, len(got.sharedTs.groups))
+			for i := range want.sharedTs.groups {
+				requireSameGroup(t, want.sharedTs.groups[i], got.sharedTs.groups[i], fmt.Sprintf("group %d", i))
+				require.NotNil(t, got.sharedTs.groups[i].ts, "group %d: timestamps", i)
+				gotOffsets[i] = got.sharedTs.groups[i].offset
+			}
+			require.Equal(t, tt.wantOffsets, gotOffsets, "group offsets")
 		})
 	}
 }
