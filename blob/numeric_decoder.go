@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"slices"
@@ -480,17 +481,31 @@ func (d *NumericDecoder) parseIndexEntries(
 	// are a legitimate collision and accepted.
 	validateV2Order := d.header.Flag.IsV2()
 
+	// A compact little-endian entry is read in place, because the parser costs more than the read:
+	// it is called through a func value, returns the entry by value,
+	// and reads each field through the byte-order interface.
+	compactLittleEndian := entrySize == section.NumericIndexEntrySize && !d.header.Flag.IsBigEndian()
+
 	var err error
 	for i := 0; i < d.metricCount; i++ {
 		start := i * entrySize
 		end := start + entrySize
-
-		indexEntries[i], err = parseEntry(indexData[start:end], d.engine)
-		if err != nil {
-			return nil, nil, err
-		}
-
 		curEntry := &indexEntries[i]
+
+		if compactLittleEndian {
+			// The bounds check of the whole index leaves exactly 16 bytes here, so the parser's size error cannot occur.
+			stored := (*[section.NumericIndexEntrySize]byte)(indexData[start:end])
+			curEntry.MetricID = binary.LittleEndian.Uint64(stored[0:8])
+			curEntry.Count = int(binary.LittleEndian.Uint16(stored[8:10]))
+			curEntry.TimestampOffset = int(binary.LittleEndian.Uint16(stored[10:12]))
+			curEntry.ValueOffset = int(binary.LittleEndian.Uint16(stored[12:14]))
+			curEntry.TagOffset = int(binary.LittleEndian.Uint16(stored[14:16]))
+		} else {
+			*curEntry, err = parseEntry(indexData[start:end], d.engine)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
 
 		// Convert delta offsets to absolute offsets
 		// Accumulate in int to prevent uint16 overflow, entry now has int fields
@@ -530,19 +545,8 @@ func (d *NumericDecoder) parseIndexEntries(
 	}
 
 	// Calculate the last entry's lengths using decompressed payload sizes
-	if d.metricCount > 0 {
-		lastEntry := &indexEntries[d.metricCount-1]
-
-		// Validate last entry offsets don't exceed payload sizes
-		if lastEntry.TimestampOffset > tsPayloadSize ||
-			lastEntry.ValueOffset > valPayloadSize ||
-			lastEntry.TagOffset > tagPayloadSize {
-			return nil, nil, errs.ErrInvalidIndexOffsets
-		}
-
-		lastEntry.TimestampLength = tsPayloadSize - lastEntry.TimestampOffset
-		lastEntry.ValueLength = valPayloadSize - lastEntry.ValueOffset
-		lastEntry.TagLength = tagPayloadSize - lastEntry.TagOffset
+	if err := boundLastIndexEntry(indexEntries, tsPayloadSize, valPayloadSize, tagPayloadSize); err != nil {
+		return nil, nil, err
 	}
 
 	// Final validation: ensure offsets are non-negative and lengths are valid
@@ -551,6 +555,29 @@ func (d *NumericDecoder) parseIndexEntries(
 	}
 
 	return indexEntries, metricIDs, nil
+}
+
+// boundLastIndexEntry derives the last entry's lengths from the decompressed payload sizes,
+// after rejecting an offset that lies past its payload.
+// The entries before it take their lengths from the offsets of the entry that follows.
+func boundLastIndexEntry(entries []section.NumericIndexEntry, tsPayloadSize, valPayloadSize, tagPayloadSize int) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	lastEntry := &entries[len(entries)-1]
+
+	// Validate last entry offsets don't exceed payload sizes
+	if lastEntry.TimestampOffset > tsPayloadSize ||
+		lastEntry.ValueOffset > valPayloadSize ||
+		lastEntry.TagOffset > tagPayloadSize {
+		return errs.ErrInvalidIndexOffsets
+	}
+
+	lastEntry.TimestampLength = tsPayloadSize - lastEntry.TimestampOffset
+	lastEntry.ValueLength = valPayloadSize - lastEntry.ValueOffset
+	lastEntry.TagLength = tagPayloadSize - lastEntry.TagOffset
+
+	return nil
 }
 
 // validateALPExceptionPositions checks that an ALP column's exception sidecar
