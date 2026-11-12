@@ -471,13 +471,10 @@ func TestNumericALP_DecodeAll_MatchesAll(t *testing.T) {
 	require.Equalf(t, byte(0), constantData[3], "width0: expected width=0")
 	alpDecodeAllCase(t, "width0_constant", constantData, len(constant))
 
-	// width 0 with exceptions: same constant base, but one value mid-column is
-	// un-encodable under the column's chosen (e,f), forcing the exception
-	// sidecar while every other value still shares a single FOR-subtracted
-	// code, so width stays 0 even though nExc >= 1. This exercises the scalar
-	// width-0 bulk loop (mask == 0, no fused-kernel dispatch since width < 1)
-	// together with the exception post-pass (verified: scheme=main, width=0,
-	// nExc>=1).
+	// width 0 with exceptions: same constant base, but one value mid-column is un-encodable under the column's chosen (e,f),
+	// forcing the exception sidecar while every other value still shares a single FOR-subtracted code,
+	// so width stays 0 even though nExc >= 1.
+	// This exercises the width-0 fill together with the exception post-pass (verified: scheme=main, width=0, nExc>=1).
 	width0Exc := make([]float64, 50)
 	for i := range width0Exc {
 		width0Exc[i] = 123.45
@@ -3664,4 +3661,382 @@ func TestNumericALP_Each_MatchesAll(t *testing.T) {
 
 	require.Equal(t, 3, dec.Each(nil, 5, 3, func(int, float64) bool { t.Fatal("no data"); return false }))
 	require.Equal(t, 3, dec.Each(cases[0].data, 0, 3, func(int, float64) bool { t.Fatal("zero count"); return false }))
+}
+
+// ---- zero-width main columns ----
+
+// alpZeroWidthColumn is a column whose main-scheme codes are zero bits wide:
+// a main column, or a runs column that nests one.
+type alpZeroWidthColumn struct {
+	name   string
+	eng    endian.EndianEngine
+	data   []byte    // the whole column, scheme byte first
+	count  int       // points in the column
+	values []float64 // the encoder's input; nil for a column crafted from header bytes
+}
+
+// alpDecodeMainIntoBaseline is a frozen copy of decodeMainInto as it stood before it filled a zero-width column:
+// such a column went through the scalar loop, which read zero bits for every value.
+// TestALPDecodeMainInto_ZeroWidth pins the decoder against it.
+func alpDecodeMainIntoBaseline(d NumericALPDecoder, data []byte, count int, dst []float64) int {
+	ee := int(data[0])
+	ff := int(data[1])
+	width := int(data[2])
+	nExc := int(d.engine.Uint32(data[3:7]))
+	mn := int64(d.engine.Uint64(data[7:15]))
+	codes := data[15:]
+	exc := data[15+(count*width+7)/8:]
+
+	mask := ^uint64(0)
+	if width < 64 {
+		mask = (uint64(1) << width) - 1
+	}
+	clen := len(codes)
+
+	n := count
+	if n > len(dst) {
+		n = len(dst)
+	}
+
+	// Fused-kernel fast path, skipped for n<8 (no full group) and width 0 (no bits — scalar handles it).
+	start := 0
+	if width >= 1 && width <= 64 && n >= 8 {
+		start = alpFusedDecodeAVX512(codes, n, width, mn, alpPow10[ff], alpInvPow10[ee], dst)
+		if kern := alpFusedUnpack[width]; start < n&^7 && kern != nil {
+			rest := codes[start/8*width:]
+			slack := 8*((width+7)/8) - width
+			maxG := (n - start) >> 3
+			if len(rest)-slack >= 0 {
+				if g := (len(rest) - slack) / width; g < maxG {
+					maxG = g
+				}
+			} else {
+				maxG = 0
+			}
+			if maxG > 0 {
+				kern(rest, maxG<<3, mn, alpPow10[ff], alpInvPow10[ee], dst[start:])
+				start += maxG << 3
+			}
+		}
+	}
+
+	// bulk decode: no exception branch in the hot loop (scalar remainder + tail)
+	bitpos := start * width
+	for i := start; i < n; i++ {
+		bp := bitpos >> 3
+		sh := bitpos & 7
+		var code uint64
+		if bp+8 <= clen && sh+width <= 64 {
+			code = (binary.LittleEndian.Uint64(codes[bp:bp+8]) >> sh) & mask
+		} else {
+			code = alpReadBitsSlow(codes, bitpos, width, mask)
+		}
+		dst[i] = float64(int64(code)+mn) * alpPow10[ff] * alpInvPow10[ee]
+		bitpos += width
+	}
+	// patch exceptions by position afterwards (sidecar positions are ascending)
+	for k := 0; k < nExc; k++ {
+		// Compare as uint32: int(position) is negative on 32-bit for p >= 2^31.
+		p := d.engine.Uint32(exc[k*12 : k*12+4])
+		if uint64(p) < uint64(n) {
+			dst[p] = math.Float64frombits(d.engine.Uint64(exc[k*12+4 : k*12+12]))
+		}
+	}
+
+	return n
+}
+
+// alpZeroWidthExceptions returns the exception positions of a crafted column, strictly ascending and below count.
+func alpZeroWidthExceptions(shape string, count int) []int {
+	switch shape {
+	case "first_middle_last":
+		pos := []int{0}
+		for _, p := range []int{count / 2, count - 1} {
+			if p > pos[len(pos)-1] {
+				pos = append(pos, p)
+			}
+		}
+
+		return pos
+	case "every_third":
+		pos := make([]int, 0, count/3)
+		for p := 2; p < count; p += 3 {
+			pos = append(pos, p)
+		}
+
+		return pos
+	default:
+		return nil
+	}
+}
+
+// alpZeroWidthRunsColumn wraps a main column body of nRuns run values in a runs envelope,
+// where run k holds 1 + k%spread points.
+// It returns the column and its point count.
+func alpZeroWidthRunsColumn(eng endian.EndianEngine, nested []byte, nRuns, spread int) ([]byte, int) {
+	count := 0
+	starts := make([]int, nRuns)
+	for k := range starts {
+		starts[k] = count
+		count += 1 + k%spread
+	}
+
+	envelope := 1 + alpRunsHeaderSize + alpRunsBitmapLen(count)
+	data := make([]byte, envelope, envelope+1+len(nested))
+	data[0] = alpSchemeRuns
+	eng.PutUint32(data[1:1+alpRunsHeaderSize], uint32(nRuns))
+	for _, s := range starts {
+		data[1+alpRunsHeaderSize+s>>3] |= 1 << uint(s&7)
+	}
+	data = append(data, alpSchemeMain)
+
+	return append(data, nested...), count
+}
+
+// alpRequireZeroWidth fails unless col is a main column with a zero width byte,
+// or a valid runs column that nests one and carries exceptions.
+func alpRequireZeroWidth(t *testing.T, col alpZeroWidthColumn) {
+	t.Helper()
+	plain := col.data
+	if col.data[0] == alpSchemeRuns {
+		_, nested, err := ValidateRunsColumn(col.data[1:], col.count, col.eng)
+		require.NoErrorf(t, err, "%s: runs envelope", col.name)
+		require.NotZerof(t, col.eng.Uint32(nested[4:8]), "%s: the nested column must carry exceptions", col.name)
+		plain = nested
+	}
+	require.Equalf(t, alpSchemeMain, plain[0], "%s: scheme byte", col.name)
+	require.Zerof(t, plain[3], "%s: width byte", col.name)
+}
+
+// alpZeroWidthColumns builds the columns the zero-width tests read, in both byte orders.
+// Crafted columns set the header bytes directly,
+// to reach frame minima and exponent pairs the encoder would not choose, and exception values it would not store.
+// Encoded columns are what the encoder writes for a constant, with and without outliers that become exceptions.
+// Every column's width byte is checked here,
+// so a fixture that stops being zero-width fails instead of passing for nothing.
+func alpZeroWidthColumns(t *testing.T) []alpZeroWidthColumn {
+	t.Helper()
+	negZero := math.Copysign(0, -1)
+	nan := math.Float64frombits(0x7ff8000000000abc)
+	excValues := []float64{0, negZero, nan, math.Inf(1)}
+	outliers := []float64{nan, math.Pi * 1e17, math.Inf(1), negZero}
+	counts := []int{1, 7, 8, 9, 30, 150, 8193}
+	mins := []int64{0, 12345, -98765, math.MaxInt64, math.MinInt64, 1<<53 - 1, 1 << 53, 1<<53 + 1, -(1<<53 + 1)}
+	efs := []struct{ ee, ff int }{
+		{0, 0}, {2, 0}, {7, 3}, {5, 5}, {14, 12}, {alpMaxExponent, 0}, {alpMaxExponent, alpMaxExponent},
+	}
+	shapes := []string{"none", "first_middle_last", "every_third"}
+
+	var cols []alpZeroWidthColumn
+	for _, e := range alpCVEngines() {
+		// Crafted main columns.
+		// The exponent pair rotates with the count, so every frame minimum meets every pair;
+		// the exception values rotate with the minimum, so short sidecars reach every value too.
+		for ci, count := range counts {
+			for mi, mn := range mins {
+				ef := efs[(ci+mi)%len(efs)]
+				for _, shape := range shapes {
+					pos := alpZeroWidthExceptions(shape, count)
+					vals := make([]float64, len(pos))
+					for k := range vals {
+						vals[k] = excValues[(k+mi)%len(excValues)]
+					}
+					cols = append(cols, alpZeroWidthColumn{
+						name:  fmt.Sprintf("crafted/%s/count=%d/min=%d/e=%d,f=%d/exc=%s", e.name, count, mn, ef.ee, ef.ff, shape),
+						eng:   e.eng,
+						data:  append([]byte{alpSchemeMain}, buildALPMain(e.eng, ef.ee, ef.ff, 0, mn, nil, pos, vals)...),
+						count: count,
+					})
+				}
+			}
+		}
+
+		// Encoded main columns.
+		// One point encodes as raw, and outliers need eight points before the main scheme wins,
+		// so the counts below those are covered by the crafted columns only.
+		for _, count := range counts {
+			if count < 2 {
+				continue
+			}
+			constant := make([]float64, count)
+			for i := range constant {
+				constant[i] = 123.45
+			}
+			cols = append(cols, alpZeroWidthColumn{
+				name: fmt.Sprintf("encoded/%s/count=%d/constant", e.name, count),
+				eng:  e.eng, data: alpEncodeSlice(constant, e.eng), count: count, values: constant,
+			})
+			if count < 8 {
+				continue
+			}
+			mixed := append([]float64(nil), constant...)
+			for k, p := range []int{0, count / 3, count / 2, count - 1} {
+				mixed[p] = outliers[k]
+			}
+			data := alpEncodeSlice(mixed, e.eng)
+			require.Equalf(t, uint32(len(outliers)), e.eng.Uint32(data[4:8]), "count=%d: every outlier must be an exception", count)
+			cols = append(cols, alpZeroWidthColumn{
+				name: fmt.Sprintf("encoded/%s/count=%d/outliers", e.name, count),
+				eng:  e.eng, data: data, count: count, values: mixed,
+			})
+		}
+
+		// An encoded runs column: a level that alternates with values no decimal scaling can hold,
+		// so the nested column of run values is a constant with exceptions.
+		runVals := make([]float64, 0, 21)
+		for k := range 10 {
+			runVals = append(runVals, 42.5, outliers[k%len(outliers)])
+		}
+		held := alpRunsRepeat(append(runVals, 42.5), 9, 4)
+		cols = append(cols, alpZeroWidthColumn{
+			name: fmt.Sprintf("encoded/%s/runs", e.name),
+			eng:  e.eng, data: alpRunsEncode(held, e.eng, true), count: len(held), values: held,
+		})
+
+		// Crafted runs columns nest a crafted main column of run values, one short and one spanning many bitmap words.
+		for _, r := range []struct {
+			nRuns, spread int
+			mn            int64
+			ee, ff        int
+		}{
+			{9, 5, math.MinInt64, alpMaxExponent, 0},
+			{150, 110, 1<<53 + 1, 5, 5},
+		} {
+			pos := alpZeroWidthExceptions("every_third", r.nRuns)
+			vals := make([]float64, len(pos))
+			for k := range vals {
+				vals[k] = excValues[k%len(excValues)]
+			}
+			nested := buildALPMain(e.eng, r.ee, r.ff, 0, r.mn, nil, pos, vals)
+			data, count := alpZeroWidthRunsColumn(e.eng, nested, r.nRuns, r.spread)
+			cols = append(cols, alpZeroWidthColumn{
+				name: fmt.Sprintf("crafted/%s/runs/count=%d/min=%d/e=%d,f=%d", e.name, count, r.mn, r.ee, r.ff),
+				eng:  e.eng, data: data, count: count,
+			})
+		}
+	}
+	for _, col := range cols {
+		alpRequireZeroWidth(t, col)
+	}
+
+	return cols
+}
+
+// alpZeroWidthBaseline decodes col into dst through alpDecodeMainIntoBaseline and returns the number of values written.
+// It expands a runs column from the bitmap itself, so the decoder's bulk reader takes no part in the result.
+func alpZeroWidthBaseline(col alpZeroWidthColumn, dst []float64) int {
+	dec := NewNumericALPDecoder(col.eng)
+	if col.data[0] == alpSchemeMain {
+		return alpDecodeMainIntoBaseline(dec, col.data[1:], col.count, dst)
+	}
+
+	nRuns, bm, nested := dec.alpRunsParse(col.data, col.count)
+	runVals := make([]float64, nRuns)
+	alpDecodeMainIntoBaseline(dec, nested[1:], nRuns, runVals)
+	n := min(col.count, len(dst))
+	run := -1
+	for i := range n {
+		run += int(bm[i>>3] >> (i & 7) & 1)
+		dst[i] = runVals[run]
+	}
+
+	return n
+}
+
+// alpRequireBits fails unless got holds want's bit patterns, naming the first index that differs.
+// It compares bits, so signed zeros and NaN payloads count, and it calls testify only on a failure.
+func alpRequireBits(t *testing.T, want, got []float64, what string) {
+	t.Helper()
+	require.Lenf(t, got, len(want), "%s: length", what)
+	for i := range want {
+		if w, g := math.Float64bits(want[i]), math.Float64bits(got[i]); w != g {
+			require.Failf(t, "value bits differ", "%s: index %d: got %#016x, want %#016x", what, i, g, w)
+		}
+	}
+}
+
+// TestALPDecodeMainInto_ZeroWidth pins the bulk decode of a zero-width column against the frozen baseline, bit for bit:
+// the values written, the count returned, and the part of dst past that count, which must stay untouched.
+// A main column goes straight to decodeMainInto;
+// a runs column goes through DecodeAll, whose bulk reader hands the nested column to decodeMainInto.
+// dst is shorter than, as long as and longer than the column, so exceptions fall inside and beyond the part written.
+func TestALPDecodeMainInto_ZeroWidth(t *testing.T) {
+	sentinel := math.Float64frombits(0x7ff80000deadbeef)
+	for _, col := range alpZeroWidthColumns(t) {
+		t.Run(col.name, func(t *testing.T) {
+			dec := NewNumericALPDecoder(col.eng)
+			for _, dstLen := range []int{0, 1, col.count - 1, col.count, col.count + 1} {
+				what := fmt.Sprintf("dst of %d", dstLen)
+				got := make([]float64, dstLen)
+				want := make([]float64, dstLen)
+				for i := range got {
+					got[i], want[i] = sentinel, sentinel
+				}
+
+				var n int
+				if col.data[0] == alpSchemeMain {
+					n = dec.decodeMainInto(col.data[1:], col.count, got)
+				} else {
+					n = dec.DecodeAll(col.data, col.count, got)
+				}
+				require.Equalf(t, min(col.count, dstLen), n, "%s: count returned", what)
+				require.Equalf(t, alpZeroWidthBaseline(col, want), n, "%s: count the baseline returned", what)
+				alpRequireBits(t, want, got, what)
+				for i := n; i < dstLen; i++ {
+					require.Equalf(t, math.Float64bits(sentinel), math.Float64bits(got[i]), "%s: index %d was written", what, i)
+				}
+			}
+		})
+	}
+}
+
+// TestNumericALP_ZeroWidth_ReadersAgree reads every zero-width column through each reader and expects the baseline's bits:
+// the bulk DecodeAll, the streaming All and Each, and the random-access At.
+// Only the bulk reader fills a zero-width column in one pass;
+// the streaming and random-access readers still read zero bits per value, and all of them must agree.
+// For a runs column these are the runs readers, which decode the nested column in bulk, as a stream and by index.
+func TestNumericALP_ZeroWidth_ReadersAgree(t *testing.T) {
+	const base = 7
+	for _, col := range alpZeroWidthColumns(t) {
+		t.Run(col.name, func(t *testing.T) {
+			dec := NewNumericALPDecoder(col.eng)
+			want := make([]float64, col.count)
+			require.Equal(t, col.count, alpZeroWidthBaseline(col, want))
+			if col.values != nil {
+				alpRequireBits(t, col.values, want, "baseline against the encoder's input")
+			}
+
+			bulk := make([]float64, col.count)
+			require.Equal(t, col.count, dec.DecodeAll(col.data, col.count, bulk))
+			alpRequireBits(t, want, bulk, "DecodeAll")
+
+			all := make([]float64, 0, col.count)
+			for v := range dec.All(col.data, col.count) {
+				all = append(all, v)
+			}
+			alpRequireBits(t, want, all, "All")
+
+			each := make([]float64, 0, col.count)
+			inOrder := true
+			next := dec.Each(col.data, col.count, base, func(i int, v float64) bool {
+				inOrder = inOrder && i == base+len(each)
+				each = append(each, v)
+
+				return true
+			})
+			require.Equal(t, base+col.count, next, "Each: index after the last value")
+			require.True(t, inOrder, "Each: indexes count up from base")
+			alpRequireBits(t, want, each, "Each")
+
+			at := make([]float64, 0, col.count)
+			for i := range col.count {
+				v, ok := dec.At(col.data, i, col.count)
+				if !ok {
+					require.Failf(t, "At found no value", "index %d", i)
+				}
+				at = append(at, v)
+			}
+			alpRequireBits(t, want, at, "At")
+		})
+	}
 }

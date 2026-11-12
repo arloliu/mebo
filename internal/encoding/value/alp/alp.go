@@ -1335,6 +1335,23 @@ func (d NumericALPDecoder) decodeMainInto(data []byte, count int, dst []float64)
 		n = len(dst)
 	}
 
+	// A zero-width column packs no code bits: every code is 0, so every value is the scaled frame minimum.
+	// Compute it once and fill dst, instead of reading zero bits per value in the scalar loop below.
+	// The expression is that loop's with code == 0, in the same operation order, so the bits are the same.
+	// The fill copies its own prefix, doubling it each pass, which moves memory in bulk where a loop stores value by value.
+	// An empty dst skips the fill, so it never indexes the power tables, as the scalar loop never did for it.
+	// The exception patch below still runs, and still locates the sidecar by count.
+	start := 0
+	if width == 0 && n > 0 {
+		v := float64(mn) * alpPow10[ff] * alpInvPow10[ee]
+		fill := dst[:n]
+		fill[0] = v
+		for filled := 1; filled < len(fill); filled *= 2 {
+			copy(fill[filled:], fill[:filled])
+		}
+		start = n
+	}
+
 	// Fused-kernel fast path.
 	// The AVX-512 kernel (alp_decsimd_amd64.s) decodes as many whole 8-value groups as it can;
 	// it declines without CPU support or for a width it cannot handle,
@@ -1346,8 +1363,7 @@ func (d NumericALPDecoder) decodeMainInto(data []byte, count int, dst []float64)
 	// so its last group over-reads up to slack = 8*ceil(w/8)-w bytes past the group;
 	// dispatch only as many groups as stay within codes,
 	// and let the scalar loop below finish the remainder + the <8-value tail.
-	// Skipped for n<8 (no full group) and width 0 (no bits — scalar handles it).
-	start := 0
+	// Skipped for n<8 (no full group) and width 0 (filled above).
 	if width >= 1 && width <= 64 && n >= 8 {
 		start = alpFusedDecodeAVX512(codes, n, width, mn, alpPow10[ff], alpInvPow10[ee], dst)
 		if kern := alpFusedUnpack[width]; start < n&^7 && kern != nil {

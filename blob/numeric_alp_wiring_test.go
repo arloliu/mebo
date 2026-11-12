@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 )
 
 // TestNumericBlob_ALP_DispatchParity is the safety net for ALP value-codec
@@ -245,6 +248,202 @@ func TestNumericBlob_ALPRLE_DispatchParity(t *testing.T) {
 					return true
 				}))
 				require.Equalf(t, want, alpRLETestBits(got), "metric %d: ForEachValues", m.id)
+			}
+		})
+	}
+}
+
+// alpConstantMetricID is the one metric of every blob the constant-column test encodes.
+const alpConstantMetricID = 7
+
+// alpConstantFixture is a value column the ALP encoder stores with zero-bit codes:
+// a main column, or under ALP-RLE a runs column that nests one.
+type alpConstantFixture struct {
+	name       string
+	encoding   format.EncodingType
+	values     []float64
+	runs       bool // the column takes the runs layout, and its nested column has the zero-bit codes
+	exceptions int  // values the zero-width column keeps in its exception sidecar
+}
+
+// alpConstantFixtures returns a constant column and a constant column with outliers no decimal scaling can hold,
+// at several point counts and for both ALP encodings, plus an ALP-RLE column that takes the runs layout.
+func alpConstantFixtures() []alpConstantFixture {
+	outliers := []float64{math.Float64frombits(0x7ff8000000000abc), math.Pi * 1e17, math.Inf(1), math.Copysign(0, -1)}
+	fixtures := make([]alpConstantFixture, 0, 17)
+	for _, enc := range []format.EncodingType{format.TypeALP, format.TypeALPRLE} {
+		for _, n := range []int{8, 30, 150, 8193} {
+			constant := make([]float64, n)
+			for i := range constant {
+				constant[i] = 123.45
+			}
+			mixed := slices.Clone(constant)
+			for k, p := range []int{0, n / 3, n / 2, n - 1} {
+				mixed[p] = outliers[k]
+			}
+			fixtures = append(fixtures,
+				alpConstantFixture{fmt.Sprintf("%s/constant/points=%d", enc, n), enc, constant, false, 0},
+				alpConstantFixture{fmt.Sprintf("%s/outliers/points=%d", enc, n), enc, mixed, false, len(outliers)},
+			)
+		}
+	}
+
+	// A level that alternates with the outliers, each held for a few points:
+	// the runs layout wins, and its nested column of run values is a constant with exceptions.
+	held := make([]float64, 0, 139)
+	for k := range 21 {
+		v, n := 42.5, 9
+		if k%2 == 1 {
+			v, n = outliers[k/2%len(outliers)], 4
+		}
+		for range n {
+			held = append(held, v)
+		}
+	}
+
+	return append(fixtures, alpConstantFixture{"ALPRLE/runs", format.TypeALPRLE, held, true, 10})
+}
+
+// alpConstantBlob encodes f's values as one metric that starts at start with a point per second,
+// and fails unless the stored value column has zero-bit codes and the fixture's exception count,
+// so a fixture the encoder stores another way fails instead of passing for nothing.
+func alpConstantBlob(t *testing.T, f alpConstantFixture, start time.Time) NumericBlob {
+	t.Helper()
+	enc, err := NewNumericEncoder(start, WithValueEncoding(f.encoding))
+	require.NoError(t, err)
+	// The default layout caps the points of a metric below the longest fixture, which takes layout 2 instead.
+	if len(f.values) > enc.MaxDataPoints() {
+		enc, err = NewNumericEncoder(start, WithValueEncoding(f.encoding), WithBlobLayoutV2())
+		require.NoError(t, err)
+	}
+	require.NoError(t, enc.StartMetricID(alpConstantMetricID, len(f.values)))
+	for i, v := range f.values {
+		require.NoError(t, enc.AddDataPoint(start.Add(time.Duration(i)*time.Second).UnixMicro(), v, ""))
+	}
+	require.NoError(t, enc.EndMetric())
+	data, err := enc.Finish()
+	require.NoError(t, err)
+	dec, err := NewNumericDecoder(data)
+	require.NoError(t, err)
+	blob, err := dec.Decode()
+	require.NoError(t, err)
+
+	// A main column is its scheme byte, exponent, factor and width byte, then its exception count;
+	// a runs column wraps the main column that holds its run values.
+	entry, ok := blob.index.GetByID(alpConstantMetricID)
+	require.True(t, ok)
+	col := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+	if f.runs {
+		require.Equal(t, ienc.ALPRLEMaxSchemeByte, col[0], "scheme byte of a runs column")
+		_, col, err = ienc.ValidateALPRunsColumn(col[1:], len(f.values), blob.Engine())
+		require.NoError(t, err)
+	}
+	require.Equal(t, byte(0), col[0], "scheme byte of a main column")
+	require.Equal(t, byte(0), col[3], "width byte")
+	require.Equal(t, uint32(f.exceptions), blob.Engine().Uint32(col[4:8]), "exception count")
+
+	return blob
+}
+
+// TestNumericBlob_ALP_ConstantColumn_ReadPaths reads zero-width ALP columns through the blob's read paths,
+// which all decode the column in bulk except ForEachValues past 8192 points.
+// ALP is lossless, so every path must return the encoder's input bit for bit, NaN payload and signed zero included,
+// and the point walks must return the timestamps beside the values.
+// Each fixture is two blobs a day apart: the per-blob paths read one after the other, the set reads both as one metric.
+func TestNumericBlob_ALP_ConstantColumn_ReadPaths(t *testing.T) {
+	// Every read returns the values of all blobs in order, and the timestamps when its path yields them.
+	// A walk stops at an index that is out of order, which shortens what it returns.
+	reads := []struct {
+		name string
+		read func(t *testing.T, blobs []NumericBlob) (vals []float64, ts []int64)
+	}{
+		{"NumericBlob.ForEach", func(t *testing.T, blobs []NumericBlob) (vals []float64, ts []int64) {
+			for _, b := range blobs {
+				base := len(vals)
+				require.True(t, b.ForEach(alpConstantMetricID, func(i int, dp NumericDataPoint) bool {
+					vals, ts = append(vals, dp.Val), append(ts, dp.Ts)
+
+					return i == len(vals)-base-1
+				}))
+			}
+
+			return vals, ts
+		}},
+		{"NumericMetric.ForEach", func(t *testing.T, blobs []NumericBlob) (vals []float64, ts []int64) {
+			for _, b := range blobs {
+				base := len(vals)
+				h, ok := b.Metric(alpConstantMetricID)
+				require.True(t, ok)
+				h.ForEach(func(i int, dp NumericDataPoint) bool {
+					vals, ts = append(vals, dp.Val), append(ts, dp.Ts)
+
+					return i == len(vals)-base-1
+				})
+			}
+
+			return vals, ts
+		}},
+		{"NumericBlob.ForEachValues", func(t *testing.T, blobs []NumericBlob) (vals []float64, ts []int64) {
+			for _, b := range blobs {
+				base := len(vals)
+				require.True(t, b.ForEachValues(alpConstantMetricID, func(i int, v float64) bool {
+					vals = append(vals, v)
+
+					return i == len(vals)-base-1
+				}))
+			}
+
+			return vals, nil
+		}},
+		{"NumericBlob.MaterializeMetric", func(t *testing.T, blobs []NumericBlob) (vals []float64, ts []int64) {
+			for _, b := range blobs {
+				m, ok := b.MaterializeMetric(alpConstantMetricID)
+				require.True(t, ok)
+				vals, ts = append(vals, m.Values...), append(ts, m.Timestamps...)
+			}
+
+			return vals, ts
+		}},
+		{"BlobSet.MaterializeNumericMetric", func(t *testing.T, blobs []NumericBlob) (vals []float64, ts []int64) {
+			m, ok := NewBlobSet(blobs, nil).MaterializeNumericMetric(alpConstantMetricID)
+			require.True(t, ok)
+
+			return m.Values, m.Timestamps
+		}},
+	}
+
+	starts := []time.Time{time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)}
+	for _, f := range alpConstantFixtures() {
+		t.Run(f.name, func(t *testing.T) {
+			blobs := make([]NumericBlob, 0, len(starts))
+			wantVals := make([]float64, 0, len(starts)*len(f.values))
+			wantTS := make([]int64, 0, len(starts)*len(f.values))
+			for _, start := range starts {
+				blobs = append(blobs, alpConstantBlob(t, f, start))
+				wantVals = append(wantVals, f.values...)
+				for i := range f.values {
+					wantTS = append(wantTS, start.Add(time.Duration(i)*time.Second).UnixMicro())
+				}
+			}
+
+			// A path that fails does not stop the others, and names its first wrong value instead of printing the column.
+			want := alpRLETestBits(wantVals)
+			for _, r := range reads {
+				vals, ts := r.read(t, blobs)
+				got := alpRLETestBits(vals)
+				if !assert.Equalf(t, len(want), len(got), "%s: value count", r.name) {
+					continue
+				}
+				for i := range want {
+					if got[i] != want[i] {
+						assert.Failf(t, "value bits differ", "%s: index %d: got %#016x, want %#016x", r.name, i, got[i], want[i])
+
+						break
+					}
+				}
+				if ts != nil {
+					assert.Equalf(t, wantTS, ts, "%s: timestamps", r.name)
+				}
 			}
 		})
 	}
