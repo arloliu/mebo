@@ -620,6 +620,9 @@ func (d NumericChimpDecoder) DecodeAll(data []byte, count int, dst []float64) in
 
 // At retrieves the float64 value at the specified index from the Chimp-compressed data.
 //
+// It replays the stream with the same windowed reads as DecodeAll, without storing the
+// values it passes, and skips a whole run of unchanged flags in one step.
+//
 // Parameters:
 //   - data: byte slice containing Chimp-compressed float64 values
 //   - index: zero-based index of the value to retrieve
@@ -633,32 +636,104 @@ func (d NumericChimpDecoder) At(data []byte, index int, count int) (float64, boo
 		return 0, false
 	}
 
-	reader := bitstream.NewReader(data)
-
-	// Read first value (uncompressed)
-	firstBits, ok := reader.ReadBits(64)
-	if !ok {
+	// Bit positions are ints, and a record advances one by up to 75 bits:
+	// on a 32-bit build a column of 256 MiB or more would overflow them, so it is refused.
+	if len(data) > (math.MaxInt-128)/8 {
 		return 0, false
 	}
 
-	prevValue := firstBits
-	if index == 0 {
-		return math.Float64frombits(prevValue), true
+	totalBits := len(data) * 8
+	if totalBits < 64 {
+		return 0, false
 	}
 
+	prevValue := bitstream.PeekBits64(data, 0)
+	bitPos := 64
 	storedLeading := 65
 
-	for current := 1; current <= index; current++ {
-		if !chimpDecodeNext(reader, &prevValue, &storedLeading) {
+	for remaining := index; remaining > 0; {
+		if bitPos+2 > totalBits {
 			return 0, false
 		}
 
-		if current == index {
-			return math.Float64frombits(prevValue), true
+		w := bitstream.PeekBits64(data, bitPos)
+
+		switch w >> 62 {
+		case 0: // Value unchanged: skip the whole run of 00 flag pairs in the window
+			run := min(bits.LeadingZeros64(w)/2, remaining, (totalBits-bitPos)/2)
+			remaining -= run
+			bitPos += run * 2
+			storedLeading = 65
+
+		case 1: // Trailing-zero optimized
+			leading := chimpLeadingDecode[(w>>59)&0x07]
+
+			sigBits := int(w>>53) & 0x3F
+			if sigBits == 0 {
+				sigBits = 64
+			}
+
+			trailingZeros := 64 - leading - sigBits
+			if trailingZeros < 0 || bitPos+11+sigBits > totalBits {
+				return 0, false
+			}
+
+			var meaningful uint64
+			if sigBits <= 53 {
+				meaningful = (w << 11) >> (64 - uint(sigBits))
+			} else {
+				meaningful = bitstream.PeekBits64(data, bitPos+11) >> (64 - uint(sigBits))
+			}
+			bitPos += 11 + sigBits
+
+			prevValue ^= meaningful << uint(trailingZeros)
+			storedLeading = 65
+			remaining--
+
+		case 2: // Reuse previous leading
+			if storedLeading > 64 {
+				return 0, false
+			}
+
+			sigBits := 64 - storedLeading
+			if bitPos+2+sigBits > totalBits {
+				return 0, false
+			}
+
+			var meaningful uint64
+			if sigBits <= 62 {
+				meaningful = (w << 2) >> (64 - uint(sigBits))
+			} else {
+				meaningful = bitstream.PeekBits64(data, bitPos+2) >> (64 - uint(sigBits))
+			}
+			bitPos += 2 + sigBits
+
+			prevValue ^= meaningful
+			remaining--
+
+		default: // case 3: New leading
+			leading := chimpLeadingDecode[(w>>59)&0x07]
+			storedLeading = leading
+			sigBits := 64 - leading
+
+			if bitPos+5+sigBits > totalBits {
+				return 0, false
+			}
+
+			var meaningful uint64
+			if sigBits <= 59 {
+				meaningful = (w << 5) >> (64 - uint(sigBits))
+			} else {
+				meaningful = bitstream.PeekBits64(data, bitPos+5) >> (64 - uint(sigBits))
+			}
+			bitPos += 5 + sigBits
+
+			prevValue ^= meaningful
+			remaining--
 		}
 	}
 
-	return 0, false
+	return math.Float64frombits(prevValue), true
 }
 
 // ByteLength calculates the number of bytes consumed by count Chimp-encoded float64 values.
@@ -922,83 +997,6 @@ func (s *ChimpValState) Next() bool {
 // Val returns the most recently decoded value.
 func (s *ChimpValState) Val() float64 {
 	return s.state.prevFloat
-}
-
-// chimpDecodeNext reads a 2-bit flag and decodes the next Chimp-compressed value,
-// updating prevValue and storedLeading in place.
-// Returns true on success, false on read failure or invalid data.
-func chimpDecodeNext(reader *bitstream.Reader, prevValue *uint64, storedLeading *int) bool {
-	flag, ok := reader.Read2Bits()
-	if !ok {
-		return false
-	}
-
-	switch flag {
-	case 0: // Value unchanged
-		*storedLeading = 65
-
-	case 1: // Trailing-zero optimized
-		header, ok := readChimpTrailingHeader(reader)
-		if !ok {
-			return false
-		}
-
-		leading := chimpLeadingDecode[header>>6]
-
-		sigBits := int(header & 0x3F)
-		if sigBits == 0 {
-			sigBits = 64
-		}
-
-		meaningful, ok := reader.ReadBits(sigBits)
-		if !ok {
-			return false
-		}
-
-		trailingZeros := 64 - leading - sigBits
-		if trailingZeros < 0 {
-			return false
-		}
-
-		*prevValue ^= meaningful << trailingZeros
-		*storedLeading = 65
-
-	case 2: // Reuse previous leading
-		if *storedLeading > 64 {
-			return false
-		}
-
-		sigBits := 64 - *storedLeading
-
-		meaningful, ok := reader.ReadBits(sigBits)
-		if !ok {
-			return false
-		}
-
-		*prevValue ^= meaningful
-
-	case 3: // New leading
-		leadingBucket, ok := reader.Read3Bits()
-		if !ok {
-			return false
-		}
-
-		leading := chimpLeadingDecode[leadingBucket]
-		*storedLeading = leading
-		sigBits := 64 - leading
-
-		meaningful, ok := reader.ReadBits(sigBits)
-		if !ok {
-			return false
-		}
-
-		*prevValue ^= meaningful
-
-	default:
-		return false
-	}
-
-	return true
 }
 
 // readChimpTrailingHeader reads the 9-bit header used by Chimp's trailing-zero path.

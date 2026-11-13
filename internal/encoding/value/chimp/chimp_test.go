@@ -1,12 +1,15 @@
 package chimp
 
 import (
+	"maps"
 	"math"
 	"math/bits"
 	"math/rand"
+	"slices"
 	"testing"
 
 	"github.com/arloliu/mebo/endian"
+	"github.com/arloliu/mebo/internal/encoding/internal/bitstream"
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
 	valraw "github.com/arloliu/mebo/internal/encoding/value/raw"
 	"github.com/arloliu/mebo/internal/pool"
@@ -1246,4 +1249,196 @@ func (e *chimpReferenceEncoder) reset() {
 	e.count = 0
 	e.prevValue = 0
 	e.storedLeadingZeros = 65
+}
+
+// chimpAtReference is the reader-based At from before the windowed rewrite, kept as the oracle for the differential test.
+func chimpAtReference(data []byte, index int, count int) (float64, bool) {
+	if len(data) == 0 || index < 0 || index >= count {
+		return 0, false
+	}
+
+	reader := bitstream.NewReader(data)
+
+	firstBits, ok := reader.ReadBits(64)
+	if !ok {
+		return 0, false
+	}
+
+	prevValue := firstBits
+	if index == 0 {
+		return math.Float64frombits(prevValue), true
+	}
+
+	storedLeading := 65
+
+	for current := 1; current <= index; current++ {
+		if !chimpDecodeNext(reader, &prevValue, &storedLeading) {
+			return 0, false
+		}
+
+		if current == index {
+			return math.Float64frombits(prevValue), true
+		}
+	}
+
+	return 0, false
+}
+
+// chimpDecodeNext reads a 2-bit flag and decodes the next Chimp-compressed value, updating prevValue and storedLeading.
+// It is the per-field decoder chimpAtReference uses.
+func chimpDecodeNext(reader *bitstream.Reader, prevValue *uint64, storedLeading *int) bool {
+	flag, ok := reader.Read2Bits()
+	if !ok {
+		return false
+	}
+
+	switch flag {
+	case 0:
+		*storedLeading = 65
+
+	case 1:
+		header, ok := readChimpTrailingHeader(reader)
+		if !ok {
+			return false
+		}
+
+		leading := chimpLeadingDecode[header>>6]
+
+		sigBits := int(header & 0x3F)
+		if sigBits == 0 {
+			sigBits = 64
+		}
+
+		meaningful, ok := reader.ReadBits(sigBits)
+		if !ok {
+			return false
+		}
+
+		trailingZeros := 64 - leading - sigBits
+		if trailingZeros < 0 {
+			return false
+		}
+
+		*prevValue ^= meaningful << trailingZeros
+		*storedLeading = 65
+
+	case 2:
+		if *storedLeading > 64 {
+			return false
+		}
+
+		meaningful, ok := reader.ReadBits(64 - *storedLeading)
+		if !ok {
+			return false
+		}
+
+		*prevValue ^= meaningful
+
+	case 3:
+		leadingBucket, ok := reader.Read3Bits()
+		if !ok {
+			return false
+		}
+
+		leading := chimpLeadingDecode[leadingBucket]
+		*storedLeading = leading
+
+		meaningful, ok := reader.ReadBits(64 - leading)
+		if !ok {
+			return false
+		}
+
+		*prevValue ^= meaningful
+
+	default:
+		return false
+	}
+
+	return true
+}
+
+// chimpAtEdgeColumns returns columns that exercise every flag, bucket and payload width.
+func chimpAtEdgeColumns() map[string][]float64 {
+	rng := rand.New(rand.NewSource(99))
+	longRun := []float64{1, 1, 1, 2, 2, 2, 2}
+	for range 34 {
+		longRun = append(longRun, 3)
+	}
+	longRun = append(longRun, 4)
+
+	cols := map[string][]float64{
+		"single":         {1.5},
+		"all_equal":      {0, 0, 0, 0},
+		"alternating":    {1, -1, 1, -1, 1, -1, 1, -1, 1},
+		"special":        {math.NaN(), math.Inf(1), math.Inf(-1), 0, math.Copysign(0, -1), math.SmallestNonzeroFloat64, math.MaxFloat64, 1},
+		"long_runs":      longRun,
+		"bucket_switch":  chimpBucketSwitchValues(120),
+		"max_spill":      chimpMaxSpillValues(120),
+		"integers":       {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 1000, 10000},
+		"fractions_slow": {20.1, 20.2, 20.1, 20.3, 20.25, 20.25, 20.2, 20.15},
+	}
+
+	// Random bit patterns: every leading bucket, 64-bit payloads, more than 6 trailing zeros.
+	for k := range 40 {
+		col := make([]float64, 1+rng.Intn(300))
+		for i := range col {
+			switch rng.Intn(5) {
+			case 0:
+				col[i] = math.Float64frombits(rng.Uint64())
+			case 1:
+				if i > 0 {
+					col[i] = col[i-1]
+				}
+			case 2:
+				col[i] = math.Float64frombits(rng.Uint64() << uint(rng.Intn(64)))
+			case 3:
+				col[i] = math.Float64frombits(rng.Uint64() >> uint(rng.Intn(64)))
+			default:
+				if i > 0 {
+					col[i] = math.Float64frombits(math.Float64bits(col[i-1]) ^ (rng.Uint64()>>uint(rng.Intn(64)))<<uint(rng.Intn(20)))
+				}
+			}
+		}
+		cols["random_"+string(rune('a'+k/26))+string(rune('a'+k%26))] = col
+	}
+
+	return cols
+}
+
+func TestNumericChimpDecoder_At_MatchesReference(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	decoder := NewNumericChimpDecoder()
+
+	columns := chimpAtEdgeColumns()
+	for _, name := range slices.Sorted(maps.Keys(columns)) {
+		col := columns[name]
+		encoder := NewNumericChimpEncoder()
+		encoder.WriteSlice(col)
+		valid := append([]byte(nil), encoder.Bytes()...)
+		encoder.Finish()
+
+		variants := map[string][]byte{"valid": valid}
+		for k := range 6 {
+			if len(valid) > 1 {
+				variants["truncated_"+string(rune('0'+k))] = valid[:rng.Intn(len(valid))]
+			}
+			flipped := append([]byte(nil), valid...)
+			flipped[rng.Intn(len(flipped))] ^= 1 << uint(rng.Intn(8))
+			variants["flipped_"+string(rune('0'+k))] = flipped
+		}
+		for n := range min(len(valid), 9) {
+			variants["truncated_to_"+string(rune('0'+n))] = valid[:n]
+		}
+
+		for variant, data := range variants {
+			for _, count := range []int{len(col), len(col) + 3} {
+				for index := -1; index <= count; index++ {
+					wantVal, wantOK := chimpAtReference(data, index, count)
+					gotVal, gotOK := decoder.At(data, index, count)
+					require.Equal(t, wantOK, gotOK, "%s/%s index %d count %d: ok", name, variant, index, count)
+					require.Equal(t, math.Float64bits(wantVal), math.Float64bits(gotVal), "%s/%s index %d count %d: value", name, variant, index, count)
+				}
+			}
+		}
+	}
 }
