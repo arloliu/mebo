@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **Looking up one Chimp value by index is about twice as fast.**
+  `ValueAt` on a Chimp column that has not been materialized replays the column up to the index.
+  It now reads the column the way a full decode does, and passes a run of unchanged values in one step.
+  Reading the last point of a 30-point column goes from 254 to 131 ns, and of a 150-point column from 1,219 to 624 ns
+  (codec level, a mix of gauges, counters and near-constant columns that is not repeated between iterations;
+  layout-averaged, Ryzen 9 9950X3D).
+  The lookup is still linear in the index.
+  On a 32-bit build a Chimp column of 256 MiB or more is no longer readable through `ValueAt`.
+
 ## [1.14.1] - 2026-11-12
 
 Faster decoding of numeric blobs, faster point walks on blobs that share timestamps,
