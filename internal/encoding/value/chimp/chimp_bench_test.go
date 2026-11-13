@@ -1,12 +1,18 @@
 package chimp
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"slices"
 	"testing"
 
 	"github.com/arloliu/mebo/internal/encoding/value/gorilla"
+)
+
+const (
+	chimpMixSetColumns = 100     // columns per set; every operation processes one set
+	chimpMixFreshMin   = 960_000 // distinct points in the fresh data, beyond what a branch predictor memorizes
 )
 
 type chimpBenchDataset struct {
@@ -24,6 +30,11 @@ type gorillaBenchDataset struct {
 }
 
 // Real-world inspired datasets with small value variety typical of monitoring/IoT metrics.
+type chimpMixSet struct {
+	cols    [][]float64
+	encoded [][]byte
+}
+
 var chimpBenchDatasets = []chimpBenchDataset{
 	// CPU utilization: hovers around 42%, tiny jitter ±0.1-0.3%
 	buildChimpDataset("cpu_util_150", generateSmallJitterMetric(150, 42.0, 0.003, 0.001)),
@@ -421,4 +432,153 @@ func generateJitteredValues(count int, baseValue, deltaPercent float64, seed int
 	}
 
 	return values
+}
+
+// generateChimpMixColumn builds one column of a monitoring-style mix:
+// 35% two-decimal gauge, 20% integer counter, 18% sparse and 27% full-precision gauge (about 3.7 bytes per point in Chimp).
+func generateChimpMixColumn(slot, n int, seed int64) []float64 {
+	rng := rand.New(rand.NewSource(seed))
+	cur := 100.0 + float64(slot)*10.0
+	col := make([]float64, n)
+
+	for j := range col {
+		switch {
+		case slot < 35: // two-decimal gauge, repeats the previous value 30% of the time
+			if j > 0 && rng.Float64() < 0.3 {
+				col[j] = col[j-1]
+				continue
+			}
+			cur += cur * (rng.Float64()*2 - 1) * 0.005
+			col[j] = math.Round(cur*100) / 100
+		case slot < 55: // integer counter
+			cur += math.Floor(rng.Float64()*10) + 1
+			col[j] = cur
+		case slot < 73: // sparse: constant with a 5% chance of a small step
+			if rng.Float64() < 0.05 {
+				cur += rng.Float64()*2 - 1
+			}
+			col[j] = math.Round(cur*100) / 100
+		default: // full-precision gauge
+			cur += cur * (rng.Float64()*2 - 1) * 0.005
+			col[j] = cur
+		}
+	}
+
+	return col
+}
+
+// buildChimpMixSets returns sets of 100 columns, each column from its own seed.
+func buildChimpMixSets(sets, n int) []chimpMixSet {
+	out := make([]chimpMixSet, sets)
+	enc := NewNumericChimpEncoder()
+	defer enc.Finish()
+
+	for s := range out {
+		out[s] = chimpMixSet{
+			cols:    make([][]float64, chimpMixSetColumns),
+			encoded: make([][]byte, chimpMixSetColumns),
+		}
+		for c := range chimpMixSetColumns {
+			col := generateChimpMixColumn(c, n, int64(s*chimpMixSetColumns+c))
+			enc.WriteSlice(col)
+			out[s].cols[c] = col
+			out[s].encoded[c] = slices.Clone(enc.Bytes())
+			enc.Reset()
+			enc.buf.B = enc.buf.B[:0]
+		}
+	}
+
+	return out
+}
+
+// BenchmarkChimpMix measures Chimp on a realistic value mix at two data sizes.
+// "repeated" loops over one set of 100 columns, small enough for a branch predictor to learn its flag sequence.
+// "fresh" cycles through at least 960,000 distinct points, too many to learn; its working set is also larger.
+// Both process 100 columns per operation, so their ns/col figures compare directly,
+// but the gap between them is a workload difference: attribute it to branch or cache misses only with hardware counters.
+func BenchmarkChimpMix(b *testing.B) {
+	for _, size := range []string{"repeated", "fresh"} {
+		for _, n := range []int{30, 150} {
+			b.Run(fmt.Sprintf("%s/n%d", size, n), func(b *testing.B) {
+				sets := 1
+				if size == "fresh" {
+					sets = (chimpMixFreshMin + chimpMixSetColumns*n - 1) / (chimpMixSetColumns * n)
+				}
+				data := buildChimpMixSets(sets, n)
+
+				// run cycles through the sets, one set per operation.
+				run := func(b *testing.B, op func(set *chimpMixSet)) {
+					b.ReportAllocs()
+					b.ResetTimer()
+
+					next := 0
+					for b.Loop() {
+						op(&data[next])
+						if next++; next == len(data) {
+							next = 0
+						}
+					}
+
+					b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/chimpMixSetColumns, "ns/col")
+				}
+
+				enc := NewNumericChimpEncoder()
+				defer enc.Finish()
+				enc.buf.Grow(chimpMixSetColumns*n*10 + 64)
+				dec := NewNumericChimpDecoder()
+				dst := make([]float64, n)
+				var sum float64
+
+				b.Run("WriteSlice", func(b *testing.B) {
+					run(b, func(set *chimpMixSet) {
+						for _, col := range set.cols {
+							enc.WriteSlice(col)
+							enc.flushBits()
+							enc.Reset()
+						}
+						enc.buf.B = enc.buf.B[:0]
+					})
+				})
+				b.Run("Write", func(b *testing.B) {
+					run(b, func(set *chimpMixSet) {
+						for _, col := range set.cols {
+							for _, v := range col {
+								enc.Write(v)
+							}
+							enc.flushBits()
+							enc.Reset()
+						}
+						enc.buf.B = enc.buf.B[:0]
+					})
+				})
+				b.Run("DecodeAll", func(b *testing.B) {
+					run(b, func(set *chimpMixSet) {
+						for _, data := range set.encoded {
+							dec.DecodeAll(data, n, dst)
+							sum += dst[n-1]
+						}
+					})
+				})
+				b.Run("All", func(b *testing.B) {
+					run(b, func(set *chimpMixSet) {
+						for _, data := range set.encoded {
+							for v := range dec.All(data, n) {
+								sum += v
+							}
+						}
+					})
+				})
+				b.Run("AtLast", func(b *testing.B) {
+					run(b, func(set *chimpMixSet) {
+						for _, data := range set.encoded {
+							v, _ := dec.At(data, n-1, n)
+							sum += v
+						}
+					})
+				})
+
+				benchmarkFloatSink = sum
+			})
+		}
+	}
 }
