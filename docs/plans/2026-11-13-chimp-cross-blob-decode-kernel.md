@@ -1448,6 +1448,60 @@ It changes no production code; a defect it finds is fixed in a commit of its own
   The consumer may run the benchmark binary of Task 0, or its own tests, on one of its machines.
   A result from there is recorded under "Results"; nothing in this plan waits for it.
 
+### Task 10: Look again after a group that stays out
+
+Added on 2026-11-14, after Tasks 0 to 9 were merged, on the owner's instruction of that day:
+the softer form of "Task 2, continued" is wanted before the release is tagged, as a pull request of its own.
+The reason is the third open question: a metric that is quiet for one group of blobs loses the kernel for the rest of the call,
+and the release is what the consumer measures Chimp with.
+
+**The change.**
+After a group that would not enter the kernel, the next `chimpGroupRetryAfter` contributing members are appended in turn,
+by `appendMembersInTurn`, and then groups are formed again.
+The value is 56: one group in 64 members is asked while a call stays sparse.
+"Task 2, continued" counted 172 instructions per member over `B0` when every group is asked and 17 with the stop,
+so about 17 + 155 × 8 / (8 + 56) = 36 are expected; this is checked in one binary before the layout runs.
+`chimpGroupRetryAfter` is a package variable, so that tests can lower it.
+
+**Exactness.**
+`appendMembersInTurn` takes the number of members to append and returns the index of the next blob.
+It also carries `written` forward with the statement of the grouped loop.
+Today no group follows it, so a member that comes up short inside it leaves elements above the rows that nobody reads again.
+Once groups form after it, a lane must not be planned over such elements:
+the unused capacity would differ from the reference.
+
+- [ ] **The rows first, in a commit of their own**, with no production change.
+  Two rows of 1,000 Chimp blobs whose metrics change kind with the blob:
+  `quiet=start` (constant for the first 16 blobs, gauges after them) and
+  `quiet=spells` (constant for 16 blobs of every 250, gauges between).
+  The data of every existing row stays identical.
+  Before the change, `kernel-columns/column` of `quiet=start` must read about 0, or the row does not exercise the stop.
+- [ ] The change, as above.
+  The comments of `materializeMembersGrouped` and `appendMembersInTurn` say what is true afterwards.
+- [ ] Tests.
+  Every fixture and the fuzz target equal the frozen reference with `chimpGroupRetryAfter` at 0, 1, 3 and 56, group decode off and on:
+  the fuzz programs hold at most 24 members, so at 56 no group forms after a stretch.
+  A fixture has a member that comes up short inside a stretch, followed by a dense group.
+  The pins of groups asked and groups decoded ahead are derived again, not loosened.
+  Mutation checks, each caught by a test:
+  the `written` carry removed; the stretch one member too long and one too short;
+  the next index returned off by one; the stop restored.
+- [ ] The orchestrator measures the commit of the change against the commit of the rows,
+  so that both sides hold one benchmark file, and applies the gate below.
+  It was written before any timing.
+
+| Rows | Requirement | When it fails |
+|---|---|---|
+| `quiet=start`, `quiet=spells` | each improves by at least 20% merged; the kernel's share of columns rises | the change is dropped |
+| `nearconst`, `constant`, `lastcolumn`, `mixed=7of8` | within 1.5% merged, limit 3% | double `chimpGroupRetryAfter` once and measure again; then the owner decides with the numbers |
+| every other row, the two gate-off rows | within 1.5% merged, limit 3% | fix inside the task, or stop and report |
+| allocations, every row | equal | fix inside the task |
+| the control | within 3% merged in both cells | the run is invalid |
+
+- [ ] The external review of the change, by commit.
+- [ ] The changelog sentence about the stop, and its figures for the sets that stay on the old code, say what is true afterwards.
+- [ ] The push and the pull request are covered by the owner's instruction; the merge and the tag are asked for again.
+
 ---
 
 ## Acceptance thresholds
@@ -1611,7 +1665,9 @@ the rest of that call is appended member by member.
 The softer form, looking again after a number of members, was to be tried only if a benchmark row needed it,
 and no row can: every fixture keeps one kind of value per metric across all its blobs, so none turns dense after a sparse group.
 A real metric over hundreds of blobs can be quiet for eight of them, and then loses the kernel for the blobs behind.
-The changelog says so. Whether a row for that shape and the softer form are wanted is the owner's call.
+The changelog says so.
+Whether a row for that shape and the softer form are wanted is the owner's call.
+**Answered on 2026-11-14: the owner wants both, before the tag**; see Task 10.
 
 ## Results
 
