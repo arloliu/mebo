@@ -2291,6 +2291,80 @@ No run compares the head of this task with `B0`.
 
 The raw output is in the orchestrator's `tmp/chimp-kernel-impl/t10-retry56/`, `t10-retry112/` and `t10-retry56-again/`.
 
+### After Task 10: the merged head against `B0`
+
+The owner asked for it on 2026-11-14, before the tag.
+Main with Tasks 0 to 10 merged against `B0`, every row of Task 9 and the two gate-off rows,
+read against "Acceptance thresholds"; the control moved by +0.1% and 0.0%.
+The machine's load average read 2.1 to 2.8 when sampled between these runs, of which the pinned benchmark is about 1.
+
+| Row | Merged | Worst layout | Requirement | Reads |
+|---|---|---|---|---|
+| `consumer` | -30.3% | -30.1% | 25% merged, 20% in every layout | passes |
+| `gauge`, `counter`, `fullprec` | -38.2%, -22.5%, -29.6% | | 20% merged | pass |
+| `equalcounts`, `points=150` | -36.9%, -34.8% | | 20% merged | pass |
+| `points=10` | -24.3% | -23.4% | limit 5% | passes |
+| `nearconst` | +2.9% | +2.6% | limit 5%, within 3% merged | passes |
+| `constant` | +1.0% | **+6.0%** | limit 5%, within 3% merged | over the limit in one layout |
+| `mixed=7of8` | **+3.5%** | **+7.5%** | limit 5% | over the limit |
+| `mixed=alternate`, `mixed=1of8` | -6.3%, -23.6% | | limit 5% | pass |
+| `alprle` | +0.8% | +1.5% | limit 3% | passes |
+| `blobs=1`, `2`, `3` | +0.7%, +0.3%, +0.8% | +2.0% at most | limit 3% | pass |
+| `blobs=4` to `64` | -10.6% to -30.4% | | limit 5% | pass |
+| `tags` | -12.4% | -11.0% | limit 5% | passes |
+| `lastcolumn` | +0.6% | +1.2% | limit 5% | passes |
+| `consumer`, `blobs=4`, gate off | +0.3%, +0.4% | +1.4% at most | limit 3%, within 2% merged | pass |
+
+Allocations are equal on every row, with the one byte on `mixed=alternate` the owner accepted.
+
+The two rows over their limit were measured once more, with `nearconst`; the control moved by +0.2% and 0.0%.
+
+| Row | First: merged | worst layout | Again: merged | worst layout |
+|---|---|---|---|---|
+| `constant` | +1.0% | +6.0% | +0.8% | +2.2% |
+| `nearconst` | +2.9% | +2.6% | +1.5% | +2.0% |
+| `mixed=7of8` | +3.5% | +7.5% | **+5.3%** | **+6.2%** |
+
+- `constant` passes the second time.
+- `mixed=7of8` is over its limit both times: three layouts of the second run are over 5%.
+  Task 9 read the row at +0.2% merged, +3.2% in its worst layout, on production code that differs from the code before Task 10 in comments alone.
+  Task 10's own two runs at 56 members read its change at +0.1% and -0.3% on this row,
+  and the commit of the rows alone reads +0.2% (`29057fb` against `f96175e`, a run of its own).
+- Merged medians of the row across the runs:
+  `B0` 497 to 506 µs in four runs; `b4ea376` 506 in Task 9;
+  the code after Task 9 and before Task 10 (`f96175e`, `29057fb`) 512 to 522 in six readings;
+  the code after Task 10 at 56 members 518 to 524 in four runs.
+- `B0` against `f96175e` in one run, this row alone, the control at +0.2% and -0.2%: +1.3% merged, +2.0% in the worst layout.
+  So the parts read +1.3% (Tasks 0 to 9) and +0.1%, -0.3% (Task 10), and the whole reads +3.5%, +5.3%:
+  the timings of this row do not add up on this machine, and the miss is not laid on either part.
+- Instructions per call do add up.
+  Layout 0, the difference of 5,000 and 1,000 iterations, one run of each:
+
+  | Code | Instructions per call | Over `B0` | Per member | Mispredicted branches |
+  |---|---|---|---|---|
+  | `B0` | 7.062 million | | | 9,722 |
+  | `f96175e` | 7.103 million | +0.6% | 17 | 9,893 |
+  | `29057fb` | 7.100 million | +0.5% | 16 | 10,017 |
+  | main after Task 10 | 7.173 million | +1.6% | 46 | 10,137 |
+
+  The 17 are what "Task 2, continued" counted with the stop.
+  Task 10 adds 29 on this row, where its plan expected about 19.
+  So the row carries 1.6% more instructions than at `B0`, and its timings read from +0.2% to +5.3%.
+- The row is 2,400 blobs of which every eighth holds Chimp values and the others ALP-RLE:
+  no group of it has four Chimp columns, so none enters.
+
+A threshold that does not pass after its second measurement goes to the owner.
+The changelog's "between 0% and 2% slower" for sets whose groups all stay out does not hold for this row as measured here,
+nor for `nearconst` in the first run.
+
+**Answered on 2026-11-14: the owner accepts the row as measured, and `v1.14.2` is tagged without a change to the code.**
+The changelog now gives the measured figures for the sets where no group enters the kernel:
+up to 1% for other encodings, one to three blobs and a constant metric,
+2.9% and 1.5% for `nearconst`, and 3.5% and 5.3% (7.5% in one layout, 1.6% more instructions) for `mixed=7of8`.
+
+The raw output is in the orchestrator's `tmp/chimp-kernel-impl/final-main-vs-b0/`, `final-main-vs-b0-again/`,
+`diag-rows-commit/`, `diag-b0-vs-pr29/`, `final-mixed7of8-perf-slope.txt` and `final-mixed7of8-perf-slope-pr29.txt`.
+
 ## Out of scope, recorded
 
 - **The same kernel for one payload** (`NumericBlob.Materialize`, `NumericBlobSet.Materialize`):
