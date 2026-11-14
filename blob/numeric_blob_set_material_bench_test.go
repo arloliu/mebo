@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/arloliu/mebo/format"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 )
 
 // setMaterialFreshMin is the number of distinct points a timed row walks before it sees a point again,
@@ -441,7 +442,11 @@ func BenchmarkNumericBlobSetMaterialize_Sparse(b *testing.B) {
 // Every row walks at least 960,000 distinct points before it repeats one, so the timing is not that of data
 // a branch predictor has learned, and it builds its fixtures inside its own sub-benchmark,
 // so a filtered run builds only the fixtures it measures.
-// It reports ns/point, the time per materialized point.
+// It reports ns/point, the time per materialized point, and kernel-columns/column,
+// the share of the row's value columns that the Chimp group decode takes into its kernel.
+// The share is counted in a pass of its own once the timed loop has ended and the timer has stopped,
+// so every revision of this benchmark starts its timed loop from the same state.
+// The consumer row fails when the kernel can run and takes no column, so it cannot time an idle kernel unnoticed.
 func BenchmarkNumericBlobSet_MaterializeMetricByName(b *testing.B) {
 	whole := func(opts ...func(*setFixture)) func(*testing.B) setMaterialRow {
 		return func(b *testing.B) setMaterialRow { return wholeSetRow(b, consumerSetFixture(opts...)) }
@@ -507,6 +512,13 @@ func BenchmarkNumericBlobSet_MaterializeMetricByName(b *testing.B) {
 				}
 			}
 			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(points), "ns/point")
+
+			// b.Loop stopped the timer when it returned false: this pass adds no time and no allocation to the row.
+			kernelShare := work.kernelColumnShare(b)
+			if row.name == "consumer" && ienc.ChimpGroupDecodeEnabled() && kernelShare == 0 {
+				b.Fatal("the group decode kernel can run on this machine and took no column")
+			}
+			b.ReportMetric(kernelShare, "kernel-columns/column")
 		})
 	}
 }
@@ -770,4 +782,26 @@ func (r *setMaterialRow) check(b *testing.B) {
 	}
 	b.Logf("%d sets, %d metrics, %d distinct columns, %d points, %d Chimp points",
 		len(r.sets), len(r.names), len(columns), points, chimpPoints)
+}
+
+// kernelColumnShare materializes one period of the row and returns the share of the value columns it visits
+// that the Chimp group decode took into its kernel, as chimpGroupObserve reports them.
+// It is 0 where the kernel cannot run, and for a row whose columns never enter it.
+func (r *setMaterialRow) kernelColumnShare(b *testing.B) float64 {
+	b.Helper()
+	kernelColumns, columns := 0, 0
+	chimpGroupObserve = func(_, _, taken, _, _ int) { kernelColumns += taken }
+	defer func() { chimpGroupObserve = nil }()
+	for p := range len(r.sets) * len(r.names) {
+		s, m := r.pair(p)
+		_, ok := r.sets[s].MaterializeNumericMetricByName(r.names[m])
+		require.True(b, ok, "set %d: metric %s", s, r.names[m])
+		for i := range r.sets[s].numericBlobs {
+			if _, ok := r.sets[s].numericBlobs[i].index.GetByName(r.names[m]); ok {
+				columns++
+			}
+		}
+	}
+
+	return float64(kernelColumns) / float64(columns)
 }
