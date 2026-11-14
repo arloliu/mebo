@@ -11,7 +11,8 @@ ENCODING_PKG    := ./internal/encoding/...
 # Fuzz targets (package:target) that take untrusted bytes; `make fuzz` runs each for FUZZ_TIME.
 FUZZ_TARGETS    := ./blob:FuzzNumericDecoder ./blob:FuzzTextDecoder ./blob:FuzzStripMetricNames \
                    ./blob:FuzzNumericBlobSetMaterializeMetric \
-                   ./internal/encoding/fused:FuzzFusedDecoders ./internal/encoding/value/alp:FuzzALPDecode
+                   ./internal/encoding/fused:FuzzFusedDecoders ./internal/encoding/value/alp:FuzzALPDecode \
+                   ./internal/encoding/value/chimp:FuzzChimpGroupDecode
 FUZZ_TIME       ?= 30s
 
 # Source files
