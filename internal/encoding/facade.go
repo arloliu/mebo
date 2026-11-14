@@ -35,6 +35,9 @@ const (
 
 	// ALPRDMaxRightBits is the largest valid ALP-RD right-part width.
 	ALPRDMaxRightBits = alp.ALPRDMaxRightBits
+
+	// ChimpGroupMinColumns is the fewest Chimp columns a ChimpColumnGroup needs before its kernel can run.
+	ChimpGroupMinColumns = chimp.GroupMinColumns
 )
 
 // TagEncoder encodes tag strings in the established length-prefixed format.
@@ -102,6 +105,12 @@ type NumericChimpDecoder = chimp.NumericChimpDecoder
 
 // ChimpValState incrementally decodes Chimp-compressed float values.
 type ChimpValState = chimp.ChimpValState
+
+// ChimpColumnGroup decodes up to eight Chimp columns together, each from a buffer of its own.
+type ChimpColumnGroup = chimp.ColumnGroup
+
+// ChimpGroupAdmission answers, from where Chimp columns lie, whether a ChimpColumnGroup would decode them in its kernel.
+type ChimpGroupAdmission = chimp.GroupAdmission
 
 // NumericALPEncoder encodes adaptive lossless floating-point values.
 type NumericALPEncoder = alp.NumericALPEncoder
@@ -217,6 +226,11 @@ func NewNumericChimpDecoder() NumericChimpDecoder {
 // NewChimpValState creates an incremental Chimp decoder state.
 func NewChimpValState(data []byte) (ChimpValState, bool) {
 	return chimp.NewChimpValState(data)
+}
+
+// ChimpGroupDecodeEnabled reports whether ChimpColumnGroup can use its AVX-512 kernel on this CPU.
+func ChimpGroupDecodeEnabled() bool {
+	return chimp.GroupDecodeEnabled()
 }
 
 // NewNumericALPEncoder creates an adaptive lossless floating-point encoder.

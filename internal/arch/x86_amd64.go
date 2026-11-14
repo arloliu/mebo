@@ -25,6 +25,14 @@ func X86HasAVX512DQ() bool {
 	return cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ
 }
 
+// X86HasAVX512BW reports whether the current x86 CPU supports the AVX-512 Foundation plus the Byte-and-Word (BW) extension.
+// BW is what provides the 512-bit byte shuffle (VPSHUFB) the Chimp group decode kernel reverses its window bytes with.
+// Real CPUs that report BW always report F,
+// but both are checked so the gate never enables the kernel on a core missing either half.
+func X86HasAVX512BW() bool {
+	return cpu.X86.HasAVX512F && cpu.X86.HasAVX512BW
+}
+
 // X86HasPOPCNT reports whether the current x86 CPU supports the POPCNT instruction.
 func X86HasPOPCNT() bool {
 	return cpu.X86.HasPOPCNT
