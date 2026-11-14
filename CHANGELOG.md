@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.2] - 2026-11-14
+
+Faster materializing of one Chimp metric across the blobs of a set on a CPU with AVX-512,
+and a faster lookup of one Chimp value by index, with no change to the API or the encoded bytes.
+
 ### Performance
 
 - **Materializing one metric across the blobs of a set is 22% to 38% faster with Chimp values, on a CPU with AVX-512.**
@@ -1115,7 +1120,8 @@ Packages under `internal/` are not covered by stability guarantees.
 ### License
 Apache License 2.0
 
-[Unreleased]: https://github.com/arloliu/mebo/compare/v1.14.1...HEAD
+[Unreleased]: https://github.com/arloliu/mebo/compare/v1.14.2...HEAD
+[1.14.2]: https://github.com/arloliu/mebo/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/arloliu/mebo/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/arloliu/mebo/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/arloliu/mebo/compare/v1.12.1...v1.13.0
