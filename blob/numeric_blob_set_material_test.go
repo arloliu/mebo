@@ -40,8 +40,13 @@ const (
 	materializeFuzzSeedMetric = 1
 )
 
-// materializeFuzzNames are the metrics every member of a fuzz set holds.
-var materializeFuzzNames = []string{"fuzz.0", "fuzz.1", "fuzz.2"}
+var (
+	// materializeFuzzNames are the metrics every member of a fuzz set holds.
+	materializeFuzzNames = []string{"fuzz.0", "fuzz.1", "fuzz.2"}
+
+	// chimpGroupRetrySweep are the values of chimpGroupRetryAfter every comparison with the reference runs at.
+	chimpGroupRetrySweep = []int{0, 1, 3, 56}
+)
 
 // materializeOutcome is what one materialize call returned, or the value it panicked with.
 type materializeOutcome struct {
@@ -1175,7 +1180,8 @@ func TestNumericBlobSet_MaterializeKeepsColumnsAligned(t *testing.T) {
 // It also pins what the group decode does for each: the groups of members the grouped loop asks to decode ahead
 // and those it does decode ahead, the columns the kernel takes, the steps it completes and its calls.
 // A group is decoded ahead when at least four of its columns can enter the kernel,
-// and the first group that is not is the last one asked.
+// and after the first group that is not, the next chimpGroupRetryAfter members are appended in turn:
+// no set here has more, so that group is the last one asked.
 // The dense columns are full-precision walks between 64 and 512, whose values all fit the kernel's 64-bit window,
 // so the kernel leaves a group only when fewer than four of its columns are unfinished.
 func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReference(t *testing.T) {
@@ -1606,7 +1612,7 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceCrafted(t *t
 		members = append(members, complete(3, 8)...)
 		blobs := decodeSetTestMembers(t, members)
 		blobs[0].index.entryByName(target).ValueLength = 8 // eight values declared, one produced
-		cutAtNestedColumn(t, &blobs[2], target)
+		cutAtNestedColumn(t, &blobs[2])
 		require.GreaterOrEqual(t, valueSlackAfter(&blobs[3], target), 16, "the target's column is followed by another")
 
 		// The cut member stays scalar; the kernel takes the eight-value column and the five whole ones,
@@ -1649,7 +1655,7 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceCrafted(t *t
 			blobs := decodeSetTestMembers(t, members)
 			cutTimestampsTo(t, &blobs[7], target, 5)
 			blobs[8].index.entryByName(target).ValueLength = 8
-			cutAtNestedColumn(t, &blobs[9], target)
+			cutAtNestedColumn(t, &blobs[9])
 			for _, i := range []int{0, 7} {
 				require.GreaterOrEqual(t, valueSlackAfter(&blobs[i], target), 16, "member %d: the target's column is followed by another", i)
 			}
@@ -1789,7 +1795,8 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAl
 	}
 	whole := func(i int) []float64 { return dense(i, 30) }
 	constant := func(i int) []float64 { return slices.Repeat([]float64{float64(i) + 0.25}, 30) }
-	// leftAlone is a call whose first group is asked and not decoded ahead: no lane is filled, and no other group is asked.
+	// leftAlone is a call whose first group is asked and not decoded ahead: no lane is filled,
+	// and the members behind it, fewer than chimpGroupRetryAfter, are appended in turn, so no other group is asked.
 	leftAlone := chimpGroupUse{grouped: 1, groups: 1}
 
 	// One member in eight holds Chimp values, so every group of eight has one Chimp column.
@@ -1815,7 +1822,7 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAl
 	})
 
 	// The sixteen dense members behind the constant group would fill two groups of the kernel:
-	// they are appended one at a time, which is what a sparse first group costs a set.
+	// they are appended one at a time, inside the stretch that follows a sparse group.
 	t.Run("a sparse group, then dense members", func(t *testing.T) {
 		blobs := decodeSetTestMembers(t, append(members(0, 8, constant), members(8, 16, whole)...))
 		got := requireMaterializeUses(t, blobs, target, leftAlone)
@@ -1823,7 +1830,7 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAl
 	})
 
 	// Two dense groups are decoded ahead, the constant group is asked and left alone,
-	// and the dense group behind it is not asked.
+	// and the dense group behind it is appended in turn, inside the stretch that follows the sparse group.
 	t.Run("dense groups, then a sparse group, then a dense group", func(t *testing.T) {
 		set := append(members(0, 16, whole), members(16, 8, constant)...)
 		blobs := decodeSetTestMembers(t, append(set, members(24, 8, whole)...))
@@ -1836,7 +1843,7 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAl
 	// and the last four members of the group are decoded again; the cut column stays scalar,
 	// and the kernel had decoded the seven others.
 	// The rows end where the group's last member ends, so the next eight members are asked at once:
-	// they are constant, and end the grouping.
+	// they are constant, and the members behind them are appended in turn.
 	t.Run("a group cleared after a short member, then a sparse group", func(t *testing.T) {
 		set := append(members(0, 8, whole), members(8, 8, constant)...)
 		blobs := decodeSetTestMembers(t, append(set, members(16, 8, whole)...))
@@ -1862,7 +1869,7 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAl
 		}
 		blobs := decodeSetTestMembers(t, append(set, members(8, 4, whole)...))
 		blobs[0].index.entryByName(target).ValueLength = 8
-		cutAtNestedColumn(t, &blobs[2], target)
+		cutAtNestedColumn(t, &blobs[2])
 
 		got := requireMaterializeUses(t, blobs, target, leftAlone)
 		require.Len(t, got.metric.Values, 1+8+4+9*30)
@@ -1982,6 +1989,129 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAl
 			got := requireMaterializeUses(t, blobs, target, want)
 			require.Len(t, got.metric.Values, values+8)
 		}
+	})
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupAskedAgain compares the materialize entry points with
+// referenceMaterializeMetric on sets whose columns turn dense after a sparse group, and pins the groups the grouped loop
+// asks and decodes ahead at several values of chimpGroupRetryAfter:
+// after a group that is left alone, that many members are appended in turn, and then groups are formed again.
+// It sets chimpGroupRetryAfter, so it must not run in parallel with other tests.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupAskedAgain(t *testing.T) {
+	const target = craftedTarget
+	chimp := consumerShapeOptions(format.TypeChimp)
+	dense := func(i, n int) []float64 { return setValueColumn(setKindFullPrec, n, 1000+float64(i), int64(i)+1) }
+	whole := func(i int) []float64 { return dense(i, 30) }
+	constant := func(i int) []float64 { return slices.Repeat([]float64{float64(i) + 0.25}, 30) }
+	onePoint := func(i int) []float64 { return dense(i, 1) }
+	// set returns Chimp members numbered from 0, member i holding what col returns for i.
+	set := func(n int, col func(i int) []float64) []setTestMember {
+		out := make([]setTestMember, n)
+		for i := range out {
+			out[i] = craftedMember(chimp, col(i))
+		}
+
+		return out
+	}
+	retryAt := func(t *testing.T, retry int) {
+		t.Helper()
+		prev := chimpGroupRetryAfter
+		t.Cleanup(func() { chimpGroupRetryAfter = prev })
+		chimpGroupRetryAfter = retry
+	}
+	leftAlone := chimpGroupUse{grouped: 1, groups: 1}
+
+	// Eight constant members, then sixteen dense ones.
+	// The first group is left alone; after the stretch, the dense members form one group of eight and one of the rest.
+	t.Run("a sparse group, then dense members", func(t *testing.T) {
+		blobs := decodeSetTestMembers(t, set(24, func(i int) []float64 {
+			if i < 8 {
+				return constant(i)
+			}
+
+			return whole(i)
+		}))
+		for retry, want := range map[int]chimpGroupUse{
+			0:  {grouped: 1, groups: 3, ahead: 2, columns: 16, steps: 2 * 29, calls: 2},
+			1:  {grouped: 1, groups: 3, ahead: 2, columns: 15, steps: 2 * 29, calls: 2},
+			3:  {grouped: 1, groups: 3, ahead: 2, columns: 13, steps: 2 * 29, calls: 2},
+			56: leftAlone,
+		} {
+			retryAt(t, retry)
+			got := requireMaterializeUses(t, blobs, target, want)
+			require.Len(t, got.metric.Values, 24*30, "retry after %d", retry)
+		}
+	})
+
+	// Sixteen dense members, eight constant ones, then sixteen dense ones again.
+	t.Run("dense groups, then a sparse group, then dense members", func(t *testing.T) {
+		blobs := decodeSetTestMembers(t, set(40, func(i int) []float64 {
+			if i >= 16 && i < 24 {
+				return constant(i)
+			}
+
+			return whole(i)
+		}))
+		for retry, want := range map[int]chimpGroupUse{
+			0:  {grouped: 1, groups: 5, ahead: 4, columns: 32, steps: 4 * 29, calls: 4},
+			1:  {grouped: 1, groups: 5, ahead: 4, columns: 31, steps: 4 * 29, calls: 4},
+			3:  {grouped: 1, groups: 5, ahead: 4, columns: 29, steps: 4 * 29, calls: 4},
+			56: {grouped: 1, groups: 3, ahead: 2, columns: 16, steps: 2 * 29, calls: 2},
+		} {
+			retryAt(t, retry)
+			got := requireMaterializeUses(t, blobs, target, want)
+			require.Len(t, got.metric.Values, 40*30, "retry after %d", retry)
+		}
+	})
+
+	// One-point columns cannot enter the kernel.
+	// The first group holds only those and is left alone, and the stretch behind it holds only those too.
+	// The group after the stretch has four whole columns, its first and its last three, with one-point columns on either side:
+	// a stretch one member longer or shorter would leave three in the group, too few for the kernel.
+	// The group behind it is left alone, and no member is left after it.
+	t.Run("the group after the stretch", func(t *testing.T) {
+		for _, retry := range []int{0, 1, 3, 56} {
+			first := 8 + retry
+			blobs := decodeSetTestMembers(t, set(first+16, func(i int) []float64 {
+				if k := i - first; k == 0 || k >= 5 && k < 8 {
+					return whole(i)
+				}
+
+				return onePoint(i)
+			}))
+			retryAt(t, retry)
+			got := requireMaterializeUses(t, blobs, target,
+				chimpGroupUse{grouped: 1, groups: 3, ahead: 1, columns: 4, steps: 29, calls: 1})
+			require.Len(t, got.metric.Values, first+12+4*30, "retry after %d", retry)
+		}
+	})
+
+	// The member right behind a sparse group has 45 values and 5 timestamps: it yields five rows and leaves 40 decoded
+	// values past them, which no member has been given yet, so no group may be planned over them.
+	// With a retry of one member it is the whole stretch, and the next members are appended one at a time
+	// until the rows have passed its range: a Chimp member that declares ten values and yields one,
+	// a cut ALP-RLE member of 20 that reads its own range before it writes it, and a whole member.
+	// Then eight dense members form a group that enters the kernel.
+	// A group planned at the rows would be cleared behind the short Chimp member, under the ALP-RLE member's range.
+	t.Run("a short member inside the stretch", func(t *testing.T) {
+		members := set(8, constant)
+		members = append(members,
+			craftedMember(ownTimestampOptions(format.TypeDelta, format.TypeChimp), dense(8, 45)),
+			craftedMember(chimp, dense(9, 10)),
+			craftedMember(consumerShapeOptions(format.TypeALPRLE), slices.Repeat([]float64{math.Pi * 1e300}, 20)),
+			craftedMember(chimp, whole(11)))
+		for i := 12; i < 20; i++ {
+			members = append(members, craftedMember(chimp, whole(i)))
+		}
+		blobs := decodeSetTestMembers(t, members)
+		cutTimestampsTo(t, &blobs[8], target, 5)
+		blobs[9].index.entryByName(target).ValueLength = 8
+		cutAtNestedColumn(t, &blobs[10])
+
+		retryAt(t, 1)
+		got := requireMaterializeUses(t, blobs, target,
+			chimpGroupUse{grouped: 1, groups: 2, ahead: 1, columns: 8, steps: 29, calls: 1})
+		require.Len(t, got.metric.Values, 8*30+5+1+20+30+8*30)
 	})
 }
 
@@ -2330,8 +2460,10 @@ func TestNumericBlobSet_MaterializeMetric_ChimpGroupDamageMatrix(t *testing.T) {
 // TestNumericBlobSet_MaterializeMetric_ChimpGroupOnByDefault pins that the public entry points use the group decode
 // as the package initialises it, without a test setting the switch: on a machine that has the kernel,
 // a group of eight dense Chimp members is decoded ahead with its eight columns in the kernel.
+// It also pins the stretch behind a group that stays out: the other tests set that value themselves.
 func TestNumericBlobSet_MaterializeMetric_ChimpGroupOnByDefault(t *testing.T) {
 	require.Equal(t, ienc.ChimpGroupDecodeEnabled(), chimpGroupDecode, "the switch as the package initialises it")
+	require.Equal(t, 56, chimpGroupRetryAfter, "the stretch as the package initialises it")
 	blobs := decodeSetTestMembers(t, craftedDenseMembers(8, func(int) []NumericEncoderOption {
 		return consumerShapeOptions(format.TypeChimp)
 	}))
@@ -2527,28 +2659,34 @@ func TestNumericBlobSet_MaterializeMetric_ConcurrentMatchesReference(t *testing.
 		require.True(t, want[k].ok, name)
 	}
 
-	defer func(prev bool) { chimpGroupDecode = prev }(chimpGroupDecode)
+	defer func(prev bool, prevRetry int) {
+		chimpGroupDecode, chimpGroupRetryAfter = prev, prevRetry
+	}(chimpGroupDecode, chimpGroupRetryAfter)
 	chimpGroupDecode = true
 	const goroutines, rounds = 8, 25
-	got := make([][]materializeOutcome, goroutines)
-	var wg sync.WaitGroup
-	for g := range got {
-		got[g] = make([]materializeOutcome, rounds)
-		wg.Go(func() {
-			for r := range got[g] {
-				name := names[(g+r)%len(names)]
-				got[g][r] = catchMaterialize(func() (MaterializedNumericMetric, bool) {
-					return blobSet.MaterializeNumericMetricByName(name)
-				})
-			}
-		})
-	}
-	wg.Wait()
+	for _, retry := range chimpGroupRetrySweep {
+		chimpGroupRetryAfter = retry
+		got := make([][]materializeOutcome, goroutines)
+		var wg sync.WaitGroup
+		for g := range got {
+			got[g] = make([]materializeOutcome, rounds)
+			wg.Go(func() {
+				for r := range got[g] {
+					name := names[(g+r)%len(names)]
+					got[g][r] = catchMaterialize(func() (MaterializedNumericMetric, bool) {
+						return blobSet.MaterializeNumericMetricByName(name)
+					})
+				}
+			})
+		}
+		wg.Wait()
 
-	for g := range got {
-		for r, out := range got[g] {
-			k := (g + r) % len(names)
-			requireSameMaterialization(t, fmt.Sprintf("goroutine %d, call %d, %s", g, r, names[k]), want[k], out)
+		for g := range got {
+			for r, out := range got[g] {
+				k := (g + r) % len(names)
+				what := fmt.Sprintf("goroutine %d, call %d, %s, retry after %d", g, r, names[k], retry)
+				requireSameMaterialization(t, what, want[k], out)
+			}
 		}
 	}
 }
@@ -2845,8 +2983,8 @@ func requireSameMaterialization(t *testing.T, what string, want, got materialize
 // public entry points, NumericBlobSet.MaterializeMetricByName and MaterializeMetric and
 // BlobSet.MaterializeNumericMetricByName and MaterializeNumericMetric, and requires each to return or panic exactly as
 // referenceMaterializeMetric does with the resolve function its entry point builds.
-// Every entry point is called twice, with chimpGroupDecode off and with it on,
-// so both loops of materializeMetricCore are compared with the reference on every machine:
+// Every entry point is called with chimpGroupDecode off, and with it on at the values of chimpGroupRetryAfter
+// materializeAgainstReference sweeps, so both loops of materializeMetricCore are compared with the reference on every machine:
 // whether a group is decoded ahead does not depend on the CPU,
 // so without the kernel the grouped loop still decodes the same groups ahead, one column at a time.
 // The ID entry points get the ID the by-name ones resolve, or the name's hash when no blob has the name:
@@ -2903,7 +3041,8 @@ func requireKernelColumns(t *testing.T, blobs []NumericBlob, name string, minCol
 // The members that hold the metric are taken eight at a time, and the grouped loop runs when there are at least four.
 // A column can enter the kernel when it has two values or more and 16 bytes of its payload after it,
 // and a group's columns enter when at least four of them can: the group is then decoded ahead.
-// The first group that is not decoded ahead is the last one asked.
+// After a group that is not decoded ahead, the next chimpGroupRetryAfter members are appended in turn,
+// and the members after them form groups again.
 // The kernel runs in rounds, each as long as the fewest values a column still wants, until fewer than four columns
 // are unfinished: so it completes as many steps as the group's fourth-largest count less the first value,
 // in one call per distinct count up to that one.
@@ -2925,11 +3064,15 @@ func denseSetUse(blobs []NumericBlob, name string) chimpGroupUse {
 	}
 
 	use := chimpGroupUse{grouped: 1}
-	for group := range slices.Chunk(counts, 8) {
+	for len(counts) > 0 {
+		group := counts[:min(8, len(counts))]
+		counts = counts[len(group):]
 		use.groups++
 		lanes := slices.DeleteFunc(slices.Sorted(slices.Values(group)), func(count int) bool { return count == 0 })
 		if len(lanes) < 4 {
-			break
+			counts = counts[min(chimpGroupRetryAfter, len(counts)):]
+
+			continue
 		}
 		use.ahead++
 		use.columns += len(lanes)
@@ -2945,7 +3088,8 @@ func denseSetUse(blobs []NumericBlob, name string) chimpGroupUse {
 // The columns of names[:roomy] have more than 16 bytes of their payload after them in every member,
 // and want is what the group decode does for each of them, derived by hand for the fixture.
 // The last name's column ends every payload, so it never enters the kernel:
-// where the grouped loop runs, its first group is not decoded ahead and is the only one asked.
+// where the grouped loop runs, its first group is not decoded ahead, and with no more members than
+// chimpGroupRetryAfter behind it, it is the only one asked.
 // For the names between, the room depends on the encoded size of the columns behind, and denseSetUse applies the rules.
 func requireDenseSetUses(t *testing.T, blobs []NumericBlob, names []string, roomy int, want chimpGroupUse) {
 	t.Helper()
@@ -2982,8 +3126,10 @@ func chimpGroupKernelRuns(tb testing.TB) bool {
 }
 
 // materializeAgainstReference does the comparison of requireMaterializeMatchesReference.
+// With chimpGroupDecode on, every call is made with chimpGroupRetryAfter at its value in force
+// and at each value of chimpGroupRetrySweep, and the variable is restored afterwards.
 // It returns the reference's outcome by name and, for each of the four entry points in the order given there,
-// what the call with chimpGroupDecode on reported to chimpGroupObserve.
+// what the call with chimpGroupDecode on and chimpGroupRetryAfter at its value in force reported to chimpGroupObserve.
 // With the switch off the hook must stay silent: the grouped loop is not taken.
 func materializeAgainstReference(t *testing.T, blobs []NumericBlob, name string) (materializeOutcome, [4]chimpGroupUse) {
 	t.Helper()
@@ -3026,27 +3172,42 @@ func materializeAgainstReference(t *testing.T, blobs []NumericBlob, name string)
 	}
 
 	var uses [4]chimpGroupUse
-	defer func(prev bool) { chimpGroupDecode, chimpGroupObserve = prev, nil }(chimpGroupDecode)
+	retryAfter := chimpGroupRetryAfter
+	defer func(prev bool) {
+		chimpGroupDecode, chimpGroupObserve, chimpGroupRetryAfter = prev, nil, retryAfter
+	}(chimpGroupDecode)
 	for _, on := range []bool{false, true} {
 		chimpGroupDecode = on
-		for i, c := range calls {
-			var use chimpGroupUse
-			chimpGroupObserve = func(groups, ahead, columns, steps, kernelCalls int) {
-				use.grouped++
-				use.groups += groups
-				use.ahead += ahead
-				use.columns += columns
-				use.steps += steps
-				use.calls += kernelCalls
+		// With the group decode on, the calls are also compared with chimpGroupRetryAfter at the values the tests sweep,
+		// whose small values form groups again inside short sets; the use is recorded at the value in force.
+		retries := []int{retryAfter}
+		if on {
+			retries = append(retries, chimpGroupRetrySweep...)
+		}
+		for r, retry := range retries {
+			if r > 0 && retry == retryAfter {
+				continue
 			}
-			got := catchMaterialize(c.call)
-			chimpGroupObserve = nil
-			what := fmt.Sprintf("%s through %s with the group decode on=%v", name, c.what, on)
-			requireSameMaterialization(t, what, c.want, got)
-			if on {
-				uses[i] = use
-			} else {
-				require.Zero(t, use, "%s: the grouped loop ran", what)
+			chimpGroupRetryAfter = retry
+			for i, c := range calls {
+				var use chimpGroupUse
+				chimpGroupObserve = func(groups, ahead, columns, steps, kernelCalls int) {
+					use.grouped++
+					use.groups += groups
+					use.ahead += ahead
+					use.columns += columns
+					use.steps += steps
+					use.calls += kernelCalls
+				}
+				got := catchMaterialize(c.call)
+				chimpGroupObserve = nil
+				what := fmt.Sprintf("%s through %s with the group decode on=%v, retry after %d", name, c.what, on, retry)
+				requireSameMaterialization(t, what, c.want, got)
+				if !on {
+					require.Zero(t, use, "%s: the grouped loop ran", what)
+				} else if r == 0 {
+					uses[i] = use
+				}
 			}
 		}
 	}
@@ -3286,11 +3447,11 @@ func cutTimestampsTo(tb testing.TB, blob *NumericBlob, name string, n int) {
 	require.FailNow(tb, "no prefix of the timestamp column decodes to the requested count", "%s: %d of %d", name, n, entry.Count)
 }
 
-// cutAtNestedColumn shortens the named metric's ALP-RLE column so that it ends where its nested column of run values
+// cutAtNestedColumn shortens craftedTarget's ALP-RLE column so that it ends where its nested column of run values
 // begins: the scheme byte, the four-byte run count and the run bitmap stay whole, and no run value is left.
-func cutAtNestedColumn(tb testing.TB, blob *NumericBlob, name string) {
+func cutAtNestedColumn(tb testing.TB, blob *NumericBlob) {
 	tb.Helper()
-	entry := blob.index.entryByName(name)
+	entry := blob.index.entryByName(craftedTarget)
 	require.Equal(tb, format.TypeALPRLE, blob.ValueEncoding())
 	require.Equal(tb, ienc.ALPRLEMaxSchemeByte, blob.valPayload[entry.ValueOffset], "the column has the runs layout")
 	cut := 1 + 4 + (entry.Count+7)/8
