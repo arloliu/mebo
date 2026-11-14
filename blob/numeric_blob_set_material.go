@@ -3,7 +3,24 @@ package blob
 import (
 	"slices"
 
+	"github.com/arloliu/mebo/format"
+	ienc "github.com/arloliu/mebo/internal/encoding"
 	"github.com/arloliu/mebo/section"
+)
+
+var (
+	// chimpGroupDecode makes materializeMetricCore decode a metric's Chimp value columns in groups of up to eight members,
+	// when at least ienc.ChimpGroupMinColumns Chimp members hold the metric.
+	// Off, every column is decoded in its member's turn.
+	// It is on where the group decode has its AVX-512 kernel; GODEBUG=cpu.avx512dq=off turns it off for a whole process.
+	// Tests set or clear it to force either loop, and must not run in parallel while they do.
+	chimpGroupDecode = ienc.ChimpGroupDecodeEnabled()
+
+	// chimpGroupObserve, when set, is called once for every metric the grouped loop materializes,
+	// with the groups it put to decodeChimpGroupAhead, the groups that function decoded ahead,
+	// the columns that entered the kernel, the steps the kernel completed and the kernel calls.
+	// It is nil outside tests.
+	chimpGroupObserve func(groups, ahead, columns, steps, calls int)
 )
 
 // MaterializedNumericBlobSet provides O(1) random access to all data points across all blobs.
@@ -43,6 +60,72 @@ type materializedNumericMetricSet struct {
 	timestamps []int64   // All timestamps from all blobs, concatenated
 	values     []float64 // All values from all blobs, concatenated
 	tags       []string  // All tags from all blobs, concatenated (empty if tags disabled)
+}
+
+// decodeChimpGroupAhead decodes the Chimp value columns of a group of members before the members are appended.
+// members and entries hold the group in order, and values holds the rows appended so far.
+// Each member is planned a range of values: it starts where the previous member's range ends, the first at len(values),
+// and is as long as the member's count.
+// A Chimp member gets a lane of group, which decodes its column into its planned range.
+// lanes[k] is member k's lane, or -1 for a member that has none and decodes its column in its turn.
+//
+// Nothing here may panic: the member-by-member loop reaches a faulty member only in its turn,
+// after the members before it, and panics there with that member's bounds.
+// Two checks see to it:
+//   - the group is decoded ahead only when every count is non-negative
+//     and every planned range lies inside the capacity of values;
+//     each count is compared with the room that is left, so no sum can overflow;
+//   - a member gets a lane only when it has at least the two values a group decode shares
+//     and its column lies inside its value payload.
+//
+// A group is decoded ahead only to share the group decode's kernel.
+// Whether its Chimp columns would enter the kernel is asked first, of ienc.ChimpGroupAdmission,
+// which goes by the index entries and the lengths of the value payloads and reads no payload byte.
+// A group that would not enter is left alone: no lane is filled and nothing is written,
+// so its members can be appended as if this function had not been called.
+//
+// It returns the end of the last planned range and true, or false when the group was not decoded ahead.
+func decodeChimpGroupAhead(
+	group *ienc.ChimpColumnGroup, members []*NumericBlob, entries []section.NumericIndexEntry,
+	lanes *[8]int, values []float64,
+) (int, bool) {
+	var admission ienc.ChimpGroupAdmission
+	end := len(values)
+	for k := range entries {
+		count := entries[k].Count
+		if count < 0 || count > cap(values)-end {
+			return 0, false
+		}
+		end += count
+		if members[k].ValueEncoding() == format.TypeChimp {
+			admission.Add(members[k].valPayload, entries[k].ValueOffset, entries[k].ValueLength, count)
+		}
+	}
+	if !admission.Enters() {
+		return 0, false
+	}
+
+	planned := values[:end]
+	off, numLanes := len(values), 0
+	for k := range entries {
+		blob, entry := members[k], &entries[k]
+		lanes[k] = -1
+		if blob.ValueEncoding() == format.TypeChimp && entry.Count >= 2 &&
+			entry.ValueOffset >= 0 && entry.ValueOffset <= len(blob.valPayload) &&
+			entry.ValueLength >= 0 && entry.ValueLength <= len(blob.valPayload)-entry.ValueOffset {
+			group.Payload[numLanes] = blob.valPayload
+			group.Off[numLanes] = entry.ValueOffset
+			group.Len[numLanes] = entry.ValueLength
+			group.Count[numLanes] = entry.Count
+			group.Dst[numLanes] = planned[off : off+entry.Count]
+			lanes[k] = numLanes
+			numLanes++
+		}
+		off += entry.Count
+	}
+	group.Decode(numLanes)
+
+	return end, true
 }
 
 // Materialize decodes all metrics from all blobs in the set and returns a
@@ -215,10 +298,14 @@ func (s *NumericBlobSet) MaterializeMetric(metricID uint64) (MaterializedNumeric
 func (s *NumericBlobSet) materializeMetricCore(metricID uint64, resolve func(blob *NumericBlob) (section.NumericIndexEntry, bool)) (MaterializedNumericMetric, bool) {
 	// Step 1: Check if metric exists in any blob and calculate total capacity
 	capacity := 0
+	chimpMembers := 0 // the members that hold the metric with Chimp values, counted only for the group decode
 	for i := range s.blobs {
 		blob := &s.blobs[i]
 		if entry, ok := resolve(blob); ok {
 			capacity += entry.Count
+			if chimpGroupDecode && blob.ValueEncoding() == format.TypeChimp {
+				chimpMembers++
+			}
 		}
 	}
 
@@ -244,48 +331,53 @@ func (s *NumericBlobSet) materializeMetricCore(metricID uint64, resolve func(blo
 		tags = make([]string, 0, capacity)
 	}
 
-	// Step 4: Iterate through blobs in chronological order, appending data
-	for i := range s.blobs {
-		blob := &s.blobs[i]
-		entry, ok := resolve(blob)
-		if !ok {
-			continue // This metric doesn't contribute to this logical metric
-		}
-
-		count := entry.Count
-
-		// Decode timestamps: extend slice and decode directly into tail
-		tsOff := len(timestamps)
-		if cached := blob.sharedTs.lookup(entry.TimestampOffset); cached != nil {
-			timestamps = append(timestamps, cached...)
-		} else {
-			tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
-			timestamps = timestamps[:tsOff+count]
-			tsProduced := blob.decodeTimestampsSlice(tsBytes, count, timestamps[tsOff:])
-			timestamps = timestamps[:tsOff+tsProduced]
-		}
-
-		// Decode values: extend slice and decode directly into tail
-		valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
-		valOff := len(values)
-		values = values[:valOff+count]
-		valProduced := blob.decodeValuesSlice(valBytes, count, values[valOff:])
-		values = values[:valOff+valProduced]
-
-		// Decode and append tags (if enabled)
-		if hasTags && blob.HasTag() {
-			tagOff := len(tags)
-			tags = slices.Grow(tags, count)[:tagOff+count]
-			tags = tags[:tagOff+blob.decodeTagsInto(entry, tags[tagOff:])]
-		} else if hasTags {
-			// This blob doesn't have tags, but other blobs do
-			// Fill with empty strings to maintain index alignment
-			for range valProduced {
-				tags = append(tags, "")
+	// With enough Chimp members, their value columns are decoded in groups; the result is the same.
+	if chimpGroupDecode && chimpMembers >= ienc.ChimpGroupMinColumns {
+		timestamps, values, tags = s.materializeMembersGrouped(resolve, hasTags, timestamps, values, tags)
+	} else {
+		// Step 4: Iterate through blobs in chronological order, appending data
+		for i := range s.blobs {
+			blob := &s.blobs[i]
+			entry, ok := resolve(blob)
+			if !ok {
+				continue // This metric doesn't contribute to this logical metric
 			}
-		}
 
-		timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
+			count := entry.Count
+
+			// Decode timestamps: extend slice and decode directly into tail
+			tsOff := len(timestamps)
+			if cached := blob.sharedTs.lookup(entry.TimestampOffset); cached != nil {
+				timestamps = append(timestamps, cached...)
+			} else {
+				tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+				timestamps = timestamps[:tsOff+count]
+				tsProduced := blob.decodeTimestampsSlice(tsBytes, count, timestamps[tsOff:])
+				timestamps = timestamps[:tsOff+tsProduced]
+			}
+
+			// Decode values: extend slice and decode directly into tail
+			valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+			valOff := len(values)
+			values = values[:valOff+count]
+			valProduced := blob.decodeValuesSlice(valBytes, count, values[valOff:])
+			values = values[:valOff+valProduced]
+
+			// Decode and append tags (if enabled)
+			if hasTags && blob.HasTag() {
+				tagOff := len(tags)
+				tags = slices.Grow(tags, count)[:tagOff+count]
+				tags = tags[:tagOff+blob.decodeTagsInto(entry, tags[tagOff:])]
+			} else if hasTags {
+				// This blob doesn't have tags, but other blobs do
+				// Fill with empty strings to maintain index alignment
+				for range valProduced {
+					tags = append(tags, "")
+				}
+			}
+
+			timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
+		}
 	}
 
 	return MaterializedNumericMetric{
@@ -568,4 +660,197 @@ func alignMemberRows[V any](timestamps []int64, values []V, tags []string, hasTa
 	}
 
 	return timestamps[:n], values[:n], tags
+}
+
+// materializeMembersGrouped is step 4 of materializeMetricCore for a metric that Chimp members hold:
+// it appends every member's rows as that loop does and returns the same three slices, over their whole capacity,
+// but decodes the Chimp value columns of up to eight members together, before those members' turns.
+//
+// It takes the next eight members that hold the metric as a group.
+// Each Chimp member of the group gets a lane, which decodes its column straight into the place its values have
+// when every earlier member of the group yields as many rows as its index entry counts.
+// Then the members are appended in order with the statements of materializeMetricCore;
+// a member with a lane finds its values already in place, and every other member decodes its column in its turn.
+//
+// Decoding ahead must not show in the result, not even in the unused capacity,
+// because a value decoder may read its destination before it has written it.
+// So a group is decoded ahead only into elements that no member has been given yet, which are still zero,
+// and only when all its members' ranges fit the capacity (decodeChimpGroupAhead).
+// When a member yields fewer rows than its count, the members after it start lower than planned:
+// the values decoded ahead are cleared, which leaves what the member-by-member loop has there,
+// and the rest of the group is decoded again, each member in its turn.
+//
+// Forming a group costs every member a little, and pays only when the group shares the kernel.
+// So the first group that decodeChimpGroupAhead leaves alone is the last one formed:
+// its members and all the members after it are appended one at a time (appendMembersInTurn),
+// at the cost they have in materializeMetricCore.
+// That is decided before any lane of the group has written, when every earlier group has been appended or cleared,
+// so the slices hold what the member-by-member loop holds at that member.
+// A set that turns dense after a sparse group is decoded column by column from there on.
+func (s *NumericBlobSet) materializeMembersGrouped(
+	resolve func(blob *NumericBlob) (section.NumericIndexEntry, bool), hasTags bool,
+	timestamps []int64, values []float64, tags []string,
+) ([]int64, []float64, []string) {
+	var (
+		group   ienc.ChimpColumnGroup
+		members [8]*NumericBlob
+		entries [8]section.NumericIndexEntry
+		lanes   [8]int // the member's lane in group, or -1 for a member that decodes its column in its turn
+	)
+	// written is the highest end of the value ranges the appended members were given: a member's offset plus its count.
+	// A member's decoder writes only inside that range, so every element from written on is still zero.
+	written := 0
+	// asked counts the groups put to decodeChimpGroupAhead and decoded those it decoded ahead, for chimpGroupObserve.
+	asked, decoded := 0, 0
+
+	for next := 0; next < len(s.blobs); {
+		// While a member's range reaches past the rows appended so far, elements above the rows are not all zero,
+		// so the members are taken one at a time until the rows have caught up.
+		limit := len(members)
+		if len(values) < written {
+			limit = 1
+		}
+		n := 0
+		for ; next < len(s.blobs) && n < limit; next++ {
+			blob := &s.blobs[next]
+			entry, ok := resolve(blob)
+			if !ok {
+				continue // This metric doesn't contribute to this logical metric
+			}
+			members[n], entries[n] = blob, entry
+			n++
+		}
+		if n == 0 {
+			break // no member is left
+		}
+		groupEnd, ahead := 0, false
+		if limit > 1 {
+			groupEnd, ahead = decodeChimpGroupAhead(&group, members[:n], entries[:n], &lanes, values)
+			asked++
+		}
+		// A group that was left alone ends the grouping; one that is cleared later, after a short member, does not.
+		last := limit > 1 && !ahead
+		if ahead {
+			decoded++
+		}
+
+		for k := range n {
+			blob, entry := members[k], entries[k]
+			count := entry.Count
+
+			// Decode timestamps: extend slice and decode directly into tail
+			tsOff := len(timestamps)
+			if cached := blob.sharedTs.lookup(entry.TimestampOffset); cached != nil {
+				timestamps = append(timestamps, cached...)
+			} else {
+				tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+				timestamps = timestamps[:tsOff+count]
+				tsProduced := blob.decodeTimestampsSlice(tsBytes, count, timestamps[tsOff:])
+				timestamps = timestamps[:tsOff+tsProduced]
+			}
+
+			valOff := len(values)
+			var valProduced int
+			if ahead && lanes[k] >= 0 {
+				// The lane decoded the column at this offset:
+				// while the group is ahead, every member starts where it was planned.
+				valProduced = group.Produced[lanes[k]]
+				values = values[:valOff+valProduced]
+			} else {
+				// Decode values: extend slice and decode directly into tail
+				valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+				values = values[:valOff+count]
+				valProduced = blob.decodeValuesSlice(valBytes, count, values[valOff:])
+				values = values[:valOff+valProduced]
+			}
+
+			// Decode and append tags (if enabled)
+			if hasTags && blob.HasTag() {
+				tagOff := len(tags)
+				tags = slices.Grow(tags, count)[:tagOff+count]
+				tags = tags[:tagOff+blob.decodeTagsInto(entry, tags[tagOff:])]
+			} else if hasTags {
+				// This blob doesn't have tags, but other blobs do
+				// Fill with empty strings to maintain index alignment
+				for range valProduced {
+					tags = append(tags, "")
+				}
+			}
+
+			timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
+
+			written = max(written, valOff+count)
+			if ahead && len(values) != valOff+count {
+				// The member came up short, so the members after it start below their planned ranges.
+				// From its planned end to the group's, only lanes have written: clearing restores the zeros.
+				clear(values[valOff+count : groupEnd])
+				ahead = false
+			}
+		}
+		if last {
+			timestamps, values, tags = s.appendMembersInTurn(next, resolve, hasTags, timestamps, values, tags)
+
+			break
+		}
+	}
+
+	if chimpGroupObserve != nil {
+		chimpGroupObserve(asked, decoded, group.Columns, group.Steps, group.Calls)
+	}
+
+	return timestamps, values, tags
+}
+
+// appendMembersInTurn appends the rows of the members from s.blobs[first] on, decoding each column in its member's turn.
+// It is the member loop of materializeMetricCore, entered at a later member:
+// materializeMembersGrouped ends with it once it forms no more groups,
+// so that those members cost what they cost in that loop.
+func (s *NumericBlobSet) appendMembersInTurn(
+	first int, resolve func(blob *NumericBlob) (section.NumericIndexEntry, bool), hasTags bool,
+	timestamps []int64, values []float64, tags []string,
+) ([]int64, []float64, []string) {
+	for i := first; i < len(s.blobs); i++ {
+		blob := &s.blobs[i]
+		entry, ok := resolve(blob)
+		if !ok {
+			continue // This metric doesn't contribute to this logical metric
+		}
+
+		count := entry.Count
+
+		// Decode timestamps: extend slice and decode directly into tail
+		tsOff := len(timestamps)
+		if cached := blob.sharedTs.lookup(entry.TimestampOffset); cached != nil {
+			timestamps = append(timestamps, cached...)
+		} else {
+			tsBytes := blob.tsPayload[entry.TimestampOffset : entry.TimestampOffset+entry.TimestampLength]
+			timestamps = timestamps[:tsOff+count]
+			tsProduced := blob.decodeTimestampsSlice(tsBytes, count, timestamps[tsOff:])
+			timestamps = timestamps[:tsOff+tsProduced]
+		}
+
+		// Decode values: extend slice and decode directly into tail
+		valBytes := blob.valPayload[entry.ValueOffset : entry.ValueOffset+entry.ValueLength]
+		valOff := len(values)
+		values = values[:valOff+count]
+		valProduced := blob.decodeValuesSlice(valBytes, count, values[valOff:])
+		values = values[:valOff+valProduced]
+
+		// Decode and append tags (if enabled)
+		if hasTags && blob.HasTag() {
+			tagOff := len(tags)
+			tags = slices.Grow(tags, count)[:tagOff+count]
+			tags = tags[:tagOff+blob.decodeTagsInto(entry, tags[tagOff:])]
+		} else if hasTags {
+			// This blob doesn't have tags, but other blobs do
+			// Fill with empty strings to maintain index alignment
+			for range valProduced {
+				tags = append(tags, "")
+			}
+		}
+
+		timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
+	}
+
+	return timestamps, values, tags
 }

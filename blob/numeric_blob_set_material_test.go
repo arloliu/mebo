@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,6 +49,17 @@ type materializeOutcome struct {
 	ok       bool
 	panicked bool
 	panicVal string // the panic value's type and message
+	panicRaw any    // the panic value itself
+}
+
+// chimpGroupUse is what chimpGroupObserve reported while one metric was materialized.
+type chimpGroupUse struct {
+	grouped int // calls of the hook: 1 when the grouped loop ran, 0 when the members were appended one at a time
+	groups  int // groups of members the grouped loop asked to decode ahead
+	ahead   int // groups it decoded ahead; in every other group no lane was filled
+	columns int // columns that entered the kernel
+	steps   int // steps the kernel completed
+	calls   int // kernel calls
 }
 
 // materializeFuzzMember is one member of a fuzz program: a variant of mixedSetVariants,
@@ -1155,50 +1168,97 @@ func TestNumericBlobSet_MaterializeKeepsColumnsAligned(t *testing.T) {
 	require.Equal(t, 51.0, val)
 }
 
-// TestNumericBlobSet_MaterializeMetric_MatchesReference compares the materialize entry points with
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReference compares the materialize entry points with
 // referenceMaterializeMetric on well-formed sets in the consumer's shape: counts that are equal and that differ,
 // set sizes around eight blobs, one- and two-point columns, the columns at the end of a value payload,
-// metrics that some or all blobs lack, near-constant columns and random bit patterns.
-func TestNumericBlobSet_MaterializeMetric_MatchesReference(t *testing.T) {
+// and metrics that some or all blobs lack.
+// It also pins what the group decode does for each: the groups of members the grouped loop asks to decode ahead
+// and those it does decode ahead, the columns the kernel takes, the steps it completes and its calls.
+// A group is decoded ahead when at least four of its columns can enter the kernel,
+// and the first group that is not is the last one asked.
+// The dense columns are full-precision walks between 64 and 512, whose values all fit the kernel's 64-bit window,
+// so the kernel leaves a group only when fewer than four of its columns are unfinished.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReference(t *testing.T) {
 	names := payloadOrderedNames(t, 5)
 
+	// Two groups of eight columns of 30 values: 29 steps each after the first value, in one call each.
 	t.Run("equal counts", func(t *testing.T) {
 		blobs := decodeSetTestMembers(t, denseSetMembers(names, slices.Repeat([]int{30}, 16)))
 		for _, name := range names {
 			require.True(t, requireMaterializeMatchesReference(t, blobs, name).ok, name)
 		}
 		require.False(t, requireMaterializeMatchesReference(t, blobs, "absent").ok, "a metric in no blob")
+		requireDenseSetUses(t, blobs, names, 4, chimpGroupUse{grouped: 1, groups: 2, ahead: 2, columns: 16, steps: 2 * 29, calls: 2})
 	})
 
+	// Five groups of eight.
+	// Their counts in rising order, with the fourth-largest in brackets:
+	// 30 32 33 35 [36] 37 39 40, 30 31 33 34 [36] 37 38 40, 30 31 32 34 [35] 37 38 39,
+	// 31 32 33 35 [36] 38 39 40 and 30 32 33 34 [36] 37 39 40.
+	// That is 35+35+34+35+35 steps, and five calls a group, one per count up to the bracket.
 	t.Run("counts from 30 to 40", func(t *testing.T) {
 		counts := make([]int, 40)
 		for i := range counts {
 			counts[i] = 30 + (i*7)%11
 		}
-		requireAllMatchReference(t, decodeSetTestMembers(t, denseSetMembers(names, counts)), names)
+		blobs := decodeSetTestMembers(t, denseSetMembers(names, counts))
+		requireDenseSetUses(t, blobs, names, 4, chimpGroupUse{grouped: 1, groups: 5, ahead: 5, columns: 40, steps: 174, calls: 25})
 	})
 
+	// Member i holds 31+i%5 values, so a full group holds 31 31 32 32 [33] 33 34 35: 32 steps in three calls.
+	// A set of one or three members takes the member-by-member loop.
+	// The ninth member of nine is asked as a group of one, which is not decoded ahead.
+	// Four members hold [31] 32 33 34, five [32], and seven 31 31 32 [32] 33 34 35.
+	// The second group of 13 holds 31 [32] 33 34 35, that of 20 holds 31 31 32 33 [34] 34 35 35,
+	// and its third group [32] 33 34 35.
 	t.Run("blob counts around a group of eight", func(t *testing.T) {
+		wants := map[int]chimpGroupUse{
+			1:  {},
+			3:  {},
+			4:  {grouped: 1, groups: 1, ahead: 1, columns: 4, steps: 30, calls: 1},
+			5:  {grouped: 1, groups: 1, ahead: 1, columns: 5, steps: 31, calls: 2},
+			7:  {grouped: 1, groups: 1, ahead: 1, columns: 7, steps: 31, calls: 2},
+			8:  {grouped: 1, groups: 1, ahead: 1, columns: 8, steps: 32, calls: 3},
+			9:  {grouped: 1, groups: 2, ahead: 1, columns: 8, steps: 32, calls: 3},
+			13: {grouped: 1, groups: 2, ahead: 2, columns: 13, steps: 32 + 31, calls: 3 + 2},
+			20: {grouped: 1, groups: 3, ahead: 3, columns: 20, steps: 32 + 33 + 31, calls: 3 + 4 + 1},
+		}
 		for _, numBlobs := range []int{1, 3, 4, 5, 7, 8, 9, 13, 20} {
 			counts := make([]int, numBlobs)
 			for i := range counts {
 				counts[i] = 31 + i%5
 			}
-			requireAllMatchReference(t, decodeSetTestMembers(t, denseSetMembers(names, counts)), names)
+			requireDenseSetUses(t, decodeSetTestMembers(t, denseSetMembers(names, counts)), names, 4, wants[numBlobs])
 		}
 	})
 
+	// A one-point column cannot enter the kernel, so the first group of one-point columns is the only one asked.
+	// Two-point columns take one step a group.
+	// In the mixed set the first group has six columns of two or more values:
+	// one step finishes the two-point column and 28 more the others.
+	// The second group has three, too few for the kernel, and is not decoded ahead.
+	// The fourth name's column has only the last name's behind it, 15 or 16 bytes when that one holds two points.
 	t.Run("one-point and two-point columns", func(t *testing.T) {
-		for _, counts := range [][]int{
-			slices.Repeat([]int{1}, 16),
-			slices.Repeat([]int{2}, 16),
-			{30, 1, 30, 2, 30, 1, 30, 30, 1, 1, 1, 30, 30, 1, 2, 1},
+		for _, c := range []struct {
+			counts []int
+			want   chimpGroupUse
+		}{
+			{slices.Repeat([]int{1}, 16), chimpGroupUse{grouped: 1, groups: 1}},
+			{slices.Repeat([]int{2}, 16), chimpGroupUse{grouped: 1, groups: 2, ahead: 2, columns: 16, steps: 2, calls: 2}},
+			{
+				[]int{30, 1, 30, 2, 30, 1, 30, 30, 1, 1, 1, 30, 30, 1, 2, 1},
+				chimpGroupUse{grouped: 1, groups: 2, ahead: 1, columns: 6, steps: 29, calls: 2},
+			},
 		} {
-			requireAllMatchReference(t, decodeSetTestMembers(t, denseSetMembers(names, counts)), names)
+			requireDenseSetUses(t, decodeSetTestMembers(t, denseSetMembers(names, c.counts)), names, 3, c.want)
 		}
 	})
 
+	// A group of eight and a group of four, all of 36 values: 35 steps each.
+	// The last column has no byte after it, and the one before a one-point column has 8, so neither enters the kernel.
+	// Before a two-point column there are 15 or 16 bytes, and before one of 35 points far more.
 	t.Run("columns at the end of the payload", func(t *testing.T) {
+		want := chimpGroupUse{grouped: 1, groups: 2, ahead: 2, columns: 12, steps: 2 * 35, calls: 2}
 		for _, last := range []int{1, 2, 35} {
 			members := denseSetMembers(names, slices.Repeat([]int{36}, 12))
 			for i := range members {
@@ -1211,10 +1271,17 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReference(t *testing.T) {
 					require.Equal(t, 8, valueSlackAfter(&blobs[i], names[3]), "the column before a one-point column ends 8 bytes early")
 				}
 			}
-			requireAllMatchReference(t, blobs, names)
+			roomy := 3
+			if last == 35 {
+				roomy = 4
+			}
+			requireDenseSetUses(t, blobs, names, roomy, want)
 		}
 	})
 
+	// The second name is held by 19 members: groups of eight, eight and three, the last too small for the kernel.
+	// The others are held by all 30: groups of eight, eight, eight and six.
+	// The last name's column ends every payload, so its first group is not decoded ahead and no other is asked.
 	t.Run("a metric missing from some blobs", func(t *testing.T) {
 		members := denseSetMembers(names, slices.Repeat([]int{30}, 30))
 		missing := 0
@@ -1226,9 +1293,58 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReference(t *testing.T) {
 			}
 		}
 		require.Equal(t, 11, missing)
-		requireAllMatchReference(t, decodeSetTestMembers(t, members), names)
+		blobs := decodeSetTestMembers(t, members)
+		all := chimpGroupUse{grouped: 1, groups: 4, ahead: 4, columns: 30, steps: 4 * 29, calls: 4}
+		requireMaterializeUses(t, blobs, names[0], all)
+		requireMaterializeUses(t, blobs, names[1], chimpGroupUse{grouped: 1, groups: 3, ahead: 2, columns: 16, steps: 2 * 29, calls: 2})
+		requireMaterializeUses(t, blobs, names[2], all)
+		requireMaterializeUses(t, blobs, names[3], all)
+		requireMaterializeUses(t, blobs, names[4], chimpGroupUse{grouped: 1, groups: 1})
+		requireMaterializeUses(t, blobs, "absent", chimpGroupUse{})
 	})
 
+	// The second name is held by the first eight of ten members: one group, decoded ahead.
+	// The two blobs behind it hold no member of the metric, and no group is asked for them.
+	t.Run("a metric missing from the last blobs", func(t *testing.T) {
+		members := denseSetMembers(names, slices.Repeat([]int{30}, 10))
+		for _, i := range []int{8, 9} {
+			members[i].names = slices.Delete(slices.Clone(members[i].names), 1, 2)
+			members[i].cols = slices.Delete(slices.Clone(members[i].cols), 1, 2)
+		}
+		blobs := decodeSetTestMembers(t, members)
+		requireMaterializeUses(t, blobs, names[1], chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 8, steps: 29, calls: 1})
+		requireMaterializeUses(t, blobs, names[0], chimpGroupUse{grouped: 1, groups: 2, ahead: 1, columns: 8, steps: 29, calls: 1})
+	})
+
+	// The grouped loop is chosen by the Chimp members that hold the metric, not by those in the set:
+	// a metric three of eight members hold is appended member by member.
+	t.Run("a metric held by three of eight members", func(t *testing.T) {
+		members := denseSetMembers(names, slices.Repeat([]int{30}, 8))
+		for _, i := range []int{0, 1, 3, 5, 6} {
+			members[i].names = slices.Delete(slices.Clone(members[i].names), 1, 2)
+			members[i].cols = slices.Delete(slices.Clone(members[i].cols), 1, 2)
+		}
+		blobs := decodeSetTestMembers(t, members)
+		requireMaterializeUses(t, blobs, names[0], chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 8, steps: 29, calls: 1})
+		got := requireMaterializeUses(t, blobs, names[1], chimpGroupUse{})
+		require.Len(t, got.metric.Values, 3*30)
+	})
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceValueKinds compares the materialize entry points with
+// referenceMaterializeMetric on well-formed sets whose columns the kernel does not take whole:
+// constant and near-constant columns, which a group leaves to the scalar loop, and random bit patterns.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceValueKinds(t *testing.T) {
+	names := payloadOrderedNames(t, 5)
+
+	// A group enters the kernel only when its columns average 12 bits a value after the first.
+	// An unchanged value takes 2 bits, and a changed value of these two-decimal columns about 45 and at most 53.
+	// The constant column has 2 bits a value, the near-constant one about 4 with a change in 20 values,
+	// the column that changes every sixth value at most (5*53+30*2)/35 = 9.3, and all three stay out.
+	// Their first group is not decoded ahead, and it is the only one asked; so is the first group of the last name's column,
+	// which ends every payload.
+	// The column that changes every third value has about (11*45+24*2)/35 = 15.5 and enters:
+	// two groups of eight columns of 36 values.
 	t.Run("constant and near-constant columns", func(t *testing.T) {
 		members := denseSetMembers(names, slices.Repeat([]int{36}, 16))
 		for i := range members {
@@ -1239,9 +1355,17 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReference(t *testing.T) {
 				members[i].cols[3][j] = 100.25 + float64(i) + float64(j/3)*0.01
 			}
 		}
-		requireAllMatchReference(t, decodeSetTestMembers(t, members), names)
+		blobs := decodeSetTestMembers(t, members)
+		for _, name := range []string{names[0], names[1], names[2], names[4]} {
+			requireMaterializeUses(t, blobs, name, chimpGroupUse{grouped: 1, groups: 1})
+		}
+		requireMaterializeUses(t, blobs, names[3], chimpGroupUse{grouped: 1, groups: 2, ahead: 2, columns: 16, steps: 2 * 35, calls: 2})
+		requireMaterializeUses(t, blobs, "absent", chimpGroupUse{})
 	})
 
+	// Every column holds 30 values or more and, but for the last name's, has another column of at least 16 bytes
+	// behind it, and random patterns take far more than 12 bits a value: the two full groups of every set enter the kernel.
+	// How far the kernel gets depends on the patterns, many of which are wider than its window, so the steps are not pinned.
 	t.Run("random bit patterns", func(t *testing.T) {
 		rng := rand.New(rand.NewSource(41))
 		for range 20 {
@@ -1254,15 +1378,21 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReference(t *testing.T) {
 				}
 				members[i] = setTestMember{opts: consumerShapeOptions(format.TypeChimp), names: names, cols: cols}
 			}
-			requireAllMatchReference(t, decodeSetTestMembers(t, members), names)
+			blobs := decodeSetTestMembers(t, members)
+			for _, name := range names[:4] {
+				requireKernelColumns(t, blobs, name, 16, 16)
+			}
+			requireMaterializeUses(t, blobs, names[4], chimpGroupUse{grouped: 1, groups: 1})
+			requireMaterializeUses(t, blobs, "absent", chimpGroupUse{})
 		}
 	})
 }
 
-// TestNumericBlobSet_MaterializeMetric_MatchesReferenceMixedEncodings compares the materialize entry points with
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceMixedEncodings compares the materialize entry points with
 // referenceMaterializeMetric on a set whose Chimp members differ in byte order, layout, timestamps, tags and
 // compression, interleaved with ALP, ALP-RLE, Gorilla and Raw members.
-func TestNumericBlobSet_MaterializeMetric_MatchesReferenceMixedEncodings(t *testing.T) {
+// The Chimp members share the kernel whatever their variant, and the members between them do not break a group.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceMixedEncodings(t *testing.T) {
 	names := payloadOrderedNames(t, 4)
 	variants := mixedSetVariants()
 	members := make([]setTestMember, 0, 36)
@@ -1290,16 +1420,68 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceMixedEncodings(t *test
 	for _, enc := range []format.EncodingType{format.TypeALP, format.TypeALPRLE, format.TypeGorilla, format.TypeRaw} {
 		require.Equal(t, 3, encodings[enc], "%v members", enc)
 	}
-	requireAllMatchReference(t, blobs, names)
+
+	// Every third member holds another encoding, and member i holds 30+i%9 values.
+	// The Chimp members of the four full groups, with the fourth-largest count in brackets:
+	// 30 31 [33] 34 36 37, 30 [31] 33 34 36, 30 [31] 33 34 37 and 30 31 [33] 34 36 37.
+	// That is 22 columns, 32+30+30+32 steps and 3+2+2+3 calls.
+	// The last group has two Chimp members, too few: it is asked and not decoded ahead.
+	// The last name's column ends every payload, so its first group is not decoded ahead and no other is asked.
+	// The gauges and the counter of these columns take 12 bits a value or more and fit the kernel's window.
+	for _, name := range names[:3] {
+		for i := range blobs {
+			if blobs[i].ValueEncoding() == format.TypeChimp {
+				require.GreaterOrEqual(t, valueSlackAfter(&blobs[i], name), 16, "member %d: %s is followed by another column", i, name)
+			}
+		}
+		requireMaterializeUses(t, blobs, name, chimpGroupUse{grouped: 1, groups: 5, ahead: 4, columns: 22, steps: 124, calls: 10})
+	}
+	requireMaterializeUses(t, blobs, names[3], chimpGroupUse{grouped: 1, groups: 1})
+	requireMaterializeUses(t, blobs, "absent", chimpGroupUse{})
+
+	// A value payload can have capacity past its length: the tag payload of an uncompressed blob with tags,
+	// or what a decompressor left over.
+	// The room after a column is counted to the length only, so the last column of eight such members stays out
+	// of the kernel, and the column before it enters: one group of eight columns of 32 values.
+	for _, v := range []setTestMember{variants[4], variants[7]} {
+		members = members[:0]
+		for i := range 8 {
+			v.names = names
+			v.cols = make([][]float64, len(names))
+			for k := range names {
+				v.cols[k] = setValueColumn(setKindFullPrec, 32, 100+float64(i*len(names)+k), int64(i*len(names)+k)+1)
+			}
+			members = append(members, v)
+		}
+		blobs = decodeSetTestMembers(t, members)
+		for i := range blobs {
+			require.Zero(t, valueSlackAfter(&blobs[i], names[3]), "member %d: the last column ends the payload", i)
+			require.GreaterOrEqual(t, cap(blobs[i].valPayload), len(blobs[i].valPayload)+16, "member %d: capacity past the length", i)
+		}
+		requireMaterializeUses(t, blobs, names[3], chimpGroupUse{grouped: 1, groups: 1})
+		requireMaterializeUses(t, blobs, names[2], chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 8, steps: 31, calls: 1})
+	}
 }
 
-// TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged compares the materialize entry points with
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceDamaged compares the materialize entry points with
 // referenceMaterializeMetric on sets with damaged members, early and late in a group of eight:
 // value bytes flipped before Decode, which accepts them, and index entries edited after it,
 // with counts raised and lowered and value columns cut short.
-func TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged(t *testing.T) {
+// A damaged member that comes up short moves the groups behind it, so only the first group of a set is pinned.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceDamaged(t *testing.T) {
 	names := payloadOrderedNames(t, 5)
 	rng := rand.New(rand.NewSource(53))
+	// requireFirstGroup compares every name with the reference and requires that the kernel took at least
+	// minColumns columns of each name but the last, and none of the last name's.
+	// That column ends its payload; a cut leaves room behind it in at most two members of any eight, too few for the kernel.
+	requireFirstGroup := func(blobs []NumericBlob, minColumns int) {
+		t.Helper()
+		for _, name := range names[:4] {
+			requireKernelColumns(t, blobs, name, minColumns, len(blobs))
+		}
+		requireKernelColumns(t, blobs, names[4], 0, 0)
+		requireMaterializeUses(t, blobs, "absent", chimpGroupUse{})
+	}
 	encodeSet := func() [][]byte {
 		counts := make([]int, 21)
 		for i := range counts {
@@ -1322,6 +1504,7 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged(t *testing.T) 
 		return blobs
 	}
 
+	// A flipped bit changes no count and no length, so the eight columns of the first group still enter the kernel.
 	t.Run("value bytes flipped", func(t *testing.T) {
 		for range 12 {
 			encoded := encodeSet()
@@ -1331,10 +1514,13 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged(t *testing.T) 
 					encoded[i][start+rng.Intn(end-start)] ^= 1 << uint(rng.Intn(8))
 				}
 			}
-			requireAllMatchReference(t, decodeSet(encoded), names)
+			requireFirstGroup(decodeSet(encoded), 8)
 		}
 	})
 
+	// Members 1 and 6 of the first group each have one entry edited, which can keep its column out of the kernel:
+	// at least six columns of every name are left to enter it.
+	// Members 1, 6, 9, 14 and 20 are edited, and no eight members in a row hold more than two of them.
 	t.Run("index entries edited", func(t *testing.T) {
 		for round := range 16 {
 			blobs := decodeSet(encodeSet())
@@ -1351,7 +1537,7 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged(t *testing.T) 
 					entry.ValueLength = max(8, entry.ValueLength-1-rng.Intn(3))
 				}
 			}
-			requireAllMatchReference(t, blobs, names)
+			requireFirstGroup(blobs, 6)
 		}
 	})
 
@@ -1359,6 +1545,8 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged(t *testing.T) 
 	// A tagless member after it pads only the rows it yields, so those tags stay in the unused capacity.
 	// Six complete members come first, so the two short members end a set of eight;
 	// nothing is appended after them that could overwrite the tags left behind.
+	// The six whole columns are enough to decode the group ahead, and they enter the kernel.
+	// The two cut columns end with their first value: they claim more values than they have bits and stay scalar.
 	t.Run("a short member without tags after a short member with tags", func(t *testing.T) {
 		members := denseSetMembers(names, slices.Repeat([]int{30}, 8))
 		members[6].tags = true
@@ -1369,7 +1557,8 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged(t *testing.T) 
 		for _, i := range []int{6, 7} {
 			blobs[i].index.entryByName(names[0]).ValueLength = 8 // the first value only
 		}
-		got := requireMaterializeMatchesReference(t, blobs, names[0])
+		got := requireMaterializeUses(t, blobs, names[0],
+			chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 6, steps: 29, calls: 1})
 		require.False(t, got.panicked)
 		require.Len(t, got.metric.Values, 6*30+2)
 		require.Equal(t, 8*30, cap(got.metric.Tags))
@@ -1377,11 +1566,11 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceDamaged(t *testing.T) 
 	})
 }
 
-// TestNumericBlobSet_MaterializeMetric_MatchesReferenceCrafted compares the materialize entry points with
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceCrafted compares the materialize entry points with
 // referenceMaterializeMetric on states made by editing decoded blobs, each built for one case:
 // a decoder that reads its destination before writing it, after members that yield fewer rows than their count;
 // a member with two faults; counts that do not fit, are negative, or overflow a sum.
-func TestNumericBlobSet_MaterializeMetric_MatchesReferenceCrafted(t *testing.T) {
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceCrafted(t *testing.T) {
 	const target = craftedTarget
 	chimp := consumerShapeOptions(format.TypeChimp)
 	alpRLE := consumerShapeOptions(format.TypeALPRLE)
@@ -1404,6 +1593,10 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceCrafted(t *testing.T) 
 
 	// The ALP-RLE member reads the value its runs expand from at the end of its own range,
 	// which the baseline has not written yet: it returns zeros.
+	// The first group holds seven Chimp members, and all seven columns enter the kernel,
+	// so the second member's values are decoded ahead into the range the ALP-RLE member reads.
+	// The kernel leaves before its first step, at the end of the cut column.
+	// The three members of the second group are too few for it: that group is asked and not decoded ahead.
 	t.Run("an ALP-RLE column cut at its nested column after a short member", func(t *testing.T) {
 		members := []setTestMember{
 			craftedMember(chimp, dense(0, 8)),
@@ -1416,7 +1609,10 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceCrafted(t *testing.T) 
 		cutAtNestedColumn(t, &blobs[2], target)
 		require.GreaterOrEqual(t, valueSlackAfter(&blobs[3], target), 16, "the target's column is followed by another")
 
-		got := requireMaterializeMatchesReference(t, blobs, target)
+		// The cut member stays scalar; the kernel takes the eight-value column and the five whole ones,
+		// seven steps with six lanes and 22 more with five.
+		got := requireMaterializeUses(t, blobs, target,
+			chimpGroupUse{grouped: 1, groups: 2, ahead: 1, columns: 6, steps: 29, calls: 2})
 		require.True(t, got.ok)
 		require.Len(t, got.metric.Values, 1+8+4+8*30)
 		require.Equal(t, []float64{101, 102, 103, 104, 105, 106, 107, 108}, got.metric.Values[1:9])
@@ -1427,29 +1623,60 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceCrafted(t *testing.T) 
 
 	// The last member of the first group of eight leaves 35 decoded values past its rows;
 	// the cut ALP-RLE member of the next group reads one of them and repeats it.
-	t.Run("an ALP-RLE column cut at its nested column across groups", func(t *testing.T) {
-		long := dense(7, 40)
-		members := complete(0, 7)
-		members = append(members,
-			craftedMember(ownDelta, long),
-			craftedMember(chimp, dense(8, 8)),
-			craftedMember(alpRLE, slices.Repeat([]float64{runValue}, 20)),
-		)
-		members = append(members, complete(10, 6)...)
-		blobs := decodeSetTestMembers(t, members)
-		cutTimestampsTo(t, &blobs[7], target, 5)
-		blobs[8].index.entryByName(target).ValueLength = 8
-		cutAtNestedColumn(t, &blobs[9], target)
-		for _, i := range []int{0, 7} {
-			require.GreaterOrEqual(t, valueSlackAfter(&blobs[i], target), 16, "member %d: the target's column is followed by another", i)
-		}
+	// No group may be decoded ahead over those values: the three members behind the long one are appended one at a time,
+	// until the rows have passed its range, and the last five form a group.
+	// With a Chimp long member the first group has eight columns in the kernel, which leaves when seven are complete;
+	// with a Gorilla one, which is decoded in its turn, it has seven.
+	// Both groups take 29 steps in one call.
+	for _, long := range []struct {
+		encoding format.EncodingType
+		want     chimpGroupUse
+	}{
+		{format.TypeChimp, chimpGroupUse{grouped: 1, groups: 2, ahead: 2, columns: 8 + 5, steps: 2 * 29, calls: 2}},
+		{format.TypeGorilla, chimpGroupUse{grouped: 1, groups: 2, ahead: 2, columns: 7 + 5, steps: 2 * 29, calls: 2}},
+	} {
+		t.Run(fmt.Sprintf("an ALP-RLE column cut at its nested column across groups, behind a long %v member", long.encoding), func(t *testing.T) {
+			longValues := dense(7, 40)
+			members := complete(0, 7)
+			members = append(members,
+				craftedMember([]NumericEncoderOption{
+					WithLittleEndian(), WithBlobLayoutV2(), WithTimestampEncoding(format.TypeDelta), WithValueEncoding(long.encoding),
+				}, longValues),
+				craftedMember(chimp, dense(8, 8)),
+				craftedMember(alpRLE, slices.Repeat([]float64{runValue}, 20)),
+			)
+			members = append(members, complete(10, 6)...)
+			blobs := decodeSetTestMembers(t, members)
+			cutTimestampsTo(t, &blobs[7], target, 5)
+			blobs[8].index.entryByName(target).ValueLength = 8
+			cutAtNestedColumn(t, &blobs[9], target)
+			for _, i := range []int{0, 7} {
+				require.GreaterOrEqual(t, valueSlackAfter(&blobs[i], target), 16, "member %d: the target's column is followed by another", i)
+			}
 
-		got := requireMaterializeMatchesReference(t, blobs, target)
-		require.True(t, got.ok)
-		off := 7*30 + 5 + 1
-		require.Len(t, got.metric.Values, off+20+6*30)
-		for _, v := range got.metric.Values[off : off+20] {
-			require.Equal(t, math.Float64bits(long[25]), math.Float64bits(v), "the cut ALP-RLE member repeats a left-over value")
+			got := requireMaterializeUses(t, blobs, target, long.want)
+			require.True(t, got.ok)
+			off := 7*30 + 5 + 1
+			require.Len(t, got.metric.Values, off+20+6*30)
+			for _, v := range got.metric.Values[off : off+20] {
+				require.Equal(t, math.Float64bits(longValues[25]), math.Float64bits(v), "the cut ALP-RLE member repeats a left-over value")
+			}
+		})
+	}
+
+	// The first member of a single group yields one row of its 30.
+	// The seven members behind it were decoded ahead and are decoded again, each 29 rows lower,
+	// so the last 29 elements of the capacity belong to no member: they must be zero, as the baseline leaves them.
+	t.Run("a short first member with nothing behind its group", func(t *testing.T) {
+		blobs := decodeSetTestMembers(t, complete(0, 8))
+		blobs[0].index.entryByName(target).ValueLength = 8
+
+		got := requireMaterializeUses(t, blobs, target,
+			chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 7, steps: 29, calls: 1})
+		require.Len(t, got.metric.Values, 1+7*30)
+		require.Equal(t, 8*30, cap(got.metric.Values))
+		for _, v := range got.metric.Values[1+7*30 : 8*30] {
+			require.Zero(t, math.Float64bits(v), "the capacity past the rows")
 		}
 	})
 
@@ -1538,6 +1765,859 @@ func TestNumericBlobSet_MaterializeMetric_MatchesReferenceCrafted(t *testing.T) 
 		require.NotEqual(t, timestampOnly.panicVal, overflowOnly.panicVal)
 		require.Equal(t, timestampOnly.panicVal, both.panicVal, "the first member's timestamp range panics first")
 	})
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAlone compares the materialize entry points with
+// referenceMaterializeMetric on sets with a group that cannot share the kernel, and pins what the grouped loop does
+// with it: the group is asked, no lane is filled for it, and no group is asked after it.
+// The sets put such a group first, behind groups that were decoded ahead, and behind one that was cleared,
+// and they stand on either side of each rule a group enters the kernel by:
+// four columns, 16 bytes after a column, and 12 bits a value.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceGroupsLeftAlone(t *testing.T) {
+	const target = craftedTarget
+	chimp := consumerShapeOptions(format.TypeChimp)
+	alpRLE := consumerShapeOptions(format.TypeALPRLE)
+	dense := func(i, n int) []float64 { return setValueColumn(setKindFullPrec, n, 1000+float64(i), int64(i)+1) }
+	// members returns n Chimp members numbered from first, each holding what col returns for its number.
+	members := func(first, n int, col func(i int) []float64) []setTestMember {
+		out := make([]setTestMember, n)
+		for i := range out {
+			out[i] = craftedMember(chimp, col(first+i))
+		}
+
+		return out
+	}
+	whole := func(i int) []float64 { return dense(i, 30) }
+	constant := func(i int) []float64 { return slices.Repeat([]float64{float64(i) + 0.25}, 30) }
+	// leftAlone is a call whose first group is asked and not decoded ahead: no lane is filled, and no other group is asked.
+	leftAlone := chimpGroupUse{grouped: 1, groups: 1}
+
+	// One member in eight holds Chimp values, so every group of eight has one Chimp column.
+	// The ALP-RLE columns are full-precision values, long enough to pass for dense Chimp columns by their lengths alone:
+	// a count that took them for Chimp columns would decode the group ahead.
+	t.Run("one Chimp member in eight", func(t *testing.T) {
+		set := make([]setTestMember, 40)
+		for i := range set {
+			opts := alpRLE
+			if i%8 == 0 {
+				opts = chimp
+			}
+			set[i] = craftedMember(opts, whole(i))
+		}
+		blobs := decodeSetTestMembers(t, set)
+		for i := range blobs {
+			entry := blobs[i].index.entryByName(target)
+			require.GreaterOrEqual(t, valueSlackAfter(&blobs[i], target), 16, "member %d: the target's column is followed by another", i)
+			require.GreaterOrEqual(t, (entry.ValueLength-8)*8, 12*(entry.Count-1), "member %d: bits of the column", i)
+		}
+		got := requireMaterializeUses(t, blobs, target, leftAlone)
+		require.Len(t, got.metric.Values, 40*30)
+	})
+
+	// The sixteen dense members behind the constant group would fill two groups of the kernel:
+	// they are appended one at a time, which is what a sparse first group costs a set.
+	t.Run("a sparse group, then dense members", func(t *testing.T) {
+		blobs := decodeSetTestMembers(t, append(members(0, 8, constant), members(8, 16, whole)...))
+		got := requireMaterializeUses(t, blobs, target, leftAlone)
+		require.Len(t, got.metric.Values, 24*30)
+	})
+
+	// Two dense groups are decoded ahead, the constant group is asked and left alone,
+	// and the dense group behind it is not asked.
+	t.Run("dense groups, then a sparse group, then a dense group", func(t *testing.T) {
+		set := append(members(0, 16, whole), members(16, 8, constant)...)
+		blobs := decodeSetTestMembers(t, append(set, members(24, 8, whole)...))
+		got := requireMaterializeUses(t, blobs, target,
+			chimpGroupUse{grouped: 1, groups: 3, ahead: 2, columns: 16, steps: 2 * 29, calls: 2})
+		require.Len(t, got.metric.Values, 32*30)
+	})
+
+	// The fourth member of the first group yields one value of its 30, so the values decoded ahead behind it are cleared
+	// and the last four members of the group are decoded again; the cut column stays scalar,
+	// and the kernel had decoded the seven others.
+	// The rows end where the group's last member ends, so the next eight members are asked at once:
+	// they are constant, and end the grouping.
+	t.Run("a group cleared after a short member, then a sparse group", func(t *testing.T) {
+		set := append(members(0, 8, whole), members(8, 8, constant)...)
+		blobs := decodeSetTestMembers(t, append(set, members(16, 8, whole)...))
+		blobs[3].index.entryByName(target).ValueLength = 8
+		got := requireMaterializeUses(t, blobs, target,
+			chimpGroupUse{grouped: 1, groups: 2, ahead: 1, columns: 7, steps: 29, calls: 1})
+		require.Len(t, got.metric.Values, 23*30+1)
+	})
+
+	// The first member declares eight values and yields one, the second holds 101 to 108,
+	// and the ALP-RLE member behind them reads its own range before it writes it: the baseline returns zeros for it.
+	// The group holds two Chimp columns, so it is left alone, and it must be left alone before a lane has written:
+	// the second member's values, decoded seven rows above where it ends up, would be what the ALP-RLE member reads.
+	t.Run("a short member and a cut ALP-RLE column in a group that is left alone", func(t *testing.T) {
+		runValue := math.Pi * 1e300 // plain ALP stores every copy in full, so the ALP-RLE encoder writes one run
+		set := []setTestMember{
+			craftedMember(chimp, dense(0, 8)),
+			craftedMember(chimp, []float64{101, 102, 103, 104, 105, 106, 107, 108}),
+			craftedMember(alpRLE, slices.Repeat([]float64{runValue}, 4)),
+		}
+		for i := 3; i < 8; i++ {
+			set = append(set, craftedMember(alpRLE, whole(i)))
+		}
+		blobs := decodeSetTestMembers(t, append(set, members(8, 4, whole)...))
+		blobs[0].index.entryByName(target).ValueLength = 8
+		cutAtNestedColumn(t, &blobs[2], target)
+
+		got := requireMaterializeUses(t, blobs, target, leftAlone)
+		require.Len(t, got.metric.Values, 1+8+4+9*30)
+		require.Equal(t, []float64{101, 102, 103, 104, 105, 106, 107, 108}, got.metric.Values[1:9])
+		for _, v := range got.metric.Values[9:13] {
+			require.Zero(t, math.Float64bits(v), "the cut ALP-RLE member yields zeros")
+		}
+	})
+
+	// The hook counts groups, not lanes: a group filled into its lanes and then left undecoded would report the same.
+	// So decodeChimpGroupAhead is asked directly, with marks in the group and in the lane numbers that must survive.
+	t.Run("no lane is filled for a group that is left alone", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			col      func(i int) []float64
+			capacity int
+		}{
+			"sparse columns":          {col: constant, capacity: 8 * 30},
+			"one element of capacity": {col: whole, capacity: 8*30 - 1},
+		} {
+			blobs := decodeSetTestMembers(t, members(0, 8, tc.col))
+			var (
+				group   ienc.ChimpColumnGroup
+				set     [8]*NumericBlob
+				entries [8]section.NumericIndexEntry
+				lanes   [8]int
+			)
+			for i := range blobs {
+				set[i], entries[i] = &blobs[i], *blobs[i].index.entryByName(target)
+				group.Count[i], group.Off[i], group.Len[i], lanes[i] = -7, -7, -7, 99
+			}
+			marked := group
+
+			_, ahead := decodeChimpGroupAhead(&group, set[:], entries[:], &lanes, make([]float64, 0, tc.capacity))
+			require.False(t, ahead, name)
+			require.Equal(t, marked, group, "%s: the group", name)
+			require.Equal(t, [8]int{99, 99, 99, 99, 99, 99, 99, 99}, lanes, "%s: the lane numbers", name)
+		}
+	})
+
+	// A one-point column cannot enter the kernel: three whole columns among five of one point are too few, four are enough.
+	t.Run("three and four columns", func(t *testing.T) {
+		for wholeColumns, want := range map[int]chimpGroupUse{
+			3: leftAlone,
+			4: {grouped: 1, groups: 1, ahead: 1, columns: 4, steps: 29, calls: 1},
+		} {
+			blobs := decodeSetTestMembers(t, members(0, 8, func(i int) []float64 {
+				if i%2 == 0 && i/2 < wholeColumns {
+					return whole(i)
+				}
+
+				return dense(i, 1)
+			}))
+			requireMaterializeUses(t, blobs, target, want)
+		}
+	})
+
+	// A value payload cut 15 bytes behind the target's column keeps that column out of the kernel, and 16 bytes do not.
+	// The bytes cut off stay in the payload's capacity, which does not count.
+	// With three columns that have 16 bytes the group is left alone; with four it is decoded ahead,
+	// and the four columns that have 15 are decoded ahead too, by the scalar loop.
+	t.Run("15 and 16 bytes after a column", func(t *testing.T) {
+		for roomy, want := range map[int]chimpGroupUse{
+			3: leftAlone,
+			4: {grouped: 1, groups: 1, ahead: 1, columns: 4, steps: 29, calls: 1},
+		} {
+			blobs := decodeSetTestMembers(t, members(0, 8, whole))
+			for i := range blobs {
+				entry := blobs[i].index.entryByName(target)
+				after := 15
+				if i < roomy {
+					after = 16
+				}
+				require.Greater(t, valueSlackAfter(&blobs[i], target), 16, "member %d: bytes after the target's column", i)
+				blobs[i].valPayload = blobs[i].valPayload[:entry.ValueOffset+entry.ValueLength+after]
+				require.Equal(t, after, valueSlackAfter(&blobs[i], target))
+			}
+			requireMaterializeUses(t, blobs, target, want)
+		}
+	})
+
+	// The columns change every sixth value and take about 9 bits a value, too few.
+	// Counts lowered on the index entries leave the bytes as they are and raise the bits a value:
+	// the group enters with the most values that still average 12 bits, and stays out with one value more.
+	// A member with a lowered count yields exactly that many rows, so nothing is cleared.
+	t.Run("12 bits a value", func(t *testing.T) {
+		for _, over := range []int{0, 1} {
+			blobs := decodeSetTestMembers(t, members(0, 8, func(i int) []float64 {
+				col := make([]float64, 36)
+				for j := range col {
+					col[j] = 100.25 + float64(i) + float64(j/6)*0.01
+				}
+
+				return col
+			}))
+			encodedBits := 0
+			for i := range blobs {
+				entry := blobs[i].index.entryByName(target)
+				encodedBits += (entry.ValueLength - 8) * 8
+			}
+			values := encodedBits/12 + over // values after the first of each column, over the group
+			require.Less(t, values, 8*35, "the columns are under 12 bits a value at their full counts")
+			require.Greater(t, values, 8*16, "the lowered counts leave every column 16 values or more")
+			for i := range blobs {
+				count := 1 + values/8
+				if i < values%8 {
+					count++
+				}
+				blobs[i].index.entryByName(target).Count = count
+			}
+
+			want := leftAlone
+			if over == 0 {
+				want = denseSetUse(blobs, target)
+				require.Equal(t, 1, want.ahead, "the rules decode the group ahead")
+				require.Equal(t, 8, want.columns)
+			}
+			got := requireMaterializeUses(t, blobs, target, want)
+			require.Len(t, got.metric.Values, values+8)
+		}
+	})
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupDamagedTimestamps compares the materialize entry points with
+// referenceMaterializeMetric on groups of eight whose Chimp value columns are whole and whose timestamps are not:
+// a member's own timestamp column cut short, a shared timestamp group short of its count,
+// and timestamp bytes flipped before Decode, which accepts them.
+// The whole columns enter the kernel, so the group is decoded ahead of the member its timestamps trim,
+// and the values decoded ahead behind that member are cleared and decoded again.
+// The sets end with their group, so a value decoded ahead and left behind would show in the capacity past the rows.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupDamagedTimestamps(t *testing.T) {
+	const target = craftedTarget
+	// A Raw column cut short yields no timestamp; a Delta or DeltaPacked one yields the five its prefix holds.
+	encodings := []struct {
+		ts    format.EncodingType
+		short int
+	}{{format.TypeRaw, 0}, {format.TypeDelta, 5}, {format.TypeDeltaPacked, 5}}
+	// The first, a middle and the last member of the group, and two members.
+	placements := [][]int{{0}, {3}, {7}, {2, 5}}
+	whole := chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 8, steps: 29, calls: 1}
+	chimpWith := func(ts format.EncodingType) func(int) []NumericEncoderOption {
+		return func(int) []NumericEncoderOption { return ownTimestampOptions(ts, format.TypeChimp) }
+	}
+
+	t.Run("a member's own timestamp column", func(t *testing.T) {
+		for _, enc := range encodings {
+			for _, at := range placements {
+				blobs := decodeSetTestMembers(t, craftedDenseMembers(8, chimpWith(enc.ts)))
+				for _, i := range at {
+					cutTimestampsTo(t, &blobs[i], target, enc.short)
+				}
+				got := requireMaterializeUses(t, blobs, target, whole)
+				require.Len(t, got.metric.Values, 8*30-len(at)*(30-enc.short), "%v timestamps cut in members %v", enc.ts, at)
+			}
+		}
+	})
+
+	// In the consumer's shape a member's metrics share one timestamp group, decoded when the blob is opened.
+	t.Run("a shared timestamp group", func(t *testing.T) {
+		for _, at := range placements {
+			blobs := decodeSetTestMembers(t, craftedDenseMembers(8, func(int) []NumericEncoderOption {
+				return consumerShapeOptions(format.TypeChimp)
+			}))
+			for _, i := range at {
+				shared := blobs[i].sharedTs
+				require.NotNil(t, shared, "member %d", i)
+				require.Len(t, shared.groups, 1, "member %d", i)
+				require.Equal(t, shared.first.offset, blobs[i].index.entryByName(target).TimestampOffset)
+				group := sharedTimestampGroup{offset: shared.first.offset, ts: shared.first.ts[:5]}
+				blobs[i].sharedTs = &sharedTimestamps{first: group, groups: []sharedTimestampGroup{group}}
+			}
+			got := requireMaterializeUses(t, blobs, target, whole)
+			require.Len(t, got.metric.Values, 8*30-len(at)*25, "shared groups short in members %v", at)
+		}
+	})
+
+	// The flips leave the value payloads and the index entries as encoded,
+	// so the first group's eight columns enter the kernel.
+	// A flip can end a Delta or DeltaPacked column early, which trims its member: at least one round must.
+	t.Run("timestamp bytes flipped", func(t *testing.T) {
+		rng := rand.New(rand.NewSource(71))
+		changed, trimmed := 0, 0
+		for round := range 30 {
+			members := craftedDenseMembers(16, chimpWith(encodings[round%len(encodings)].ts))
+			encoded := make([][]byte, len(members))
+			for i, m := range members {
+				encoded[i] = encodeSetTestMember(t, i, m)
+			}
+			intact := craftedReferenceOutcome(t, decodeEncodedMembers(t, encoded))
+			for _, i := range []int{1, 6, rng.Intn(len(encoded))} {
+				flipped := slices.Clone(encoded[i])
+				applyMaterializeFuzzFlip(t, flipped, materializeFuzzStep{op: 1, metric: byte(rng.Intn(8)), arg: uint16(rng.Intn(1 << 16))})
+				if decodeAccepts(flipped) {
+					encoded[i] = flipped
+				}
+			}
+			blobs := decodeEncodedMembers(t, encoded)
+			requireKernelColumns(t, blobs, target, 8, 16)
+			got := craftedReferenceOutcome(t, blobs)
+			if !sameMaterialization(intact, got) {
+				changed++
+			}
+			if len(got.metric.Values) < 16*30 {
+				trimmed++
+			}
+		}
+		t.Logf("%d of 30 rounds changed the result, %d trimmed a member", changed, trimmed)
+		require.Positive(t, changed, "rounds whose flips changed the result")
+		require.Positive(t, trimmed, "rounds whose flips trimmed a member")
+	})
+
+	// One member yields five of its 30 timestamps and another one of its 30 values, in either order,
+	// with a Gorilla member between them or not.
+	// The value column cut to its first value stays out of the kernel, and so does the Gorilla column.
+	t.Run("short timestamps and short values in one group", func(t *testing.T) {
+		for _, c := range []struct {
+			name                     string
+			tsShort, valShort, other int // members; other holds Gorilla values, or is -1
+		}{
+			{"timestamps, then values", 2, 5, -1},
+			{"values, then timestamps", 5, 2, -1},
+			{"timestamps, Gorilla, then values", 2, 5, 3},
+			{"values, Gorilla, then timestamps", 5, 2, 4},
+		} {
+			blobs := decodeSetTestMembers(t, craftedDenseMembers(8, func(i int) []NumericEncoderOption {
+				if i == c.other {
+					return ownTimestampOptions(format.TypeDelta, format.TypeGorilla)
+				}
+
+				return ownTimestampOptions(format.TypeDelta, format.TypeChimp)
+			}))
+			cutTimestampsTo(t, &blobs[c.tsShort], target, 5)
+			blobs[c.valShort].index.entryByName(target).ValueLength = 8
+			columns := 7
+			if c.other >= 0 {
+				columns = 6
+			}
+			got := requireMaterializeUses(t, blobs, target,
+				chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: columns, steps: 29, calls: 1})
+			require.Len(t, got.metric.Values, 8*30-25-29, c.name)
+		}
+	})
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupDamagedTags compares the materialize entry points with
+// referenceMaterializeMetric on groups of eight that mix members with tags and members without,
+// each with a member whose value column is cut to its first value, before or after the tag damage:
+// a tagged member whose tag range lies outside the tag payload, which yields no row,
+// one whose tag column is cut short, which yields fewer rows than its count, or no tag damage.
+// The members without tags are padded with as many empty tags as they yield values.
+// The cut value column stays out of the kernel and the other seven enter it.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupDamagedTags(t *testing.T) {
+	const target = craftedTarget
+	untagged := []int{3, 6}
+	build := func() []NumericBlob {
+		members := craftedDenseMembers(8, func(int) []NumericEncoderOption {
+			return ownTimestampOptions(format.TypeDeltaPacked, format.TypeChimp)
+		})
+		for i := range members {
+			members[i].tags = !slices.Contains(untagged, i)
+		}
+
+		return decodeSetTestMembers(t, members)
+	}
+	// Each damage returns the rows its member yields.
+	damages := []struct {
+		name   string
+		damage func(blob *NumericBlob) int
+	}{
+		{"no tag damage", func(*NumericBlob) int { return 30 }},
+		{"a tag range outside the tag payload", func(blob *NumericBlob) int {
+			blob.index.entryByName(target).TagOffset = len(blob.tagPayload) + 3
+			return 0
+		}},
+		{"a tag column cut short", func(blob *NumericBlob) int {
+			entry := blob.index.entryByName(target)
+			entry.TagLength /= 2
+			rows := blob.decodeTagsInto(*entry, make([]string, entry.Count))
+			require.Positive(t, rows)
+			require.Less(t, rows, entry.Count)
+
+			return rows
+		}},
+	}
+	for _, d := range damages {
+		// The value column is cut after the tags, before them in an untagged member, and before them in a tagged one.
+		for _, c := range []struct{ tags, values int }{{1, 6}, {5, 3}, {2, 0}} {
+			blobs := build()
+			rows := d.damage(&blobs[c.tags])
+			blobs[c.values].index.entryByName(target).ValueLength = 8
+			got := requireMaterializeUses(t, blobs, target,
+				chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 7, steps: 29, calls: 1})
+			require.Len(t, got.metric.Values, 8*30-(30-rows)-29, "%s in member %d, values cut in member %d", d.name, c.tags, c.values)
+		}
+	}
+
+	// The first group's constant columns are too sparse for the kernel, so it is left alone
+	// and the members behind it are appended one at a time, by appendMembersInTurn.
+	// The tagged member there yields one value of 30 and leaves the tags it decoded past its row in the capacity;
+	// the member without tags behind it, also cut to one value, pads one row, so those tags stay.
+	t.Run("short members with and without tags behind a group left alone", func(t *testing.T) {
+		members := craftedDenseMembers(10, func(int) []NumericEncoderOption {
+			return ownTimestampOptions(format.TypeDelta, format.TypeChimp)
+		})
+		for i := range 8 {
+			members[i].cols[0] = slices.Repeat([]float64{float64(i) + 0.25}, 30)
+		}
+		for i := range 9 {
+			members[i].tags = true
+		}
+		blobs := decodeSetTestMembers(t, members)
+		for _, i := range []int{8, 9} {
+			blobs[i].index.entryByName(target).ValueLength = 8
+		}
+		got := requireMaterializeUses(t, blobs, target, chimpGroupUse{grouped: 1, groups: 1})
+		require.Len(t, got.metric.Values, 8*30+2)
+		require.NotEmpty(t, got.metric.Tags[:cap(got.metric.Tags)][8*30+2], "a tag of the short member with tags past the rows")
+	})
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupPanics compares the materialize entry points with
+// referenceMaterializeMetric on groups of eight with faulty members, which must panic as the reference does,
+// with the same value: a timestamp range outside its payload, a value range outside its payload,
+// and an ALP column cut in memory, which its decoder reads past;
+// one member with one fault or two, and two faulty members, the later a Chimp member whose whole column gets a lane.
+// Each fault has bounds of its own, so the panic value tells which fault was met first.
+// The fourth member holds ALP values and the others Chimp values.
+// Without a fault the group is decoded ahead with the kernel's seven Chimp columns, and so it is with the faults,
+// up to the member that panics: the hook reports nothing then, so the set without a fault pins the kernel.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupPanics(t *testing.T) {
+	const target = craftedTarget
+	type fault struct {
+		member int
+		kind   string
+	}
+	faults := map[string]func(blob *NumericBlob){
+		"timestamps": func(blob *NumericBlob) { blob.index.entryByName(target).TimestampOffset = cap(blob.tsPayload) + 1 },
+		"values":     func(blob *NumericBlob) { blob.index.entryByName(target).ValueOffset = cap(blob.valPayload) + 3 },
+		"ALP cut":    func(blob *NumericBlob) { blob.index.entryByName(target).ValueLength /= 2 },
+		"short":      func(blob *NumericBlob) { blob.index.entryByName(target).ValueLength = 8 }, // one value, no panic
+	}
+	build := func(with ...fault) []NumericBlob {
+		blobs := decodeSetTestMembers(t, craftedDenseMembers(8, func(i int) []NumericEncoderOption {
+			if i == 3 {
+				return ownTimestampOptions(format.TypeDelta, format.TypeALP)
+			}
+
+			return ownTimestampOptions(format.TypeDelta, format.TypeChimp)
+		}))
+		for _, f := range with {
+			faults[f.kind](&blobs[f.member])
+		}
+
+		return blobs
+	}
+	panicOf := func(with ...fault) string {
+		t.Helper()
+		out := requireMaterializeMatchesReference(t, build(with...), target)
+		require.True(t, out.panicked, "%v", with)
+
+		return out.panicVal
+	}
+
+	requireMaterializeUses(t, build(), target, chimpGroupUse{grouped: 1, groups: 1, ahead: 1, columns: 7, steps: 29, calls: 1})
+
+	single := map[fault]string{}
+	for _, f := range []fault{{3, "timestamps"}, {3, "values"}, {3, "ALP cut"}, {5, "timestamps"}, {5, "values"}} {
+		single[f] = panicOf(f)
+	}
+	for a, va := range single {
+		for b, vb := range single {
+			if a != b {
+				require.NotEqual(t, va, vb, "%v and %v panic alike", a, b)
+			}
+		}
+	}
+
+	// Two faults of the ALP member, each pair with the fault that is met first.
+	// The value range is sliced before the column is decoded, so with an ALP cut it panics at the cut length.
+	ts, values, cut := fault{3, "timestamps"}, fault{3, "values"}, fault{3, "ALP cut"}
+	require.Equal(t, single[ts], panicOf(ts, values), "timestamps and values")
+	require.Equal(t, single[ts], panicOf(ts, cut), "timestamps and an ALP cut")
+	valueRangePanic := func(with ...fault) string {
+		blob := build(with...)[3]
+		entry := blob.index.entryByName(target)
+
+		return fmt.Sprintf("runtime.boundsError: runtime error: slice bounds out of range [:%d] with capacity %d",
+			entry.ValueOffset+entry.ValueLength, cap(blob.valPayload))
+	}
+	require.Equal(t, valueRangePanic(values), single[values])
+	require.Equal(t, valueRangePanic(values, cut), panicOf(values, cut), "values and an ALP cut")
+	require.NotEqual(t, single[values], panicOf(values, cut), "the cut length is in the value range's bounds")
+
+	// Two faulty members: the later Chimp member's column is whole, so it has a lane and is decoded ahead,
+	// and its own fault, met later, must not be the panic.
+	later := fault{5, "timestamps"}
+	require.Equal(t, single[cut], panicOf(cut, later), "an ALP cut before a Chimp member with a lane")
+	require.Equal(t, single[values], panicOf(values, later), "values before a Chimp member with a lane")
+	// A member that comes up short clears the values decoded ahead; the later fault panics on the rows as they are then.
+	require.Equal(t, single[later], panicOf(fault{1, "short"}, later), "a short member before a Chimp member with a lane")
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupDamageMatrix damages one member of a group of eight before Decode,
+// a member of every value encoding on each side that applies to it: its value, timestamp and tag payloads,
+// the timestamp side once per timestamp encoding.
+// The damaged member is the fourth; the seven others hold whole Chimp columns, which enter the kernel.
+// Bits are flipped until Decode accepts the member and the reference's result for the metric changes.
+// A cell where no flip changed it fails the test: a damage that changes nothing tests nothing.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupDamageMatrix(t *testing.T) {
+	const target = craftedTarget
+	sides := []string{"value", "timestamp", "tag"} // the ops of applyMaterializeFuzzFlip
+	type cell struct {
+		val, ts format.EncodingType
+		side    byte
+	}
+	var cells []cell
+	for _, val := range []format.EncodingType{format.TypeChimp, format.TypeALP, format.TypeALPRLE, format.TypeGorilla, format.TypeRaw} {
+		cells = append(cells, cell{val, format.TypeDelta, 0}, cell{val, format.TypeDelta, 2})
+		for _, ts := range []format.EncodingType{format.TypeRaw, format.TypeDelta, format.TypeDeltaPacked} {
+			cells = append(cells, cell{val, ts, 1})
+		}
+	}
+
+	rng := rand.New(rand.NewSource(83))
+	var unchanged []string
+	for _, c := range cells {
+		members := craftedDenseMembers(8, func(i int) []NumericEncoderOption {
+			if i == 3 {
+				return ownTimestampOptions(c.ts, c.val)
+			}
+
+			return ownTimestampOptions(format.TypeDelta, format.TypeChimp)
+		})
+		members[3].tags = true
+		encoded := make([][]byte, len(members))
+		for i, m := range members {
+			encoded[i] = encodeSetTestMember(t, i, m)
+		}
+		intact := craftedReferenceOutcome(t, decodeEncodedMembers(t, encoded))
+		member := encoded[3]
+		tries, accepted := 0, 0
+		changed := false
+		for ; tries < 200 && !changed; tries++ {
+			encoded[3] = slices.Clone(member)
+			applyMaterializeFuzzFlip(t, encoded[3], materializeFuzzStep{op: c.side, metric: byte(rng.Intn(8)), arg: uint16(rng.Intn(1 << 16))})
+			if !decodeAccepts(encoded[3]) {
+				continue
+			}
+			accepted++
+			blobs := decodeEncodedMembers(t, encoded)
+			if sameMaterialization(intact, craftedReferenceOutcome(t, blobs)) {
+				continue
+			}
+			changed = true
+			requireKernelColumns(t, blobs, target, 7, 8)
+		}
+		what := fmt.Sprintf("%v values, %v timestamps, %s side", c.val, c.ts, sides[c.side])
+		t.Logf("%s: changed=%v after %d flips, %d accepted", what, changed, tries, accepted)
+		if !changed {
+			unchanged = append(unchanged, what)
+		}
+	}
+	require.Empty(t, unchanged, "cells whose damage changed nothing")
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupOnByDefault pins that the public entry points use the group decode
+// as the package initialises it, without a test setting the switch: on a machine that has the kernel,
+// a group of eight dense Chimp members is decoded ahead with its eight columns in the kernel.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupOnByDefault(t *testing.T) {
+	require.Equal(t, ienc.ChimpGroupDecodeEnabled(), chimpGroupDecode, "the switch as the package initialises it")
+	blobs := decodeSetTestMembers(t, craftedDenseMembers(8, func(int) []NumericEncoderOption {
+		return consumerShapeOptions(format.TypeChimp)
+	}))
+	var columns int
+	chimpGroupObserve = func(_, _, c, _, _ int) { columns += c }
+	defer func() { chimpGroupObserve = nil }()
+	metric, ok := NewBlobSet(blobs, nil).MaterializeNumericMetricByName(craftedTarget)
+	require.True(t, ok)
+	require.Len(t, metric.Values, 8*30)
+	if chimpGroupKernelRuns(t) {
+		require.Equal(t, 8, columns, "columns in the kernel")
+	}
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceRandomSets compares the materialize entry points with
+// referenceMaterializeMetric on 400 random sets of 1 to 30 members.
+// Every other set is all Chimp in the consumer's shape; the others mix every variant of mixedSetVariants.
+// Members hold 1 to 45 points of every kind of value, and all but the first metric are missing from some members.
+// Every third set is damaged like a program of FuzzNumericBlobSetMaterializeMetric, in members of any encoding:
+// a bit of a value, timestamp or tag payload flipped before Decode, or an index entry edited after it.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupMatchesReferenceRandomSets(t *testing.T) {
+	rng := rand.New(rand.NewSource(67))
+	names := materializeFuzzNames
+	variants := mixedSetVariants()
+	var total chimpGroupUse
+	for round := range 400 {
+		encoded := make([][]byte, 1+rng.Intn(30))
+		for i := range encoded {
+			m := variants[rng.Intn(len(variants))]
+			if rng.Intn(3) > 0 {
+				m = variants[rng.Intn(mixedSetChimpVariants)]
+			}
+			if round%2 == 0 {
+				m = variants[0]
+			}
+			n := 30 + rng.Intn(11)
+			switch rng.Intn(10) {
+			case 0:
+				n = 1 + rng.Intn(3)
+			case 1:
+				n = 1 + rng.Intn(materializeFuzzMaxCount)
+			default:
+			}
+			kind := byte(rng.Intn(materializeFuzzKinds))
+			for k, name := range names {
+				if k == 0 || rng.Intn(8) > 0 { // every member holds the first metric
+					m.names = append(m.names, name)
+					m.cols = append(m.cols, materializeFuzzColumn(kind, round*30+i, k, n))
+				}
+			}
+			encoded[i] = encodeSetTestMember(t, i, m)
+		}
+
+		type edit struct {
+			member int
+			step   materializeFuzzStep
+		}
+		var edits []edit
+		if round%3 == 0 {
+			for range 1 + rng.Intn(3) {
+				i := rng.Intn(len(encoded))
+				step := materializeFuzzStep{op: byte(rng.Intn(materializeFuzzOps)), metric: byte(rng.Intn(256)), arg: uint16(rng.Intn(1 << 16))}
+				if step.op >= 3 {
+					edits = append(edits, edit{i, step})
+
+					continue
+				}
+				// A flip Decode rejects never reaches a set: the member keeps its bytes.
+				flipped := slices.Clone(encoded[i])
+				applyMaterializeFuzzFlip(t, flipped, step)
+				if dec, err := NewNumericDecoder(flipped); err == nil {
+					if _, err = dec.Decode(); err == nil {
+						encoded[i] = flipped
+					}
+				}
+			}
+		}
+		blobs := make([]NumericBlob, len(encoded))
+		for i, data := range encoded {
+			blobs[i] = decodeSetTestMember(t, data)
+		}
+		for _, e := range edits {
+			applyMaterializeFuzzEdit(&blobs[e.member], e.step)
+		}
+
+		for _, name := range names {
+			_, uses := materializeAgainstReference(t, blobs, name)
+			total.grouped += uses[0].grouped
+			total.groups += uses[0].groups
+			total.ahead += uses[0].ahead
+			total.columns += uses[0].columns
+			total.steps += uses[0].steps
+			total.calls += uses[0].calls
+		}
+		requireMaterializeUses(t, blobs, "absent", chimpGroupUse{})
+	}
+
+	t.Logf("the grouped loop ran %d times and decoded %d of %d groups ahead; the kernel took %d columns and completed %d steps in %d calls",
+		total.grouped, total.ahead, total.groups, total.columns, total.steps, total.calls)
+	require.Positive(t, total.grouped, "runs of the grouped loop")
+	require.Positive(t, total.ahead, "groups decoded ahead")
+	require.Less(t, total.ahead, total.groups, "groups decoded ahead, of the groups asked")
+	if chimpGroupKernelRuns(t) {
+		require.Positive(t, total.columns, "columns in the kernel")
+		require.Positive(t, total.steps, "kernel steps")
+	}
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupGuardPage ends every member's value payload at an inaccessible page,
+// so a read past a payload faults.
+// The last two metrics hold one point, which leaves 16 bytes of the payload after the third metric's column
+// and 8 after the fourth's; with the payload's last byte dropped they are 15 and 7.
+// Only a column with 16 bytes or more after it may enter the kernel.
+// Every column claims eight more points than it holds, so the kernel walks to the column's last bit
+// and reads the bytes after it.
+// A member that claims more than it holds comes up short, and the rows never catch up with its range again:
+// only the first group of eight members is asked. Where its columns may enter the kernel it is decoded ahead,
+// in one kernel call, which completes at least as many steps as its shortest column holds values after the first.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupGuardPage(t *testing.T) {
+	names := payloadOrderedNames(t, 5)
+	kernel := chimpGroupKernelRuns(t)
+	for round := range 12 {
+		for _, drop := range []int{0, 1} {
+			counts := make([]int, 12)
+			for i := range counts {
+				counts[i] = 30 + (i+round)%9
+			}
+			members := denseSetMembers(names, counts)
+			blobs := make([]NumericBlob, len(members))
+			for i, m := range members {
+				m.cols[3], m.cols[4] = m.cols[3][:1], m.cols[4][:1]
+				blobs[i] = decodeSetTestMember(t, encodeSetTestMember(t, i, m))
+				// Decode rejects a blob cut short, so the payload is moved and shortened after decoding,
+				// and the last column's entry follows.
+				guarded, ok := fuzzGuardedCopy(t, blobs[i].valPayload[:len(blobs[i].valPayload)-drop])
+				if !ok {
+					t.Skip("guard pages are unavailable")
+				}
+				blobs[i].valPayload = guarded
+				blobs[i].index.entryByName(names[4]).ValueLength -= drop
+				require.Equal(t, 16-drop, valueSlackAfter(&blobs[i], names[2]))
+				require.Equal(t, 8-drop, valueSlackAfter(&blobs[i], names[3]))
+				require.Zero(t, valueSlackAfter(&blobs[i], names[4]))
+				for k := range blobs[i].index.sorted {
+					blobs[i].index.sorted[k].Count += 8
+				}
+			}
+
+			minSteps := slices.Min(counts[:8]) - 1
+			for k, name := range names {
+				out, uses := materializeAgainstReference(t, blobs, name)
+				require.False(t, out.panicked, "%s with %d bytes dropped: %s", name, drop, out.panicVal)
+				for _, use := range uses {
+					enters := k < 2 || k == 2 && drop == 0
+					require.Equal(t, 1, use.grouped, name)
+					require.Equal(t, 1, use.groups, "%s with %d bytes dropped: groups asked", name, drop)
+					require.Equal(t, enters, use.ahead == 1, "%s with %d bytes dropped: groups decoded ahead: %d", name, drop, use.ahead)
+					switch {
+					case !kernel:
+					case enters:
+						require.Equal(t, 8, use.columns, "%s with %d bytes dropped: columns in the kernel", name, drop)
+						require.Equal(t, 1, use.calls, "%s with %d bytes dropped: kernel calls", name, drop)
+						require.GreaterOrEqual(t, use.steps, minSteps, "%s with %d bytes dropped: kernel steps", name, drop)
+					default:
+						require.Zero(t, use.columns, "%s with %d bytes dropped entered the kernel", name, drop)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestNumericBlobSet_MaterializeMetric_ConcurrentMatchesReference materializes the metrics of one set from eight
+// goroutines at once through the grouped loop, and compares every result with the reference.
+// Each call keeps its group on its own stack, so the calls share nothing but the set, which they only read.
+// One member is cut short, so the calls also clear and decode again.
+func TestNumericBlobSet_MaterializeMetric_ConcurrentMatchesReference(t *testing.T) {
+	names := payloadOrderedNames(t, 5)
+	counts := make([]int, 40)
+	for i := range counts {
+		counts[i] = 30 + (i*7)%11
+	}
+	blobs := decodeSetTestMembers(t, denseSetMembers(names, counts))
+	blobs[9].index.entryByName(names[0]).ValueLength = 8
+	numericSet, err := NewNumericBlobSet(blobs)
+	require.NoError(t, err)
+	blobSet := NewBlobSet(blobs, nil)
+	want := make([]materializeOutcome, len(names))
+	for k, name := range names {
+		want[k] = catchMaterialize(func() (MaterializedNumericMetric, bool) {
+			return referenceMaterializeMetricByName(&numericSet, name)
+		})
+		require.True(t, want[k].ok, name)
+	}
+
+	defer func(prev bool) { chimpGroupDecode = prev }(chimpGroupDecode)
+	chimpGroupDecode = true
+	const goroutines, rounds = 8, 25
+	got := make([][]materializeOutcome, goroutines)
+	var wg sync.WaitGroup
+	for g := range got {
+		got[g] = make([]materializeOutcome, rounds)
+		wg.Go(func() {
+			for r := range got[g] {
+				name := names[(g+r)%len(names)]
+				got[g][r] = catchMaterialize(func() (MaterializedNumericMetric, bool) {
+					return blobSet.MaterializeNumericMetricByName(name)
+				})
+			}
+		})
+	}
+	wg.Wait()
+
+	for g := range got {
+		for r, out := range got[g] {
+			k := (g + r) % len(names)
+			requireSameMaterialization(t, fmt.Sprintf("goroutine %d, call %d, %s", g, r, names[k]), want[k], out)
+		}
+	}
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupFuzzSeeds pins that the seed corpus of
+// FuzzNumericBlobSetMaterializeMetric reaches the group decode:
+// the kernel takes columns in at least one seed, and the two crafted seeds decode a group ahead that holds
+// a member which comes up short.
+// In the first, the short member opens the only group with four Chimp columns, and the kernel takes that group's seven:
+// they were decoded ahead of a short member, so the values behind it were cleared and decoded again.
+// The three members behind that group are asked as a group and not decoded ahead.
+// In the second, the kernel takes the eight columns of the first group and the five of the last and no others,
+// and only those two groups are asked, so the three members behind the short one were appended one at a time.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupFuzzSeeds(t *testing.T) {
+	seeds := materializeFuzzSeeds(t)
+	withColumns := 0
+	for _, seed := range seeds {
+		blobs := buildMaterializeFuzzSet(t, seed)
+		columns := 0
+		for _, name := range materializeFuzzNames {
+			_, uses := materializeAgainstReference(t, blobs, name)
+			columns += uses[0].columns
+		}
+		if columns > 0 {
+			withColumns++
+		}
+	}
+	if chimpGroupKernelRuns(t) {
+		require.Positive(t, withColumns, "seeds in which the kernel takes columns")
+	}
+
+	name := materializeFuzzNames[materializeFuzzSeedMetric]
+	short := requireMaterializeUses(t, buildMaterializeFuzzSet(t, seeds[len(seeds)-2]), name,
+		chimpGroupUse{grouped: 1, groups: 2, ahead: 1, columns: 6, steps: 29, calls: 2})
+	require.Len(t, short.metric.Values, 1+8+4+8*30)
+	require.Equal(t, 8+8+4+8*30, cap(short.metric.Values), "the first member yields one row of its eight")
+
+	across := requireMaterializeUses(t, buildMaterializeFuzzSet(t, seeds[len(seeds)-1]), name,
+		chimpGroupUse{grouped: 1, groups: 2, ahead: 2, columns: 8 + 5, steps: 2 * 29, calls: 2})
+	require.Len(t, across.metric.Values, 7*30+5+1+20+6*30)
+	require.Equal(t, 7*30+40+8+20+6*30, cap(across.metric.Values), "the eighth member yields five rows of its 40")
+}
+
+// TestNumericBlobSet_MaterializeMetric_ChimpGroupAllocations pins that materializing a metric of a set in the
+// consumer's shape allocates what the reference allocates, with the group decode off and with it on:
+// the group and its scratch rows stay on the stack.
+func TestNumericBlobSet_MaterializeMetric_ChimpGroupAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("race detector adds allocations")
+	}
+	set := buildSetFixture(t, consumerSetFixture())
+	numericSet, err := NewNumericBlobSet(set.NumericBlobs())
+	require.NoError(t, err)
+
+	defer func(prev bool) { chimpGroupDecode = prev }(chimpGroupDecode)
+	// A gauge, a counter, a near-constant column and a full-precision gauge of the mix.
+	for _, m := range []int{0, 40, 60, 99} {
+		name := setFixtureName(m)
+		want := testing.AllocsPerRun(5, func() {
+			referenceMaterializeMetricByName(&numericSet, name)
+		})
+		for _, on := range []bool{false, true} {
+			chimpGroupDecode = on
+			got := testing.AllocsPerRun(5, func() {
+				set.MaterializeNumericMetricByName(name)
+			})
+			require.Equal(t, want, got, "%s with the group decode on=%v: allocations per call", name, on)
+		}
+	}
 }
 
 // FuzzNumericBlobSetMaterializeMetric compares the four entry points that materialize one metric of a set with
@@ -1715,7 +2795,7 @@ func referenceMaterializeMetricByID(s *NumericBlobSet, metricID uint64) (Materia
 func catchMaterialize(call func() (MaterializedNumericMetric, bool)) (out materializeOutcome) {
 	defer func() {
 		if r := recover(); r != nil {
-			out = materializeOutcome{panicked: true, panicVal: fmt.Sprintf("%T: %v", r, r)}
+			out = materializeOutcome{panicked: true, panicVal: fmt.Sprintf("%T: %v", r, r), panicRaw: r}
 		}
 	}()
 	out.metric, out.ok = call()
@@ -1746,6 +2826,8 @@ func requireSameMaterialization(t *testing.T, what string, want, got materialize
 	require.Equal(t, want.panicked, got.panicked, "%s: panicked (want %q, got %q)", what, want.panicVal, got.panicVal)
 	if want.panicked {
 		require.Equal(t, want.panicVal, got.panicVal, "%s: panic value", what)
+		// Two values can print alike: the values themselves are compared too.
+		require.Equal(t, want.panicRaw, got.panicRaw, "%s: panic value behind the message", what)
 
 		return
 	}
@@ -1763,10 +2845,147 @@ func requireSameMaterialization(t *testing.T, what string, want, got materialize
 // public entry points, NumericBlobSet.MaterializeMetricByName and MaterializeMetric and
 // BlobSet.MaterializeNumericMetricByName and MaterializeNumericMetric, and requires each to return or panic exactly as
 // referenceMaterializeMetric does with the resolve function its entry point builds.
+// Every entry point is called twice, with chimpGroupDecode off and with it on,
+// so both loops of materializeMetricCore are compared with the reference on every machine:
+// whether a group is decoded ahead does not depend on the CPU,
+// so without the kernel the grouped loop still decodes the same groups ahead, one column at a time.
 // The ID entry points get the ID the by-name ones resolve, or the name's hash when no blob has the name:
 // MaterializeMetricByName returns before materializeMetricCore for an absent name, and MaterializeMetric does not.
 // It returns the reference's outcome by name, so a fixture can pin the result it was built for.
 func requireMaterializeMatchesReference(t *testing.T, blobs []NumericBlob, name string) materializeOutcome {
+	t.Helper()
+	out, _ := materializeAgainstReference(t, blobs, name)
+
+	return out
+}
+
+// requireMaterializeUses is requireMaterializeMatchesReference that also pins what the group decode did
+// for each of the four entry points: whether the grouped loop ran, the groups it asked to decode ahead
+// and the groups it did decode ahead, which no machine's CPU changes, and,
+// on a machine that has the kernel, the columns the kernel took, the steps it completed and its calls.
+func requireMaterializeUses(t *testing.T, blobs []NumericBlob, name string, want chimpGroupUse) materializeOutcome {
+	t.Helper()
+	out, uses := materializeAgainstReference(t, blobs, name)
+	kernel := chimpGroupKernelRuns(t)
+	for i, use := range uses {
+		require.Equal(t, want.grouped, use.grouped, "%s: runs of the grouped loop for entry point %d", name, i)
+		require.Equal(t, want.groups, use.groups, "%s: groups asked by entry point %d", name, i)
+		require.Equal(t, want.ahead, use.ahead, "%s: groups decoded ahead by entry point %d", name, i)
+		if kernel {
+			require.Equal(t, want, use, "%s: use of the group decode by entry point %d", name, i)
+		}
+	}
+
+	return out
+}
+
+// requireKernelColumns is requireMaterializeMatchesReference for a metric that at least four Chimp members hold,
+// on a set where what the kernel does depends on the data.
+// It requires that the grouped loop ran and, on a machine that has the kernel,
+// that the kernel took between minColumns and maxColumns columns, for each of the four entry points.
+func requireKernelColumns(t *testing.T, blobs []NumericBlob, name string, minColumns, maxColumns int) {
+	t.Helper()
+	_, uses := materializeAgainstReference(t, blobs, name)
+	kernel := chimpGroupKernelRuns(t)
+	for i, use := range uses {
+		require.Equal(t, 1, use.grouped, "%s: runs of the grouped loop for entry point %d", name, i)
+		if kernel {
+			require.GreaterOrEqual(t, use.columns, minColumns, "%s: columns in the kernel for entry point %d", name, i)
+			require.LessOrEqual(t, use.columns, maxColumns, "%s: columns in the kernel for entry point %d", name, i)
+		}
+	}
+}
+
+// denseSetUse returns what the group decode does for the named metric of a set of well-formed Chimp members
+// whose columns average 12 bits a value or more and hold only values the kernel takes,
+// which is what the full-precision columns of denseSetMembers are.
+// It applies the rules, and decodes nothing.
+// The members that hold the metric are taken eight at a time, and the grouped loop runs when there are at least four.
+// A column can enter the kernel when it has two values or more and 16 bytes of its payload after it,
+// and a group's columns enter when at least four of them can: the group is then decoded ahead.
+// The first group that is not decoded ahead is the last one asked.
+// The kernel runs in rounds, each as long as the fewest values a column still wants, until fewer than four columns
+// are unfinished: so it completes as many steps as the group's fourth-largest count less the first value,
+// in one call per distinct count up to that one.
+func denseSetUse(blobs []NumericBlob, name string) chimpGroupUse {
+	var counts []int // per member that holds the metric: its count, or 0 for a column that cannot enter the kernel
+	for i := range blobs {
+		entry := blobs[i].index.entryByName(name)
+		if entry == nil {
+			continue
+		}
+		count := entry.Count
+		if count < 2 || valueSlackAfter(&blobs[i], name) < 16 {
+			count = 0
+		}
+		counts = append(counts, count)
+	}
+	if len(counts) < 4 {
+		return chimpGroupUse{}
+	}
+
+	use := chimpGroupUse{grouped: 1}
+	for group := range slices.Chunk(counts, 8) {
+		use.groups++
+		lanes := slices.DeleteFunc(slices.Sorted(slices.Values(group)), func(count int) bool { return count == 0 })
+		if len(lanes) < 4 {
+			break
+		}
+		use.ahead++
+		use.columns += len(lanes)
+		use.steps += lanes[len(lanes)-4] - 1
+		use.calls += len(slices.Compact(lanes[:len(lanes)-3]))
+	}
+
+	return use
+}
+
+// requireDenseSetUses runs requireMaterializeUses for every name of a set of dense Chimp members,
+// and for a name no blob has.
+// The columns of names[:roomy] have more than 16 bytes of their payload after them in every member,
+// and want is what the group decode does for each of them, derived by hand for the fixture.
+// The last name's column ends every payload, so it never enters the kernel:
+// where the grouped loop runs, its first group is not decoded ahead and is the only one asked.
+// For the names between, the room depends on the encoded size of the columns behind, and denseSetUse applies the rules.
+func requireDenseSetUses(t *testing.T, blobs []NumericBlob, names []string, roomy int, want chimpGroupUse) {
+	t.Helper()
+	last := len(names) - 1
+	for k, name := range names {
+		switch {
+		case k < roomy:
+			require.Equal(t, want, denseSetUse(blobs, name), "%s: the rules give what the fixture was derived for", name)
+			requireMaterializeUses(t, blobs, name, want)
+		case k < last:
+			requireMaterializeUses(t, blobs, name, denseSetUse(blobs, name))
+		default:
+			require.Zero(t, denseSetUse(blobs, name).columns, "%s ends its payload", name)
+			requireMaterializeUses(t, blobs, name, chimpGroupUse{grouped: want.grouped, groups: want.grouped})
+		}
+	}
+	requireMaterializeUses(t, blobs, "absent", chimpGroupUse{})
+}
+
+// chimpGroupKernelRuns reports whether the group decode's kernel runs on this machine.
+// Where it does not, a test still compares every result with the reference, and skips what it pins about the kernel.
+// MEBO_REQUIRE_AVX512=1 turns that skip into a failure:
+// set it on a runner meant to execute the kernel, so its pins cannot pass by being skipped.
+func chimpGroupKernelRuns(tb testing.TB) bool {
+	tb.Helper()
+	if ienc.ChimpGroupDecodeEnabled() {
+		return true
+	}
+	if os.Getenv("MEBO_REQUIRE_AVX512") == "1" {
+		tb.Fatal("the Chimp group decode kernel cannot run on this machine, and MEBO_REQUIRE_AVX512=1")
+	}
+
+	return false
+}
+
+// materializeAgainstReference does the comparison of requireMaterializeMatchesReference.
+// It returns the reference's outcome by name and, for each of the four entry points in the order given there,
+// what the call with chimpGroupDecode on reported to chimpGroupObserve.
+// With the switch off the hook must stay silent: the grouped loop is not taken.
+func materializeAgainstReference(t *testing.T, blobs []NumericBlob, name string) (materializeOutcome, [4]chimpGroupUse) {
 	t.Helper()
 	numericSet, err := NewNumericBlobSet(blobs)
 	require.NoError(t, err)
@@ -1787,7 +3006,7 @@ func requireMaterializeMatchesReference(t *testing.T, blobs []NumericBlob, name 
 	byID := catchMaterialize(func() (MaterializedNumericMetric, bool) {
 		return referenceMaterializeMetricByID(&numericSet, metricID)
 	})
-	calls := []struct {
+	calls := [4]struct {
 		what string
 		want materializeOutcome
 		call func() (MaterializedNumericMetric, bool)
@@ -1805,11 +3024,34 @@ func requireMaterializeMatchesReference(t *testing.T, blobs []NumericBlob, name 
 			return blobSet.MaterializeNumericMetric(metricID)
 		}},
 	}
-	for _, c := range calls {
-		requireSameMaterialization(t, name+" through "+c.what, c.want, catchMaterialize(c.call))
+
+	var uses [4]chimpGroupUse
+	defer func(prev bool) { chimpGroupDecode, chimpGroupObserve = prev, nil }(chimpGroupDecode)
+	for _, on := range []bool{false, true} {
+		chimpGroupDecode = on
+		for i, c := range calls {
+			var use chimpGroupUse
+			chimpGroupObserve = func(groups, ahead, columns, steps, kernelCalls int) {
+				use.grouped++
+				use.groups += groups
+				use.ahead += ahead
+				use.columns += columns
+				use.steps += steps
+				use.calls += kernelCalls
+			}
+			got := catchMaterialize(c.call)
+			chimpGroupObserve = nil
+			what := fmt.Sprintf("%s through %s with the group decode on=%v", name, c.what, on)
+			requireSameMaterialization(t, what, c.want, got)
+			if on {
+				uses[i] = use
+			} else {
+				require.Zero(t, use, "%s: the grouped loop ran", what)
+			}
+		}
 	}
 
-	return byName
+	return byName, uses
 }
 
 // requireAllMatchReference runs requireMaterializeMatchesReference for every name and for a name no blob has.
@@ -1930,6 +3172,63 @@ func craftedMember(opts []NumericEncoderOption, col []float64) setTestMember {
 	}
 
 	return setTestMember{opts: opts, names: []string{craftedTarget, craftedCompanion}, cols: [][]float64{col, other}}
+}
+
+// craftedDenseMembers returns n crafted members of 30 full-precision points,
+// member i with the options opts returns for it.
+func craftedDenseMembers(n int, opts func(i int) []NumericEncoderOption) []setTestMember {
+	members := make([]setTestMember, n)
+	for i := range members {
+		members[i] = craftedMember(opts(i), setValueColumn(setKindFullPrec, 30, 1000+float64(i), int64(i)+1))
+	}
+
+	return members
+}
+
+// ownTimestampOptions are the options of a little-endian V2 member whose metrics have timestamp columns of their own.
+func ownTimestampOptions(ts, val format.EncodingType) []NumericEncoderOption {
+	return []NumericEncoderOption{WithLittleEndian(), WithBlobLayoutV2(), WithTimestampEncoding(ts), WithValueEncoding(val)}
+}
+
+// decodeAccepts reports whether Decode accepts an encoded member.
+func decodeAccepts(data []byte) bool {
+	dec, err := NewNumericDecoder(data)
+	if err != nil {
+		return false
+	}
+	_, err = dec.Decode()
+
+	return err == nil
+}
+
+// decodeEncodedMembers decodes every encoded member and fails if Decode rejects one.
+func decodeEncodedMembers(tb testing.TB, encoded [][]byte) []NumericBlob {
+	tb.Helper()
+	blobs := make([]NumericBlob, len(encoded))
+	for i, data := range encoded {
+		blobs[i] = decodeSetTestMember(tb, data)
+	}
+
+	return blobs
+}
+
+// craftedReferenceOutcome materializes craftedTarget of a set of the given blobs with referenceMaterializeMetricByName.
+func craftedReferenceOutcome(tb testing.TB, blobs []NumericBlob) materializeOutcome {
+	tb.Helper()
+	set, err := NewNumericBlobSet(blobs)
+	require.NoError(tb, err)
+
+	return catchMaterialize(func() (MaterializedNumericMetric, bool) {
+		return referenceMaterializeMetricByName(&set, craftedTarget)
+	})
+}
+
+// sameMaterialization reports whether two outcomes are equal in their rows:
+// the panic, ok, timestamps, tags and value bits.
+func sameMaterialization(a, b materializeOutcome) bool {
+	return a.panicked == b.panicked && a.panicVal == b.panicVal && a.ok == b.ok &&
+		slices.Equal(a.metric.Timestamps, b.metric.Timestamps) && slices.Equal(a.metric.Tags, b.metric.Tags) &&
+		slices.EqualFunc(a.metric.Values, b.metric.Values, func(x, y float64) bool { return math.Float64bits(x) == math.Float64bits(y) })
 }
 
 // payloadOrderedNames returns n metric names in the order their value columns take in a payload
@@ -2098,23 +3397,7 @@ func buildMaterializeFuzzSet(tb testing.TB, program []byte) []NumericBlob {
 
 	// Flips first, on the encoded bytes.
 	for _, s := range steps {
-		data := encoded[int(s.member)%len(encoded)]
-		header, err := section.ParseNumericHeader(data)
-		require.NoError(tb, err)
-		var start, end int
-		switch s.op % materializeFuzzOps {
-		case 0:
-			start, end = int(header.ValuePayloadOffset), int(header.TagPayloadOffset)
-		case 1:
-			start, end = int(header.TimestampPayloadOffset), int(header.ValuePayloadOffset)
-		case 2:
-			start, end = int(header.TagPayloadOffset), len(data)
-		default:
-			continue
-		}
-		if start < end && end <= len(data) {
-			data[start+int(s.arg)%(end-start)] ^= 1 << (s.metric % 8)
-		}
+		applyMaterializeFuzzFlip(tb, encoded[int(s.member)%len(encoded)], s)
 	}
 
 	blobs := make([]NumericBlob, len(members))
@@ -2146,6 +3429,28 @@ func buildMaterializeFuzzSet(tb testing.TB, program []byte) []NumericBlob {
 	}
 
 	return kept
+}
+
+// applyMaterializeFuzzFlip applies one flip step of a fuzz program to an encoded member.
+// A step that is not a flip leaves the bytes as they are.
+func applyMaterializeFuzzFlip(tb testing.TB, data []byte, s materializeFuzzStep) {
+	tb.Helper()
+	header, err := section.ParseNumericHeader(data)
+	require.NoError(tb, err)
+	var start, end int
+	switch s.op % materializeFuzzOps {
+	case 0:
+		start, end = int(header.ValuePayloadOffset), int(header.TagPayloadOffset)
+	case 1:
+		start, end = int(header.TimestampPayloadOffset), int(header.ValuePayloadOffset)
+	case 2:
+		start, end = int(header.TagPayloadOffset), len(data)
+	default:
+		return
+	}
+	if start < end && end <= len(data) {
+		data[start+int(s.arg)%(end-start)] ^= 1 << (s.metric % 8)
+	}
 }
 
 // applyMaterializeFuzzEdit applies one edit step of a fuzz program to a decoded member.
