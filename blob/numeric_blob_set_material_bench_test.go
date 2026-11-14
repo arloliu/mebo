@@ -42,6 +42,8 @@ type setFixture struct {
 	encoding  func(blob int) format.EncodingType
 	tags      bool // two-byte tags
 	kind      func(metric int) setValueKind
+	// blobKind, when set, gives the kind of metric m in blob k instead of kind, for metrics that change kind with the blob.
+	blobKind func(blob, metric int) setValueKind
 }
 
 // setMaterialRow is the work of one benchmark row: operation p materializes metric names[p/len(sets)] of set sets[p%len(sets)],
@@ -457,6 +459,19 @@ func BenchmarkNumericBlobSet_MaterializeMetricByName(b *testing.B) {
 	fixedPoints := func(n int) func(*setFixture) {
 		return func(f *setFixture) { f.minPoints, f.maxPoints = n, n }
 	}
+	// quietWhere makes every metric constant in the blobs where quiet holds and a gauge in the others,
+	// so a metric's columns are too sparse for the kernel in those blobs and dense enough between them.
+	quietWhere := func(quiet func(blob int) bool) func(*setFixture) {
+		return func(f *setFixture) {
+			f.blobKind = func(k, _ int) setValueKind {
+				if quiet(k) {
+					return setKindConstant
+				}
+
+				return setKindGauge
+			}
+		}
+	}
 	alpRLEWhere := func(blobs int, alpRLE func(blob int) bool) func(*setFixture) {
 		return func(f *setFixture) {
 			f.blobs = blobs
@@ -490,6 +505,8 @@ func BenchmarkNumericBlobSet_MaterializeMetricByName(b *testing.B) {
 		setMaterialBenchRow{"mixed=7of8", whole(alpRLEWhere(2400, func(k int) bool { return k%8 != 0 }))},
 		setMaterialBenchRow{"alprle", whole(alpRLEWhere(1000, func(int) bool { return true }))},
 		setMaterialBenchRow{"tags", whole(func(f *setFixture) { f.tags = true })},
+		setMaterialBenchRow{"quiet=start", whole(quietWhere(func(k int) bool { return k < 16 }))},
+		setMaterialBenchRow{"quiet=spells", whole(quietWhere(func(k int) bool { return k%250 < 16 }))},
 	)
 
 	for _, row := range rows {
@@ -589,6 +606,9 @@ func setFixtureName(m int) string {
 func setFixtureColumn(f setFixture, k, m, n int) []float64 {
 	u := (f.id*f.blobs+k)*f.metrics + m
 	kind := f.kind(m)
+	if f.blobKind != nil {
+		kind = f.blobKind(k, m)
+	}
 	start := 100 + float64(u)/100
 	switch kind {
 	case setKindCounter:
