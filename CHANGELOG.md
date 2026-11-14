@@ -24,10 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A group stays on the code it ran before when fewer than four of its Chimp columns can enter the kernel
   (a column that is the last of its payload cannot),
   or when its columns average under 12 encoded bits per value, as columns that rarely change do.
-  After the first group of a call that stays out, the rest of that call is decoded as before too,
-  so a metric that is quiet for eight blobs in a row gets no kernel for the blobs behind them.
-  Those sets, and sets of other encodings, measured between 0% and 2% slower than before this change,
-  which is close to what the measurement resolves.
+  After a group that stays out, the metric's columns in the next 56 blobs that hold it are decoded as before too,
+  and the group behind them is asked again,
+  so a metric that is quiet for a while gets the kernel back once its values change again.
+  Sets whose groups all stay out, and sets of other encodings,
+  measured between 0% and 2% slower than before this change, which is close to what the measurement resolves.
+  Asking again costs a metric that stays quiet for the whole call up to 2% more.
   The kernel needs AVX-512 F, BW and DQ.
   `GODEBUG=cpu.avx512dq=off` turns it off for a process, together with the ALP kernels.
   A CPU without those instructions, and every arm64 build, runs the code it ran before.
