@@ -2262,16 +2262,34 @@ The rows not listed are within 1.2% merged in both runs;
   Added to this task's figures at 56 members they come to about +2.7% each, against "within 3% merged";
   that sum was not measured.
 
+The second run does not clear the rows the first run missed: it measured 112 members,
+and `fullprec` is over the limit in one layout of it too (+3.4%).
+So the rows that missed at 56 members were measured once more at 56, as the procedure allows,
+`71564f9` (the published commit of the change, the same files as `8b23f91`) against `29057fb`; the control moved by 0.0% and -0.3%.
+
+| Row | First run: merged | worst layout | Again: merged | worst layout |
+|---|---|---|---|---|
+| `nearconst` | +1.9% | +2.4% | **+1.6%** | +2.0% |
+| `constant` | +1.4% | +3.7% | +0.7% | +1.9% |
+| `fullprec` | +2.0% | +4.4% | +0.2% | +0.7% |
+| `mixed=7of8` | +0.1% | +6.7% | -0.3% | +2.2% |
+| `blobs=9` | within 1.2% | +3.1% | -0.2% | +1.2% |
+| `blobs=64` | within 1.2% | +5.2% | +0.2% | +2.9% |
+
+No row is placement-sensitive in it, and every row is inside the limit of 3%.
+`nearconst` is still over its 1.5% merged, by 0.1; every other row is within it.
+
 The task's rule hands this to the owner with the numbers: 56 members, 112 members, or the change dropped.
 The orchestrator recommended 56: it keeps both new rows well over their requirement,
 and 112 buys nothing on `nearconst`.
 
 **Answered on 2026-11-14: the owner takes 56 members**, with `nearconst` at +1.9% merged against the 1.5% of this task's gate.
+The answer came before the rows were measured again, on the first run's figures and the second run's.
 The published branch holds 56, and the changelog gives the two measured costs separately:
 0% to 2% against `B0` before this task, and up to 2% more for a metric that stays quiet, against `29057fb`.
 No run compares the head of this task with `B0`.
 
-The raw output is in the orchestrator's `tmp/chimp-kernel-impl/t10-retry56/` and `t10-retry112/`.
+The raw output is in the orchestrator's `tmp/chimp-kernel-impl/t10-retry56/`, `t10-retry112/` and `t10-retry56-again/`.
 
 ## Out of scope, recorded
 
