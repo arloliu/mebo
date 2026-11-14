@@ -1073,7 +1073,9 @@ func (bs BlobSet) MaterializeText() MaterializedTextBlobSet {
 //
 // Performance:
 //   - Materialization cost: about 12 µs for a 600-point metric over four blobs with Chimp values and tags,
-//     about 2–5 ns per point without tags (measured 2026-10)
+//     about 3–9 ns per point without tags with Chimp values, 5–6 ns where the AVX-512 group decode takes the columns
+//     (columns that change often, in sets of eight blobs or more), and about 4 ns with ALP-RLE values
+//     (blobs of 30 to 40 points, Ryzen 9 9950X3D, measured 2026-11)
 //   - Random access: about 1 ns per accessor (O(1), slice indexing)
 //   - Memory: ~16 bytes per data point × total data points for this metric
 //
@@ -1109,7 +1111,9 @@ func (bs BlobSet) MaterializeNumericMetric(metricID uint64) (MaterializedNumeric
 //
 // Performance:
 //   - Materialization cost: about 12 µs for a 600-point metric over four blobs with Chimp values and tags,
-//     about 2–5 ns per point without tags (measured 2026-10)
+//     about 3–9 ns per point without tags with Chimp values, 5–6 ns where the AVX-512 group decode takes the columns
+//     (columns that change often, in sets of eight blobs or more), and about 4 ns with ALP-RLE values
+//     (blobs of 30 to 40 points, Ryzen 9 9950X3D, measured 2026-11)
 //   - Random access: about 1 ns per accessor (O(1), slice indexing)
 //   - Memory: ~16 bytes per data point × total data points for this metric
 //

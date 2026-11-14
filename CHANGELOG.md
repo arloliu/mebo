@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Materializing one metric across the blobs of a set is 22% to 38% faster with Chimp values, on a CPU with AVX-512.**
+  `MaterializeNumericMetric` and `MaterializeNumericMetricByName` on a `BlobSet`,
+  and `MaterializeMetric` and `MaterializeMetricByName` on a `NumericBlobSet`,
+  now decode the metric's Chimp columns of up to eight blobs together,
+  one value of each column per step, in an AVX-512 kernel.
+  Over 1,000 blobs of 30 to 40 points, with a mix of gauges, counters, near-constant and full-precision columns,
+  one metric goes from 259 to 180 µs (7.4 to 5.2 ns per point), 30% faster.
+  Gauges alone are 38% faster, full-precision values 29%, counters 22%;
+  blobs of 150 points 36%, sets of 4 to 64 blobs 11% to 31%, and a set with tags 12%
+  (little endian, V2 layout, shared DeltaPacked timestamps, no stored names, data that is not repeated between iterations;
+  layout-averaged, Ryzen 9 9950X3D).
+  The data is synthetic, and the rules for when a group of columns uses the kernel were set from it.
+  A group stays on the code it ran before when fewer than four of its Chimp columns can enter the kernel
+  (a column that is the last of its payload cannot),
+  or when its columns average under 12 encoded bits per value, as columns that rarely change do.
+  After the first group of a call that stays out, the rest of that call is decoded as before too,
+  so a metric that is quiet for eight blobs in a row gets no kernel for the blobs behind them.
+  Those sets, and sets of other encodings, measured between 0% and 2% slower than before this change,
+  which is close to what the measurement resolves.
+  The kernel needs AVX-512 F, BW and DQ.
+  `GODEBUG=cpu.avx512dq=off` turns it off for a process, together with the ALP kernels.
+  A CPU without those instructions, and every arm64 build, runs the code it ran before.
+  The result is the same in every element as before, for damaged blobs too.
+
 - **Looking up one Chimp value by index is about twice as fast.**
   `ValueAt` on a Chimp column that has not been materialized replays the column up to the index.
   It now reads the column the way a full decode does, and passes a run of unchanged values in one step.
