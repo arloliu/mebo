@@ -1470,15 +1470,15 @@ Today no group follows it, so a member that comes up short inside it leaves elem
 Once groups form after it, a lane must not be planned over such elements:
 the unused capacity would differ from the reference.
 
-- [ ] **The rows first, in a commit of their own**, with no production change.
+- [x] **The rows first, in a commit of their own**, with no production change.
   Two rows of 1,000 Chimp blobs whose metrics change kind with the blob:
   `quiet=start` (constant for the first 16 blobs, gauges after them) and
   `quiet=spells` (constant for 16 blobs of every 250, gauges between).
   The data of every existing row stays identical.
   Before the change, `kernel-columns/column` of `quiet=start` must read about 0, or the row does not exercise the stop.
-- [ ] The change, as above.
+- [x] The change, as above.
   The comments of `materializeMembersGrouped` and `appendMembersInTurn` say what is true afterwards.
-- [ ] Tests.
+- [x] Tests.
   Every fixture and the fuzz target equal the frozen reference with `chimpGroupRetryAfter` at 0, 1, 3 and 56, group decode off and on:
   the fuzz programs hold at most 24 members, so at 56 no group forms after a stretch.
   A fixture has a member that comes up short inside a stretch, followed by a dense group.
@@ -1486,7 +1486,7 @@ the unused capacity would differ from the reference.
   Mutation checks, each caught by a test:
   the `written` carry removed; the stretch one member too long and one too short;
   the next index returned off by one; the stop restored.
-- [ ] The orchestrator measures the commit of the change against the commit of the rows,
+- [x] The orchestrator measures the commit of the change against the commit of the rows,
   so that both sides hold one benchmark file, and applies the gate below.
   It was written before any timing.
 
@@ -1498,9 +1498,9 @@ the unused capacity would differ from the reference.
 | allocations, every row | equal | fix inside the task |
 | the control | within 3% merged in both cells | the run is invalid |
 
-- [ ] The external review of the change, by commit.
-- [ ] The changelog sentence about the stop, and its figures for the sets that stay on the old code, say what is true afterwards.
-- [ ] The push and the pull request are covered by the owner's instruction; the merge and the tag are asked for again.
+- [x] The external review of the change, by commit.
+- [x] The changelog sentence about the stop, and its figures for the sets that stay on the old code, say what is true afterwards.
+- [x] The push and the pull request are covered by the owner's instruction; the merge and the tag are asked for again.
 
 ---
 
@@ -1680,6 +1680,9 @@ The hashes this plan cites are those of the commits before the squash, which are
 The squash changed no file: the tree of the last commit before it and the tree after it are the same.
 `B0`, `6b7cfc6`, is the commit "test(blob): benchmark, pin and fuzz single-metric set materialization" there;
 the two differ in this plan alone, which the published commit does not hold yet.
+The branch of Task 10 was tidied the same way before it was pushed:
+`89cded7` and `8b23f91` are one commit there, "perf(blob): form Chimp groups again after a group that stays out",
+and `0f7c97c`, which only set the stretch to 112 members for the second run, is not in it.
 
 ### Task 0
 
@@ -2218,6 +2221,57 @@ the timing of `b4ea376` is that of the head.
   Not done, and waiting for the owner each: the merge and the tag.
 
 The raw output is in the orchestrator's `tmp/chimp-kernel-impl/t9-final-vs-b0/`.
+
+### Task 10
+
+Commits `29057fb` (the two rows), `89cded7` (the change) and `8b23f91` (a pin of the starting value, after the review).
+Every fixture and the fuzz target equal the frozen reference at 0, 1, 3 and 56 members, group decode off and on.
+All five mutation checks were caught; the one that removes the `written` carry is caught by a comparison with the reference.
+The external review of `89cded7`, a static read, found no P0 and no P1 and no input on which a result or a panic differs.
+Its one P2 is fixed in `8b23f91`: no test saw a change of the value the package starts with.
+
+Before the change the kernel takes no column of either new row; after it, 0.93 of `quiet=start` and 0.74 of `quiet=spells`.
+
+Two runs, each against `29057fb`, four layouts, three rounds, twelve observations per side; the control moved by 0.0% in both.
+Allocations are equal on every row.
+
+| Row | 56 members: merged | worst layout | 112 members: merged | worst layout | Requirement |
+|---|---|---|---|---|---|
+| `quiet=start` | -36.5% | -36.2% | -34.3% | -33.9% | improves by 20% merged |
+| `quiet=spells` | -29.6% | -29.6% | **-19.7%** | -19.0% | improves by 20% merged |
+| `nearconst` | **+1.9%** | +2.4% | **+2.0%** | +2.1% | within 1.5% merged, limit 3% |
+| `constant` | +1.4% | **+3.7%** | +1.0% | +1.0% | within 1.5% merged, limit 3% |
+| `lastcolumn` | +0.3% | +0.4% | +0.6% | +0.9% | within 1.5% merged, limit 3% |
+| `mixed=7of8` | +0.1% | +6.7% | +0.1% | +1.8% | within 1.5% merged, limit 3% |
+| `consumer` | -0.2% | +0.1% | -0.5% | -0.2% | within 1.5% merged, limit 3% |
+| `fullprec` | +2.0% | +4.4% | -0.1% | +3.4% | within 1.5% merged, limit 3% |
+| `alprle` | +0.8% | +1.5% | +1.0% | +1.2% | within 1.5% merged, limit 3% |
+
+The rows not listed are within 1.2% merged in both runs;
+`blobs=9` (+3.1%) and `blobs=64` (+5.2%) are over the limit in one layout of the first run and inside it in the second.
+
+- At 56 members `nearconst` is over its requirement, so the stretch was doubled once, as the task says (`0f7c97c`, a measurement commit).
+- At 112 members `nearconst` did not move, and `quiet=spells` fell under its own requirement:
+  it is quiet for 16 blobs of every 250, and a longer stretch gives up more of the blobs between.
+  So the cost on `nearconst` is not the number of groups asked alone.
+  Where it is was not found: instruction counts in one binary differ by more from run to run than the two values differ.
+- The first run was disturbed: single observations of `fullprec`, `mixed=7of8` and `blobs=64` are 30% to 60% off their layout's others,
+  with a load average near 2 on the machine.
+  `fullprec` and `mixed=7of8` are placement-sensitive in it for that reason.
+- Against `B0` the two rows were at +0.8% (`nearconst`) and +1.3% (`constant`) before this task.
+  Added to this task's figures at 56 members they come to about +2.7% each, against "within 3% merged";
+  that sum was not measured.
+
+The task's rule hands this to the owner with the numbers: 56 members, 112 members, or the change dropped.
+The orchestrator recommended 56: it keeps both new rows well over their requirement,
+and 112 buys nothing on `nearconst`.
+
+**Answered on 2026-11-14: the owner takes 56 members**, with `nearconst` at +1.9% merged against the 1.5% of this task's gate.
+The published branch holds 56, and the changelog gives the two measured costs separately:
+0% to 2% against `B0` before this task, and up to 2% more for a metric that stays quiet, against `29057fb`.
+No run compares the head of this task with `B0`.
+
+The raw output is in the orchestrator's `tmp/chimp-kernel-impl/t10-retry56/` and `t10-retry112/`.
 
 ## Out of scope, recorded
 
