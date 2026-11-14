@@ -21,6 +21,11 @@ var (
 	// the columns that entered the kernel, the steps the kernel completed and the kernel calls.
 	// It is nil outside tests.
 	chimpGroupObserve func(groups, ahead, columns, steps, calls int)
+
+	// chimpGroupRetryAfter is how many contributing members materializeMembersGrouped appends in turn
+	// after a group that would not enter the kernel, before it forms a group again.
+	// Tests lower it, and must not run in parallel while they do.
+	chimpGroupRetryAfter = 56
 )
 
 // MaterializedNumericBlobSet provides O(1) random access to all data points across all blobs.
@@ -54,6 +59,13 @@ type MaterializedNumericBlobSet struct {
 	names   []string
 	byName  map[string]int
 	byID    map[uint64]int
+}
+
+// memberRows are the slices the members' rows of one metric are appended to, as appendMembersInTurn takes and returns them.
+type memberRows struct {
+	timestamps []int64
+	values     []float64
+	tags       []string
 }
 
 type materializedNumericMetricSet struct {
@@ -681,12 +693,12 @@ func alignMemberRows[V any](timestamps []int64, values []V, tags []string, hasTa
 // and the rest of the group is decoded again, each member in its turn.
 //
 // Forming a group costs every member a little, and pays only when the group shares the kernel.
-// So the first group that decodeChimpGroupAhead leaves alone is the last one formed:
-// its members and all the members after it are appended one at a time (appendMembersInTurn),
-// at the cost they have in materializeMetricCore.
+// So a group that decodeChimpGroupAhead leaves alone is appended member by member,
+// and so are the next chimpGroupRetryAfter members that hold the metric (appendMembersInTurn),
+// at the cost they have in materializeMetricCore; then a group is formed again,
+// so a set that turns dense after a sparse stretch gets the kernel back.
 // That is decided before any lane of the group has written, when every earlier group has been appended or cleared,
 // so the slices hold what the member-by-member loop holds at that member.
-// A set that turns dense after a sparse group is decoded column by column from there on.
 func (s *NumericBlobSet) materializeMembersGrouped(
 	resolve func(blob *NumericBlob) (section.NumericIndexEntry, bool), hasTags bool,
 	timestamps []int64, values []float64, tags []string,
@@ -728,8 +740,8 @@ func (s *NumericBlobSet) materializeMembersGrouped(
 			groupEnd, ahead = decodeChimpGroupAhead(&group, members[:n], entries[:n], &lanes, values)
 			asked++
 		}
-		// A group that was left alone ends the grouping; one that is cleared later, after a short member, does not.
-		last := limit > 1 && !ahead
+		// A group that was left alone is followed by members appended in turn; one cleared after a short member is not.
+		leftAlone := limit > 1 && !ahead
 		if ahead {
 			decoded++
 		}
@@ -787,10 +799,11 @@ func (s *NumericBlobSet) materializeMembersGrouped(
 				ahead = false
 			}
 		}
-		if last {
-			timestamps, values, tags = s.appendMembersInTurn(next, resolve, hasTags, timestamps, values, tags)
-
-			break
+		if leftAlone {
+			var rows memberRows
+			next, written, rows = s.appendMembersInTurn(
+				next, chimpGroupRetryAfter, written, resolve, hasTags, memberRows{timestamps, values, tags})
+			timestamps, values, tags = rows.timestamps, rows.values, rows.tags
 		}
 	}
 
@@ -801,20 +814,27 @@ func (s *NumericBlobSet) materializeMembersGrouped(
 	return timestamps, values, tags
 }
 
-// appendMembersInTurn appends the rows of the members from s.blobs[first] on, decoding each column in its member's turn.
+// appendMembersInTurn appends the rows of up to limit members that hold the metric, from s.blobs[first] on,
+// decoding each column in its member's turn.
 // It is the member loop of materializeMetricCore, entered at a later member:
-// materializeMembersGrouped ends with it once it forms no more groups,
+// materializeMembersGrouped calls it after a group it left alone,
 // so that those members cost what they cost in that loop.
+// It raises written as materializeMembersGrouped does, because groups are formed again after it:
+// a member that comes up short leaves values above the rows, and no group may be planned over them.
+// It returns the index of the next blob to look at, written, and the rows.
 func (s *NumericBlobSet) appendMembersInTurn(
-	first int, resolve func(blob *NumericBlob) (section.NumericIndexEntry, bool), hasTags bool,
-	timestamps []int64, values []float64, tags []string,
-) ([]int64, []float64, []string) {
-	for i := first; i < len(s.blobs); i++ {
+	first, limit, written int, resolve func(blob *NumericBlob) (section.NumericIndexEntry, bool), hasTags bool,
+	rows memberRows,
+) (next, raised int, out memberRows) {
+	timestamps, values, tags := rows.timestamps, rows.values, rows.tags
+	i := first
+	for ; i < len(s.blobs) && limit > 0; i++ {
 		blob := &s.blobs[i]
 		entry, ok := resolve(blob)
 		if !ok {
 			continue // This metric doesn't contribute to this logical metric
 		}
+		limit--
 
 		count := entry.Count
 
@@ -850,7 +870,9 @@ func (s *NumericBlobSet) appendMembersInTurn(
 		}
 
 		timestamps, values, tags = alignMemberRows(timestamps, values, tags, hasTags)
+
+		written = max(written, valOff+count)
 	}
 
-	return timestamps, values, tags
+	return i, written, memberRows{timestamps, values, tags}
 }
