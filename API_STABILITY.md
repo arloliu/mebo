@@ -370,6 +370,21 @@ Behaviour changes:
 - **`MetricDuration` and `MetricDurationByName` take their ends from the blobs that have points of the metric.**
   They returned 0 when the first or the last blob holding the metric held it without points.
 
+## Additions (v1.15.0)
+
+The additions are purely additive; no existing signature changed.
+
+- **`NumericMetric.TimestampGroup() (id TimestampGroupID, ok bool)`** and the type **`TimestampGroupID`**:
+  the ID of the timestamp sequence a handle reads,
+  when its points are in one blob and that blob stores the timestamps once for several metrics.
+  IDs are comparable; two handles with equal IDs answer the same on `Len`, `TimestampAt`, `ForEachTimestamps`,
+  `ForEachTimestampsRange`, `SearchTimestamp` and `TimestampsSorted`.
+  `ForEach` and `At` are outside the promise, because they also read the metric's values and tags.
+  Unequal IDs say nothing, and the same bytes decoded twice give different IDs.
+  `ok` is false for a metric with timestamps of its own, for a handle with points in several blobs,
+  for a handle without points, and for a group that does not hold exactly the metric's points.
+  An ID keeps its group's decoded timestamps in memory while it is held.
+
 ## Go Version Compatibility
 
 ### Minimum Go Version
