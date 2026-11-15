@@ -1,7 +1,7 @@
 # Design: an ID for the timestamp group a handle reads
 
 **Date:** 2026-11-15
-**Status:** implemented on `feat/timestamp-group-id`, not released.
+**Status:** implemented; ships in v1.15.0.
 Owner request (2026-11-15): design and implement the timestamp group ID the consumer asked for.
 The consumer's requirement note of 2026-11-14 is in its repository, under `tmp/defense-path-cost/`.
 The owner chose an opaque ID there, rather than returning the decoded timestamps.
