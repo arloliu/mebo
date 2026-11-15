@@ -2516,6 +2516,247 @@ func TestNumericMetric_TimestampsSortedAllocatesNothing(t *testing.T) {
 	}
 }
 
+// timestampGroupTestBlob encodes five metrics of 12 points with shared DeltaPacked timestamps and decodes them:
+// metrics 1 and 2 share one timestamp sequence, 3 and 4 another, and 5 has its own.
+func timestampGroupTestBlob(tb testing.TB, opts ...NumericEncoderOption) (NumericBlob, []handleTestMetric) {
+	tb.Helper()
+	ms := handleTestMetrics(5, 12, handleTestIdentical)
+	for i := range ms[2].ts {
+		ms[2].ts[i]++
+		ms[3].ts[i]++
+		ms[4].ts[i] += 2
+	}
+	base := []NumericEncoderOption{WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked)}
+	blob := handleTestBlob(tb, ms, false, append(base, opts...)...)
+	require.NotNil(tb, blob.sharedTs)
+	require.Len(tb, blob.sharedTs.groups, 2)
+
+	return blob, ms
+}
+
+// timestampAxis is what a handle answers about its timestamps: what equal group IDs promise to be equal.
+type timestampAxis struct {
+	n      int
+	at     []int64 // TimestampAt at every index it answers
+	walk   []int64 // ForEachTimestamps, as far as its indices count up from 0
+	window []int64 // ForEachTimestampsRange over [2, n-2), as far as its indices count up from 2
+	search []int   // SearchTimestamp of each timestamp in at, negated minus one when it reports not found
+	sorted bool
+}
+
+func readTimestampAxis(h *NumericMetric) timestampAxis {
+	a := timestampAxis{n: h.Len(), sorted: h.TimestampsSorted()}
+	for i := range a.n {
+		if ts, ok := h.TimestampAt(i); ok {
+			a.at = append(a.at, ts)
+		}
+	}
+	h.ForEachTimestamps(func(i int, ts int64) bool {
+		if i == len(a.walk) {
+			a.walk = append(a.walk, ts)
+		}
+
+		return true
+	})
+	h.ForEachTimestampsRange(2, a.n-2, func(i int, ts int64) bool {
+		if i == 2+len(a.window) {
+			a.window = append(a.window, ts)
+		}
+
+		return true
+	})
+	for _, ts := range a.at {
+		i, found := h.SearchTimestamp(ts)
+		if !found {
+			i = -i - 1
+		}
+		a.search = append(a.search, i)
+	}
+
+	return a
+}
+
+// TestNumericMetric_TimestampGroup pins the ID a handle on one blob reports:
+// metrics of one shared group have equal IDs and the same timestamps on every timestamp accessor,
+// metrics of two groups have different IDs, and a metric outside every group has none.
+func TestNumericMetric_TimestampGroup(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		opts []NumericEncoderOption
+	}{
+		{"gorilla", nil},
+		{"tags", []NumericEncoderOption{WithTagsEnabled(true)}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			blob, ms := timestampGroupTestBlob(t, mode.opts...)
+
+			var (
+				ids  [5]TimestampGroupID
+				oks  [5]bool
+				axes [5]timestampAxis
+			)
+			for m := range ids {
+				h, ok := blob.Metric(uint64(m + 1))
+				require.True(t, ok)
+				ids[m], oks[m] = h.TimestampGroup()
+				axes[m] = readTimestampAxis(&h)
+				require.Equal(t, 12, axes[m].n)
+				require.Equal(t, ms[m].ts, axes[m].at, "metric %d TimestampAt", m+1)
+				require.Equal(t, ms[m].ts, axes[m].walk, "metric %d ForEachTimestamps", m+1)
+				require.Equal(t, ms[m].ts[2:10], axes[m].window, "metric %d ForEachTimestampsRange", m+1)
+				require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, axes[m].search, "metric %d SearchTimestamp", m+1)
+				require.True(t, axes[m].sorted)
+
+				// Materialize leaves the ID and the timestamps as they were.
+				h.Materialize()
+				id, ok := h.TimestampGroup()
+				require.Equal(t, oks[m], ok, "metric %d materialized", m+1)
+				require.True(t, id == ids[m], "metric %d materialized", m+1)
+				require.Equal(t, axes[m], readTimestampAxis(&h), "metric %d materialized", m+1)
+			}
+
+			require.Equal(t, [5]bool{true, true, true, true, false}, oks)
+			require.Zero(t, ids[4], "a metric with its own timestamps")
+			require.NotZero(t, ids[0])
+			// The IDs are compared with ==, as a caller compares them: require.Equal would follow the pointer inside.
+			require.True(t, ids[0] == ids[1])
+			require.True(t, ids[2] == ids[3])
+			require.False(t, ids[0] == ids[2])
+			require.Equal(t, axes[0], axes[1], "equal IDs have the same timestamps")
+			require.Equal(t, axes[2], axes[3], "equal IDs have the same timestamps")
+			require.NotEqual(t, axes[0].walk, axes[2].walk)
+
+			// The ID keys a map, which is how a caller reuses a result across the metrics of a group.
+			seen := map[TimestampGroupID]int{}
+			for m, id := range ids {
+				if oks[m] {
+					seen[id]++
+				}
+			}
+			require.Len(t, seen, 2)
+			require.Equal(t, 2, seen[ids[0]])
+			require.Equal(t, 2, seen[ids[2]])
+
+			// A copy of the blob is the same decoded blob, so its handles have the same IDs.
+			again := blob
+			h, ok := again.Metric(2)
+			require.True(t, ok)
+			id, ok := h.TimestampGroup()
+			require.True(t, ok)
+			require.True(t, id == ids[0])
+
+			// A handle on a set that holds the metric in one blob reads that blob alone, so it has the blob's ID.
+			set := NewBlobSet([]NumericBlob{blob}, nil)
+			h, ok = set.NumericMetric(2)
+			require.True(t, ok)
+			id, ok = h.TimestampGroup()
+			require.True(t, ok)
+			require.True(t, id == ids[0])
+
+			if raceEnabled {
+				return
+			}
+			hits := 0
+			allocs := testing.AllocsPerRun(100, func() {
+				h, _ := blob.Metric(1)
+				if id, ok := h.TimestampGroup(); ok && id == ids[0] {
+					hits++
+				}
+			})
+			require.Zero(t, allocs)
+			require.Equal(t, 101, hits)
+		})
+	}
+}
+
+// TestNumericMetric_TimestampGroup_None pins the handles that report no ID,
+// that the ID promises the timestamps and not the points,
+// and that the ID of a group is not the ID of the same bytes decoded again.
+func TestNumericMetric_TimestampGroup_None(t *testing.T) {
+	var zero NumericMetric
+	id, ok := zero.TimestampGroup()
+	require.False(t, ok, "zero value")
+	require.Zero(t, id)
+
+	ms := handleTestMetrics(3, 12, handleTestAllUnique)
+	own := handleTestBlob(t, ms, false, WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked))
+	require.Nil(t, own.sharedTs)
+	h, ok := own.Metric(1)
+	require.True(t, ok)
+	_, ok = h.TimestampGroup()
+	require.False(t, ok, "a blob without a shared group")
+
+	// A handle over two blobs reads two sequences, so it has no single ID.
+	h = searchTestHandle(t, [][]int64{{100, 201}, {303, 404}}, WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked))
+	require.NotNil(t, h.first.shared)
+	_, ok = h.TimestampGroup()
+	require.False(t, ok, "a handle over two blobs")
+
+	blob, _ := timestampGroupTestBlob(t)
+	h, ok = blob.Metric(1)
+	require.True(t, ok)
+	want, ok := h.TimestampGroup()
+	require.True(t, ok)
+	wantAxis := readTimestampAxis(&h)
+
+	// A group that does not hold exactly the metric's points is malformed:
+	// the reads behind it go to the metric's own range, so the group alone does not say what they return.
+	short := h
+	short.first.shared = h.first.shared[:5]
+	_, ok = short.TimestampGroup()
+	require.False(t, ok, "a group shorter than the count")
+	long := h
+	long.first.count = 5
+	_, ok = long.TimestampGroup()
+	require.False(t, ok, "a group longer than the count")
+	empty := h
+	empty.first.count = 0
+	empty.first.shared = h.first.shared[:0]
+	_, ok = empty.TimestampGroup()
+	require.False(t, ok, "a handle without points")
+
+	// The timestamp accessors of a full group never read the metric's own timestamp range,
+	// so a range that cannot be read changes neither the ID nor the timestamps.
+	noRange := h
+	noRange.first.tsBytes, noRange.first.tsOK = nil, false
+	got, ok := noRange.TimestampGroup()
+	require.True(t, ok)
+	require.True(t, got == want, "an unreadable timestamp range")
+	require.Equal(t, wantAxis, readTimestampAxis(&noRange))
+
+	// The ID promises the timestamps and not the points:
+	// a value column that ends early keeps the ID and the timestamps, and its point walk stops short.
+	cut := h
+	cut.first.valBytes = h.first.valBytes[:1]
+	got, ok = cut.TimestampGroup()
+	require.True(t, ok)
+	require.True(t, got == want, "a truncated value column")
+	require.Equal(t, wantAxis, readTimestampAxis(&cut))
+	points := 0
+	cut.ForEach(func(int, NumericDataPoint) bool {
+		points++
+
+		return true
+	})
+	require.Less(t, points, 12, "the point walk of a truncated value column")
+
+	// Equality is not content equality: the same bytes decoded twice give two groups.
+	data := handleTestBlobBytes(t, handleTestStart, handleTestMetrics(2, 12, handleTestIdentical), false,
+		WithSharedTimestamps(), WithTimestampEncoding(format.TypeDeltaPacked))
+	var twice [2]TimestampGroupID
+	for k := range twice {
+		dec, err := NewNumericDecoder(data)
+		require.NoError(t, err)
+		decoded, err := dec.Decode()
+		require.NoError(t, err)
+		h, ok := decoded.Metric(1)
+		require.True(t, ok)
+		twice[k], ok = h.TimestampGroup()
+		require.True(t, ok)
+	}
+	require.False(t, twice[0] == twice[1])
+}
+
 // rangeTestPair is one call of a walk's yield: the index and what came with it.
 type rangeTestPair[T any] struct {
 	index int
