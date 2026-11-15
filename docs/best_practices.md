@@ -196,6 +196,14 @@ When the writer cannot rule the rest out, call `TimestampsSorted()` once per han
 it reads each timestamp at most once, and only the ends of each blob's timestamps when the blobs share them and the decoder found them in order,
 and a search costs a fraction of a microsecond after it.
 
+When a result depends on a metric's timestamps and not on its values, compute it once per timestamp group:
+resolve the metric on each blob (`NumericBlob.Metric` or `MetricByName`) and call `TimestampGroup()` on the handle.
+Handles with equal IDs have the same timestamps, so the ID can key a table of results;
+a handle without an ID is computed on its own.
+Read the timestamps with `ForEachTimestamps` or `TimestampAt` when you fill the table:
+`ForEach` also reads the values, and stops early on a value column that cannot be read.
+Do not keep the table longer than the blobs, because an ID keeps its group's decoded timestamps in memory.
+
 ### Tags add overhead — enable them only when needed
 
 Tags are stored as a length-prefixed string per data point.

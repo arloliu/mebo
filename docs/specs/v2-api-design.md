@@ -237,6 +237,7 @@ func (h *NumericMetric) ForEachValues(yield func(i int, v float64) bool)
 func (h *NumericMetric) ForEachTimestamps(yield func(i int, ts int64) bool)
 func (h *NumericMetric) SearchTimestamp(ts int64) (i int, found bool) // see Time search
 func (h *NumericMetric) TimestampsSorted() bool                       // the precondition of SearchTimestamp; see Time search
+func (h *NumericMetric) TimestampGroup() (TimestampGroupID, bool)     // added in v1 after this design; see timestamp-group-id.md
 func (h *NumericMetric) TimestampAccess() AccessClass
 func (h *NumericMetric) ValueAccess() AccessClass
 func (h *NumericMetric) Materialize() error                // see Materialize and Columns

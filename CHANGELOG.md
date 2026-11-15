@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`NumericMetric.TimestampGroup()` tells a reader that two metrics of one blob read the same timestamps.**
+  It returns a `TimestampGroupID`, a comparable value that can key a map,
+  for a handle whose points are in one blob and whose timestamps the blob stores once for several metrics
+  (`WithSharedTimestamps`).
+  Two handles with equal IDs have the same timestamps on every timestamp accessor,
+  so a result that depends on the timestamps alone, such as the largest gap in a window,
+  can be computed once per group instead of once per metric.
+  The promise does not reach `ForEach` and `At`, which also read the metric's values and tags.
+  Unequal IDs say nothing: the same bytes decoded twice give different IDs.
+  It reports no ID for a metric with timestamps of its own and for a handle with points in several blobs.
+  The call reads no timestamp and allocates nothing.
+  An ID keeps its group's decoded timestamps in memory while it is held.
+
 ## [1.14.2] - 2026-11-14
 
 Faster materializing of one Chimp metric across the blobs of a set on a CPU with AVX-512,
