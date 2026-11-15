@@ -81,6 +81,26 @@ type NumericMetric struct {
 	rest  []numericMetricPart
 }
 
+// TimestampGroupID identifies the timestamp sequence a handle on one blob reads,
+// for a metric whose timestamps the blob stores once for several metrics (see WithSharedTimestamps).
+// NumericMetric.TimestampGroup returns it.
+//
+// IDs are comparable and can key a map.
+// Two handles with equal IDs have the same timestamps:
+// Len, TimestampAt, ForEachTimestamps, ForEachTimestampsRange, SearchTimestamp and TimestampsSorted
+// answer the same on both, before and after Materialize,
+// so a result that depends on the timestamps alone can be computed for one handle and reused for the other.
+// The promise covers the timestamps and not the points:
+// ForEach and At also read the metric's values and tags, and stop where those cannot be read.
+// Unequal IDs say nothing: decoding the same bytes twice gives two blobs whose IDs differ.
+//
+// An ID keeps the decoded timestamps of its group in memory while it is held,
+// so a table keyed by IDs should not outlive the blobs it was filled from.
+// The zero value is never the ID of a group.
+type TimestampGroupID struct {
+	first *int64 // the first of the group's decoded timestamps: each group of each decoded blob is its own allocation
+}
+
 // numericMetricPart is the metric's slice of one blob: what the point accessors need, copied at resolution.
 // It holds no pointer into the blob's index, which entryByID and entryByName forbid retaining.
 // The embedded blobBase carries the encodings, the flags and the byte order the decode paths dispatch on,
@@ -806,6 +826,27 @@ func (h *NumericMetric) TimestampsSorted() bool {
 	}
 
 	return ok
+}
+
+// TimestampGroup returns the ID of the timestamp sequence the handle reads, and whether it has one.
+//
+// It has one when all its points are in one blob
+// and the decoder decoded their timestamps when it opened the blob, because two or more metrics of the blob share them.
+// Handles with equal IDs have the same timestamps; see TimestampGroupID.
+//
+// ok is false for a metric with timestamps of its own, for a handle with points in several blobs,
+// for a handle without points, and for a group that does not hold exactly the metric's points,
+// which only a malformed blob has.
+// The caller then reads the handle's timestamps itself.
+//
+// It reads no timestamp and allocates nothing.
+func (h *NumericMetric) TimestampGroup() (id TimestampGroupID, ok bool) {
+	p := &h.first
+	if len(h.rest) != 0 || p.count == 0 || len(p.shared) != p.count {
+		return TimestampGroupID{}, false
+	}
+
+	return TimestampGroupID{first: &p.shared[0]}, true
 }
 
 // TagAt returns the tag at the given index.
